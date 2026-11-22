@@ -6,6 +6,10 @@
     make test-canary
     make test-tools           # pytest for tools/rimg.py
     make test-target          # spikes and examples on all four boards through boot()
+    make test-target BOARD=raspi0   # the same on one board
+
+`BOARD` defaults to `all`. It is passed to pytest as `--board`, so it
+takes a board name or `all`. The reusable workflow sets it per board.
 
 Needs `qemu-system-arm` and `qemu-system-aarch64` on `PATH`. A machine
 missing from the installed QEMU is skipped. V2 is skipped without

@@ -61,9 +61,11 @@ test-examples:
 	done; \
 	echo "test-examples: all passed"
 
-# Target tests: boot spikes and examples through tests/harness/boot.py on every board.
+# Target tests: boot spikes and examples through tests/harness/boot.py.
+# BOARD picks one QEMU board, or all of them (default).
+BOARD ?= all
 test-target: venv
-	$(VENV)/bin/pytest tests/target -v --board all
+	$(VENV)/bin/pytest tests/target -v --board $(BOARD)
 
 # Host unit tests: src/lib built with the host cc, ASan and UBSan.
 include mk/host.mk
