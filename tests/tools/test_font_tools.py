@@ -13,7 +13,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOL = os.path.join(ROOT, "tools", "font2c.py")
 SPLEEN = "third_party/spleen/spleen-8x16.bdf"
-COMMITTED = os.path.join(ROOT, "src", "gfx", "font8x16.c")
+COMMITTED = os.path.join(ROOT, "src", "gfx", "font8x16_spleen.c")
 GLYPH_COUNT = 95 + 23
 
 
@@ -52,7 +52,7 @@ def test_spleen_regenerates_identically(tmp_path):
     with open(COMMITTED) as f:
         committed = f.read()
     # The generator line names the output, so compare with the committed path in it.
-    got = out.read_text().replace(str(out), "src/gfx/font8x16.c")
+    got = out.read_text().replace(str(out), "src/gfx/font8x16_spleen.c")
     assert got == committed
 
 

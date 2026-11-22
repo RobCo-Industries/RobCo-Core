@@ -2,7 +2,7 @@
  * Generated file. Do not edit.
  * Source: spleen-8x16.bdf
  * SHA-256: 3be74111b39d48647a9a944528bd0bfaf0b926817cf85ff3746658c3f7532147
- * Generator: tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen -o src/gfx/font8x16.c
+ * Generator: tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen -o src/gfx/font8x16_spleen.c
  * This table inherits the licence of its source font.
  */
 

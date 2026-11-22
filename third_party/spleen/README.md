@@ -7,6 +7,6 @@ Bitmap font by Frederic Cambus, BSD 2-Clause (see `LICENSE`).
 - Commit: `b2d04a6180d44f47396dc530f3b2ca46b87e618b`
 - Files: `spleen-8x16.bdf`, `LICENSE`, unchanged.
 
-`src/gfx/font8x16.c` is generated from the BDF:
+`src/gfx/font8x16_spleen.c` is generated from the BDF:
 
-    tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen -o src/gfx/font8x16.c
+    tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen -o src/gfx/font8x16_spleen.c

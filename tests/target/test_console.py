@@ -17,7 +17,7 @@ from harness.boot import BOARDS, boot
 from harness.qemu import have_machine
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-FONT_C = os.path.join(ROOT, "src", "gfx", "font8x16.c")
+FONT_C = os.path.join(ROOT, "src", "gfx", "font8x16_spleen.c")
 GOLDEN = os.path.join(ROOT, "tests", "golden", "console_banner_green.png")
 
 W, H = 640, 480
