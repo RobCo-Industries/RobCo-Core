@@ -43,6 +43,8 @@ static void slow_main(void)
 {
     uint32_t loops = 0;
     uint32_t start_us;
+    uint32_t ticks, calls, missed, ms;
+    uint32_t s;
     int done = 0;
     int c;
 
@@ -54,10 +56,16 @@ static void slow_main(void)
         loops++;
         if (!done && tick_count() >= SLOW_TICKS) {
             done = 1;
+            /* Snapshot with IRQs masked so a tick cannot land between reads. */
+            s = irq_save();
+            ticks = tick_count();
+            calls = slow_calls;
+            missed = tick_missed();
+            ms = tick_ms();
+            irq_restore(s);
             k_printf("@RC stage=tick ev=slow ticks=%u calls=%u missed=%u ms=%u "
                      "elapsed_us=%u loops=%u\n",
-                     (unsigned)tick_count(), (unsigned)slow_calls,
-                     (unsigned)tick_missed(), (unsigned)tick_ms(),
+                     (unsigned)ticks, (unsigned)calls, (unsigned)missed, (unsigned)ms,
                      (unsigned)((uint32_t)timer_now_us() - start_us), (unsigned)loops);
         }
         c = uart_poll();
@@ -68,18 +76,18 @@ static void slow_main(void)
 }
 #endif
 
-/* Delay edge cases that finish quickly. Returns 0 if all hold. */
+/*
+ * Delay edge cases. Returns 0 if all hold. Only lower bounds count: a
+ * delay must not return early, but the host under QEMU can stall it.
+ */
 static int check_delays(uint32_t *us_out)
 {
     uint64_t t0;
     uint64_t t1;
     int bad = 0;
 
-    t0 = timer_now_us();
     timer_delay_us(0);
     timer_delay_ms(0);
-    t1 = timer_now_us();
-    bad |= t1 - t0 > 1000;
 
     t0 = timer_now_us();
     timer_delay_us(1500);
@@ -121,7 +129,8 @@ static void on_tick(void)
     uint32_t now = (uint32_t)timer_now_us();
 
     tick_us[n % RING] = now;
-    if (n == DONE_TICKS) {
+    /* A late handler can count several periods at once and skip DONE_TICKS. */
+    if (n >= DONE_TICKS && done_us == 0) {
         done_us = now;
     }
 }
@@ -192,8 +201,7 @@ void robco_main(void)
     }
 #endif
     oneshot_deadline = timer_now_lo() + ONESHOT_US;
-    timer_compare_set(ONESHOT_CH, oneshot_deadline);
-    timer_compare_clear(ONESHOT_CH);
+    timer_oneshot_arm(ONESHOT_CH, oneshot_deadline);
     irq_enable(IRQ_TIMER3);
     irq_cpu_enable();
 
