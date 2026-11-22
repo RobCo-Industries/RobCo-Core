@@ -266,10 +266,12 @@ key    = 1*( lower / DIGIT / "_" )
 value  = 1*( VCHAR except SP )
 ```
 
-- Numbers are hex with `0x`, or decimal for sizes, counts and clocks.
+- Numbers are hex with `0x`, or decimal for sizes, counts and clocks. Register values and addresses are always hex with 8 digits. `mem` in `boot` is hex too.
+- `soc` is the lowercase SoC name: `bcm2835`, `bcm2836`, `bcm2837`. It is not the numeric `soc` field of the boot info.
 - Paths are absolute and contain no spaces.
 - Markers are always on. They are not behind a debug flag.
-- A marker line never shares a line with other output.
+- A marker line never shares a line with other output. Code may print `\n` before a marker to end a partial line.
+- The first marker of every image is `boot`.
 
 Example:
 
@@ -282,15 +284,15 @@ Example:
 
 | Event | Keys | Meaning |
 |---|---|---|
-| `hello` | `midr soc base board_rev mem` | First line of every stage |
+| `boot` | `midr soc base board_rev mem entry_mode` | First marker of every image. `entry_mode` is the CPU mode at entry, such as `svc` or `hyp`. |
 | `handoff` | `trusted=0\|1` | Result of the trust rule. Not printed by first stages. |
 | `load` | `path size` | Loader opened an image |
 | `fallback` | `path` | Loader moves to a fallback file |
-| `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). |
+| `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |
 | `jump` | `addr next` | Last line before entering the next stage |
 | `ready` | | Stage reached its main screen or prompt |
 | `shell` | `reason` | Stage entered its emergency shell |
-| `exception` | `type pc dfsr dfar` | CPU exception. The stage halts after it. |
+| `exception` | `type pc lr spsr dfsr dfar` | CPU exception. `type` is `undef`, `svc`, `prefetch_abort`, `data_abort`, `irq`, `fiq` or `reset`. The stage halts after it. |
 | `panic` | `msg` | Fatal software error. `msg` uses `_` for spaces. |
 | `holo_launch` | `path` | Pip-OS starts a holotape |
 | `holo_exit` | `status` | Holotape returned |
@@ -298,11 +300,11 @@ Example:
 
 | Stage | Must emit |
 |---|---|
-| `bios` | `hello`, `load`, `fallback`, `error`, `jump`, `shell` |
-| `bootagent` | `hello`, `handoff`, `ready` when the menu shows, `load`, `error`, `jump` |
-| `uos`, `maint`, `diag` | `hello`, `handoff`, `ready` |
-| `pipos` | `hello`, `load`, `error`, `jump` for the ROM, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
-| `deitrix` | `hello`, `ready` |
+| `bios` | `boot`, `load`, `fallback`, `error`, `jump`, `shell` |
+| `bootagent` | `boot`, `handoff`, `ready` when the menu shows, `load`, `error`, `jump` |
+| `uos`, `maint`, `diag` | `boot`, `handoff`, `ready` |
+| `pipos` | `boot`, `load`, `error`, `jump` for the ROM, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
+| `deitrix` | `boot`, `ready` |
 
 All stages emit `exception` and `panic` when those happen. Deitrix runs in USR mode, so it prints through the `log` syscall.
 
