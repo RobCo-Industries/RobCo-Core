@@ -198,6 +198,9 @@ def test_umode(board, umode_vm):
     assert int(after[0]["addr"], 16) == canary_addr and after[0]["canary"] == "ok", vm.serial
     stale = events(vm, "stale")[0]
     assert (stale["rc"], stale["reason"], stale["code"]) == ("0", "returned", "42"), vm.serial
+    # Task sections left privileged read-only or unmapped by the caller: the task still runs.
+    pre = [(p["name"], p["rc"], p["reason"], p["code"]) for p in events(vm, "premapped")]
+    assert pre == [("ro", "0", "returned", "42"), ("none", "0", "returned", "42")], vm.serial
     assert not events(vm, "error"), vm.serial
     assert not EXCEPTION.search(vm.serial), vm.serial
 

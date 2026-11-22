@@ -419,6 +419,41 @@ static void check_stale_kill(void)
              ex.code);
 }
 
+/*
+ * MMU on: the caller left the task's sections privileged read-only or
+ * unmapped. umode_run() maps them before it writes the stub, so the task
+ * still runs and returns 42.
+ */
+static void check_premapped(void)
+{
+    static umode_exit_t ex;
+    static const struct {
+        const char *name;
+        unsigned data_attr, code_attr;
+    } pre[] = {
+        { "ro",   MMU_ATTR_RO_CODE, MMU_ATTR_RO_CODE },
+        { "none", MMU_ATTR_NONE,    MMU_ATTR_NONE },
+    };
+    umode_task_t t;
+    unsigned i;
+    int rc;
+
+    for (i = 0; i < sizeof(pre) / sizeof(pre[0]); i++) {
+        load_programs();
+        mmu_map(DATA_BASE, REGION_SIZE, pre[i].data_attr);
+        mmu_map(CODE_BASE, REGION_SIZE, pre[i].code_attr);
+        k_memset(&t, 0, sizeof(t));
+        t.entry = CODE_BASE;    /* case 0: returns 42 */
+        t.sp = USER_SP;
+        t.stub = STUB_ADDR;
+        t.regions = regions;
+        t.region_count = 2;
+        rc = run_task(&t, &ex, 0);
+        k_printf("@RC stage=umode ev=premapped name=%s rc=%d reason=%s code=%d\n", pre[i].name,
+                 rc, reason_name(ex.reason), ex.code);
+    }
+}
+
 void robco_main(void)
 {
     unsigned tasks = 0;
@@ -446,6 +481,7 @@ void robco_main(void)
     k_printf("@RC stage=umode ev=mmu on=%d\n", mmu_enabled());
     tasks += run_pass(1);
     check_errors();
+    check_premapped();
 
 #ifdef UMODE_KFAULT
     {

@@ -293,13 +293,17 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
     }
     record(UMODE_KILLED, 0, 0, &zero);  /* overwritten by the real end */
 
+    /*
+     * Map first: the caller may have left a region unmapped or read-only.
+     * The stub is in a writable region, so the kernel can write it then.
+     */
+    if (mmu) {
+        map_regions(1);     /* TLB and branch predictor invalidated by mmu_map() */
+    }
     /* Return stub: lr of the task. Clean it to memory for the I-side. */
     ((volatile uint32_t *)(uintptr_t)U.stub)[0] = INSN_SVC0;
     ((volatile uint32_t *)(uintptr_t)U.stub)[1] = INSN_BSELF;
     cache_clean_range((const void *)(uintptr_t)U.stub, UMODE_STUB_SIZE);
-    if (mmu) {
-        map_regions(1);     /* TLB and branch predictor invalidated by mmu_map() */
-    }
     cache_invalidate_icache();
 
     ctx[0] = task->entry;
