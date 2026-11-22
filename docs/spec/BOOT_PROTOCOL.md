@@ -39,7 +39,9 @@ CPU state at the jump between terminal stages:
 | UART | PL011 left on, FIFO drained |
 | Framebuffer | Left on. Its address is in the boot info. |
 
-`robco_handoff(entry, bi, fdt_or_atags)` in `src/arch/handoff.c` does steps 4 and 5. It masks IRQ and FIQ, masks every source at the interrupt controller if the image links the driver, invalidates the I-cache and branch predictor, and jumps in SVC mode. If the MMU or D-cache is on, it turns them off. Only on ARM1176 does it clean the D-cache first. On ARMv7 the image must clean it before the call. The library never turns the D-cache on. The caller drains the UART with `uart_flush()`.
+`robco_handoff(entry, bi, fdt_or_atags)` in `src/arch/handoff.c` does steps 4 and 5. It masks IRQ and FIQ, masks every source at the interrupt controller if the image links the driver, invalidates the I-cache and branch predictor, and jumps in SVC mode. If the MMU or D-cache is on, it turns them off. Only on ARM1176 does it clean the D-cache first.
+
+The caller must call `robco_handoff()` with the MMU and D-cache off, or with the D-cache already cleaned to memory. On ARMv7 and later the function does not clean the D-cache, so an image that turned it on must clean it, by set and way or by address range over everything it wrote, before the call. The library never turns the MMU or D-cache on, so an image that uses only the library meets this contract. The caller drains the UART with `uart_flush()`.
 
 Pip-OS enters ROMs and holotapes differently, in USR mode. See [PIPOS_ABI.md](./PIPOS_ABI.md).
 

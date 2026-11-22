@@ -26,8 +26,8 @@ void robco_handoff(uint32_t entry, const robco_bootinfo_t *bi, uint32_t fdt_or_a
     /*
      * The library never turns on the MMU or the D-cache. If the image did,
      * turn both off. On ARM1176 also clean and invalidate the whole
-     * D-cache first. ARMv7 has no whole-cache operation: an image that
-     * turns the D-cache on there must clean it before the handoff.
+     * D-cache first. ARMv7 has no whole-cache operation, so this function
+     * does not clean there: the caller must. See the contract in boot.h.
      */
     __asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
     __asm__ volatile("mrc p15, 0, %0, c0, c0, 0" : "=r"(midr));
