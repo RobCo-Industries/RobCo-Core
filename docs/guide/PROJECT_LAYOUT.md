@@ -111,7 +111,7 @@ build/fault -DHELLO_FAULT=1
 
 ## Add a host test
 
-Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and built as `build/host/test_<name>`. `rc_test.h` gives `TEST()`, `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. See [tests/README.md](../../tests/README.md#host-tests).
+Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and built as `build/host/test_<name>`. `rc_test.h` gives `TEST()`, `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. See [tests/README.md](../../tests/README.md#host-tests). A project runs its own host tests through the same `mk/host.mk`, see [host tests in a project](../../tests/README.md#host-tests-in-a-project).
 
 ## Tool tests
 
@@ -127,6 +127,7 @@ Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and bui
 | `test_makefile.py` | The top-level Makefile, such as the `BOARD` variable of `make test-target` |
 | `test_boot_scripts.py` | `tools/fetch_firmware.sh` and `tools/mkbootdir.sh` |
 | `test_fs_interop.py` | `build/host/fs_tool` against mtools images. It builds the tool itself and skips without mtools. |
+| `test_sample_project.py` | `tests/fixtures/sample-project` built from a copy outside the repository: the image and its host tests through `mk/host.mk` |
 
 ## Add a target test
 

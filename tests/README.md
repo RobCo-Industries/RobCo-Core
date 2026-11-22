@@ -59,6 +59,37 @@ assumption about pointer size (the host is 64-bit, the target 32-bit).
 What does not: drivers, MMIO, assembly, exceptions, timing and anything
 in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
 
+## Host tests in a project
+
+A project that uses RobCo-Core as a submodule includes `mk/host.mk` after
+`mk/robco.mk` and gets the same `test-host` target for its own tests:
+
+```make
+ROBCO_CORE    := external/robco-core
+HOST_TEST_DIR := tests/host
+HOST_SRCS     := kernel/settings.c
+HOST_INCLUDES := kernel
+include $(ROBCO_CORE)/mk/robco.mk
+include $(ROBCO_CORE)/mk/host.mk
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ROBCO_CORE` | `.` | Path to RobCo-Core. Every core path starts with it. |
+| `HOST_TEST_DIR` | RobCo-Core's `tests/host` | Directory of the project's `test_<name>.c` files. Setting it switches to a project build. |
+| `HOST_SRCS` | empty | Pure project sources linked into every test |
+| `HOST_INCLUDES` | empty | Extra include directories |
+| `HOST_DEFINES` | empty | Extra defines, such as `FOO=1` |
+| `HOST_CORE_SETS` | empty in a project | `fs` adds `src/fs` and `tests/host/blk_file.c`, `fatfs` adds FatFs. `fs` needs `fatfs`. The pure library `src/lib` is always linked. |
+| `HOST_BUILD` | `$(BUILD)/host` | Output directory |
+| `HOST_CC`, `HOST_SANITIZE` | `cc`, `1` | As above, `require` included |
+
+Tests include `rc_test.h` from RobCo-Core's `tests/host`. A project test
+fails `make test-host` the same way a core test does.
+[tests/fixtures/sample-project](fixtures/sample-project/Makefile) is a
+complete project. `tools/test_sample_project.py` copies it to a
+temporary directory outside the repository and builds it there.
+
 ## Layout
 
 - `harness/qemu.py`: starts QEMU headless and talks QMP, HMP (through
