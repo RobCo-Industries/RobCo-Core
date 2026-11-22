@@ -96,12 +96,20 @@ For `mode="svc"` the third word is `0xD2803A60`, `mov x0, #0x1D3`. The stub then
 
 ### Guest state on timeout
 
-A wait in `boot.py` that times out appends a guest state block to its `QemuError`, after the serial log. It holds five samples of CPU0's pc, lr, sp and CPSR, the interrupt controller and system timer registers, and function names from the image's ELF. `vm.state_dump()` returns the same block. [tests/README.md](../../tests/README.md#when-a-wait-times-out) shows how to read it.
+A wait in `boot.py` that times out appends a guest state block to its `QemuError`, after the serial log. The dump stops the VM, reads the interrupt controller and system timer registers and one CPU0 sample, then resumes it. It then takes five samples of CPU0's pc, lr, sp and CPSR while the VM runs, and names functions from the image's ELF. The VM is resumed even when a read fails. The block says whether the keep-alive was on. `vm.state_dump()` returns the same block. [tests/README.md](../../tests/README.md#when-a-wait-times-out) shows how to read it.
 
 | Board | System timer | Interrupt controller | Local controller |
 |---|---|---|---|
 | `raspi0`, `raspi1ap` | `0x20003000` | `0x2000B200` | none |
 | `raspi2b`, `raspi3b` | `0x3F003000` | `0x3F00B200` | `0x40000000` |
+
+### QEMU keep-alive
+
+While a VM from `boot()` runs, the harness sends QMP `query-status` every 20 ms from a background thread, under the same lock as every other QMP command. It covers all waits and sleeps in a test.
+
+On the GitHub Linux runner, QEMU 10.1 sometimes failed to deliver a due system timer interrupt to the halted ARM1176 CPU on `raspi0` and `raspi1ap`. Pip-OS boots stalled in `wfi` for the whole timeout: 17 of 900 on `raspi1ap`, 1 of 900 on `raspi0`, none on `raspi2b`, `raspi3b` or 12,000 boots on macOS. In all 21 captured cases the compare had matched about 30 seconds earlier, and the guest resumed within one second of the first QMP monitor command. The cause inside QEMU is not identified.
+
+The keep-alive cannot hide a guest bug: the guest cannot see monitor traffic. A guest that masks IRQs, never arms its timer or waits on its own logic still hangs. `ROBCO_QEMU_KEEPALIVE=0` or `boot(..., keepalive=False)` turns it off, to reproduce the stall. [tests/README.md](../../tests/README.md#qemu-keep-alive) has the details.
 
 ## Boards and suites
 

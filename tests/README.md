@@ -234,6 +234,14 @@ with the serial log first, then a guest state block. The block reads
 CPU0 and the hardware over QMP, so it shows where the guest was when
 the test gave up. `vm.state_dump()` returns the same text on demand.
 
+The dump first stops the VM with QMP `stop`. It reads the interrupt
+controllers, the system timer and one CPU0 sample on the stopped VM,
+then resumes it with `cont`. It then takes five CPU0 samples while the
+VM runs, to see whether the guest still executes. The VM is resumed
+even when a read fails. A VM that was already stopped stays stopped
+and is read as it is. The block says how the device registers were
+read and whether the keep-alive was on.
+
 The dump has an 8 second budget. It reads the hardware first and looks
 up symbols last, with whatever time is left. If a step fails or runs
 out of time, the block keeps everything read so far and adds one
@@ -247,35 +255,44 @@ This one is `examples/audio` idle in its `wfi` loop on `raspi0`:
 ```
 --- guest state at timeout (raspi0) ---
 summary: guest executing: no (pc and registers fixed over 5 samples); IRQs unmasked (CPSR.I=0 in every sample)
-cpu0 samples (5, 100 ms apart):
+keep-alive: on
+device registers: read with the VM stopped (QMP stop, then cont)
+cpu0 at stop: pc=0x000085e8 <robco_main> lr=0x000085c4 <robco_main> sp=0x00015040 cpsr=0xa0000153 svc I=0 F=1 T=0
+cpu0 samples while running (5, 100 ms apart):
   #1 pc=0x000085e8 <robco_main> lr=0x000085c4 <robco_main> sp=0x00015040 cpsr=0xa0000153 svc I=0 F=1 T=0
   ... samples 2 to 5 are the same
 symbols: audio.elf via arm-none-eabi-addr2line
 interrupt controller @ 0x2000b200:
-  basic_pending=0x00000000 pending1=0x00000000 pending2=0x00000000 fiq_ctrl=0x00000000 enable1=0x00000002 enable2=0x00000000 enable_basic=0x00000000
+  basic_pending=0x00000100 pending1=0x00000002 pending2=0x00000000 fiq_ctrl=0x00000000 enable1=0x00000002 enable2=0x00000000 enable_basic=0x00000000
 system timer @ 0x20003000:
-  CS=0x00000000 (match M3..M0=0000) CLO=0x00581143 CHI=0x00000000
-  C0=0x00000000 match=0 distance=-5771587 us (behind)
-  C1=0x0058122d match=0 distance=+234 us (ahead)
-  C2=0x00000000 match=0 distance=-5771587 us (behind)
-  C3=0x00000000 match=0 distance=-5771587 us (behind)
-info registers (sample #1):
+  CS=0x00000002 (match M3..M0=0010) CLO=0x0041d957 CHI=0x00000000
+  C0=0x00000000 match=0 distance=-4315479 us (behind)
+  C1=0x0041cba9 match=1 distance=-3502 us (behind)
+  C2=0x00000000 match=0 distance=-4315479 us (behind)
+  C3=0x00000000 match=0 distance=-4315479 us (behind)
+info registers (first sample):
   CPU#0
   R00=ffffffff R01=20201000 R02=00000090 R03=ffffff9e
   ...
-  R12=00000ced R13=00015040 R14=000085c4 R15=000085e8
+  R12=00000ce3 R13=00015040 R14=000085c4 R15=000085e8
   PSR=a0000153 N-C- A S svc32
 --- end of guest state ---
 ```
 
-Here the tick is healthy: C1 fires in 234 us and `enable1` has bit 1,
-the C1 interrupt, set.
+Here the tick is healthy. C1 matched 3.5 ms before the stop and its
+interrupt is pending in `pending1`. The guest takes it once the VM
+runs again. On a healthy guest a match up to a few milliseconds old is
+normal. A match tens of seconds old is not.
 
 What each part holds:
 
 - `summary`: whether pc or any core register changed across the
-  samples, and whether CPSR.I masked IRQs.
-- Five samples of pc, lr, sp and CPSR, 100 ms apart. CPSR shows the mode
+  running samples, and whether CPSR.I masked IRQs.
+- `keep-alive`: on or off, see [QEMU keep-alive](#qemu-keep-alive).
+- `device registers`: read with the VM stopped, or running when the
+  stop failed.
+- `cpu0 at stop`: pc, lr, sp and CPSR of the stopped VM.
+- Five samples of pc, lr, sp and CPSR, 100 ms apart, while it runs. CPSR shows the mode
   and the I, F and T bits. pc and lr carry function names when the
   ELF is known. `boot()` uses the `.elf` next to the `.img`, or
   `boot(..., elf=path)`. Without one, the `symbols:` line says why.
@@ -309,6 +326,45 @@ block says so. If reading a register fails, the block holds one
 2 second limit per QMP reply, so a dead socket cannot hang the run.
 Each QMP command carries an id. A reply that comes after its command
 timed out is dropped, so later `vm.qmp` calls get their own replies.
+
+## QEMU keep-alive
+
+While a VM from `boot()` runs, the harness sends QMP `query-status`
+every 20 ms from a background thread. It covers every wait: `wait_for`,
+`script`, `wait_event` and plain sleeps in a test. One lock holds each
+QMP command and its reply, so the thread and the test never read each
+other's replies. Pings pause while the VM is stopped and end when the
+VM closes.
+
+Why it exists. On the GitHub Linux runner, with QEMU 10.1 on `raspi0`
+and `raspi1ap` (ARM1176, one core), a Pip-OS boot sometimes stalled
+until the test timed out. The guest sat in `wfi` waiting for its
+100 Hz tick. The system timer compare had matched about 30 seconds
+earlier, but the interrupt did not arrive. This hit 17 of 900 boots on
+`raspi1ap` and 1 of 900 on `raspi0`. It never hit `raspi2b`, `raspi3b`,
+or 12,000 boots on macOS. In all 21 captured cases the guest resumed
+within one second of the first QMP monitor command the harness sent.
+The cause inside QEMU is not identified. The keep-alive keeps QEMU's
+main loop busy with monitor traffic so a due interrupt is not left
+waiting.
+
+It cannot hide a guest bug. The guest cannot see monitor traffic: no
+serial byte, no register and no run state changes. A guest that waits
+on its own logic, masks IRQs or never arms its timer still hangs, and
+the state dump still shows it.
+
+Cost: on a 10 second idle wait, under 0.1 s of harness CPU and a few
+tenths of a second of QEMU CPU.
+
+Turn it off to reproduce the stall on purpose:
+
+```sh
+ROBCO_QEMU_KEEPALIVE=0 make test-target
+```
+
+or `boot(..., keepalive=False)` for one boot. `Qemu` objects a test
+builds itself, such as the canary's, have no keep-alive. Neither has
+`Qemu.run_to_exit()`, which runs without QMP, nor `python3 -m harness.run`.
 
 ## The harness in a project
 
