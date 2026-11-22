@@ -51,7 +51,7 @@ From QEMU. On hardware the `fsel`, `ocr`, `cid`, `crc32` and partition values di
 RobCo spike 2: SD sector 0 through EMMC (read only)
 @RC stage=spike2 ev=gpio pins=34-39 fsel=000000
 @RC stage=spike2 ev=gpio pins=48-53 fsel=000000
-@RC stage=spike2 ev=remux changed=1
+@RC stage=spike2 ev=remux pins34_39=kept pins48_53=changed
 @RC stage=spike2 ev=gpio pins=34-39 fsel=000000
 @RC stage=spike2 ev=gpio pins=48-53 fsel=777777
 @RC stage=spike2 ev=emmc base_clk=50000000
@@ -77,6 +77,6 @@ On failure you get a line like this instead of `ev=card` or `ev=read`:
 For each board:
 
 1. The board name.
-2. All `@RC` lines, especially `ev=gpio`, `ev=card`, `ev=read` or `ev=error`.
+2. All `@RC` lines, especially `ev=gpio`, `ev=remux`, `ev=card`, `ev=read` or `ev=error`.
 3. The hex dump, or at least its last line.
 4. Any `ev=exception` line.

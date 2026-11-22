@@ -26,6 +26,18 @@ static void print_fsel(uint32_t first, uint32_t last)
     k_printf("\n");
 }
 
+static int pins_any(uint32_t first, uint32_t last, uint32_t fsel)
+{
+    uint32_t pin;
+
+    for (pin = first; pin <= last; pin++) {
+        if (gpio_get_fsel(pin) == fsel) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int pins_all(uint32_t first, uint32_t last, uint32_t fsel)
 {
     uint32_t pin;
@@ -39,27 +51,33 @@ static int pins_all(uint32_t first, uint32_t last, uint32_t fsel)
 }
 
 /*
- * Moves the SD card to the EMMC controller: GPIO 34-39 to input (WiFi side),
- * GPIO 48-53 to ALT3. Never selects ALT0. Returns 1 if a pin changed.
+ * Moves the SD card to the EMMC controller. The two pin groups are handled
+ * independently: GPIO 34-39 go to input if any is ALT3 (WiFi side), GPIO
+ * 48-53 go to ALT3 if any is not ALT3. Never selects ALT0. Returns 1 if a
+ * pin changed.
  */
 static int remux_sd_to_emmc(void)
 {
     uint32_t pin;
-    int changed = 0;
+    int low = 0;
+    int high = 0;
 
-    if (!pins_all(48, 53, GPIO_FSEL_ALT3)) {
-        if (!pins_all(34, 39, GPIO_FSEL_IN)) {
-            for (pin = 34; pin <= 39; pin++) {
-                gpio_set_fsel(pin, GPIO_FSEL_IN);
-            }
+    if (pins_any(34, 39, GPIO_FSEL_ALT3)) {
+        for (pin = 34; pin <= 39; pin++) {
+            gpio_set_fsel(pin, GPIO_FSEL_IN);
         }
+        low = 1;
+    }
+    if (!pins_all(48, 53, GPIO_FSEL_ALT3)) {
         for (pin = 48; pin <= 53; pin++) {
             gpio_set_fsel(pin, GPIO_FSEL_ALT3);
         }
-        changed = 1;
+        high = 1;
     }
+    k_printf("@RC stage=spike2 ev=remux pins34_39=%s pins48_53=%s\n", low ? "changed" : "kept",
+             high ? "changed" : "kept");
     timer_delay_us(1000);
-    return changed;
+    return low || high;
 }
 
 static void print_error(const struct emmc_error *err)
@@ -162,7 +180,6 @@ void spike_main(uint32_t r0, uint32_t r1, uint32_t r2)
         k_printf("warning: %s is unsupported, skipping SD\n", board.soc);
     } else {
         changed = remux_sd_to_emmc();
-        k_printf("@RC stage=spike2 ev=remux changed=%d\n", changed);
         if (changed) {
             print_fsel(34, 39);
             print_fsel(48, 53);
