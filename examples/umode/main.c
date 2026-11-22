@@ -7,7 +7,9 @@
  *       type=<t> pc=0x... thumb=<0|1> addr=0x... status=0x... ticks=<n>
  *       canary=<ok|bad>
  *
- * and at the end "ev=done tasks=<n>", then echoes UART input.
+ * Then the nested cases: an outer task whose handler starts an inner
+ * task (ev=nest for the outer task, ev=inner for each inner one). At the
+ * end "ev=done tasks=<n>", then it echoes UART input.
  */
 
 #include <stdint.h>
@@ -49,15 +51,26 @@
 #define SYS_KILLEXIT    8
 #define SYS_KMMU        9
 #define SYS_KILLFIRST   10
+#define SYS_RUN         11
+#define SYS_DEPTH       12
+#define SYS_RANGE       13
+#define SYS_ARMKILL     14
 #define E_FAULT         14
+
+/* Nested cases: outer task memory, shared memory, inner task memory. */
+#define O_PRIV_BASE     0x01200000u /* outer only */
+#define SHARED_BASE     0x01300000u /* outer read-write, inner read-only */
+#define I_DATA_BASE     0x01400000u /* inner stub and stack */
+#define STRAY_BASE      0x01500000u /* user-mapped by the "badmap" case */
 
 extern const char user_prog_start[], user_prog_end[];
 
 static volatile uint32_t canary = CANARY;
-static volatile uint32_t watch_start;
-static volatile uint32_t watch_limit;
-static volatile int watch_kill;
-static volatile int kill_armed, kill_seen;
+/* Watchdog per depth: [1] the outer (or only) task, [2] the inner task. */
+static volatile uint32_t watch_start[UMODE_MAX_DEPTH + 2];
+static volatile uint32_t watch_limit[UMODE_MAX_DEPTH + 2];
+static volatile int watch_kill[UMODE_MAX_DEPTH + 2];
+static volatile int kill_armed, kill_seen;  /* kill_armed: reason the next tick requests */
 
 /* Needs: 0 runs with the MMU off and on, 1 only with the MMU on. */
 enum { ARG_NONE, ARG_SCRATCH, ARG_KERNEL, ARG_CANARY, ARG_PERIPH, ARG_OWN_CODE, ARG_UNMAPPED,
@@ -110,21 +123,26 @@ static const umode_region_t regions2[] = {
     { DATA2_BASE, REGION_SIZE, UMODE_REGION_WRITE },
 };
 
-/* Tick callback, IRQ context: the watchdog. */
+/* Tick callback, IRQ context: the watchdog of the innermost task. */
 static void on_tick(void)
 {
-    if (umode_active() && tick_count() - watch_start >= watch_limit) {
-        umode_request_kill(watch_kill);
+    int d = umode_depth(), r;
+
+    if (d != 0 && tick_count() - watch_start[d] >= watch_limit[d]) {
+        umode_request_kill(watch_kill[d]);
     }
-    if (kill_armed && umode_active()) {
+    if (kill_armed && d != 0) {
+        r = kill_armed;
         kill_armed = 0;
-        umode_request_kill(2);
+        umode_request_kill(r);
         kill_seen = 1;
     }
 }
 
 static umode_task_t nested;
 static umode_exit_t nested_exit;
+
+static void run_inner(exc_frame_t *f);
 
 /* System calls, SVC mode with IRQs on. */
 static void on_svc(exc_frame_t *f, void *ctx)
@@ -171,7 +189,7 @@ static void on_svc(exc_frame_t *f, void *ctx)
     case SYS_KILLEXIT:
         /* A kill request lands during the task's last call: the exit wins. */
         kill_seen = 0;
-        kill_armed = 1;
+        kill_armed = 2;
         while (!kill_seen) {
             __asm__ volatile("wfi");
         }
@@ -180,11 +198,25 @@ static void on_svc(exc_frame_t *f, void *ctx)
     case SYS_KILLFIRST:
         /* The tick requests reason 2 first: the handler's later request is ignored. */
         kill_seen = 0;
-        kill_armed = 1;
+        kill_armed = 2;
         while (!kill_seen) {
             __asm__ volatile("wfi");
         }
         umode_request_kill(7);
+        break;
+    case SYS_RUN:
+        run_inner(f);
+        break;
+    case SYS_DEPTH:
+        k_printf("@RC stage=umode ev=depth where=handler depth=%d\n", umode_depth());
+        f->r[0] = (uint32_t)umode_depth();
+        break;
+    case SYS_RANGE:
+        f->r[0] = (uint32_t)umode_range_ok(f->r[0], f->r[1], (int)f->r[2]);
+        break;
+    case SYS_ARMKILL:
+        kill_armed = (int)f->r[0];
+        f->r[0] = 0;
         break;
 #ifdef UMODE_KMMU
     case SYS_KMMU:
@@ -249,14 +281,15 @@ static uint32_t arg_for(int arg)
  */
 static int run_task(const umode_task_t *t, umode_exit_t *ex, int spins)
 {
-    int rc;
+    int d = umode_depth() + 1, rc;
 
-    watch_limit = spins ? WATCHDOG_TICKS : BACKSTOP_TICKS;
-    watch_kill = spins ? KILL_WATCHDOG : KILL_BACKSTOP;
-    watch_start = tick_count();
+    watch_limit[d] = BACKSTOP_TICKS;
+    watch_start[d] = tick_count();
+    watch_kill[d] = spins ? KILL_WATCHDOG : KILL_BACKSTOP;
+    watch_limit[d] = spins ? WATCHDOG_TICKS : BACKSTOP_TICKS;
     rc = umode_run(t, ex);
-    watch_limit = BACKSTOP_TICKS;
-    watch_kill = KILL_BACKSTOP;
+    watch_kill[d] = KILL_BACKSTOP;
+    watch_limit[d] = BACKSTOP_TICKS;
     return rc;
 }
 
@@ -492,6 +525,177 @@ static void check_usermap(void)
     }
 }
 
+/*
+ * Nested tasks. The outer task has the code read-only, its data, a
+ * private region and a shared region read-write. The inner task has the
+ * code and the shared region read-only, and its own data region.
+ */
+static const umode_region_t outer_regions[] = {
+    { CODE_BASE, REGION_SIZE, 0 },
+    { DATA_BASE, REGION_SIZE, UMODE_REGION_WRITE },
+    { O_PRIV_BASE, REGION_SIZE, UMODE_REGION_WRITE },
+    { SHARED_BASE, REGION_SIZE, UMODE_REGION_WRITE },
+};
+
+static const umode_region_t inner_regions[] = {
+    { CODE_BASE, REGION_SIZE, 0 },
+    { SHARED_BASE, REGION_SIZE, 0 },
+    { I_DATA_BASE, REGION_SIZE, UMODE_REGION_WRITE },
+};
+
+/* Inner layout overlapping the kernel image. */
+static const umode_region_t inner_kernel[] = {
+    { 0, REGION_SIZE, UMODE_REGION_WRITE },
+};
+
+enum { LAY_OK, LAY_KERNEL, LAY_STUB, LAY_USERMAP };
+
+/* Inner tasks, by selector (outer r0 of SYS_RUN). */
+static const struct {
+    const char *name;
+    unsigned slot;
+    uint32_t arg;
+    int layout;
+    int watchdog;
+} inners[] = {
+    { "ret",      28, 0,             LAY_OK,      0 },  /* 0 */
+    { "exit",     29, 0,             LAY_OK,      0 },  /* 1 */
+    { "undef",    30, 0,             LAY_OK,      0 },  /* 2 */
+    { "rdpriv",   31, O_PRIV_BASE,   LAY_OK,      0 },  /* 3 */
+    { "rdshared", 31, SHARED_BASE,   LAY_OK,      0 },  /* 4 */
+    { "wrshared", 32, SHARED_BASE,   LAY_OK,      0 },  /* 5 */
+    { "rdunmap",  31, UNMAPPED_ADDR, LAY_OK,      0 },  /* 6 */
+    { "pabt",     33, UNMAPPED_ADDR, LAY_OK,      0 },  /* 7 */
+    { "spin",     34, 0,             LAY_OK,      1 },  /* 8 */
+    { "busy",     35, 0,             LAY_OK,      0 },  /* 9 */
+    { "depth",    36, 0,             LAY_OK,      0 },  /* 10 */
+    { "range",    37, 0,             LAY_OK,      0 },  /* 11 */
+    { "kill",     38, 0,             LAY_OK,      0 },  /* 12 */
+    { "badkern",  28, 0,             LAY_KERNEL,  0 },  /* 13 */
+    { "badstub",  28, 0,             LAY_STUB,    0 },  /* 14 */
+    { "badmap",   28, 0,             LAY_USERMAP, 0 },  /* 15 */
+};
+
+/* Exit records, one per depth: an inner handler may try to start a third task. */
+static umode_exit_t inner_ex[UMODE_MAX_DEPTH + 1];
+
+/* SYS_RUN: starts inner task r0, prints ev=inner, returns its code in r0 and reason in r1. */
+static void run_inner(exc_frame_t *f)
+{
+    umode_exit_t *ex = &inner_ex[umode_depth()];
+    unsigned sel = f->r[0];
+    int before = umode_depth(), rc;
+    umode_task_t t;
+
+    if (sel >= sizeof(inners) / sizeof(inners[0])) {
+        f->r[0] = (uint32_t)-E_FAULT;
+        return;
+    }
+    k_memset(&t, 0, sizeof(t));
+    k_memset(ex, 0, sizeof(*ex));
+    t.entry = CODE_BASE + inners[sel].slot * 0x40u;
+    t.sp = I_DATA_BASE + REGION_SIZE;
+    t.r[0] = inners[sel].arg;
+    t.r[1] = 0xbadbad00u;
+    t.stub = I_DATA_BASE;
+    t.regions = inner_regions;
+    t.region_count = 3;
+    if (inners[sel].layout == LAY_KERNEL) {
+        t.regions = inner_kernel;
+        t.region_count = 1;
+    } else if (inners[sel].layout == LAY_STUB) {
+        t.stub = CODE_BASE;     /* read-only to the inner task */
+    } else if (inners[sel].layout == LAY_USERMAP) {
+        mmu_map(STRAY_BASE, REGION_SIZE, MMU_ATTR_RAM | MMU_USER_RO);
+    }
+    rc = run_task(&t, ex, inners[sel].watchdog);
+    if (inners[sel].layout == LAY_USERMAP) {
+        mmu_map(STRAY_BASE, REGION_SIZE, MMU_ATTR_RAM);
+    }
+    k_printf("@RC stage=umode ev=inner name=%s depth=%d after=%d rc=%d reason=%s code=%d "
+             "type=%s pc=0x%08x addr=0x%08x status=0x%08x canary=%s\n",
+             inners[sel].name, before, umode_depth(), rc,
+             rc == 0 ? reason_name(ex->reason) : "none", rc == 0 ? ex->code : 0,
+             rc == 0 ? type_name(ex) : "none", (unsigned)ex->pc, (unsigned)ex->addr,
+             (unsigned)ex->status, canary == CANARY ? "ok" : "bad");
+    f->r[0] = rc == 0 ? (uint32_t)ex->code : (uint32_t)rc;
+    f->r[1] = rc == 0 ? ex->reason : 0;
+}
+
+/* Outer tasks: name, outer slot, inner selectors in r0..r2, MMU on only. */
+static const struct {
+    const char *name;
+    unsigned slot;
+    uint32_t r[3];
+    int need_mmu;
+} nests[] = {
+    { "value",    24, { 0 },        0 },
+    { "exit",     24, { 1 },        0 },
+    { "undef",    24, { 2 },        0 },
+    { "rdpriv",   24, { 3 },        0 },
+    { "rdshared", 24, { 4 },        0 },
+    { "wrshared", 24, { 5 },        1 },
+    { "rdunmap",  24, { 6 },        1 },
+    { "pabt",     24, { 7 },        1 },
+    { "spin",     24, { 8 },        0 },
+    { "busy",     24, { 9 },        0 },
+    { "depth",    24, { 10 },       0 },
+    { "range",    26, { 11 },       0 },
+    { "kill",     25, { 12 },       0 },
+    { "badkern",  24, { 13 },       0 },
+    { "badstub",  24, { 14 },       0 },
+    { "badmap",   24, { 15 },       1 },
+    { "seq",      27, { 12, 1, 0 }, 0 },
+};
+
+static unsigned run_nests(int mmu)
+{
+    static umode_exit_t ex;
+    umode_task_t t;
+    unsigned i, n = 0;
+    int rc;
+
+    for (i = 0; i < sizeof(nests) / sizeof(nests[0]); i++) {
+        if (nests[i].need_mmu && !mmu) {
+            continue;
+        }
+        load_programs();
+        k_memset(&t, 0, sizeof(t));
+        t.entry = CODE_BASE + nests[i].slot * 0x40u;
+        t.sp = USER_SP;
+        t.r[0] = nests[i].r[0];
+        t.r[1] = nests[i].r[1];
+        t.r[2] = nests[i].r[2];
+        t.stub = STUB_ADDR;
+        t.regions = outer_regions;
+        t.region_count = 4;
+        k_printf("@RC stage=umode ev=depth where=main depth=%d\n", umode_depth());
+        rc = run_task(&t, &ex, 0);
+        if (rc != 0) {
+            k_printf("@RC stage=umode ev=error name=nest_%s rc=%d\n", nests[i].name, rc);
+            continue;
+        }
+        n++;
+        k_printf("@RC stage=umode ev=nest name=%s mmu=%d reason=%s code=%d type=%s pc=0x%08x "
+                 "addr=0x%08x canary=%s\n", nests[i].name, mmu, reason_name(ex.reason), ex.code,
+                 type_name(&ex), (unsigned)ex.pc, (unsigned)ex.addr,
+                 canary == CANARY ? "ok" : "bad");
+    }
+    /* A plain top-level task after the nested ones. */
+    load_programs();
+    k_memset(&t, 0, sizeof(t));
+    t.entry = CODE_BASE;
+    t.sp = USER_SP;
+    t.stub = STUB_ADDR;
+    t.regions = regions;
+    t.region_count = 2;
+    rc = run_task(&t, &ex, 0);
+    k_printf("@RC stage=umode ev=nest name=plain mmu=%d reason=%s code=%d type=none pc=0x%08x "
+             "addr=0x%08x canary=%s rc=%d\n", mmu, reason_name(ex.reason), ex.code,
+             (unsigned)ex.pc, (unsigned)ex.addr, canary == CANARY ? "ok" : "bad", rc);
+    return n;
+}
+
 void robco_main(void)
 {
     unsigned tasks = 0;
@@ -500,14 +704,17 @@ void robco_main(void)
     uart_init(115200);
     k_printf("@RC stage=umode ev=boot canary_addr=0x%08x\n", (unsigned)(uintptr_t)&canary);
     irq_init();
-    watch_limit = BACKSTOP_TICKS;
-    watch_kill = KILL_BACKSTOP;
+    for (c = 0; c < UMODE_MAX_DEPTH + 2; c++) {
+        watch_limit[c] = BACKSTOP_TICKS;
+        watch_kill[c] = KILL_BACKSTOP;
+    }
     tick_register(on_tick);
     tick_init(TICK_HZ);
     irq_cpu_enable();
     umode_set_svc_handler(on_svc, 0);
 
     tasks += run_pass(0);
+    run_nests(0);
     check_errors();
     check_stale_kill();
 
@@ -518,6 +725,7 @@ void robco_main(void)
     mmu_enable();
     k_printf("@RC stage=umode ev=mmu on=%d\n", mmu_enabled());
     tasks += run_pass(1);
+    run_nests(1);
     check_errors();
     check_premapped();
     check_usermap();

@@ -63,7 +63,7 @@ def check_common(t, mmu):
     if n == "return":
         assert (t["reason"], t["code"]) == ("returned", "42")
     elif n == "exit":
-        assert (t["reason"], t["code"]) == ("exit", "7")     # 99: nested run not refused
+        assert (t["reason"], t["code"]) == ("exit", "7")     # 99: empty nested task not refused
     elif n in ("regs", "badptr"):
         assert (t["reason"], t["code"]) == ("exit", "0")     # see user/prog.S for codes
     elif n == "priv":
@@ -308,3 +308,112 @@ def test_umode_handler_mmu_change(board, example_image):
         assert events(vm, "kmmu"), vm.serial
         assert [c["nr"] for c in events(vm, "umode_mmu_changed")] == ["9"], vm.serial
         assert not events(vm, "done"), vm.serial
+
+
+# Nested tasks: an outer task whose handler starts an inner task (SYS_RUN).
+O_PRIV, SHARED, UNMAPPED = 0x01200000, 0x01300000, 0xE0000000
+NEST_OFF = ["value", "exit", "undef", "rdpriv", "rdshared", "spin", "busy", "depth", "range",
+            "kill", "badkern", "badstub", "seq"]
+NEST_ON = ["value", "exit", "undef", "rdpriv", "rdshared", "wrshared", "rdunmap", "pabt", "spin",
+           "busy", "depth", "range", "kill", "badkern", "badstub", "badmap", "seq"]
+# Inner tasks each outer case starts, in order. "busy" starts "ret" at depth 2 first: refused.
+INNERS = {"value": ["ret"], "busy": ["ret", "busy"], "range": ["range"], "kill": ["kill"],
+          "seq": ["kill", "exit", "ret"]}
+# Outer result: (reason, code). Default: returned, the inner code + 1.
+OUTER = {"kill": ("killed", 6), "badkern": ("returned", -8), "badstub": ("returned", -13),
+         "badmap": ("returned", -14), "seq": ("returned", 42)}
+
+
+def u32(v):
+    return int(v) & 0xFFFFFFFF
+
+
+def check_inner(i, mmu):
+    """One inner task's outcome, from the handler's ev=inner marker."""
+    n = i["name"]
+    assert i["canary"] == "ok", i
+    if i["depth"] == "2":
+        # Started from an inner task's handler: refused, nothing changed.
+        assert (n, i["after"], i["rc"], i["reason"]) == ("ret", "2", "-1", "none"), i
+        return
+    assert (i["depth"], i["after"]) == ("1", "1"), i
+    rc = {"badkern": "-9", "badstub": "-14", "badmap": "-15"}.get(n, "0")
+    assert i["rc"] == rc, i
+    if rc != "0":
+        return
+    pc, addr = int(i["pc"], 16), int(i["addr"], 16)
+    got = (i["reason"], i["type"])
+    if n == "ret":
+        assert (got, i["code"]) == (("returned", "none"), "41"), i
+    elif n == "exit":
+        assert (got, i["code"]) == (("exit", "none"), "9"), i
+    elif n == "undef":
+        assert got == ("fault", "undef") and pc == slot(30), i
+    elif n == "rdpriv" and mmu:
+        # The outer task's private region is privileged while the inner task runs.
+        assert got == ("fault", "data_abort") and (pc, addr) == (slot(31), O_PRIV), i
+        assert fault_status(i["status"]) == FS_PERMISSION, i
+    elif n == "rdpriv":
+        assert got == ("returned", "none") and u32(i["code"]) == 0xC0FFEE01, i
+    elif n == "rdshared":
+        assert got == ("returned", "none") and u32(i["code"]) == 0x5A5A0001, i
+    elif n == "wrshared":
+        assert got == ("fault", "data_abort") and (pc, addr) == (slot(32), SHARED), i
+        assert fault_status(i["status"]) == FS_PERMISSION and int(i["status"], 16) & WNR, i
+    elif n == "rdunmap":
+        assert got == ("fault", "data_abort") and (pc, addr) == (slot(31), UNMAPPED), i
+        assert fault_status(i["status"]) == FS_TRANSLATION, i
+    elif n == "pabt":
+        assert got == ("fault", "prefetch_abort") and pc == UNMAPPED, i
+    elif n == "spin":
+        assert (got, i["code"]) == (("killed", "none"), "1") and slot(34) <= pc < slot(35), i
+    elif n in ("busy", "depth"):
+        assert (got, i["code"]) == (("returned", "none"), "2"), i
+    elif n == "range":
+        assert (got, i["code"]) == (("returned", "none"), str(0x1F)), i
+    elif n == "kill":
+        assert (got, i["code"]) == (("killed", "none"), "5") and slot(38) <= pc < slot(39), i
+    else:
+        raise AssertionError(i)
+
+
+def test_umode_nested(board, umode_vm):
+    """A system-call handler starts an inner task and gets control back, MMU off and on."""
+    vm = umode_vm
+    nests = events(vm, "nest")
+    inners = events(vm, "inner")
+    for mmu, names in (("0", NEST_OFF), ("1", NEST_ON)):
+        outer = [t for t in nests if t["mmu"] == mmu]
+        assert [t["name"] for t in outer] == names + ["plain"], vm.serial
+        for t in outer:
+            n = t["name"]
+            assert t["canary"] == "ok", t
+            if n == "plain":
+                # A plain top-level task after the nested ones.
+                assert (t["rc"], t["reason"], t["code"]) == ("0", "returned", "42"), t
+                continue
+            want = OUTER.get(n)
+            if want is None:
+                code = {"value": 41, "exit": 9, "rdshared": 0x5A5A0001, "busy": 2, "depth": 2,
+                        "range": 0x0F1F - 1, "spin": 1}.get(n, 0)
+                if n == "rdpriv" and mmu == "0":
+                    code = 0xC0FFEE01
+                want = ("returned", code + 1)
+            # A reason "exit" with code 2xx: the call changed a register or a mapping.
+            assert (t["reason"], u32(t["code"])) == (want[0], want[1] & 0xFFFFFFFF), t
+    # The inner tasks, in order, both passes.
+    want = []
+    for names in (NEST_OFF, NEST_ON):
+        for n in names:
+            want += INNERS.get(n, [n])
+    assert [i["name"] for i in inners] == want, vm.serial
+    split = sum(len(INNERS.get(n, [n])) for n in NEST_OFF)
+    for k, i in enumerate(inners):
+        check_inner(i, k >= split)
+    # umode_depth(): 0 in main before each outer task, 2 in the handler of an inner task.
+    depth = events(vm, "depth")
+    main = [d["depth"] for d in depth if d["where"] == "main"]
+    assert main == ["0"] * (len(NEST_OFF) + len(NEST_ON)), vm.serial
+    assert [d["depth"] for d in depth if d["where"] == "handler"] == ["2"] * 4, vm.serial
+    assert not events(vm, "error"), vm.serial
+    assert not EXCEPTION.search(vm.serial), vm.serial
