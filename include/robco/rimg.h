@@ -129,6 +129,13 @@ typedef struct rimg_expect {
 int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
                   const rimg_header_t **out);
 
+/*
+ * Runs steps 1 to 5 on the first 0x60 bytes of an image, before the rest
+ * is read. `head` holds at least 0x60 bytes. `avail` is the size of the
+ * whole file. Fewer than 0x60 bytes gives RIMG_E_IO. Reads only `head`.
+ */
+int rimg_check_header(const void *head, size_t avail, const rimg_expect_t *expect);
+
 /* The @RC name of a rimg_err_t code, such as "crc". "unknown" for others. */
 const char *rimg_strerror(int code);
 #endif
