@@ -6,12 +6,15 @@ from the current run instead of comparing against it.
 
 import os
 import re
+import subprocess
+import sys
 import time
 
 import pytest
 from PIL import Image
 
-from harness.boot import boot
+from harness.boot import BOARDS, boot
+from harness.qemu import have_machine
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT_C = os.path.join(ROOT, "src", "gfx", "font8x16.c")
@@ -57,6 +60,31 @@ def load_font():
         for m in row_re.finditer(f.read()):
             glyphs[int(m.group(2), 16)] = [int(v, 16) for v in m.group(1).split(", ")]
     return glyphs
+
+
+def load_table(path=FONT_C):
+    """Every glyph the console can draw from a byte, keyed by byte value.
+
+    ASCII maps to itself, the extras to their CP437 byte, and every other
+    byte from 0x80 to 0xff to the replacement glyph.
+    """
+    with open(path) as f:
+        text = f.read()
+    table = load_font_text(text)
+    rep = re.search(r"font_replacement\[FONT_H\] = \{([^}]*)\}", text)
+    replacement = [int(v, 16) for v in rep.group(1).replace(",", " ").split()]
+    for b in range(0x80, 0x100):
+        table[b] = replacement
+    extra_re = re.compile(r"\{0x([0-9a-f]{4}), 0x([0-9a-f]{2}), \{((?:0x[0-9a-f]{2}, ){15}0x[0-9a-f]{2})\}\}")
+    for m in extra_re.finditer(text):
+        table[int(m.group(2), 16)] = [int(v, 16) for v in m.group(3).split(", ")]
+    return table
+
+
+def load_font_text(text):
+    row_re = re.compile(r"\{((?:0x[0-9a-f]{2}, ){15}0x[0-9a-f]{2})\}, /\* U\+([0-9A-F]{4}) \*/")
+    return {int(m.group(2), 16): [int(v, 16) for v in m.group(1).split(", ")]
+            for m in row_re.finditer(text)}
 
 
 class Console:
@@ -186,3 +214,50 @@ def test_console_pixels(console):
         check_cells(console.shot(), normal, skip=(COLS - 1, ROWS - 1))
         console.cmd("c")
         check_cells(console.shot(), bg, skip=(0, 0))
+
+
+def test_console_font_marker(console):
+    names = [m["name"] for m in console.vm.markers() if m.get("ev") == "font"]
+    assert names == ["spleen"], console.vm.serial
+
+
+def check_glyph_grid(console, table):
+    """Draws every byte the table covers and compares each cell with the table."""
+    _, bg, _dim, normal, _bright = SCHEMES["1"]
+    console.cmd("g")
+    img = console.shot()
+    cells = [(b, (b - 0x20) % COLS, (b - 0x20) // COLS) for b in range(0x20, 0x7F)]
+    cells += [(b, (b - 0x80) % COLS, 2 + (b - 0x80) // COLS) for b in range(0x80, 0x100)]
+    for b, col, row in cells:
+        check_glyph(img, table[b], col, row, normal, bg)
+
+
+def test_console_every_glyph(console):
+    check_glyph_grid(console, load_table())
+
+
+EXAMPLE = os.path.join(ROOT, "examples", "console")
+
+
+def test_console_font_override(tmp_path):
+    """A project font in SRCS replaces the built-in one at link time."""
+    if not have_machine(BOARDS["raspi0"].binary, "raspi0"):
+        pytest.skip("qemu-system-arm -M raspi0 not available")
+    font_c = tmp_path / "font8x16_override.c"
+    subprocess.run([sys.executable, os.path.join(ROOT, "tools", "font2c.py"),
+                    os.path.join(ROOT, "third_party", "spleen", "spleen-8x16.bdf"),
+                    "--name", "override-test", "-o", str(font_c)], check=True, cwd=ROOT)
+    build = "build/override-test"
+    subprocess.run(["make", "-s", "-C", EXAMPLE, "CI=1", f"BUILD={build}", f"FONT_C={font_c}"],
+                   check=True, stdout=subprocess.DEVNULL)
+    elf = os.path.join(EXAMPLE, build, "console.elf")
+    nm = subprocess.run(["arm-none-eabi-nm", elf], check=True, capture_output=True, text=True).stdout
+    for sym in ("font_ascii", "font8x16_glyph", "font8x16_name"):
+        assert len(re.findall(rf" {sym}$", nm, re.M)) == 1, nm
+
+    with boot(os.path.join(EXAMPLE, build, "console.img"), "raspi0") as vm:
+        vm.wait_for(READY, timeout=10)
+        names = [m["name"] for m in vm.markers() if m.get("ev") == "font"]
+        assert names == ["override-test"], vm.serial
+        check_glyph_grid(Console(vm, tmp_path), load_table(str(font_c)))
+        assert "ev=exception" not in vm.serial, vm.serial
