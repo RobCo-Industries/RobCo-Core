@@ -32,3 +32,9 @@ test-spikes: venv
 	  $(VENV)/bin/python spikes/s3-fb-mmu/check_screen.py $$m || fail "s3-fb-mmu check_screen on $$m"; \
 	done; \
 	echo "test-spikes: all passed"
+
+# Target tests: boot spikes through tests/harness/boot.py on every board.
+.PHONY: test-target
+test: test-target
+test-target: venv
+	$(VENV)/bin/pytest tests/target -v --board all
