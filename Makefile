@@ -3,7 +3,7 @@ VENV := .venv
 SPIKES := s1-uart-hello s2-sd-read s3-fb-mmu
 MACHINES := raspi0 raspi1ap raspi2b raspi3b
 
-.PHONY: venv test test-canary test-spikes
+.PHONY: venv test test-canary test-spikes test-examples test-target
 
 venv: $(VENV)/.installed
 
@@ -12,7 +12,10 @@ $(VENV)/.installed: tests/requirements.txt
 	$(VENV)/bin/pip install -q -r tests/requirements.txt
 	touch $@
 
-test: test-canary test-spikes
+# test-target rebuilds the spike and example dirs; keep top-level targets serial.
+.NOTPARALLEL:
+
+test: test-canary test-spikes test-examples test-target
 
 test-canary: venv
 	$(VENV)/bin/pytest tests/canary -v
@@ -32,3 +35,24 @@ test-spikes: venv
 	  $(VENV)/bin/python spikes/s3-fb-mmu/check_screen.py $$m || fail "s3-fb-mmu check_screen on $$m"; \
 	done; \
 	echo "test-spikes: all passed"
+
+# Builds every examples/*/Makefile warning-free. test-target boots them.
+# An example may list extra builds in examples/<name>/VARIANTS, one per
+# line: <build-dir> <extra cflags>. Lines starting with # are skipped.
+test-examples:
+	@set -eu; \
+	fail() { echo "FAIL: $$1" >&2; exit 1; }; \
+	for mk in examples/*/Makefile; do \
+	  d=$${mk%/Makefile}; n=$${d#examples/}; \
+	  $(MAKE) -C $$d CI=1 || fail "$$n build"; \
+	  [ -f $$d/VARIANTS ] || continue; \
+	  while read -r build flags; do \
+	    case "$$build" in ''|'#'*) continue ;; esac; \
+	    $(MAKE) -C $$d CI=1 BUILD=$$build EXTRA_CFLAGS="$$flags" || fail "$$n $$build build"; \
+	  done < $$d/VARIANTS; \
+	done; \
+	echo "test-examples: all passed"
+
+# Target tests: boot spikes and examples through tests/harness/boot.py on every board.
+test-target: venv
+	$(VENV)/bin/pytest tests/target -v --board all

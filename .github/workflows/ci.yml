@@ -111,7 +111,7 @@ jobs:
       - name: Canary tests
         run: make venv && make test-canary
 
-  spikes:
+  test:
     needs: image
     runs-on: ubuntu-latest
     permissions:
@@ -124,5 +124,5 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - name: Spike tests
-        run: make venv && make test-spikes
+      - name: Spikes, examples and target tests
+        run: make venv && make test-spikes test-examples test-target
