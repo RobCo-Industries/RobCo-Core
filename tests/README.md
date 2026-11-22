@@ -34,6 +34,9 @@ drivers; that code belongs in `src/drv/`, `src/arch/`, `src/board/` or
 `src/gfx/`. ASan and UBSan are on when the compiler supports
 them. The build defines `ROBCO_HOST`, which drops the library's own
 `memcpy`, `memset`, `memmove` and `memcmp` so the host libc ones are used.
+`test_fs_readonly.c` is the exception: it links a second copy of the
+file system built with `ROBCO_FS_READONLY=1` and reads an image that
+`fs_tool` writes to `build/host/fs_readonly.img`.
 
 To add a test, create `tests/host/test_<name>.c`:
 
@@ -75,7 +78,8 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   (repeatable, default raspi0 and raspi2b, `all` for all four). They
   boot the spikes and the examples `hello`, `tick`, `gpio`, `console`,
   `heap`, `demo`, `sdraw`, `storage`, `mmu`, `input`, `audio`, `rtc` and `spi`.
-  `test_sdraw.py` and `test_storage.py` attach an SD image. `test_input.py` drives the
+  `test_sdraw.py` and `test_storage.py` attach an SD image.
+  `test_storage.py` also boots the read-only build of `storage`. `test_input.py` drives the
   serial and script backends, the second over the mini UART.
   `test_rtc.py` attaches QEMU's `ds1338` model at I2C address `0x68`.
   `test_spi.py` attaches a `w25q32` SPI flash. `demo` and `chain1` also

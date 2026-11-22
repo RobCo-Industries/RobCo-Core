@@ -297,6 +297,29 @@ def test_storage_errors(board, image, need_mtools, tmp_path):
         no_exception(vm)
 
 
+def test_storage_readonly(board, example_image, need_mtools, tmp_path):
+    """The ROBCO_FS_READONLY build mounts, lists and reads, and every writing call says ro."""
+    img = example_image("storage", "ro", "-DROBCO_FS_READONLY=1")
+    sd = tmp_path / "sd.img"
+    files = {"A/B.TXT": b"read me", "OLD.SAV": b"old"}
+    make_sd_image(sd, 16, files)
+    before = sd.read_bytes()
+    with boot(img, board, sd=sd) as vm:
+        s = start(vm)
+        assert (s["mount"]["rc"], s["mount"]["fat"]) == ("ok", "0"), vm.serial
+        done, root = ls(vm, "/")
+        assert done["rc"] == "ok" and set(root) == {"A", "OLD.SAV"}, vm.serial
+        assert cmd(vm, "cat /A/B.TXT")["crc"] == crc(files["A/B.TXT"])
+        for line in ("put /NEW.BIN 10 1", "put /OLD.SAV 10 1", "atomic /OLD.SAV 10 1",
+                     "rm /OLD.SAV", "mv /OLD.SAV /NEW.SAV", "mkdir /NEWDIR", "df"):
+            assert cmd(vm, line)["rc"] == "ro", line
+        assert cmd(vm, "umount")["rc"] == "ok"
+        assert cmd(vm, "mount")["rc"] == "ok"
+        assert cmd(vm, "cat /OLD.SAV")["crc"] == crc(files["OLD.SAV"])
+        no_exception(vm)
+    assert sd.read_bytes() == before
+
+
 def test_storage_full(board, image, need_mtools, tmp_path):
     sd = tmp_path / "sd.img"
     make_sd_image(sd, 4, {})

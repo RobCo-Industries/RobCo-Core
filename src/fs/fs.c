@@ -293,6 +293,16 @@ int fs_statvfs(const char *volume, fs_statvfs_t *out)
     if (vol < 0) {
         return FS_ERR_NOVOL;
     }
+#if FF_FS_READONLY
+    /* FatFs builds f_getfree() only with write support. */
+    (void)drv;
+    (void)nfree;
+    (void)fs;
+    (void)cl;
+    (void)rc;
+    k_memset(out, 0, sizeof(*out));
+    return FS_ERR_RO;
+#else
     fs_vols[vol].blk_err = 0;
     drive_prefix(drv, vol);
     rc = from_fr(f_getfree(drv, &nfree, &fs), vol);
@@ -305,6 +315,7 @@ int fs_statvfs(const char *volume, fs_statvfs_t *out)
     out->free_bytes = (uint64_t)nfree * cl;
     out->fat_type = fs->fs_type == FS_FAT12 ? 12 : fs->fs_type == FS_FAT16 ? 16 : 32;
     return FS_OK;
+#endif
 }
 
 int fs_chdir(const char *path)

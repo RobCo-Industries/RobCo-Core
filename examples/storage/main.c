@@ -168,7 +168,7 @@ static const char *u64_dec(uint64_t v, char *out)
     return p;
 }
 
-/* Sizes in bytes. */
+/* Sizes in bytes. With ROBCO_FS_READONLY, df gives rc=ro and zeros. */
 static void print_df(const char *ev, int rc)
 {
     fs_statvfs_t st = { 0 };
@@ -176,7 +176,12 @@ static void print_df(const char *ev, int rc)
     char avail[21];
 
     if (rc == FS_OK) {
-        rc = fs_statvfs(VOL, &st);
+        int src = fs_statvfs(VOL, &st);
+
+        /* The read-only build has no free count. The mount itself worked. */
+        if (src != FS_ERR_RO || k_strcmp(ev, "mount") != 0) {
+            rc = src;
+        }
     }
     k_printf("@RC stage=" STAGE " ev=%s rc=%s total=%s free=%s cluster=%u fat=%u\n", ev,
              fs_rc_name(rc), u64_dec(st.total_bytes, total), u64_dec(st.free_bytes, avail),

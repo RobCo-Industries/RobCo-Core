@@ -53,7 +53,7 @@ This page maps the repository and shows where new code and tests go. To use the 
 | Build | How `src/fs/` and FatFs are built |
 |---|---|
 | Target, `mk/robco.mk` | `src/fs/*.c`, `ff.c` and `ffunicode.c` go into `librobco.a`. Only these files get `-I src/fs -I third_party/fatfs -I src/fs/libc`. `ROBCO_FATFS_CFLAGS` relaxes warnings for the FatFs files alone. `--gc-sections` drops the code from an image that calls no `fs_` function. |
-| Host, `mk/host.mk` | The same files are built once into objects with the host compiler and linked into every host test, together with `src/lib/*.c` and the file-backed test device `tests/host/blk_file.c`. The host uses its own `<string.h>`. `HOST_FATFS_CFLAGS` relaxes warnings for FatFs. |
+| Host, `mk/host.mk` | The same files are built once into objects with the host compiler and linked into every host test, together with `src/lib/*.c` and the file-backed test device `tests/host/blk_file.c`. The host uses its own `<string.h>`. `HOST_FATFS_CFLAGS` relaxes warnings for FatFs. A second copy built with `ROBCO_FS_READONLY=1` links into `tests/host/test_fs_readonly.c`. |
 
 `make test-host` also builds `build/host/fs_tool`, a command-line tool over `fs.h` that `tests/tools/test_fs_interop.py` runs against images made with mtools. When `fsck.vfat` or `fsck_msdos` is installed, the test also checks the images after each write.
 

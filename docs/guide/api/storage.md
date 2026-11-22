@@ -286,8 +286,8 @@ if (rc == 0) {
 | Locking | None. Call from one context at a time. |
 | Open files | Do not open the same file twice for writing, and do not unlink or rename an open file. FatFs does not check. |
 | Time | New and modified files get the time of the library clock when it is set, else 2026-01-01 00:00. See [File time stamps](#file-time-stamps). |
-| Read-only build | `#define ROBCO_FS_READONLY 1` in `robco_config.h` drops the write, mkfs, rename and mkdir code. Functions that would write return `FS_ERR_RO`. |
-| Code size | Measured on an `sdraw`-style image that calls every function: about 16 KiB of code read-only and about 30 KiB read-write, both with `part.c`. Both add about 2.3 KiB of BSS. An image that calls no `fs_` function links none of it. |
+| Read-only build | `#define ROBCO_FS_READONLY 1` in `robco_config.h` drops the write, mkfs, rename and mkdir code. Mount, list, stat, open for reading, read, seek and unmount work. Every function that would write returns `FS_ERR_RO`, and so does `fs_statvfs()`, since FatFs counts free clusters only in the read-write build. `fs_sync()` on a read handle returns `0`. `examples/storage` builds both flavours, and the host and target tests run both. |
+| Code size | `examples/storage`, which calls every function, has 48.3 KiB of code read-write and 37.7 KiB read-only for the whole image, so the read-only build saves about 10.6 KiB. The file system adds about 2.3 KiB of BSS in both. An image that calls no `fs_` function links none of it. |
 
 Every function returns `FS_OK` (`0`) or a count on success, or a negative code:
 
@@ -374,7 +374,7 @@ typedef struct {
 } fs_statvfs_t;
 ```
 
-`volume` is a bare name such as `"sd"`, without `:`. `total_bytes` counts the data clusters. `fat_type` is `12`, `16` or `32`. The first call on a large FAT32 volume may scan the whole FAT.
+`volume` is a bare name such as `"sd"`, without `:`. The read-only build returns `FS_ERR_RO` and zeros `*out`. `total_bytes` counts the data clusters. `fat_type` is `12`, `16` or `32`. The first call on a large FAT32 volume may scan the whole FAT.
 
 ```c
 int fs_mkfs(blk_dev_t *dev, const fs_mkfs_opts_t *opts);
@@ -569,7 +569,7 @@ Sharp edges:
 | No locking. | One caller at a time, from one context. |
 | Duplicate handles. | Two write handles on one file, or unlink and rename of an open file, corrupt the volume. FatFs does not check. |
 | Unmount does not flush files. | Close files before `fs_unmount()`. |
-| `fs_statvfs()` in the read-only build. | FatFs builds `f_getfree()` only with write support, so an image with `ROBCO_FS_READONLY` 1 that calls `fs_statvfs()` fails to link. |
+| `fs_statvfs()` in the read-only build. | It returns `FS_ERR_RO` and zeros: FatFs builds `f_getfree()` only with write support. |
 | Time stamps need a clock. | Without one, every file gets 2026-01-01 00:00. See [File time stamps](#file-time-stamps). |
 
 Pending hardware validation: the file system is tested on the host and with mtools images, not yet on a real SD card. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
