@@ -129,6 +129,23 @@ def test_mkbootdir_refuses_bad_image(tmp_path):
     assert not (tmp_path / "boot").exists()
 
 
+def test_mkbootdir_refuses_wrong_load_addr(tmp_path):
+    """The firmware loads the kernel at 0x8000: an image linked elsewhere cannot boot."""
+    other = tmp_path / "chain2.img"
+    other.write_bytes(sealed(load_addr=0x00200000, subtype=4))
+    r = run(MKBOOT, other, tmp_path / "boot", "--no-firmware")
+    assert r.returncode == 1
+    assert "0x200000" in r.stderr and "0x8000" in r.stderr
+    assert not (tmp_path / "boot").exists()
+
+
+def test_mkbootdir_refuses_missing_verifier(image, tmp_path):
+    r = run(MKBOOT, image, tmp_path / "boot", "--no-firmware",
+            env={"PYTHON": "robco-no-such-python"})
+    assert r.returncode == 1 and "robco-no-such-python" in r.stderr
+    assert not (tmp_path / "boot").exists()
+
+
 @pytest.mark.skipif(os.environ.get("ROBCO_NET_TESTS") != "1",
                     reason="downloads firmware; set ROBCO_NET_TESTS=1")
 @needs_curl

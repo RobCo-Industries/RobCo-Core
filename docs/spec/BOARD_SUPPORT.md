@@ -130,7 +130,7 @@ framebuffer_depth=32
 
 `arm_64bit=0` makes the firmware load the image at `0x8000` in AArch32 state. The framebuffer lines set the default mode. Stages still ask for 640x480x32 through the mailbox.
 
-`tools/mkbootdir.sh <image.img> <target-dir> [--kernel-name NAME]` writes a boot directory with these settings, the image and the firmware files from `tools/fetch_firmware.sh`. Copy its files to the card's boot partition.
+`tools/mkbootdir.sh <image.img> <target-dir> [--kernel-name NAME]` writes a boot directory with these settings, the image and the firmware files from `tools/fetch_firmware.sh`. It first verifies the image with `tools/rimg.py` and fails if the image is invalid, if it is not linked at 0x8000, or if `python3` (or `PYTHON`) is missing. Copy its files to the card's boot partition.
 
 ## No .dtb on the card
 

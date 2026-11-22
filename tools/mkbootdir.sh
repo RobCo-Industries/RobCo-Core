@@ -75,10 +75,13 @@ for f in "$name" config.txt; do
     fi
 done
 
-# Check the image before anything is written.
-if command -v "${PYTHON:-python3}" > /dev/null; then
-    "${PYTHON:-python3}" "$here/rimg.py" verify "$image" > /dev/null || die "$image is not a valid rimg image"
-fi
+# Check the image before anything is written. The firmware loads the
+# kernel at 0x8000, so an image linked anywhere else cannot boot.
+python=${PYTHON:-python3}
+command -v "$python" > /dev/null || die "cannot verify $image: '$python' not found (set PYTHON)"
+"$python" "$here/rimg.py" verify "$image" > /dev/null || die "$image is not a valid rimg image"
+load_addr=$("$python" "$here/rimg.py" info "$image" | sed -n 's/^load_addr=//p')
+[ "$load_addr" = 0x8000 ] || die "$image is linked at ${load_addr:-an unknown address}, the firmware loads the kernel at 0x8000"
 
 mkdir -p -- "$target"
 if [ "$firmware" -eq 1 ]; then
