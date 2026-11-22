@@ -15,7 +15,7 @@ All code runs in AArch32. The build targets ARMv6 with `-mcpu=arm1176jzf-s -marm
 
 ## Detection table
 
-`board_detect()` reads MIDR with `mrc p15, 0, rX, c0, c0, 0`. The part number is MIDR bits [15:4].
+`board_get()` in `include/robco/board.h` detects the board on its first call and caches the result. It reads MIDR with `mrc p15, 0, rX, c0, c0, 0`. The part number is MIDR bits [15:4]. `robco_board_t` holds the SoC as a `robco_soc_t` value and as a name such as `bcm2835`. The `soc` column is the number the boot info stores.
 
 | MIDR part | SoC | `soc` value | Peripheral base | Interrupt controller | VC bus alias |
 |---|---|---|---|---|---|
@@ -141,14 +141,16 @@ Every image starts in `src/arch/start.S`. The order is fixed.
 
 | Step | Action | Reason |
 |---|---|---|
-| 1 | Save r0 to r3 and the entry CPSR in callee-saved registers. | They carry the firmware arguments or the handoff. Later steps clobber r0 to r3. |
+| 1 | Save r0 to r3 in r4 to r7 and the entry mode, CPSR bits [4:0], in r8. | They carry the firmware arguments or the handoff. Later steps clobber r0 to r3. |
 | 2 | Read MIDR. If the part is not `0xB76`, read MPIDR and park every core whose bits [1:0] are not 0. | Multi-core parts may start secondaries at the entry point. See the ARM1176 trap below. |
-| 3 | If the entry mode is HYP, drop to SVC with `msr SPSR_hyp`, `msr ELR_hyp`, `eret`. Then force SVC with IRQ and FIQ masked. | Pi 2 and Pi 3 firmware enters in HYP. HYP has its own banked registers and exception model. `cps` cannot leave HYP, so `eret` is the only way out. |
-| 4 | Set sp for IRQ, ABT, UND and SVC from the image's own `.stack` section. | Exceptions need a valid stack before VBAR points at handlers. Each image owns its stacks, so no stage depends on another stage's memory. |
-| 5 | Enable VFP access in CPACR and set FPEXC.EN. Clear SCTLR.V. Write VBAR. Flush the prefetch buffer. | The current flags emit no VFP code. Enabling access costs nothing and avoids an undefined-instruction trap if a later component uses VFP. Low vectors plus VBAR put the vector table inside the image. |
-| 6 | Zero BSS from `__bss_start` to `__bss_end`. | C code expects zeroed statics. A loader does not zero BSS for the image. |
-| 7 | Call `robco_entry(r0, r1, r2, r3)` with the saved values. It validates or builds the boot info, then calls `robco_main(const robco_bootinfo_t *)`. | One C entry point per image. See [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md). |
-| 8 | If `robco_main` returns, park in a `wfi` loop. | There is nowhere to return to. |
+| 3 | If the entry mode is HYP, drop to SVC with `msr SPSR_hyp`, `msr ELR_hyp`, `eret`. Then force SVC with IRQ and FIQ masked, with `cpsid if`. | Pi 2 and Pi 3 firmware enters in HYP. HYP has its own banked registers and exception model. `cps` cannot leave HYP, so `eret` is the only way out. |
+| 4 | If the part is not `0xB76`, set SCTLR.CP15BEN, bit 5. | ARMv7 and later need it for the CP15 barrier forms that `mmio.h` uses. Its reset value is not guaranteed on ARMv8 AArch32. ARM1176 has no such bit. |
+| 5 | Set sp for IRQ, FIQ, ABT, UND and SVC from the image's own `.stack` section. End in SVC. | Exceptions need a valid stack before VBAR points at handlers. Each image owns its stacks, so no stage depends on another stage's memory. |
+| 6 | Clear SCTLR.V, then write VBAR. | Low vectors plus VBAR put the vector table inside the image. |
+| 7 | Enable cp10 and cp11 in CPACR, flush the prefetch buffer, then set FPEXC.EN. | The current flags emit no VFP code. Enabling access costs nothing and avoids an undefined-instruction trap if a later component uses VFP. |
+| 8 | Zero BSS from `__bss_start` to `__bss_end`. Then store the saved r0 to r3 and entry mode in `robco_boot_args_store`. | C code expects zeroed statics. A loader does not zero BSS for the image. The store sits in `.data`, so the BSS clear cannot erase it. |
+| 9 | Call `robco_start()`. It detects the board with `board_get()`, then calls `robco_main()`. | One C entry point per image. See [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md). |
+| 10 | If `robco_main` returns, mask IRQ and FIQ and park in a `wfi` loop. | There is nowhere to return to. |
 
 ### ARM1176 MPIDR trap
 
