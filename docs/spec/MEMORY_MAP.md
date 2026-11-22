@@ -17,7 +17,9 @@ The lowest board in the set has 256 MiB of RAM, and `gpu_mem=64` leaves 192 MiB 
 |---|---|---|
 | `0x00000000`-`0x000000FF` | Firmware | Firmware data and secondary-core spin code on Pi 2 and Pi 3. Never written. |
 | `0x00000100`-`0x00003FFF` | Firmware | ATAGS list from the firmware. Read once at boot. |
-| `0x00004000`-`0x00007FFF` | Test stub | Unused on hardware. The QEMU firmware stub lives here. See [TESTING.md](./TESTING.md). |
+| `0x00004000`-`0x00007FFF` | Nobody | Unused on hardware. |
+
+In QEMU tests a firmware stub plays the firmware's part in this range. Its code sits at `0x0` and `0x400`, it writes ATAGS at `0x100`, and the harness writes its parameter block at `0x7F00`. See [TESTING.md](./TESTING.md).
 
 ## Terminal chain
 
