@@ -70,10 +70,10 @@ class Qemu:
         # or one read in wait_event(). The keep-alive thread takes it too.
         self._qmp_lock = threading.RLock()
         self.vm_running = False  # set by stop/cont and the STOP/RESUME events
-        self.keepalive_on = False
-        self.keepalive_pings = 0
+        self.keepalive_pings = 0  # pings sent since the last start_keepalive()
         self._ka_thread = None
-        self._ka_stop = threading.Event()
+        self._ka_stop = threading.Event()  # one per thread, replaced on start
+        self._ka_reason = None  # why the last thread ended by itself, or None
         self._qt = self._qt_file = None
         self.events = []
         self.serial_paths = [os.path.join(self.tmpdir, f"serial{i}.txt")
@@ -230,35 +230,63 @@ class Qemu:
         Runs on a daemon thread until stop_keepalive() or close(). Pings
         pause while the VM is stopped and end when QEMU exits or the QMP
         connection fails. Replies are matched by id like any command.
+        Does nothing while a keep-alive is already on. Resets the ping count.
         """
-        if self._ka_thread is not None or self._qmp is None:
+        if self.keepalive_on or self._qmp is None:
             return
-        self._ka_stop.clear()
-        self.keepalive_on = True
-        self._ka_thread = threading.Thread(target=self._keepalive_loop, args=(interval,),
+        self.stop_keepalive()  # reap a thread that ended by itself
+        stop = self._ka_stop = threading.Event()
+        self.keepalive_pings = 0
+        self._ka_reason = None
+        self._ka_thread = threading.Thread(target=self._keepalive_loop, args=(interval, stop),
                                            name="qmp-keepalive", daemon=True)
         self._ka_thread.start()
 
     def stop_keepalive(self):
+        """Stop the pings. Safe to call twice, from any thread."""
         t, self._ka_thread = self._ka_thread, None
         self._ka_stop.set()
         if t is not None and t is not threading.current_thread():
             t.join(KEEPALIVE_TIMEOUT + 1)
 
-    def _keepalive_loop(self, interval):
-        while not self._ka_stop.wait(interval):
-            if self.proc is not None and self.proc.poll() is not None:
-                return
-            try:
-                with self._qmp_lock:  # the flag is checked and used in one hold
-                    if not self.vm_running:
-                        continue
-                    self.command("query-status", timeout=KEEPALIVE_TIMEOUT)
-                    self.keepalive_pings += 1
-            except socket.timeout:
-                continue  # the late reply is dropped by its id
-            except (QemuError, OSError, ValueError, AttributeError):
-                return  # connection gone; close() is on its way
+    @property
+    def keepalive_on(self):
+        """True while the ping thread is alive and not asked to stop."""
+        t = self._ka_thread
+        return t is not None and t.is_alive() and not self._ka_stop.is_set()
+
+    def keepalive_status(self):
+        """The keep-alive state for the dump, from what the thread does now.
+
+        `on`, `on (paused: VM stopped)` when pings wait for the VM to run
+        again, `off`, or `off (stopped: <reason>)` when the thread ended
+        by itself.
+        """
+        if self.keepalive_on:
+            return "on" if self.vm_running else "on (paused: VM stopped)"
+        reason = self._ka_reason
+        return f"off (stopped: {reason})" if reason else "off"
+
+    def _keepalive_loop(self, interval, stop):
+        try:
+            while not stop.wait(interval):
+                if self.proc is not None and self.proc.poll() is not None:
+                    self._ka_reason = f"QEMU exited ({self.proc.returncode})"
+                    return
+                try:
+                    with self._qmp_lock:  # the flag is checked and used in one hold
+                        if stop.is_set():
+                            return
+                        if not self.vm_running:
+                            continue
+                        self.command("query-status", timeout=KEEPALIVE_TIMEOUT)
+                        self.keepalive_pings += 1
+                except socket.timeout:
+                    continue  # the late reply is dropped by its id
+        except Exception as e:  # noqa: BLE001 - the reason goes to the dump
+            if not stop.is_set():
+                msg = str(e).splitlines()[0][:80].rstrip(": ") if str(e) else ""
+                self._ka_reason = f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
     # -- QMP / HMP -------------------------------------------------------
 

@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import re
 import socket
 import threading
 import time
@@ -382,3 +383,82 @@ def test_command_error_still_raises():
     with wired(reply) as (q, srv):
         with pytest.raises(QemuError, match="^bogus: bad$"):
             q.execute("bogus")
+
+
+def wait_until(cond, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while not cond():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def test_stop_on_a_running_vm_reports_off():
+    with wired(hmp_reply()) as (q, srv):
+        q.start_keepalive(INTERVAL)
+        assert wait_until(lambda: q.keepalive_pings > 0)
+        q.stop_keepalive()
+        assert q.vm_running and not q.keepalive_on
+        text = DumpVm(q).state_dump()
+    assert "keep-alive: off\n" in text, text
+
+
+def test_closed_socket_reports_off_with_a_reason():
+    a, b = socket.socketpair()
+    q = Qemu("qemu-none", "raspi0", timeout=2.0)
+    q._qmp = a
+    a.settimeout(q.timeout)
+    q.proc = FakeProc()
+    q.vm_running = True
+    srv = FakeServer(b)
+    try:
+        q.start_keepalive(INTERVAL)
+        assert wait_until(lambda: q.keepalive_pings > 0)
+        b.shutdown(socket.SHUT_RDWR)
+        b.close()
+        # A closed peer surfaces as EOF or a broken pipe, depending on timing.
+        assert wait_until(lambda: not q.keepalive_on)
+        text = DumpVm(q).state_dump()
+        line = next(x for x in text.splitlines() if x.startswith("keep-alive:"))
+        assert re.fullmatch(r"keep-alive: off \(stopped: (QemuError|\w*Error): .+\)", line), line
+    finally:
+        q.stop_keepalive()
+        q.proc = None
+        a.close()
+        q.close()
+
+
+def test_paused_vm_reports_on_paused():
+    with wired(running=False) as (q, srv):
+        q.start_keepalive(INTERVAL)
+        assert q.keepalive_status() == "on (paused: VM stopped)"
+        q.stop_keepalive()
+        assert q.keepalive_status() == "off"
+
+
+def test_start_stop_start_counts_again():
+    with wired() as (q, srv):
+        q.start_keepalive(INTERVAL)
+        assert wait_until(lambda: q.keepalive_pings > 0)
+        q.stop_keepalive()
+        n = len(srv.commands("query-status"))
+        time.sleep(0.1)
+        assert len(srv.commands("query-status")) == n
+        q.start_keepalive(INTERVAL)
+        assert q.keepalive_on and q.keepalive_pings == 0
+        assert wait_until(lambda: q.keepalive_pings >= 3)
+        assert len(srv.commands("query-status")) > n
+
+
+def test_double_start_and_double_stop_are_harmless():
+    with wired() as (q, srv):
+        q.start_keepalive(INTERVAL)
+        first = q._ka_thread
+        q.start_keepalive(INTERVAL)
+        assert q._ka_thread is first
+        assert len([t for t in threading.enumerate() if t.name == "qmp-keepalive"]) == 1
+        q.stop_keepalive()
+        q.stop_keepalive()
+        assert not q.keepalive_on and q.keepalive_status() == "off"
+        assert not first.is_alive()

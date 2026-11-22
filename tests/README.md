@@ -290,7 +290,7 @@ What each part holds:
   samples, and whether CPSR.I masked IRQs. Fixed registers mean "no"
   only when the VM ran. When it was stopped, or `cont` failed, or its
   state is unknown, the summary says "cannot be judged" and why.
-- `keep-alive`: on or off, see [QEMU keep-alive](#qemu-keep-alive).
+- `keep-alive`: `on` while the ping thread runs. `on (paused: VM stopped)` means pings resume when the VM runs again. `off (stopped: <reason>)` means the thread ended by itself, for example when QEMU exited or the QMP connection failed. See [QEMU keep-alive](#qemu-keep-alive).
 - `device registers`: read with the VM stopped by the dump, already
   stopped, or running when the stop failed.
 - `cpu0 at stop`: pc, lr, sp and CPSR of the stopped VM.

@@ -274,7 +274,7 @@ class Vm:
             def resume():
                 # Never skipped for the budget: the VM must run again.
                 q.command("cont", timeout=self.DUMP_READ_TIMEOUT)
-        ka = "on" if getattr(q, "keepalive_on", False) else "off"
+        ka = q.keepalive_status() if hasattr(q, "keepalive_status") else "off"
         try:
             lines = dump.collect(hmp, machine, self.elf, deadline=deadline,
                                  pause=pause, resume=resume, state=state)
