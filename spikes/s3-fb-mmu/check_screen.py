@@ -61,7 +61,7 @@ def wait_done(q, timeout=15.0):
             text = f.read().decode("ascii", "replace")
         if "ev=exception" in text:
             raise QemuError("exception: " + text)
-        if "@RC stage=spike3 ev=done" in text:
+        if "@RC stage=spike3 ev=done\n" in text.replace("\r\n", "\n"):
             return text
         time.sleep(0.1)
     raise QemuError("no ev=done line")

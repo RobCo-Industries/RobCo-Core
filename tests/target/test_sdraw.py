@@ -5,7 +5,7 @@ import struct
 import time
 import zlib
 
-from harness.boot import boot, parse_markers
+from harness.boot import boot
 from harness.qemu import QemuError
 from harness.sdimage import SECTOR, corrupt, make_sd_image
 
@@ -36,9 +36,7 @@ def crc(data):
 
 
 def events(vm, ev):
-    # Complete lines only: a marker may still be arriving.
-    text = vm.serial
-    done = parse_markers(text[:text.rfind("\n") + 1])
+    done = vm.markers()
     return [m for m in done if m.get("stage") == "sdraw" and m.get("ev") == ev]
 
 

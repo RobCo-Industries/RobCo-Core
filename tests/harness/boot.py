@@ -68,10 +68,22 @@ def fwstub_path():
         return _stub_path
 
 
+def complete_lines(text):
+    """Return `text` up to its last newline.
+
+    The guest may still be printing the last line, so a tail without a
+    newline is dropped. A tail that ends in a bare CR is dropped too.
+    """
+    return text[:text.rfind("\n") + 1]
+
+
 def parse_markers(text):
-    """Parse `@RC stage=<s> ev=<e> k=v ...` lines into dicts."""
+    """Parse complete `@RC stage=<s> ev=<e> k=v ...` lines into dicts.
+
+    A last line without a newline is still arriving and is ignored.
+    """
     out = []
-    for line in text.replace("\r", "").splitlines():
+    for line in complete_lines(text).replace("\r", "").splitlines():
         m = MARKER_RE.search(line)
         if m:
             out.append(dict(tok.split("=", 1) for tok in m.group(1).split()))
@@ -124,17 +136,24 @@ class Vm:
         """Text received so far on the mini UART (boot(serial2=True) only)."""
         return self._text(1)
 
-    def wait_for(self, pattern, timeout=10.0, port=0):
+    def lines(self, port=0):
+        """Complete lines received so far, without line endings."""
+        return complete_lines(self._text(port)).replace("\r", "").splitlines()
+
+    def wait_for(self, pattern, timeout=10.0, port=0, line=False):
         """Wait until `pattern` shows up on the serial stream.
 
         `pattern` is a substring or a compiled regex. Returns the match
-        (a re.Match for regexes, the substring otherwise). Raises
-        QemuError with the captured log on timeout or if QEMU exits.
+        (a re.Match for regexes, the substring otherwise). With
+        line=True only complete lines are searched. Raises QemuError
+        with the captured log on timeout or if QEMU exits.
         """
         deadline = time.monotonic() + timeout
         with self._cond:
             while True:
                 text = self._bufs[port].decode("utf-8", "replace").replace("\r\n", "\n")
+                if line:
+                    text = complete_lines(text)
                 if isinstance(pattern, re.Pattern):
                     m = pattern.search(text)
                     if m:
@@ -156,7 +175,7 @@ class Vm:
         self._socks[port].sendall(data)
 
     def markers(self, port=0):
-        """All `@RC` marker lines seen so far, as dicts."""
+        """All complete `@RC` marker lines seen so far, as dicts."""
         return parse_markers(self._text(port))
 
     def screendump(self, path):

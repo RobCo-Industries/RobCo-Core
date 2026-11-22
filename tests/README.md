@@ -167,6 +167,12 @@ SD image, `serial2=True` adds the mini UART, `extra_args=[...]` goes
 straight to QEMU. `vm.qmp` is the `Qemu` object from `harness/qemu.py`.
 QEMU is killed when the `with` block ends, even on failure.
 
+The guest may still be printing when a test reads its output.
+`vm.serial` and `vm.serial2` return everything received so far.
+`vm.markers()` and `vm.lines(port)` only see complete lines, up to the
+last newline. `vm.wait_for()` searches the raw stream; end the pattern
+in `\n` or pass `line=True` before parsing what it matched.
+
 ## What QEMU cannot prove
 
 Caches, PWM sound, GPIO input, real SPI signalling and SD pin routing

@@ -30,7 +30,7 @@ def wait_count(vm, fn, count, timeout=TIMEOUT):
 
 
 def replies(vm):
-    return [line for line in vm.serial2.split("\n") if line.startswith(("ok", "err"))]
+    return [line for line in vm.lines(port=1) if line.startswith(("ok", "err"))]
 
 
 def start(vm):
