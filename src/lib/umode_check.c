@@ -213,3 +213,29 @@ int umode_task_check(const umode_task_t *t, const umode_limits_t *lim)
     }
     return 0;
 }
+
+long umode_stray_section(const umode_region_t *regions, unsigned count,
+                         int (*user)(uint32_t addr))
+{
+    uintptr_t a, al;
+    unsigned i;
+    long s;
+
+    for (s = 0; s < 4096; s++) {
+        a = (uintptr_t)s << 20;
+        al = a + 0xfffffu;
+        if (user((uint32_t)a) == 0) {
+            continue;
+        }
+        for (i = 0; i < count; i++) {
+            if (usable(&regions[i]) && meet(a, al, regions[i].start,
+                                             regions[i].start + (regions[i].size - 1))) {
+                break;
+            }
+        }
+        if (i == count) {
+            return s;
+        }
+    }
+    return -1;
+}

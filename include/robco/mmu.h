@@ -66,6 +66,13 @@ void mmu_enable(void);
  */
 void mmu_disable(void);
 
+/*
+ * USR-mode access the table gives the 1 MiB section holding `addr`:
+ * 0 none (or unmapped), 1 read-only, 2 read-write. Reads the table only,
+ * so it works with the MMU on or off. Any context.
+ */
+int mmu_section_user(uint32_t addr);
+
 /* Non-zero when SCTLR.M is set. */
 int mmu_enabled(void);
 

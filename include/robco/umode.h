@@ -45,6 +45,7 @@
 #define UMODE_ERR_ENTRY     (-12)   /* entry not word-aligned or not inside a region */
 #define UMODE_ERR_SP        (-13)   /* sp not 8-aligned, or [sp - 8, sp) not writable */
 #define UMODE_ERR_STUB      (-14)   /* stub not word-aligned, not writable, or on the entry */
+#define UMODE_ERR_USERMAP   (-15)   /* MMU on and a section outside the regions is user-accessible */
 
 /* r0 set by the library when no handler is installed (as -38). */
 #define UMODE_ENOSYS        38
@@ -102,7 +103,9 @@ typedef void (*umode_svc_fn)(exc_frame_t *frame, void *ctx);
  * MMU on, each region is whole sections, alone in its sections, mapped
  * MMU_ATTR_RAM | MMU_USER_RW (writable) or MMU_ATTR_RO_CODE | MMU_USER_RO
  * (read-only) before entry and MMU_ATTR_RAM after exit, on every way
- * out. The caller cleans loaded code to memory (cache_clean_range());
+ * out. It returns UMODE_ERR_USERMAP if any section outside the regions
+ * is already user-accessible (an earlier mmu_map() with a MMU_USER_*
+ * flag). The caller cleans loaded code to memory (cache_clean_range());
  * umode_run() invalidates the I-cache. Handlers must not change the MMU
  * state or the task's mappings. Main context only. Returns UMODE_ERR_*
  * with nothing mapped and nothing run.
@@ -176,5 +179,13 @@ int umode_regions_range_ok(const umode_region_t *regions, unsigned count,
                            uintptr_t ptr, size_t len, int write);
 long umode_regions_strnlen(const umode_region_t *regions, unsigned count,
                            uintptr_t ptr, size_t max);
+
+/*
+ * Index (0..4095) of the first 1 MiB section of a 32-bit address space
+ * that touches no region and for which `user` (given the section's base
+ * address, mmu_section_user() on target) returns non-zero, or -1.
+ */
+long umode_stray_section(const umode_region_t *regions, unsigned count,
+                         int (*user)(uint32_t addr));
 
 #endif

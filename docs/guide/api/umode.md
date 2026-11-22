@@ -27,6 +27,8 @@
 
 With the MMU off there is no memory protection at all. Use it only for trusted code or for bring-up.
 
+With the MMU on, `umode_run()` scans the whole translation table before it maps anything. If a section outside the task's regions gives USR mode any access, for example after an earlier `mmu_map()` with `MMU_USER_RO` or `MMU_USER_RW`, it returns `UMODE_ERR_USERMAP` and changes nothing. A section inside the regions may hold any earlier mapping, because `umode_run()` replaces it.
+
 Some privileged instructions do not fault in USR mode. They are ignored instead, on ARMv6 and ARMv7 alike: `cpsid` and `cpsie` do nothing, and `msr cpsr_c` leaves the mode and masks alone. Only the flags of an `msr cpsr_f` take effect. A task cannot raise its privilege with them, but a test must use an instruction that traps, such as `mrc p15`.
 
 ### Constants
@@ -53,6 +55,7 @@ Some privileged instructions do not fault in USR mode. They are ignored instead,
 | `UMODE_ERR_ENTRY` | `-12` | `entry` not word-aligned or not inside a region |
 | `UMODE_ERR_SP` | `-13` | `sp` not 8-byte aligned, or the 8 bytes below it are not writable |
 | `UMODE_ERR_STUB` | `-14` | `stub` not word-aligned, not inside writable memory, or on the entry word |
+| `UMODE_ERR_USERMAP` | `-15` | MMU on and a section outside the regions is already user-accessible |
 | `UMODE_ENOSYS` | `38` | A call with no handler installed returns `-38` |
 | `UMODE_STUB_SIZE` | `8u` | Bytes of the return stub |
 
@@ -141,15 +144,19 @@ int umode_regions_range_ok(const umode_region_t *regions, unsigned count,
                            uintptr_t ptr, size_t len, int write);
 long umode_regions_strnlen(const umode_region_t *regions, unsigned count,
                            uintptr_t ptr, size_t max);
+long umode_stray_section(const umode_region_t *regions, unsigned count,
+                         int (*user)(uint32_t addr));
 ```
 
 The pure forms on any region list, in `src/lib/umode_check.c`. They ignore a region whose last byte would wrap past the top of the address space. A range may end exactly at the top. `tests/host/test_umode_check.c` covers empty ranges, ranges that cross a region end, adjacent regions, wraparound at the top of the address space, regions that wrap, zero-length buffers at a region boundary and read-only regions.
+
+`umode_stray_section()` walks the 4096 sections of the 32-bit address space. It returns the index of the first section that touches no region and for which `user(base address)` is non-zero, or `-1`. `umode_run()` passes [`mmu_section_user()`](memory.md) and fails with `UMODE_ERR_USERMAP` on a match.
 
 ```c
 int umode_task_check(const umode_task_t *task, const umode_limits_t *lim);
 ```
 
-The whole validation, pure, in `src/lib/umode_check.c`. `umode_run()` calls it with board RAM, the MMU section size (or `0` with the MMU off) and the kernel's forbidden ranges, each with its own error code. Returns `0` or the first `UMODE_ERR_*` found.
+The whole validation, pure, in `src/lib/umode_check.c`. `umode_run()` calls it with board RAM, the MMU section size (or `0` with the MMU off) and the kernel's forbidden ranges, each with its own error code. Returns `0` or the first `UMODE_ERR_*` found. It does not read the translation table, so it never returns `UMODE_ERR_USERMAP`. `umode_run()` makes that check after it.
 
 ### Task validation
 
@@ -222,7 +229,8 @@ Latency: a task in USR mode ends at the end of the IRQ that made the request, or
 ### What the kernel author must still get right
 
 - Call `umode_run()` from main context only, never from an IRQ handler.
-- Never call `mmu_map()`, `mmu_enable()` or `mmu_disable()` while a task runs, from a handler or from an IRQ handler. The library catches a change of the MMU state at the next system-call exit only.
+- Never call `mmu_map()`, `mmu_enable()` or `mmu_disable()` while a task runs, from a handler or from an IRQ handler. The library catches a change of the MMU state at the next system-call exit only. It does not catch a new user mapping made while the task runs: `umode_run()` scans the table only before entry.
+- Before `umode_run()`, leave no section outside the task's regions with a `MMU_USER_*` flag. `umode_run()` refuses such a table with `UMODE_ERR_USERMAP` rather than revoke the mapping.
 - Check every pointer with `umode_range_ok()` or `umode_strnlen_ok()` before using it. A handler that dereferences a bad pointer faults in SVC mode, and that is fatal.
 - Keep task memory away from kernel data the library does not know about: the heap, DMA buffers, the framebuffer and mailbox buffers.
 - Never put a kernel pointer or secret into `frame->r[0]` or any other frame register.

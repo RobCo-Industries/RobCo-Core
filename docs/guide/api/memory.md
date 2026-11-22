@@ -193,6 +193,12 @@ void mmu_disable(void);
 Cleans and invalidates the whole data cache, then clears SCTLR M, C and I, then invalidates the data cache, the instruction cache, the branch predictor and the TLB again. It is written in assembly and touches no memory between the clean and the SCTLR write, so it is safe to call from cached code. The identity map keeps the next instruction at the same address after the MMU is off. It masks IRQs and FIQs while it runs and restores the mask on return. Does nothing if the MMU and data cache are already off. `robco_handoff()` calls it. It lives in `src/arch/cache.S`, so an image that uses `mmu.h` or `cache.h` links it.
 
 ```c
+int mmu_section_user(uint32_t addr);
+```
+
+Returns the USR-mode access the table gives the 1 MiB section that holds `addr`: `0` none or unmapped, `1` read-only, `2` read-write. It reads the table only, so it works with the MMU on or off. [`umode_run()`](umode.md) uses it to refuse a stray user mapping. Any context.
+
+```c
 int mmu_enabled(void);
 ```
 

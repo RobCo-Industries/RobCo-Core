@@ -201,6 +201,10 @@ def test_umode(board, umode_vm):
     # Task sections left privileged read-only or unmapped by the caller: the task still runs.
     pre = [(p["name"], p["rc"], p["reason"], p["code"]) for p in events(vm, "premapped")]
     assert pre == [("ro", "0", "returned", "42"), ("none", "0", "returned", "42")], vm.serial
+    # A section outside the regions left user-accessible: refused, nothing runs. Then restored.
+    um = [(u["name"], u["rc"], u["ran"], u["code"]) for u in events(vm, "usermap")]
+    assert um == [("ro", "-15", "0", "0"), ("rw", "-15", "0", "0"),
+                  ("restored", "0", "1", "42")], vm.serial
     assert not events(vm, "error"), vm.serial
     assert not EXCEPTION.search(vm.serial), vm.serial
 

@@ -454,6 +454,42 @@ static void check_premapped(void)
     }
 }
 
+/*
+ * MMU on: a section outside the task's regions left user-accessible by
+ * the caller. umode_run() refuses with UMODE_ERR_USERMAP and runs
+ * nothing. After the section is privileged again, the task runs.
+ */
+static void check_usermap(void)
+{
+    static umode_exit_t ex;
+    static const struct {
+        const char *name;
+        unsigned attr;
+    } map[] = {
+        { "ro",      MMU_ATTR_RAM | MMU_USER_RO },
+        { "rw",      MMU_ATTR_RAM | MMU_USER_RW },
+        { "restored", MMU_ATTR_RAM },
+    };
+    umode_task_t t;
+    unsigned i;
+    int rc;
+
+    for (i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        load_programs();
+        mmu_map(DATA2_BASE, REGION_SIZE, map[i].attr);  /* not in `regions` */
+        k_memset(&t, 0, sizeof(t));
+        k_memset(&ex, 0, sizeof(ex));
+        t.entry = CODE_BASE;    /* case 0: returns 42 */
+        t.sp = USER_SP;
+        t.stub = STUB_ADDR;
+        t.regions = regions;
+        t.region_count = 2;
+        rc = run_task(&t, &ex, 0);
+        k_printf("@RC stage=umode ev=usermap name=%s rc=%d ran=%d code=%d\n", map[i].name, rc,
+                 ex.reason != 0, ex.code);
+    }
+}
+
 void robco_main(void)
 {
     unsigned tasks = 0;
@@ -482,6 +518,7 @@ void robco_main(void)
     tasks += run_pass(1);
     check_errors();
     check_premapped();
+    check_usermap();
 
 #ifdef UMODE_KFAULT
     {

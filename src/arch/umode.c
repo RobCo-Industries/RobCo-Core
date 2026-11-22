@@ -278,6 +278,10 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
     if (rc != 0) {
         return rc;
     }
+    /* A user mapping left by the caller outside the regions would leak memory to the task. */
+    if (mmu && umode_stray_section(task->regions, task->region_count, mmu_section_user) >= 0) {
+        return UMODE_ERR_USERMAP;
+    }
     for (i = 0; i < task->region_count; i++) {
         U.regions[i] = task->regions[i];
     }

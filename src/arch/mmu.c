@@ -134,6 +134,16 @@ int mmu_enabled(void)
     return (sctlr_read() & SCTLR_M) != 0;
 }
 
+int mmu_section_user(uint32_t addr)
+{
+    uint32_t d = l1_table[addr >> 20];
+
+    if ((d & 3) != SECT || !(d & SECT_AP1)) {
+        return 0;               /* unmapped, or AP[1] clear: no user access */
+    }
+    return (d & AP_MASK) == AP_PRW_URW ? 2 : 1;
+}
+
 static int cached(uint32_t d)
 {
     return (d & 3) == SECT && (d & SECT_C) != 0;

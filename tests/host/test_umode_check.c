@@ -432,3 +432,46 @@ TEST(task_mmu_view_matches_checks)
         }
     }
 }
+
+/* Per-section USR access for umode_stray_section(): 0 none, 1 read-only, 2 read-write. */
+static unsigned char sect_user[4096];
+
+static int fake_user(uint32_t addr)
+{
+    return sect_user[addr >> 20];
+}
+
+TEST(stray_section)
+{
+    /* Writable at sections 16-17, read-only at 4. */
+    static const umode_region_t r[] = {
+        { 16 * MB, 2 * MB, UMODE_REGION_WRITE },
+        { 4 * MB, MB, 0 },
+    };
+
+    memset(sect_user, 0, sizeof(sect_user));
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), -1);
+    /* The regions' own sections may have any earlier mapping. */
+    sect_user[4] = 2;
+    sect_user[16] = 1;
+    sect_user[17] = 2;
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), -1);
+    sect_user[200] = 1;                             /* stray read-only */
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), 200);
+    sect_user[200] = 2;                             /* stray read-write */
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), 200);
+    sect_user[200] = 0;
+    sect_user[18] = 1;                              /* just past a two-section region */
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), 18);
+    sect_user[18] = 0;
+    sect_user[15] = 2;                              /* just before it */
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), 15);
+    sect_user[15] = 0;
+    sect_user[0] = 1;
+    sect_user[4095] = 2;
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), 0);
+    sect_user[0] = 0;
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), 4095);
+    sect_user[4095] = 0;
+    CHECK_EQ(umode_stray_section(r, 2, fake_user), -1);
+}
