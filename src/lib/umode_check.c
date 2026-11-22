@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <robco/mmu.h>
 #include <robco/umode.h>
 
 /* Region is usable: non-empty and its last byte does not wrap. Others are ignored. */
@@ -238,4 +239,26 @@ long umode_stray_section(const umode_region_t *regions, unsigned count,
         }
     }
     return -1;
+}
+
+unsigned umode_region_attr(const umode_region_t *r, int user)
+{
+    if (!user) {
+        return MMU_ATTR_RAM;
+    }
+    if (r->flags & UMODE_REGION_WRITE) {
+        return MMU_ATTR_RAM | MMU_USER_RW;
+    }
+    return MMU_ATTR_RO_CODE | MMU_USER_RO;
+}
+
+void umode_map_regions(const umode_region_t *regions, unsigned count, int user,
+                       int (*map)(uint32_t start, uint32_t size, unsigned attr))
+{
+    unsigned i;
+
+    for (i = 0; i < count; i++) {
+        map((uint32_t)regions[i].start, (uint32_t)regions[i].size,
+            umode_region_attr(&regions[i], user));
+    }
 }

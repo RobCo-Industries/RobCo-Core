@@ -1,3 +1,6 @@
+#include <string.h>
+
+#include <robco/mmu.h>
 #include <robco/umode.h>
 
 #include "rc_test.h"
@@ -474,4 +477,80 @@ TEST(stray_section)
     CHECK_EQ(umode_stray_section(r, 2, fake_user), 4095);
     sect_user[4095] = 0;
     CHECK_EQ(umode_stray_section(r, 2, fake_user), -1);
+}
+
+/* A fake section table: mmu_map() as umode_run() uses it. */
+static unsigned table[64];
+
+static int fake_map(uint32_t start, uint32_t size, unsigned attr)
+{
+    uint32_t a;
+
+    for (a = start; a - start < size; a += MB) {
+        table[a / MB] = attr;
+    }
+    return 0;
+}
+
+TEST(region_attr)
+{
+    umode_region_t ro = { 4 * MB, MB, 0 }, rw = { 5 * MB, MB, UMODE_REGION_WRITE };
+
+    CHECK_EQ(umode_region_attr(&ro, 1), MMU_ATTR_RO_CODE | MMU_USER_RO);
+    CHECK_EQ(umode_region_attr(&rw, 1), MMU_ATTR_RAM | MMU_USER_RW);
+    CHECK_EQ(umode_region_attr(&ro, 0), MMU_ATTR_RAM);
+    CHECK_EQ(umode_region_attr(&rw, 0), MMU_ATTR_RAM);
+}
+
+/*
+ * The nested sequence of umode_run(): outer user, outer set aside, inner
+ * user; then inner privileged, outer user. Every section checked at each step.
+ */
+TEST(nested_mapping)
+{
+    /* Outer: code 4 read-only, data 16-17 writable, private 20 writable. */
+    static const umode_region_t outer[] = {
+        { 4 * MB, MB, 0 },
+        { 16 * MB, 2 * MB, UMODE_REGION_WRITE },
+        { 20 * MB, MB, UMODE_REGION_WRITE },
+    };
+    /* Inner: outer code read-only, outer data section 17 read-only, own 30 writable. */
+    static const umode_region_t inner[] = {
+        { 4 * MB, MB, 0 },
+        { 17 * MB, MB, 0 },
+        { 30 * MB, MB, UMODE_REGION_WRITE },
+    };
+    const unsigned RO = MMU_ATTR_RO_CODE | MMU_USER_RO, RW = MMU_ATTR_RAM | MMU_USER_RW;
+    unsigned before[64];
+    unsigned i;
+
+    for (i = 0; i < 64; i++) {
+        table[i] = MMU_ATTR_RAM;
+    }
+    umode_map_regions(outer, 3, 1, fake_map);
+    memcpy(before, table, sizeof(table));
+    CHECK_EQ(table[4], RO);
+    CHECK_EQ(table[16], RW);
+    CHECK_EQ(table[17], RW);
+    CHECK_EQ(table[20], RW);
+
+    /* Nested entry. */
+    umode_map_regions(outer, 3, 0, fake_map);
+    umode_map_regions(inner, 3, 1, fake_map);
+    for (i = 0; i < 64; i++) {
+        unsigned want = MMU_ATTR_RAM;
+
+        if (i == 4 || i == 17) {
+            want = RO;          /* listed by both: the inner permission */
+        } else if (i == 30) {
+            want = RW;
+        }
+        CHECK_EQ(table[i], want);   /* 16 and 20: outer-only, privileged */
+    }
+
+    /* Nested exit: the outer view comes back exactly. */
+    umode_map_regions(inner, 3, 0, fake_map);
+    umode_map_regions(outer, 3, 1, fake_map);
+    CHECK_EQ(memcmp(before, table, sizeof(table)), 0);
+    CHECK_EQ(table[30], MMU_ATTR_RAM);
 }
