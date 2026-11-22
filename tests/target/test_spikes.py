@@ -1,7 +1,6 @@
 """Prove tests/harness/boot.py with the M0 spikes as payloads."""
 
 import re
-import subprocess
 import time
 import zlib
 
@@ -88,17 +87,13 @@ def test_s3_screen(board, spike_image, tmp_path):
     assert got == BARS
 
 
-def qemu_pids():
-    out = subprocess.run(["pgrep", "-f", "qemu-system"], capture_output=True, text=True)
-    return set(out.stdout.split())
-
-
 def test_wait_for_timeout_cleans_up(spike_image):
     start = time.monotonic()
     with pytest.raises(QemuError) as err:
         with boot(spike_image("s1"), "raspi0") as vm:
-            pid = str(vm.qmp.proc.pid)
+            proc = vm.qmp.proc
             vm.wait_for("this never comes", timeout=1.0)
     assert time.monotonic() - start < 5
     assert "ev=hello" in str(err.value)  # the captured log is in the error
-    assert pid not in qemu_pids()
+    # The CI container has no pgrep. close() reaped QEMU, so poll() is set.
+    assert proc.poll() is not None
