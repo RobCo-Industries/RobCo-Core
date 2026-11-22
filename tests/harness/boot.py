@@ -236,8 +236,9 @@ class Vm:
         HMP. Resolves pc and lr to symbols when the image's ELF is known.
         Never raises. Each failed or late part becomes one "not collected"
         line and the rest is kept; "state dump failed" means nothing could
-        be read. Runs within DUMP_BUDGET seconds, symbol lookup included. If a QMP read times out, later
-        QMP replies on this Vm may be out of step.
+        be read. Runs within DUMP_BUDGET seconds, symbol lookup included.
+        A reply that arrives after its read timed out is dropped, so later
+        QMP calls on this Vm still get their own replies.
         """
         q = self.qemu
         machine = getattr(q, "machine", "?")

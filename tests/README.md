@@ -307,6 +307,8 @@ The dump never hides the original error. If QEMU has exited, the
 block says so. If reading a register fails, the block holds one
 `state dump failed:` line. The dump has an 8 second budget and a
 2 second limit per QMP reply, so a dead socket cannot hang the run.
+Each QMP command carries an id. A reply that comes after its command
+timed out is dropped, so later `vm.qmp` calls get their own replies.
 
 ## The harness in a project
 
