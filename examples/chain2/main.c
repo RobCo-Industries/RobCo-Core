@@ -40,7 +40,14 @@ void robco_main(void)
              (unsigned)b->midr, b->soc_name, (unsigned)b->periph_base,
              (unsigned)b->board_rev, (unsigned)b->mem_size,
              mode_name(robco_boot_args()->entry_mode));
-    k_printf("@RC stage=" STAGE " ev=handoff trusted=%d\n", inherited);
+    {
+        uint32_t sctlr;
+
+        /* The previous stage must leave the MMU and caches off: SCTLR bits 0, 2 and 12. */
+        __asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
+        k_printf("@RC stage=" STAGE " ev=handoff trusted=%d sctlr=0x%08x\n", inherited,
+                 (unsigned)sctlr);
+    }
 
 #if defined(CHAIN2_TICK) && CHAIN2_TICK
     {

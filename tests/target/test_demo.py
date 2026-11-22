@@ -6,6 +6,8 @@ the UART, and the heap, RNG and GPIO run beside it.
 
 import re
 
+import pytest
+
 from harness.boot import boot
 
 DONE = re.compile(r"^@RC stage=demo ev=done ticks=(\d+) elapsed_ms=(\d+)\n", re.M)
@@ -18,11 +20,19 @@ def events(vm, name):
     return [m for m in vm.markers() if m.get("stage") == "demo" and m.get("ev") == name]
 
 
-def test_demo(board, example_image):
-    with boot(example_image("demo"), board) as vm:
+# "mmu" turns on the MMU and caches before any other component.
+VARIANTS = {"plain": None, "mmu": ("mmu", "-DDEMO_MMU=1")}
+
+
+@pytest.mark.parametrize("variant", list(VARIANTS))
+def test_demo(board, example_image, variant):
+    img = example_image("demo", *VARIANTS[variant]) if VARIANTS[variant] else example_image("demo")
+    with boot(img, board) as vm:
         done = vm.wait_for(DONE, timeout=60)
         dump = vm.wait_for(SCREEN, timeout=30)
         assert len(events(vm, "boot")) == 1, vm.serial
+        mmu = events(vm, "mmu")
+        assert [m["on"] for m in mmu] == (["1"] if variant == "mmu" else []), vm.serial
         assert not events(vm, "error"), vm.serial
         heap = events(vm, "heap")
         assert heap and heap[0]["base"] == "0x01000000", vm.serial

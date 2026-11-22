@@ -7,6 +7,7 @@
 #include <robco/fb.h>
 #include <robco/irq.h>
 #include <robco/klibc.h>
+#include <robco/mmu.h>
 #include <robco/rimg.h>
 #include <robco/tick.h>
 #include <robco/timer.h>
@@ -53,6 +54,21 @@ void robco_main(void)
              (unsigned)b->midr, b->soc_name, (unsigned)b->periph_base,
              (unsigned)b->board_rev, (unsigned)b->mem_size,
              mode_name(robco_boot_args()->entry_mode));
+
+#if defined(CHAIN1_MMU) && CHAIN1_MMU
+    /*
+     * Runs the whole stage with the MMU and caches on. The image, boot
+     * info and FDT copy are then written through the D-cache, and
+     * robco_handoff() must clean them to memory for the next stage.
+     */
+    rc = mmu_init();
+    if (rc != 0) {
+        k_printf("@RC stage=" STAGE " ev=error code=mmu rc=%d\n", rc);
+        halt();
+    }
+    mmu_enable();
+    k_printf("@RC stage=" STAGE " ev=mmu on=%d\n", mmu_enabled());
+#endif
 
 #if defined(CHAIN1_FB) && CHAIN1_FB
     /* Hands a live framebuffer and console to the next stage. */

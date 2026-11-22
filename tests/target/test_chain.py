@@ -75,11 +75,31 @@ def run_fault(board, example_image, next_image, timeout=60):
         return one(vm, "chain1", "error")["code"]
 
 
-def test_chain_happy(board, example_image, chain2):
+# SCTLR.M, C and I: the next stage must start with all three clear.
+SCTLR_MCI = (1 << 0) | (1 << 2) | (1 << 12)
+
+
+def chain1_image(example_image, mmu, fb=False):
+    if mmu and fb:
+        return example_image("chain1", "mmufb", "-DCHAIN1_MMU=1 -DCHAIN1_FB=1")
+    if mmu:
+        return example_image("chain1", "mmu", "-DCHAIN1_MMU=1")
+    if fb:
+        return example_image("chain1", "fb", "-DCHAIN1_FB=1")
+    return example_image("chain1")
+
+
+def check_mmu_handoff(vm, mmu):
+    assert [m["on"] for m in events(vm, "chain1", "mmu")] == (["1"] if mmu else []), vm.serial
+    assert int(one(vm, "chain2", "handoff")["sctlr"], 16) & SCTLR_MCI == 0, vm.serial
+
+
+@pytest.mark.parametrize("mmu", [False, True], ids=["plain", "mmu"])
+def test_chain_happy(board, example_image, chain2, mmu):
     with open(chain2, "rb") as f:
         hdr = f.read(0x60)
     file_size, crc = struct.unpack_from("<I", hdr, 0x34)[0], struct.unpack_from("<I", hdr, 0x3C)[0]
-    with boot(example_image("chain1"), board, extra_args=chain_args(chain2)) as vm:
+    with boot(chain1_image(example_image, mmu), board, extra_args=chain_args(chain2)) as vm:
         vm.wait_for(READY, timeout=60)
         b1 = one(vm, "chain1", "boot")
         load = one(vm, "chain1", "load")
@@ -103,6 +123,7 @@ def test_chain_happy(board, example_image, chain2):
         assert int(info["fdt_size"]) > 0
         assert int(info["flags"], 16) & BOOT_COLD
         assert not events(vm, "chain2", "error"), vm.serial
+        check_mmu_handoff(vm, mmu)
 
 
 def test_chain_bad_crc(board, example_image, chain2, tmp_path):
@@ -158,8 +179,9 @@ def test_chain_bad_bootinfo(board, example_image, chain2):
         assert info["prev_stage"] == str(STAGE_BOOTAGENT)
 
 
-def test_chain_keeps_framebuffer(board, example_image, chain2):
-    img = example_image("chain1", "fb", "-DCHAIN1_FB=1")
+@pytest.mark.parametrize("mmu", [False, True], ids=["plain", "mmu"])
+def test_chain_keeps_framebuffer(board, example_image, chain2, mmu):
+    img = chain1_image(example_image, mmu, fb=True)
     with boot(img, board, extra_args=chain_args(chain2)) as vm:
         vm.wait_for(READY, timeout=60)
         fb = one(vm, "chain1", "fb")["addr"]
@@ -176,6 +198,7 @@ def test_chain_keeps_framebuffer(board, example_image, chain2):
         assert rb["cy"] == "1"
         assert rb["scheme"] == "1"
         assert rb["fdt"] == "0x00101000"
+        check_mmu_handoff(vm, mmu)
 
 
 def test_chain_handoff_quiets_timer(board, example_image):
