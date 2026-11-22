@@ -28,6 +28,7 @@
 
 #define CODE_BASE       0x00400000u /* ROM slot: the programs, read-only to the task */
 #define DATA_BASE       0x01000000u /* ROM heap and stack, writable */
+#define DATA2_BASE      0x01100000u /* data region of the "peek" task */
 #define REGION_SIZE     0x00100000u
 #define STUB_ADDR       DATA_BASE   /* return stub: first 8 bytes of the data region */
 #define SCRATCH_ADDR    (DATA_BASE + 0x10)
@@ -41,6 +42,8 @@
 #define SYS_EXIT        4
 #define SYS_NEST        5
 #define SYS_KFAULT      6
+#define SYS_BADPSR      7
+#define SYS_KILLEXIT    8
 #define E_FAULT         14
 
 extern const char user_prog_start[], user_prog_end[];
@@ -48,9 +51,11 @@ extern const char user_prog_start[], user_prog_end[];
 static volatile uint32_t canary = CANARY;
 static volatile uint32_t watch_start;
 static volatile int watch_on;
+static volatile int kill_armed, kill_seen;
 
 /* Needs: 0 runs with the MMU off and on, 1 only with the MMU on. */
-enum { ARG_NONE, ARG_SCRATCH, ARG_KERNEL, ARG_CANARY, ARG_PERIPH, ARG_OWN_CODE, ARG_UNMAPPED };
+enum { ARG_NONE, ARG_SCRATCH, ARG_KERNEL, ARG_CANARY, ARG_PERIPH, ARG_OWN_CODE, ARG_UNMAPPED,
+       ARG_DATA };
 
 static const struct {
     const char *name;
@@ -74,6 +79,14 @@ static const struct {
     { "spin",       12, ARG_NONE,     0, 1 },
     { "svcspin",    13, ARG_NONE,     0, 1 },
     { "thumb",      14, ARG_NONE,     0, 0 },
+    { "init",       16, ARG_NONE,     0, 0 },
+    { "psr",        17, ARG_NONE,     0, 0 },
+    { "cpsid",      18, ARG_NONE,     0, 1 },
+    { "stubsvc",    19, ARG_NONE,     0, 0 },
+    { "killexit",   20, ARG_NONE,     0, 0 },
+    { "afterkill",  0,  ARG_NONE,     0, 0 },
+    /* Reads the previous tasks' data region without declaring it. */
+    { "peek",       6,  ARG_DATA,     1, 0 },
 };
 
 static const umode_region_t regions[] = {
@@ -81,11 +94,21 @@ static const umode_region_t regions[] = {
     { DATA_BASE, REGION_SIZE, UMODE_REGION_WRITE },
 };
 
+static const umode_region_t regions2[] = {
+    { CODE_BASE, REGION_SIZE, 0 },
+    { DATA2_BASE, REGION_SIZE, UMODE_REGION_WRITE },
+};
+
 /* Tick callback, IRQ context: the watchdog. */
 static void on_tick(void)
 {
     if (watch_on && umode_active() && tick_count() - watch_start >= WATCHDOG_TICKS) {
         umode_request_kill(KILL_WATCHDOG);
+    }
+    if (kill_armed && umode_active()) {
+        kill_armed = 0;
+        umode_request_kill(2);
+        kill_seen = 1;
     }
 }
 
@@ -129,6 +152,19 @@ static void on_svc(exc_frame_t *f, void *ctx)
     case SYS_NEST:
         /* umode_run() from a handler: must fail with UMODE_ERR_BUSY. */
         f->r[0] = (uint32_t)umode_run(&nested, &nested_exit);
+        break;
+    case SYS_BADPSR:
+        f->cpsr = 0xffffffffu;      /* the return path must sanitise it */
+        f->r[0] = 0;
+        break;
+    case SYS_KILLEXIT:
+        /* A kill request lands during the task's last call: the exit wins. */
+        kill_seen = 0;
+        kill_armed = 1;
+        while (!kill_seen) {
+            __asm__ volatile("wfi");
+        }
+        umode_exit(f, 5);
         break;
 #ifdef UMODE_KFAULT
     case SYS_KFAULT:
@@ -177,6 +213,7 @@ static uint32_t arg_for(int arg)
     case ARG_PERIPH:   return board_get()->periph_base + 0x3004u;   /* system timer CLO */
     case ARG_OWN_CODE: return CODE_BASE + 0x800u;
     case ARG_UNMAPPED: return UNMAPPED_ADDR;
+    case ARG_DATA:     return DATA_BASE;
     default:           return 0;
     }
 }
@@ -205,6 +242,11 @@ static unsigned run_pass(int mmu)
         t.stub = STUB_ADDR;
         t.regions = regions;
         t.region_count = 2;
+        if (cases[i].arg == ARG_DATA) {
+            t.sp = DATA2_BASE + REGION_SIZE;
+            t.stub = DATA2_BASE;
+            t.regions = regions2;
+        }
 
         watch_start = tick_count();
         watch_on = cases[i].watchdog;

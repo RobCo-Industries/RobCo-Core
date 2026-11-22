@@ -15,6 +15,7 @@ DONE = re.compile(r"^@RC stage=umode ev=done .*\n", re.M)
 EXCEPTION = re.compile(r"^@RC stage=umode ev=exception .*\n", re.M)
 
 CODE = 0x00400000
+DATA = 0x01000000
 SLOT = 0x40
 PERIPH = {"raspi0": 0x20000000, "raspi1ap": 0x20000000,
           "raspi2b": 0x3F000000, "raspi3b": 0x3F000000}
@@ -24,11 +25,12 @@ FS_PERMISSION = 0x0D
 WNR = 1 << 11
 
 # Cases that run with the MMU off too, in order.
+AUDIT = ["init", "psr", "cpsid", "stubsvc", "killexit", "afterkill"]
 NO_MMU = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "rdperiph",
-          "spin", "svcspin", "thumb"]
+          "spin", "svcspin", "thumb"] + AUDIT
 ALL = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "wrkern", "rdperiph",
-       "wrro", "jump", "stack", "spin", "svcspin", "thumb"]
-WATCHDOG = ("spin", "svcspin")
+       "wrro", "jump", "stack", "spin", "svcspin", "thumb"] + AUDIT + ["peek"]
+WATCHDOG = ("spin", "svcspin", "cpsid")
 # umode_run() errors.
 ERR = {"stub": -14, "align": -3, "overlap": -5, "kernel": -9, "periph": -11, "ram": -7}
 
@@ -68,6 +70,27 @@ def check_common(t, mmu):
         assert (t["reason"], t["code"]) == ("killed", "1")
         pc = int(t["pc"], 16)
         assert slot(12 if n == "spin" else 13) <= pc < slot(14)
+    elif n == "init":
+        # First entry: r4-r12 and the flags are 0, no kernel value leaks.
+        assert (t["reason"], t["code"]) == ("returned", "0"), t
+    elif n == "psr":
+        # USR, ARM, IRQs on, FIQ masked, A clear: whatever the handler wrote.
+        assert t["reason"] == "exit", t
+        assert int(t["code"]) & 0x1FF == 0x50, t
+    elif n == "cpsid":
+        # The task cannot mask IRQs: the watchdog still kills it.
+        assert (t["reason"], t["code"]) == ("killed", "1"), t
+        assert slot(18) <= int(t["pc"], 16) < slot(19)
+    elif n == "stubsvc":
+        # An svc at the stub only ends the task, with its own r0.
+        assert (t["reason"], t["code"]) == ("returned", "77"), t
+        assert int(t["pc"], 16) == DATA + 4
+    elif n == "killexit":
+        # A kill requested during the exiting call: the exit wins.
+        assert (t["reason"], t["code"]) == ("exit", "5"), t
+    elif n == "afterkill":
+        # The next task does not inherit that kill request.
+        assert (t["reason"], t["code"]) == ("returned", "42"), t
     else:
         return False
     return True
@@ -86,6 +109,8 @@ def check_mmu(t, board, canary_addr):
         "wrro": ("data_abort", slot(9), CODE + 0x800, FS_PERMISSION, True),
         "jump": ("prefetch_abort", 0xE0000000, 0xE0000000, FS_TRANSLATION, None),
         "stack": ("data_abort", slot(11), 0x00FFFFFC, FS_PERMISSION, True),
+        # The earlier tasks' data region is privileged again.
+        "peek": ("data_abort", slot(6), DATA, FS_PERMISSION, False),
     }[n]
     assert t["reason"] == "fault" and t["type"] == want[0]
     assert (pc, addr) == (want[1], want[2])
@@ -134,7 +159,7 @@ def test_umode(board, umode_vm):
             assert int(t["ticks"]) >= 30, vm.serial        # killed after 30 ticks of run time
     done = events(vm, "done")[0]
     assert done["tasks"] == str(len(NO_MMU) + len(ALL)) and done["canary"] == "ok", vm.serial
-    assert int(done["ticks"]) > ticks[0] + 4 * 30, vm.serial
+    assert int(done["ticks"]) > ticks[0] + 6 * 30, vm.serial
 
     # The bad pointer was refused; the good write printed once per pass.
     writes = events(vm, "write")

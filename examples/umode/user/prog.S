@@ -14,6 +14,8 @@
 #define SYS_EXIT    4
 #define SYS_NEST    5
 #define SYS_KFAULT  6
+#define SYS_BADPSR  7
+#define SYS_KILLEXIT 8
 
 #define REG_LOOPS   3000
 
@@ -113,7 +115,62 @@ _ustart:
     svc     #0
     bx      lr
 
+/* 16: first entry: r4-r12 and the flags must be 0. Returns their OR. */
     .org    0x400
+    orr     r4, r4, r5
+    orr     r4, r4, r6
+    orr     r4, r4, r7
+    orr     r4, r4, r8
+    orr     r4, r4, r9
+    orr     r4, r4, r10
+    orr     r4, r4, r11
+    orr     r4, r4, r12
+    mrs     r0, cpsr
+    and     r0, r0, #0xf8000000
+    orr     r0, r0, r4
+    bx      lr
+
+/*
+ * 17: try to mask IRQs, unmask FIQ and enter SYS mode (all ignored in
+ * USR), then a call whose handler writes 0xffffffff to the frame cpsr.
+ * Exits with the cpsr after it, or 1 if the first attempt changed it.
+ */
+    .org    0x440
+    cpsid   i
+    cpsie   f
+    msr     cpsr_c, #0xdf
+    mrs     r4, cpsr
+    and     r4, r4, #0xff
+    cmp     r4, #0x50
+    movne   r0, #1
+    bne     1f
+    mov     r7, #SYS_BADPSR
+    svc     #0
+    mrs     r0, cpsr
+1:
+    mov     r7, #SYS_EXIT
+    svc     #0
+    b       .
+
+/* 18: mask IRQs as far as USR mode allows, then spin: the watchdog must still kill it. */
+    .org    0x480
+    cpsid   if
+    msr     cpsr_c, #0xd0
+    b       .
+
+/* 19: svc from the stub with a chosen r0 and a real call number: only ends the task. */
+    .org    0x4c0
+    mov     r0, #77
+    mov     r7, #SYS_NEST
+    bx      lr
+
+/* 20: a call during which a kill is requested, then exits from the same call with 5. */
+    .org    0x500
+    mov     r7, #SYS_KILLEXIT
+    svc     #0
+    b       .
+
+    .org    0x600
 
 /*
  * regs: r0 = a scratch word in the data region. Before each call, load
