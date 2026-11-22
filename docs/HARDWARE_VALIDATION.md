@@ -68,7 +68,10 @@ Use a DS1338, a DS3231, or a DS1307 module with 3.3 V pull-ups. A logic analyser
 |---|---|---|---|
 | I2C rate and errors | All. The Pi 3 core clock varies. | `examples/rtc` | SCL at or below 100 kHz, the scan finds `0x68`, `errors=0` |
 | DS1307 behaviour | All | `examples/rtc` | `ev=rtc present=1 running=1`, the set time reads back, the time moves on by 2 s, `ev=nvram ... same=1`, `ev=h12 ... hour=23` |
-| DS3231 | All | `examples/rtc` with a DS3231 module | `ev=rtc present=1 running=1 rc=0 chip=1`, the set time reads back, and RAM byte `0x12` of a DS1307 or DS1338 is unchanged after `rtc_init()`. The `ev=nvram` check fails on a DS3231, which has no RAM. |
+| DS1307 detection | All | `examples/rtc` with a DS1307 or DS1338, RAM filled with known bytes first | `chip=0`. A logic analyser shows no write transfer during `rtc_init()`, and the RAM bytes are unchanged. Repeat at second `00` and `59`. |
+| DS3231 | All | `examples/rtc` with a DS3231 module | `ev=rtc present=1 running=1 rc=0 chip=1`, the set time reads back. A logic analyser shows a 26-byte read and no write during `rtc_init()`, and byte `0x13` repeats byte `0x00`. The `ev=nvram` check fails on a DS3231, which has no RAM. |
+| DS3231 detection at a tick | All | `examples/rtc` on a DS3231, reset many times | `chip=1` every time, also when the read crosses a second or a minute |
+| DS3231 status bits | All | `examples/rtc` on a DS3231 with `EN32kHz` set and an alarm flag set | After `rtc_set()`, only bit 7 of `0x0F` changed |
 | DS3231 stopped oscillator | Any | `examples/rtc` on a DS3231 after its battery was removed | `RTC_ERR_HALTED` until `rtc_set()` runs, then `running=1` |
 | New chip | Any | `examples/rtc` on a chip never set | `RTC_ERR_HALTED` until `rtc_set()` runs |
 | Drift and battery | Any | `examples/rtc` over hours, with a power cut | The software clock stays near the RTC, and the RTC keeps time through the cut |
