@@ -7,7 +7,8 @@
 # Builds build/host/test_<name> from tests/host/test_<name>.c and every
 # src/lib/*.c with the host compiler, then runs each binary.
 #
-# Options: HOST_CC (default cc), HOST_SANITIZE=0 turns sanitizers off.
+# Options: HOST_CC (default cc), HOST_SANITIZE=0 turns sanitizers off,
+# HOST_SANITIZE=require fails when the compiler cannot use them.
 
 HOST_CC       ?= cc
 HOST_SANITIZE ?= 1
@@ -17,7 +18,7 @@ HOST_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -g -O1 -DROBCO_HOST=1 \
                -I include -I tests/host
 
 # Probe once: some compilers or platforms lack ASan or UBSan.
-ifeq ($(HOST_SANITIZE),1)
+ifneq ($(filter 1 require,$(HOST_SANITIZE)),)
 HOST_SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 HOST_SAN_OK := $(shell mkdir -p $(HOST_BUILD) && \
                  printf 'int main(void){return 0;}\n' > $(HOST_BUILD)/probe.c && \
@@ -25,6 +26,8 @@ HOST_SAN_OK := $(shell mkdir -p $(HOST_BUILD) && \
                  $(HOST_BUILD)/probe && echo 1; rm -rf $(HOST_BUILD)/probe $(HOST_BUILD)/probe.c $(HOST_BUILD)/probe.dSYM)
 ifeq ($(HOST_SAN_OK),1)
 HOST_CFLAGS += $(HOST_SAN_FLAGS)
+else ifeq ($(HOST_SANITIZE),require)
+$(error $(HOST_CC) cannot build and run with $(HOST_SAN_FLAGS))
 endif
 endif
 

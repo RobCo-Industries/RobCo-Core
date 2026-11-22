@@ -12,6 +12,8 @@ QEMU is 8.x and its raspi machine models differ.
   pinned SHA-256. No GUI, no docs, no tools, no slirp. Pixman is
   enabled because QMP `screendump` needs it; the image build checks it.
 - `gcc-arm-none-eabi`, `binutils-arm-none-eabi`
+- `gcc` and `libc6-dev` for `make test-host`. The gcc package brings
+  libasan and libubsan, so the host tests run with sanitizers.
 - `make`, `git`, `mtools`, `dosfstools`
 - `python3`, `python3-venv`, `python3-pip`, `ca-certificates`
 

@@ -14,6 +14,7 @@ missing from the installed QEMU is skipped. V2 is skipped without
 
     make test-host                  # build and run every tests/host/test_*.c
     make test-host HOST_SANITIZE=0  # without ASan and UBSan
+    make test-host HOST_SANITIZE=require  # fail if they are missing (CI)
     build/host/test_alloc realloc   # run only tests whose name contains "realloc"
 
 `make test` runs them first. Each `tests/host/test_<name>.c` becomes
