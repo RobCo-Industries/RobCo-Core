@@ -29,7 +29,7 @@ AUDIT = ["init", "psr", "cpsid", "stubsvc", "killexit", "afterkill", "killfirst"
 NO_MMU = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "rdperiph",
           "spin", "svcspin", "thumb", "thumb2"] + AUDIT
 ALL = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "wrkern", "rdperiph",
-       "wrro", "jump", "stack", "spin", "svcspin", "thumb", "thumb2"] + AUDIT + ["peek"]
+       "wrro", "jump", "jumpkern", "stack", "spin", "svcspin", "thumb", "thumb2"] + AUDIT + ["peek"]
 # ARM1176 has no Thumb-2: the 32-bit Thumb case runs on the other CPUs only.
 NO_THUMB2 = ("raspi0", "raspi1ap")
 WATCHDOG = ("spin", "svcspin", "cpsid")
@@ -113,7 +113,7 @@ def check_common(t, mmu):
 
 def check_mmu(t, board, canary_addr):
     n = t["name"]
-    if check_common(t, True):
+    if check_common(t, True) or n == "jumpkern":    # test_umode_jump_kernel
         return
     pc, addr = int(t["pc"], 16), int(t["addr"], 16)
     status = int(t["status"], 16)
@@ -211,6 +211,25 @@ def test_umode(board, umode_vm):
     # IRQs still work after every task: UART input is echoed.
     vm.send("umode-echo-7\r")
     vm.wait_for("umode-echo-7\n", timeout=30)
+
+
+# QEMU 10.1 lets ARMv6 fetch from privileged-only sections in USR mode: get_S1prot()
+# in target/arm/ptw.c grants PAGE_EXEC on every pre-v7 CPU. Real ARM1176 must abort.
+QEMU_V6_EXEC = ("raspi0", "raspi1ap")
+
+
+def test_umode_jump_kernel(board, umode_vm, request):
+    """A jump into the kernel image (mapped, privileged-only) is a prefetch abort at the target."""
+    if board in QEMU_V6_EXEC:
+        request.applymarker(pytest.mark.xfail(
+            strict=True, reason="QEMU ARMv6 model ignores fetch permission"))
+    t = [t for t in events(umode_vm, "task") if t["name"] == "jumpkern"]
+    assert len(t) == 1, umode_vm.serial
+    t = t[0]
+    assert (t["reason"], t["type"]) == ("fault", "prefetch_abort"), t
+    assert int(t["pc"], 16) == 0x8000 and int(t["addr"], 16) == 0x8000, t
+    assert fault_status(t["status"]) == FS_PERMISSION, t
+    assert t["canary"] == "ok", t
 
 
 @pytest.mark.parametrize("variant,flag,ev,etype,call", [

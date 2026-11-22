@@ -27,6 +27,8 @@
 
 With the MMU off there is no memory protection at all. Use it only for trusted code or for bring-up.
 
+A jump into kernel memory must be a prefetch abort. The tests prove it on QEMU `raspi2b` and `raspi3b` only. QEMU 10.1 does not check fetch permission on ARMv6, so on `raspi0` and `raspi1ap` the task runs kernel code in USR mode. The library maps kernel sections with AP `001` (privileged only) and sets SCTLR.XP, which real ARM1176 must refuse for a USR fetch. A real Pi Zero or Pi 1 has not confirmed it yet. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
+
 With the MMU on, `umode_run()` scans the whole translation table before it maps anything. If a section outside the task's regions gives USR mode any access, for example after an earlier `mmu_map()` with `MMU_USER_RO` or `MMU_USER_RW`, it returns `UMODE_ERR_USERMAP` and changes nothing. A section inside the regions may hold any earlier mapping, because `umode_run()` replaces it.
 
 Some privileged instructions do not fault in USR mode. They are ignored instead, on ARMv6 and ARMv7 alike: `cpsid` and `cpsie` do nothing, and `msr cpsr_c` leaves the mode and masks alone. Only the flags of an `msr cpsr_f` take effect. A task cannot raise its privilege with them, but a test must use an instruction that traps, such as `mrc p15`.
@@ -246,6 +248,7 @@ Latency: a task in USR mode ends at the end of the IRQ that made the request, or
 | Handlers are not preemptible by the kill. | A request during a handler waits for the handler to return. |
 | The task's own memory is unprotected from itself. | A task can overwrite its own stub, stack or heap. |
 | FIQ stays masked in the task. | The library has no FIQ handler. |
+| Kernel code fetch on ARM1176 is unproven. | On QEMU ARMv6 a task can run kernel instructions, still in USR mode. Its loads, stores and privileged instructions still fault, so it cannot read kernel data, write kernel memory or touch MMIO. It can learn kernel code bytes by running them and watching its registers. It can reuse kernel code with its own registers, but any call that loads kernel data or touches a peripheral faults. |
 | Hardware validation. | QEMU enforces the MMU permissions. Real fault status values and real-silicon behaviour of privileged instructions in USR mode are in [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md). |
 
 ### Example
