@@ -27,7 +27,7 @@
 
 With the MMU off there is no memory protection at all. Use it only for trusted code or for bring-up.
 
-A jump into kernel memory must be a prefetch abort. The tests prove it on QEMU `raspi2b` and `raspi3b` only. QEMU 10.1 does not check fetch permission on ARMv6, so on `raspi0` and `raspi1ap` the task runs kernel code in USR mode. The library maps kernel sections with AP `001` (privileged only) and sets SCTLR.XP, which real ARM1176 must refuse for a USR fetch. A real Pi Zero or Pi 1 has not confirmed it yet. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
+A jump into kernel memory must be a prefetch abort. The tests prove it on QEMU `raspi2b` and `raspi3b` only. QEMU 10.1 does not check fetch permission on ARMv6, so on `raspi0` and `raspi1ap` the task runs kernel code in USR mode. There the tests assert that the task stops with an undefined-instruction fault at the first privileged instruction of the boot code, read from the example's ELF. They fail if QEMU starts to raise the prefetch abort, so the expectation can move. The library maps kernel sections with AP `001` (privileged only) and sets SCTLR.XP, which real ARM1176 must refuse for a USR fetch. A real Pi Zero or Pi 1 has not confirmed it yet. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
 
 With the MMU on, `umode_run()` scans the whole translation table before it maps anything. If a section outside the task's regions gives USR mode any access, for example after an earlier `mmu_map()` with `MMU_USER_RO` or `MMU_USER_RW`, it returns `UMODE_ERR_USERMAP` and changes nothing. A section inside the regions may hold any earlier mapping, because `umode_run()` replaces it.
 

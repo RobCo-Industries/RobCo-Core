@@ -5,7 +5,9 @@ cases that do not need protection), then with the MMU on (every case),
 and prints one ev=task marker per task.
 """
 
+import os
 import re
+import subprocess
 
 import pytest
 
@@ -113,7 +115,7 @@ def check_common(t, mmu):
 
 def check_mmu(t, board, canary_addr):
     n = t["name"]
-    if check_common(t, True) or n == "jumpkern":    # test_umode_jump_kernel
+    if check_common(t, True) or n == "jumpkern":    # check_jumpkern()
         return
     pc, addr = int(t["pc"], 16), int(t["addr"], 16)
     status = int(t["status"], 16)
@@ -150,7 +152,7 @@ def umode_vm(board, example_image):
         yield vm
 
 
-def test_umode(board, umode_vm):
+def test_umode(board, umode_vm, example_image):
     vm = umode_vm
     canary_addr = int(events(vm, "boot")[0]["canary_addr"], 16)
     tasks = events(vm, "task")
@@ -167,6 +169,7 @@ def test_umode(board, umode_vm):
         check_no_mmu(t, canary_addr)
     for t in on:
         check_mmu(t, board, canary_addr)
+    check_jumpkern(jumpkern(vm), board, os.path.splitext(example_image("umode"))[0] + ".elf")
 
     # Kernel memory never changed, and the tick kept running across tasks.
     assert all(t["canary"] == "ok" for t in tasks), vm.serial
@@ -216,20 +219,66 @@ def test_umode(board, umode_vm):
 # QEMU 10.1 lets ARMv6 fetch from privileged-only sections in USR mode: get_S1prot()
 # in target/arm/ptw.c grants PAGE_EXEC on every pre-v7 CPU. Real ARM1176 must abort.
 QEMU_V6_EXEC = ("raspi0", "raspi1ap")
+KERNEL = 0x8000
+PRIV_OPS = ("mrc", "mcr", "mrrc", "mcrr", "cps", "cpsid", "cpsie", "srs", "rfe")
 
 
-def test_umode_jump_kernel(board, umode_vm, request):
-    """A jump into the kernel image (mapped, privileged-only) is a prefetch abort at the target."""
-    if board in QEMU_V6_EXEC:
-        request.applymarker(pytest.mark.xfail(
-            strict=True, reason="QEMU ARMv6 model ignores fetch permission"))
-    t = [t for t in events(umode_vm, "task") if t["name"] == "jumpkern"]
-    assert len(t) == 1, umode_vm.serial
-    t = t[0]
-    assert (t["reason"], t["type"]) == ("fault", "prefetch_abort"), t
-    assert int(t["pc"], 16) == 0x8000 and int(t["addr"], 16) == 0x8000, t
-    assert fault_status(t["status"]) == FS_PERMISSION, t
+def first_priv_insn(elf):
+    """Address and text of the first instruction undefined in USR mode on the boot path.
+
+    Follows the branch at the image start, then scans for the first coprocessor
+    access or mode change. The kernel runs straight through to it from the entry.
+    """
+    dis = subprocess.run(["arm-none-eabi-objdump", "-d", elf], check=True,
+                         capture_output=True, text=True).stdout
+    insns = {}
+    for m in re.finditer(r"^\s*([0-9a-f]+):\s+[0-9a-f]{8}\s+(\S+)\s*(.*)$", dis, re.M):
+        insns[int(m.group(1), 16)] = (m.group(2), m.group(3))
+    op, args = insns[KERNEL]
+    assert op == "b", (op, args)
+    pc = int(args.split()[0], 16)
+    while insns[pc][0] not in PRIV_OPS:
+        assert insns[pc][0].split(".")[0] not in ("b", "bl", "bx", "blx", "pop", "ldm"), \
+            (hex(pc), insns[pc])
+        pc += 4
+    return pc, insns[pc]
+
+
+def jumpkern(vm):
+    t = [t for t in events(vm, "task") if t["name"] == "jumpkern"]
+    assert len(t) == 1, vm.serial
+    return t[0]
+
+
+def check_jumpkern(t, board, elf):
+    """Exact jumpkern outcome per CPU. Fails if the other CPU class's outcome shows up."""
     assert t["canary"] == "ok", t
+    assert t["reason"] == "fault", t        # not returned, not killed by the watchdog
+    if board in QEMU_V6_EXEC:
+        assert t["type"] != "prefetch_abort", (
+            "QEMU now refuses the USR fetch on ARM1176: move this board to the "
+            "prefetch_abort expectation and drop QEMU_V6_EXEC", t)
+        # The task runs the boot code in USR mode until the first privileged instruction.
+        # A USR fault is reported as a task fault; a kernel fault would be ev=exception.
+        want, insn = first_priv_insn(elf)
+        assert (t["type"], t["thumb"]) == ("undef", "0"), t
+        assert int(t["pc"], 16) == want, (t, hex(want), insn)
+    else:
+        assert t["type"] == "prefetch_abort", (t, "ARM1176-style fetch of kernel code")
+        assert int(t["pc"], 16) == KERNEL and int(t["addr"], 16) == KERNEL, t
+        assert fault_status(t["status"]) == FS_PERMISSION, t
+
+
+def test_umode_jump_kernel(board, umode_vm, example_image):
+    """A jump into the kernel image (mapped, privileged-only) from USR mode.
+
+    Cortex-A7/A53: prefetch abort at the target. ARM1176 under QEMU 10.1: the
+    fetch is allowed, so the task stops at the boot code's first privileged
+    instruction with an undefined-instruction fault.
+    """
+    elf = os.path.splitext(example_image("umode"))[0] + ".elf"
+    check_jumpkern(jumpkern(umode_vm), board, elf)
+    assert not EXCEPTION.search(umode_vm.serial), umode_vm.serial
 
 
 @pytest.mark.parametrize("variant,flag,ev,etype,call", [
