@@ -8,7 +8,8 @@
 
 ### The model
 
-- One task at a time, on core 0. `umode_run()` blocks until the task ends, then returns to its caller in SVC mode, on the caller's stack.
+- One task runs at a time, on core 0. `umode_run()` blocks until the task ends, then returns to its caller in SVC mode, on the caller's stack.
+- A system-call handler may start one inner task. The outer task waits inside its system call until the inner one ends. See [Nested tasks](#nested-tasks).
 - A task ends in one of four ways: it returns from its entry function, a system-call handler calls `umode_exit()`, it faults, or an IRQ handler asks for a kill.
 - Only ARM state is supported. A task that switches to Thumb runs until it faults or makes a system call, and either one ends it with `UMODE_FAULT`, with the right `pc`, for 16-bit and 32-bit Thumb instructions alike.
 - The task runs with IRQs enabled and FIQ masked. The tick, the UART and every other IRQ keep working.
@@ -38,12 +39,13 @@ Some privileged instructions do not fault in USR mode. They are ignored instead,
 | Constant | Value | Meaning |
 |---|---|---|
 | `UMODE_MAX_REGIONS` | `8` | Largest region list |
+| `UMODE_MAX_DEPTH` | `2` | Running tasks at most: an outer task and one inner task |
 | `UMODE_REGION_WRITE` | `1u` | Region flag: writable by the task |
 | `UMODE_RETURNED` | `1` | Reason: the entry function returned. `code` is its `r0`. |
 | `UMODE_EXITED` | `2` | Reason: a handler called `umode_exit()`. `code` is its code. |
 | `UMODE_FAULT` | `3` | Reason: undefined instruction, abort, or `svc` in Thumb state. `type` says which. |
 | `UMODE_KILLED` | `4` | Reason: `umode_request_kill()`. `code` is its reason. |
-| `UMODE_ERR_BUSY` | `-1` | `umode_run()` while a task runs |
+| `UMODE_ERR_BUSY` | `-1` | `umode_run()` at depth 2, or while a task runs but not from its system-call handler |
 | `UMODE_ERR_ARG` | `-2` | NULL argument, no regions, more than `UMODE_MAX_REGIONS`, or unknown region flags |
 | `UMODE_ERR_ALIGN` | `-3` | MMU on and a region start or size is not whole megabytes |
 | `UMODE_ERR_RANGE` | `-4` | A region of size `0`, or one that runs past the top of the address space |
@@ -106,15 +108,21 @@ The task owns the stub, so it can rewrite it or run its `svc` on purpose with an
 int umode_run(const umode_task_t *task, umode_exit_t *out);
 ```
 
-Runs the task in USR mode until it ends, fills `*out` and returns `0`. On entry the task has `r0` to `r3` from `task->r`, `sp` from `task->sp`, `lr` at the stub, every other register `0`, IRQs on and FIQ masked. It returns in SVC mode on the caller's stack, with `r4` to `r11` and the IRQ and FIQ masks as they were. It can be called again any number of times. It returns `UMODE_ERR_BUSY` while a task runs, including from a system-call handler: no nesting. Otherwise it validates the whole task first (see [Task validation](#task-validation)) and returns the first error found. On any error nothing is mapped, nothing is written and nothing runs.
+Runs the task in USR mode until it ends, fills `*out` and returns `0`. On entry the task has `r0` to `r3` from `task->r`, `sp` from `task->sp`, `lr` at the stub, every other register `0`, IRQs on and FIQ masked. It returns in SVC mode on the caller's stack, with `r4` to `r11` and the IRQ and FIQ masks as they were. It can be called again any number of times. A system-call handler may call it to start an inner task (see [Nested tasks](#nested-tasks)). It returns `UMODE_ERR_BUSY` at depth 2, and while a task runs when the caller is not its system-call handler, for example an IRQ handler or the fault hook. Otherwise it validates the whole task first (see [Task validation](#task-validation)) and returns the first error found. On any error nothing is mapped, nothing is written and nothing runs.
 
-With the MMU on, it maps each region before entry: writable ones as `MMU_ATTR_RAM | MMU_USER_RW`, the others as `MMU_ATTR_RO_CODE | MMU_USER_RO`. It maps them before it writes the stub, so a region the caller left unmapped or read-only with `mmu_map()` still works. After the task ends it maps them back as `MMU_ATTR_RAM`, privileged-only, on every way out: return, exit, fault and kill. `mmu_map()` does the TLB and branch predictor maintenance on every CPU type. Load the program while the regions are privileged RAM, then clean it to memory with `cache_clean_range()`. `umode_run()` invalidates the instruction cache before entry. Main context only.
+With the MMU on, it maps each region before entry: writable ones as `MMU_ATTR_RAM | MMU_USER_RW`, the others as `MMU_ATTR_RO_CODE | MMU_USER_RO`. It maps them before it writes the stub, so a region the caller left unmapped or read-only with `mmu_map()` still works. After the task ends it maps them back as `MMU_ATTR_RAM`, privileged-only, on every way out: return, exit, fault and kill. `mmu_map()` does the TLB and branch predictor maintenance on every CPU type. Load the program while the regions are privileged RAM, then clean it to memory with `cache_clean_range()`. `umode_run()` invalidates the instruction cache before entry. Main context, or a system-call handler for an inner task.
 
 ```c
 int umode_active(void);
 ```
 
 Non-zero while a task runs, including inside its system calls.
+
+```c
+int umode_depth(void);
+```
+
+The number of running tasks: `0` when none runs, `1` for a top-level task, `2` while an inner task runs. One handler serves both tasks. It calls `umode_depth()` to tell which one called: `1` means the outer task, `2` the inner task. Any context.
 
 ```c
 void umode_set_svc_handler(umode_svc_fn fn, void *ctx);
@@ -126,20 +134,20 @@ Installs the system-call handler. `0` makes every call return `-UMODE_ENOSYS`. T
 void umode_exit(exc_frame_t *frame, int code);
 ```
 
-From the handler only. Ends the task with `UMODE_EXITED` and `code` when the handler returns, instead of resuming it. The first end wins: a later `umode_exit()` or kill request does nothing.
+From the handler only. Ends the innermost task, the caller of the current system call, with `UMODE_EXITED` and `code` when the handler returns, instead of resuming it. The first end wins: a later `umode_exit()` or kill request does nothing.
 
 ```c
 void umode_request_kill(int reason);
 ```
 
-Ends the running task with `UMODE_KILLED` and code `reason` (`0` counts as `1`). Callable from IRQ context, for example from a tick callback that acts as a watchdog, or from a key handler. Ignored when no task runs. The first request wins.
+Ends the running task with `UMODE_KILLED` and code `reason` (`0` counts as `1`). Callable from IRQ context, for example from a tick callback that acts as a watchdog, or from a key handler. Ignored when no task runs. It targets the innermost task running at the time of the request. The first request wins, per task. A request while an inner task runs ends only the inner task.
 
 ```c
 int umode_range_ok(uintptr_t ptr, size_t len, int write);
 long umode_strnlen_ok(uintptr_t ptr, size_t max);
 ```
 
-For handlers. `umode_range_ok()` is non-zero when `ptr` to `ptr + len - 1` lies inside the running task's regions, in writable ones if `write`. A buffer may cross from one region into an adjacent one. A zero-length buffer is valid at any address inside a region or exactly at its end. Arithmetic never wraps: a range past the top of the address space fails. `umode_strnlen_ok()` returns the length of the string at `ptr`, reading only inside the regions, or `-1` when it finds no NUL in the first `max` bytes or meets a byte outside the regions. Both return `0` or `-1` when no task runs. They check the task's declared regions, so they work the same with the MMU off.
+For handlers. `umode_range_ok()` is non-zero when `ptr` to `ptr + len - 1` lies inside the regions of the innermost task, the caller of the current system call, in writable ones if `write`. A buffer may cross from one region into an adjacent one. A zero-length buffer is valid at any address inside a region or exactly at its end. Arithmetic never wraps: a range past the top of the address space fails. `umode_strnlen_ok()` returns the length of the string at `ptr`, reading only inside the regions, or `-1` when it finds no NUL in the first `max` bytes or meets a byte outside the regions. Both return `0` or `-1` when no task runs. They check the task's declared regions, so they work the same with the MMU off.
 
 ```c
 int umode_regions_range_ok(const umode_region_t *regions, unsigned count,
@@ -151,6 +159,14 @@ long umode_stray_section(const umode_region_t *regions, unsigned count,
 ```
 
 The pure forms on any region list, in `src/lib/umode_check.c`. They ignore a region whose last byte would wrap past the top of the address space. A range may end exactly at the top. `tests/host/test_umode_check.c` covers empty ranges, ranges that cross a region end, adjacent regions, wraparound at the top of the address space, regions that wrap, zero-length buffers at a region boundary and read-only regions.
+
+```c
+unsigned umode_region_attr(const umode_region_t *r, int user);
+void umode_map_regions(const umode_region_t *regions, unsigned count, int user,
+                       int (*map)(uint32_t start, uint32_t size, unsigned attr));
+```
+
+`umode_region_attr()` returns the `mmu_map()` attribute of a region: `MMU_ATTR_RAM` when `user` is `0`, otherwise `MMU_ATTR_RAM | MMU_USER_RW` for a writable region and `MMU_ATTR_RO_CODE | MMU_USER_RO` for a read-only one. `umode_map_regions()` calls `map` once per region, in order, with that attribute. `umode_run()` passes `mmu_map()`. A later call wins on a section, which gives a section both tasks list the inner task's permission. `tests/host/test_umode_check.c` replays the nested sequence on a fake table and checks every section at each step.
 
 `umode_stray_section()` walks the 4096 sections of the 32-bit address space. It returns the index of the first section that touches no region and for which `user(base address)` is non-zero, or `-1`. `umode_run()` passes [`mmu_section_user()`](memory.md) and fails with `UMODE_ERR_USERMAP` on a match.
 
@@ -180,10 +196,10 @@ After validation each byte, and with the MMU on each section, belongs to at most
 
 ### Invariants
 
-- The region list and the mappings do not change while a task runs. `umode_run()` copies the list and maps it before entry, and only unmaps it after the task ends. A nested `umode_run()` fails with `UMODE_ERR_BUSY`. There is one task, and it does not run while its handler does. So a pointer that `umode_range_ok()` approves stays valid for the rest of that call.
+- The region list and the mappings do not change while a task runs. `umode_run()` copies the list and maps it before entry, and only unmaps it after the task ends. A task does not run while its handler does. So a pointer that `umode_range_ok()` approves stays valid for the rest of that call, unless the handler starts an inner task (see [Nested tasks](#nested-tasks)).
 - Every return to USR mode uses a status word the library built: `USR | F` at entry, the sanitised frame value after a system call, and the CPU's own saved value after an IRQ. The task cannot mask IRQs, unmask FIQ, enter Thumb through a handler, or reach a privileged mode. A test spins with IRQs "masked" and the watchdog still kills it.
 - The task never sees kernel registers. At entry `r4` to `r12` and the flags are `0`. A system call restores every register from the frame. The kernel's banked `sp` and `lr` are never visible in USR mode.
-- A kill request counts only while a task runs, and `umode_run()` clears it before entry and after exit, with IRQs masked. A request that lands during a task's last call cannot kill the next task.
+- A kill request counts only while a task runs, and `umode_run()` clears it before entry and after exit, with IRQs masked. A request that lands during a task's last call cannot kill the next task. Each running task has its own request.
 - If a handler changes the MMU state, the library prints `ev=umode_mmu_changed nr=<call>` and halts before the task resumes.
 - A fault in a handler prints `ev=umode_call nr=<call>` before the fatal `ev=exception` line.
 
@@ -223,14 +239,14 @@ Latency: a task in USR mode ends at the end of the IRQ that made the request, or
 
 | Rule | Why |
 |---|---|
-| `umode_run()` from main context only, never from IRQ context or a handler. | It switches stacks and modes; a nested call returns `UMODE_ERR_BUSY`. |
-| `umode_exit()`, `umode_range_ok()` and `umode_strnlen_ok()` from the handler. | They act on the running task. |
+| `umode_run()` from main context, or from a system-call handler for an inner task. Never from IRQ context or the fault hook. | It switches stacks and modes. From the wrong context, or at depth 2, it returns `UMODE_ERR_BUSY`. |
+| `umode_exit()`, `umode_range_ok()` and `umode_strnlen_ok()` from the handler. | They act on the innermost task, the caller of the current system call. |
 | `umode_request_kill()` from anywhere. | It only sets a flag. |
 | Handlers may sleep with `wfi`. | IRQs are on and return to the handler. |
 
 ### What the kernel author must still get right
 
-- Call `umode_run()` from main context only, never from an IRQ handler.
+- Call `umode_run()` from main context or from a system-call handler, never from an IRQ handler.
 - Never call `mmu_map()`, `mmu_enable()` or `mmu_disable()` while a task runs, from a handler or from an IRQ handler. The library catches a change of the MMU state at the next system-call exit only. It does not catch a new user mapping made while the task runs: `umode_run()` scans the table only before entry.
 - Before `umode_run()`, leave no section outside the task's regions with a `MMU_USER_*` flag. `umode_run()` refuses such a table with `UMODE_ERR_USERMAP` rather than revoke the mapping.
 - Check every pointer with `umode_range_ok()` or `umode_strnlen_ok()` before using it. A handler that dereferences a bad pointer faults in SVC mode, and that is fatal.
@@ -246,10 +262,45 @@ Latency: a task in USR mode ends at the end of the IRQ that made the request, or
 | Regions return to `MMU_ATTR_RAM`. | After the task, each region is privileged RAM, whatever it was before. Regions must lie in RAM. |
 | Thumb is not supported. | A task in Thumb state is killed at its first fault or system call. |
 | Handlers are not preemptible by the kill. | A request during a handler waits for the handler to return. |
+| Two levels only. | An inner task cannot start a third task. Tasks never run side by side: the outer task waits in its system call. |
+| Shared sections are shared memory. | A section both tasks list holds the same bytes for both. A writable one lets the inner task change the outer task's data, stub or code. |
 | The task's own memory is unprotected from itself. | A task can overwrite its own stub, stack or heap. |
 | FIQ stays masked in the task. | The library has no FIQ handler. |
 | Kernel code fetch on ARM1176 is unproven. | On QEMU ARMv6 a task can run kernel instructions, still in USR mode. Its loads, stores and privileged instructions still fault, so it cannot read kernel data, write kernel memory or touch MMIO. It can learn kernel code bytes by running them and watching its registers. It can reuse kernel code with its own registers, but any call that loads kernel data or touches a peripheral faults. |
 | Hardware validation. | QEMU enforces the MMU permissions. Real fault status values and real-silicon behaviour of privileged instructions in USR mode are in [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md). |
+
+### Nested tasks
+
+A system-call handler may call `umode_run()` to start an inner task. Pip-OS uses it so its ROM, the outer task, can launch a holotape, the inner task, and get control back when the holotape exits or crashes.
+
+The model:
+
+- Depth is 2 at most. A call at depth 2 returns `UMODE_ERR_BUSY` and changes nothing. A call from an IRQ handler or the fault hook returns `UMODE_ERR_BUSY` too.
+- The inner task is validated like any task: `umode_task_check()`, the stray user-mapping scan and the stub rules. It may list sections of the outer task, for example the outer task's code read-only.
+- The outer task waits inside its system call. Its registers, banked `sp` and `lr`, status word and pending kill sit in its system-call frame and in its own record. Nothing the inner task does changes them.
+- When the inner task ends for any reason, `umode_run()` returns `0` to the handler with the inner result in `*out`. The handler goes on, and its result goes to the outer task as usual.
+- The same handler serves both tasks. `umode_depth()` tells it which one called.
+- `umode_exit()`, `umode_range_ok()`, `umode_strnlen_ok()`, the fault hook and the call tracking act on the innermost task.
+- `umode_request_kill()` targets the innermost task at the time of the request. A request while the inner task runs never ends the outer task. A request made for the outer task before it started the inner one waits until the outer task's system call returns.
+
+Mappings with the MMU on:
+
+1. On entry, after `umode_task_check()` passes, every outer region becomes `MMU_ATTR_RAM`, privileged-only.
+2. The stray user-mapping scan runs next, so the outer task's own sections do not trip it. If it fails, the outer regions get their user mappings back and `umode_run()` returns `UMODE_ERR_USERMAP`.
+3. The inner regions are mapped for USR mode. A section both tasks list gets the inner permission.
+4. When the inner task ends, its regions become `MMU_ATTR_RAM`, then the outer regions get their user mappings back, with the same flags as before. The instruction cache is invalidated, so the outer task never runs stale code.
+
+`mmu_map()` invalidates the TLB and the branch predictor at each step, so neither task runs through a stale TLB entry. With the MMU off, nesting works the same way without memory protection.
+
+Stack budget. The inner task runs on the SVC stack, below the handler's frame. Measured with `-fstack-usage` at `-O2`, a nested run costs the library about 320 bytes over the handler's own use: the outer system-call frame (80 bytes), `robco_umode_svc_call()` (32), `umode_run()` (168) and the saved registers of `robco_umode_enter` (40). Validation needs about 130 more bytes for a moment before entry. Then the inner task's system calls take the same path again: another 80-byte frame, 32 bytes and the inner handler. `examples/umode` peaks under 1 KiB of the default 16 KiB SVC stack (`ROBCO_STACK_SVC_SIZE`). IRQs use the IRQ stack.
+
+What the handler author must get right:
+
+- Start the inner task only from the outer task's handler, and pass an exit record that stays valid until `umode_run()` returns.
+- Use `umode_depth()` to decide which calls the inner task may make. Refuse the launch call at depth 2, or let `umode_run()` refuse it.
+- Check every pointer after the inner task ends again. A pointer the outer task passed before the launch is still in its regions, but the inner task may have changed the bytes behind it if it had write access.
+- Give each depth its own watchdog. A tick watchdog that requests a kill hits the innermost task, so the outer task's limit cannot fire while the inner task runs.
+- Do not change mappings or the MMU state between tasks. `umode_run()` halts with `ev=umode_mmu_changed` if the MMU state differs from the outer task's when it starts the inner task.
 
 ### Example
 
