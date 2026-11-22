@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from harness.boot import BOARDS, boot
-from harness.qemu import QemuError
+from harness.qemu import QemuError, have_machine
 from harness.sdimage import make_sd_image, read_sector
 
 SOC = {"raspi0": ("bcm2835", "0x20000000"), "raspi1ap": ("bcm2835", "0x20000000"),
@@ -88,6 +88,8 @@ def test_s3_screen(board, spike_image, tmp_path):
 
 
 def test_wait_for_timeout_cleans_up(spike_image):
+    if not have_machine(BOARDS["raspi0"].binary, "raspi0"):
+        pytest.skip(f"{BOARDS['raspi0'].binary} -M raspi0 not available")
     start = time.monotonic()
     with pytest.raises(QemuError) as err:
         with boot(spike_image("s1"), "raspi0") as vm:
