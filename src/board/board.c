@@ -2,6 +2,7 @@
 
 #include <robco/board.h>
 #include <robco/boot.h>
+#include <robco/bootinfo.h>
 #include <robco/exc.h>
 #include <robco/klibc.h>
 #include <robco/mbox.h>
@@ -92,6 +93,9 @@ void robco_start(void)
     case ROBCO_SOC_BCM2835:
     case ROBCO_SOC_BCM2836:
     case ROBCO_SOC_BCM2837:
+#if !ROBCO_FIRST_STAGE
+        bootinfo_receive();
+#endif
         robco_main();
         break;
     case ROBCO_SOC_BCM2711:

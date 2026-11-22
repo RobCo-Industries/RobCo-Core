@@ -27,6 +27,8 @@
 #define CR_RXE          (1u << 9)
 
 static uint32_t uart_base;
+static uint32_t uart_clock;
+static uint32_t uart_baud;
 
 void uart_init(uint32_t baud)
 {
@@ -60,6 +62,8 @@ void uart_init(uint32_t baud)
 
     /* divisor = clk / (16 * baud), in 1/64 units, rounded. */
     div64 = (clk * 4u + baud / 2u) / baud;
+    uart_clock = clk;
+    uart_baud = baud;
 
     mmio_write(uart_base + UART_ICR, 0x7ff);
     mmio_write(uart_base + UART_IBRD, div64 >> 6);
@@ -120,4 +124,14 @@ void uart_flush(void)
     }
     while (mmio_read(uart_base + UART_FR) & FR_BUSY) {
     }
+}
+
+int uart_get_config(uint32_t *clock, uint32_t *baud)
+{
+    if (uart_base == 0) {
+        return -1;
+    }
+    *clock = uart_clock;
+    *baud = uart_baud;
+    return 0;
 }

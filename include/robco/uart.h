@@ -14,4 +14,7 @@ int uart_poll(void);            /* -1 when nothing is pending */
 void uart_puts(const char *s);
 void uart_flush(void);          /* waits until the transmitter is idle */
 
+/* Reference clock and baud rate in use. Returns 0, or -1 before uart_init(). */
+int uart_get_config(uint32_t *clock, uint32_t *baud);
+
 #endif

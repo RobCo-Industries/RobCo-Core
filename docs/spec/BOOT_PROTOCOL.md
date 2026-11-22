@@ -90,7 +90,8 @@ void robco_main(void);
 |---|---|---|
 | `robco_boot_args()` | `robco/boot.h` | `robco_boot_args_t`: r0 to r3 at entry and the entry mode, CPSR bits [4:0] |
 | `board_get()` | `robco/board.h` | `robco_board_t`: MIDR, SoC, peripheral base, VC bus alias, board revision, ARM memory |
-| `robco_bootinfo()` | `robco/bootinfo.h` | `const robco_bootinfo_t *`, the trusted or rebuilt boot info. Not implemented yet. |
+| `bootinfo_get()` | `robco/bootinfo.h` | `const robco_bootinfo_t *`, the trusted block, the block the image built with `bootinfo_build()`, or `NULL` |
+| `bootinfo_inherited()` | `robco/bootinfo.h` | 1 if the block from the previous stage passed the trust rule |
 
 The accessors return pointers to data the library owns. Callers must not write through them.
 
