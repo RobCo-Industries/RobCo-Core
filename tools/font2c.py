@@ -5,6 +5,9 @@ Usage:
     tools/font2c.py FONT.bdf --name NAME -o font8x16.c
     tools/font2c.py FONT.ttf --name NAME [--size 16] -o font8x16.c
 
+--select ROBCO_FONT_X wraps the table in #if ROBCO_FONT == ROBCO_FONT_X.
+The built-in tables use it. A project table does not need it.
+
 BDF input needs only the standard library. TTF and OTF input needs Pillow
 and works only for pixel-grid fonts: every glyph must rasterise to pure
 black and white, fit an 8x16 cell and advance by 8 pixels.
@@ -61,6 +64,7 @@ REPLACEMENT = [0x00, 0x00, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x42,
 SCALE = 4
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+SELECT_RE = re.compile(r"^ROBCO_FONT_[A-Z0-9_]+$")
 
 
 class FontError(Exception):
@@ -246,7 +250,7 @@ def parse_outline(path, size):
 # Output
 
 
-def emit(out, src, command, name, glyphs):
+def emit(out, src, command, name, glyphs, select=None):
     digest = hashlib.sha256(open(src, "rb").read()).hexdigest()
     ascii_rows = [glyphs.get(cp, REPLACEMENT) for cp in ASCII]
     extras = [(u, c) for u, c in EXTRAS if u in glyphs]
@@ -260,6 +264,8 @@ def emit(out, src, command, name, glyphs):
     w(" * This table inherits the licence of its source font.\n")
     w(" */\n\n")
     w("#include <stddef.h>\n#include <stdint.h>\n\n#include <robco/font.h>\n\n")
+    if select:
+        w(f"/* Built only when robco_config.h selects this font. */\n#if ROBCO_FONT == {select}\n\n")
     w("/* U+0020 to U+007E, 16 rows each, bit 7 is the left pixel. */\n")
     w(f"static const uint8_t font_ascii[{len(ascii_rows)}][FONT_H] = {{\n")
     for cp, rows in zip(ASCII, ascii_rows):
@@ -283,6 +289,8 @@ def emit(out, src, command, name, glyphs):
     w("            return font_extra[i].rows;\n        }\n    }\n")
     w("    return font_replacement;\n}\n\n")
     w(f"const char *font8x16_name(void)\n{{\n    return \"{name}\";\n}}\n")
+    if select:
+        w(f"\n#endif /* ROBCO_FONT == {select} */\n")
 
 
 def main(argv=None):
@@ -290,11 +298,15 @@ def main(argv=None):
     ap.add_argument("font", help="BDF, TTF or OTF file")
     ap.add_argument("--name", required=True, help="name returned by font8x16_name() ([A-Za-z0-9._-], up to 32)")
     ap.add_argument("--size", type=int, default=16, help="pixel size for TTF and OTF (default 16)")
+    ap.add_argument("--select", metavar="MACRO",
+                    help="wrap the table in #if ROBCO_FONT == MACRO (for the tables in src/gfx)")
     ap.add_argument("-o", dest="out", required=True, help="output C file")
     args = ap.parse_args(argv)
 
     if not NAME_RE.match(args.name):
         ap.error("--name must be 1 to 32 characters from [A-Za-z0-9._-]")
+    if args.select and not SELECT_RE.match(args.select):
+        ap.error("--select must be a ROBCO_FONT_* macro name")
 
     ext = os.path.splitext(args.font)[1].lower()
     command = f"tools/font2c.py {args.font} --name {args.name}"
@@ -308,10 +320,12 @@ def main(argv=None):
             raise FontError(f"{args.font}: unknown font type {ext!r}, want .bdf, .ttf or .otf")
     except (FontError, OSError, ValueError) as e:
         sys.exit(f"font2c: {e}")
+    if args.select:
+        command += f" --select {args.select}"
     command += f" -o {args.out}"
 
     with open(args.out, "w", newline="\n") as out:
-        emit(out, args.font, command, args.name, glyphs)
+        emit(out, args.font, command, args.name, glyphs, args.select)
 
     missing = [cp for cp in WANTED if cp not in glyphs]
     print(f"font2c: {args.out}: {len(WANTED) - len(missing)} of {len(WANTED)} glyphs", file=sys.stderr)
