@@ -21,6 +21,7 @@ Init order: after step 10 of the [initialisation order](../API.md#initialisation
 | `AUDIO_ERR_PARSE` | `-9` | Malformed tune text |
 | `AUDIO_ERR_FULL` | `-10` | The tune has more notes than the buffer |
 | `AUDIO_ERR_STATE` | `-11` | The call is only allowed before `audio_init()` |
+| `AUDIO_ERR_PIN` | `-12` | `audio_init()` could not switch a pin to its PWM function |
 | `AUDIO_HZ_MIN`, `AUDIO_HZ_MAX` | `20u`, `20000u` | Accepted tone range. `0` is a rest. |
 | `AUDIO_LOOP` | `1u` | Restart at the first step after the last |
 | `AUDIO_PRIORITY` | `2u` | Replace what plays now |
@@ -45,11 +46,11 @@ Set these in `robco_config.h`. All are optional.
 | Macro | Default | Meaning |
 |---|---|---|
 | `ROBCO_AUDIO_BACKEND` | `AUDIO_BACKEND_AUTO` | `1` forces PWM, `2` forces trace |
-| `ROBCO_AUDIO_PIN0`, `ROBCO_AUDIO_FN0` | per board, see below | Pin and `GPIO_FN_*` code for PWM channel 1. Set both. |
+| `ROBCO_AUDIO_PIN0`, `ROBCO_AUDIO_FN0` | per board, see below | Pin and `GPIO_FN_*` code for PWM channel 1. Set both. The build stops for a pin outside 0 to 53 or a code above 7, and the same holds for channel 2. |
 | `ROBCO_AUDIO_PIN1`, `ROBCO_AUDIO_FN1` | none | Pin and code for PWM channel 2. Only read when `ROBCO_AUDIO_PIN0` is set. Leave it out for mono. |
 | `ROBCO_AUDIO_CLOCK_SRC` | `AUDIO_CLK_SRC_OSC` | PWM clock source. Any other value than the two `AUDIO_CLK_SRC_*` stops the build. |
-| `ROBCO_AUDIO_VOLUME` | `100` | Start volume in percent |
-| `ROBCO_AUDIO_BEEP_HZ`, `ROBCO_AUDIO_BEEP_MS` | `1000`, `80` | The standard beep. Not range-checked. |
+| `ROBCO_AUDIO_VOLUME` | `100` | Start volume in percent. The build stops above `100`. |
+| `ROBCO_AUDIO_BEEP_HZ`, `ROBCO_AUDIO_BEEP_MS` | `1000`, `80` | The standard beep. The build stops when the frequency is outside `AUDIO_HZ_MIN` to `AUDIO_HZ_MAX` or the length is `0`. |
 | `ROBCO_AUDIO_TUNE_MAX` | `64` | Notes in the `audio_play_rtttl()` buffer. The call also puts that many notes (8 bytes each) on the stack. |
 | `ROBCO_AUDIO_TRACE_QUEUE` | `64` | Trace records held between two `audio_poll()` calls |
 | `ROBCO_STAGE_NAME` | `"robco"` | `stage=` field of the trace markers |
@@ -99,9 +100,10 @@ Backend selection:
 | Auto | `abort` or `ignored` | `trace` | `0` |
 | PWM | `ok` or `ignored` | `pwm` | `0` |
 | PWM | `abort` | `trace` | `AUDIO_ERR_NO_PWM` |
+| Auto or PWM, a pin mux call fails | `ok` or `ignored` | `trace` | `AUDIO_ERR_PIN` |
 | Trace | `skipped` | `trace` | `0` |
 
-The probe reads the PWM CTL and RNG1 registers and the clock manager PWMCTL and PWMDIV registers with `mmio_probe()`. If any read aborts, or the board has no peripheral base, the result is `abort` and nothing is written. Otherwise it starts the PWM clock. If the clock BUSY bit does not settle within 1 ms, the result is `ignored`. Then it writes `0x0000A5A5` to RNG1, reads it back and restores the old value. A different value gives `ignored`. `AUDIO_ERR_NO_PWM` is the one error that still leaves audio usable: the trace backend is installed, so check `audio_backend()`.
+The probe reads the PWM CTL and RNG1 registers and the clock manager PWMCTL and PWMDIV registers with `mmio_probe()`. If any read aborts, or the board has no peripheral base, the result is `abort` and nothing is written. Otherwise it starts the PWM clock. If the clock BUSY bit does not settle within 1 ms, the result is `ignored`. Then it writes `0x0000A5A5` to RNG1, reads it back and restores the old value. A different value gives `ignored`. `AUDIO_ERR_NO_PWM` and `AUDIO_ERR_PIN` still leave audio usable: the trace backend is installed, so check `audio_backend()`. A pin mux call fails only when the GPIO block has no address, since the pins are checked before.
 
 | Board | QEMU result |
 |---|---|

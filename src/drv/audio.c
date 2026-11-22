@@ -33,6 +33,22 @@
 #define ROBCO_AUDIO_VOLUME      100
 #endif
 
+/* Checked at build time: a bad value stops the build instead of a silent beep. */
+_Static_assert(ROBCO_AUDIO_BEEP_HZ >= AUDIO_HZ_MIN && ROBCO_AUDIO_BEEP_HZ <= AUDIO_HZ_MAX,
+               "ROBCO_AUDIO_BEEP_HZ must be within AUDIO_HZ_MIN to AUDIO_HZ_MAX");
+_Static_assert(ROBCO_AUDIO_BEEP_MS > 0, "ROBCO_AUDIO_BEEP_MS must be above 0");
+_Static_assert(ROBCO_AUDIO_VOLUME <= 100,
+               "ROBCO_AUDIO_VOLUME must be 0 to 100");
+#ifdef ROBCO_AUDIO_PIN0
+_Static_assert(ROBCO_AUDIO_PIN0 >= 0 && ROBCO_AUDIO_PIN0 < GPIO_PIN_COUNT && ROBCO_AUDIO_FN0 <= 7,
+               "ROBCO_AUDIO_PIN0 must be a GPIO pin and ROBCO_AUDIO_FN0 a GPIO_FN_* code");
+#ifdef ROBCO_AUDIO_PIN1
+_Static_assert(ROBCO_AUDIO_PIN1 == AUDIO_PIN_NONE ||
+               (ROBCO_AUDIO_PIN1 >= 0 && ROBCO_AUDIO_PIN1 < GPIO_PIN_COUNT && ROBCO_AUDIO_FN1 <= 7),
+               "ROBCO_AUDIO_PIN1 must be a GPIO pin and ROBCO_AUDIO_FN1 a GPIO_FN_* code");
+#endif
+#endif
+
 /* Step changes handled one by one per tick before the rest is skipped. */
 #define EVENTS_PER_TICK         16
 
@@ -276,9 +292,16 @@ int audio_init(void)
         /* Registers that abort cannot be driven. Stay usable on trace. */
         ret = AUDIO_ERR_NO_PWM;
     }
-    if (probe == AUDIO_PROBE_OK ||
-        (forced == AUDIO_BACKEND_PWM && probe == AUDIO_PROBE_IGNORED)) {
-        audio_pwm_setup(pin0, fn0, pin1, fn1);
+    if ((probe == AUDIO_PROBE_OK ||
+         (forced == AUDIO_BACKEND_PWM && probe == AUDIO_PROBE_IGNORED)) &&
+        audio_pwm_setup(pin0, fn0, pin1, fn1) != 0) {
+        /* A pin did not take its PWM function. Stay usable on trace. */
+        ret = AUDIO_ERR_PIN;
+        s = irq_save();
+        backend = AUDIO_BACKEND_TRACE;
+        irq_restore(s);
+    } else if (probe == AUDIO_PROBE_OK ||
+               (forced == AUDIO_BACKEND_PWM && probe == AUDIO_PROBE_IGNORED)) {
         s = irq_save();
         backend = AUDIO_BACKEND_PWM;
         irq_restore(s);

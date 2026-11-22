@@ -92,7 +92,8 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   SD image with the stage loader and falls back to the backup file.
 - `tools/`: pytest unit tests for the host tools: `tools/rimg.py` on
   images built in memory, one case per error code, the font and doc
-  tools, the `SLOT_END` link check, the `BOARD` variable of
+  tools, the `SLOT_END` link check, the build-time checks of the audio
+  macros, the `BOARD` variable of
   `test-target`, and the argument handling, refusal cases and
   `config.txt` of `fetch_firmware.sh`, `mkbootdir.sh` and `mksdimage.sh`,
   and the `sdimage` make target. The firmware

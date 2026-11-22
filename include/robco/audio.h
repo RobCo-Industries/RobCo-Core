@@ -15,13 +15,14 @@
 #define AUDIO_ERR_NO_IRQ    (-2)    /* irq_init() has not run */
 #define AUDIO_ERR_NO_TICK   (-3)    /* the tick does not run, or CPU IRQs are masked */
 #define AUDIO_ERR_TICK_FULL (-4)    /* no free tick callback slot */
-#define AUDIO_ERR_NO_PWM    (-5)    /* PWM forced but the registers abort or ignore writes */
+#define AUDIO_ERR_NO_PWM    (-5)    /* PWM forced but its registers abort; trace runs instead */
 #define AUDIO_ERR_RANGE     (-6)    /* frequency out of range */
 #define AUDIO_ERR_ARG       (-7)    /* bad argument */
 #define AUDIO_ERR_BUSY      (-8)    /* playing, and AUDIO_PRIORITY not set */
 #define AUDIO_ERR_PARSE     (-9)    /* malformed tune text */
 #define AUDIO_ERR_FULL      (-10)   /* tune has more notes than the buffer */
 #define AUDIO_ERR_STATE     (-11)   /* call not allowed after audio_init() */
+#define AUDIO_ERR_PIN       (-12)   /* a PWM pin did not take its function; trace runs instead */
 
 /* Audible range. A step with hz 0 is a rest. */
 #define AUDIO_HZ_MIN        20u
@@ -78,8 +79,10 @@ void audio_get_pins(int *pin0, unsigned *fn0, int *pin1, unsigned *fn1);
 /*
  * Picks a backend, registers the tick callback and checks the tick runs.
  * Needs irq_init(), tick_init() and irq_cpu_enable() first. Returns 0 or
- * an AUDIO_ERR_* code. When PWM is forced but fails the probe, it returns
- * AUDIO_ERR_NO_PWM and still installs the trace backend.
+ * an AUDIO_ERR_* code. When PWM is forced and its registers abort, it
+ * returns AUDIO_ERR_NO_PWM. When a pin cannot be switched to its PWM
+ * function, it returns AUDIO_ERR_PIN. Both still install the trace backend.
+ * A forced PWM whose registers ignore writes is used anyway and returns 0.
  */
 int audio_init(void);
 
