@@ -2,6 +2,7 @@
 
 #include <robco/boot.h>
 #include <robco/exc.h>
+#include <robco/irq.h>
 #include <robco/klibc.h>
 
 static const char *const exc_names[] = {
@@ -22,4 +23,13 @@ void robco_exc_report(uint32_t type, uint32_t pc, uint32_t lr, uint32_t spsr)
              ROBCO_STAGE_NAME, type < 8 ? exc_names[type] : "?", (unsigned)pc,
              (unsigned)lr, (unsigned)spsr, (unsigned)dfsr, (unsigned)dfar);
     robco_halt();
+}
+
+/*
+ * Default IRQ dispatcher, used when the image does not link the
+ * interrupt driver (src/drv/irq_bcm.c). An IRQ is then unexpected.
+ */
+__attribute__((weak)) void robco_irq_dispatch(uint32_t pc, uint32_t spsr)
+{
+    robco_exc_report(ROBCO_EXC_IRQ, pc, 0, spsr);
 }

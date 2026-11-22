@@ -66,17 +66,30 @@ robco_vec_dabt:
     mov     r1, lr
     b       robco_exc_common
 
-/* Weak so a later IRQ, FIQ or SVC component can replace them. */
+/* Weak so a later FIQ or SVC component can replace them. */
     .weak   robco_vec_svc
 robco_vec_svc:
     mov     r0, #ROBCO_EXC_SVC
     sub     r1, lr, #4
     b       robco_exc_common
-    .weak   robco_vec_irq
+
+/*
+ * IRQ entry. Saves the caller-saved registers, lr and spsr on the IRQ
+ * stack, calls robco_irq_dispatch(pc, spsr) and returns to the
+ * interrupted code. IRQs stay masked throughout: no nesting. Eight
+ * words are pushed so sp keeps the 8-byte alignment the AAPCS needs.
+ */
 robco_vec_irq:
-    mov     r0, #ROBCO_EXC_IRQ
-    sub     r1, lr, #4
-    b       robco_exc_common
+    push    {r0-r3, r12, lr}
+    mrs     r0, spsr
+    push    {r0, r1}                        @ r1 is padding
+    sub     r0, lr, #4                      @ interrupted instruction
+    mrs     r1, spsr
+    bl      robco_irq_dispatch
+    pop     {r0, r1}
+    msr     spsr_cxsf, r0
+    pop     {r0-r3, r12, lr}
+    subs    pc, lr, #4                      @ also restores CPSR from SPSR
     .weak   robco_vec_fiq
 robco_vec_fiq:
     mov     r0, #ROBCO_EXC_FIQ
