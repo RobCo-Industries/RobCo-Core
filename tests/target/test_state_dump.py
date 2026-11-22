@@ -2,6 +2,7 @@
 
 import re
 import struct
+import time
 
 import pytest
 
@@ -71,3 +72,26 @@ def test_state_dump_on_demand(board, tmp_path):
         assert "system timer @ " in text, text
     # After QEMU is gone the dump says so instead of trying.
     assert "not collected: QEMU has exited" in vm.state_dump()
+
+
+def test_keepalive_on_by_default(board, example_image):
+    with boot(example_image("audio"), board) as vm:
+        vm.wait_for(READY, timeout=60)
+        before = vm.qmp.keepalive_pings
+        time.sleep(0.5)
+        assert vm.qmp.keepalive_on
+        assert vm.qmp.keepalive_pings > before
+        text = vm.state_dump()
+    assert "keep-alive: on" in text, text
+    assert "device registers: read with the VM stopped" in text, text
+
+
+def test_boot_with_keepalive_off(board, example_image):
+    # Keeps the path without pings alive: ROBCO_QEMU_KEEPALIVE=0 runs it.
+    with boot(example_image("audio"), board, keepalive=False) as vm:
+        vm.wait_for(READY, timeout=60)
+        msg = timeout_error(vm)
+        assert not vm.qmp.keepalive_on and vm.qmp.keepalive_pings == 0
+    block = state_block(msg)
+    assert "keep-alive: off" in block, block
+    assert "summary: guest executing: " in block, block

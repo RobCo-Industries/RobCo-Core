@@ -13,7 +13,19 @@ import signal
 import socket
 import subprocess
 import tempfile
+import threading
 import time
+
+# Keep-alive: a harmless QMP command at a fixed interval while the VM runs.
+# See tests/README.md, "QEMU keep-alive".
+KEEPALIVE_ENV = "ROBCO_QEMU_KEEPALIVE"
+KEEPALIVE_INTERVAL = 0.02
+KEEPALIVE_TIMEOUT = 1.0
+
+
+def keepalive_default():
+    """False when ROBCO_QEMU_KEEPALIVE is 0, off, no or false. On otherwise."""
+    return os.environ.get(KEEPALIVE_ENV, "1").strip().lower() not in ("0", "off", "no", "false")
 
 
 class QemuError(RuntimeError):
@@ -54,6 +66,14 @@ class Qemu:
         self._qmp = None
         self._qmp_buf = b""  # bytes read past the last complete QMP line
         self._qmp_seq = 0
+        # One lock serialises every QMP exchange: a command and its reply,
+        # or one read in wait_event(). The keep-alive thread takes it too.
+        self._qmp_lock = threading.RLock()
+        self.vm_running = False  # set by stop/cont and the STOP/RESUME events
+        self.keepalive_on = False
+        self.keepalive_pings = 0
+        self._ka_thread = None
+        self._ka_stop = threading.Event()
         self._qt = self._qt_file = None
         self.events = []
         self.serial_paths = [os.path.join(self.tmpdir, f"serial{i}.txt")
@@ -158,6 +178,7 @@ class Qemu:
             q.close()
 
     def close(self):
+        self.stop_keepalive()
         for f in (self._qmp, self._qt_file, self._qt):
             try:
                 if f:
@@ -201,6 +222,44 @@ class Qemu:
     def __exit__(self, *exc):
         self.close()
 
+    # -- keep-alive ------------------------------------------------------
+
+    def start_keepalive(self, interval=KEEPALIVE_INTERVAL):
+        """Send query-status every `interval` seconds while the VM runs.
+
+        Runs on a daemon thread until stop_keepalive() or close(). Pings
+        pause while the VM is stopped and end when QEMU exits or the QMP
+        connection fails. Replies are matched by id like any command.
+        """
+        if self._ka_thread is not None or self._qmp is None:
+            return
+        self._ka_stop.clear()
+        self.keepalive_on = True
+        self._ka_thread = threading.Thread(target=self._keepalive_loop, args=(interval,),
+                                           name="qmp-keepalive", daemon=True)
+        self._ka_thread.start()
+
+    def stop_keepalive(self):
+        t, self._ka_thread = self._ka_thread, None
+        self._ka_stop.set()
+        if t is not None and t is not threading.current_thread():
+            t.join(KEEPALIVE_TIMEOUT + 1)
+
+    def _keepalive_loop(self, interval):
+        while not self._ka_stop.wait(interval):
+            if self.proc is not None and self.proc.poll() is not None:
+                return
+            try:
+                with self._qmp_lock:  # the flag is checked and used in one hold
+                    if not self.vm_running:
+                        continue
+                    self.command("query-status", timeout=KEEPALIVE_TIMEOUT)
+                    self.keepalive_pings += 1
+            except socket.timeout:
+                continue  # the late reply is dropped by its id
+            except (QemuError, OSError, ValueError, AttributeError):
+                return  # connection gone; close() is on its way
+
     # -- QMP / HMP -------------------------------------------------------
 
     def _qmp_read(self):
@@ -215,7 +274,12 @@ class Qemu:
                 raise QemuError("QMP connection closed: " + self.stderr())
             self._qmp_buf += chunk
         line, _, self._qmp_buf = self._qmp_buf.partition(b"\n")
-        return json.loads(line)
+        msg = json.loads(line)
+        if msg.get("event") == "STOP":
+            self.vm_running = False
+        elif msg.get("event") == "RESUME":
+            self.vm_running = True
+        return msg
 
     def execute(self, cmd, **arguments):
         """Run a QMP command. Returns 'return', raises QemuError on 'error'.
@@ -224,6 +288,30 @@ class Qemu:
         answers to commands that timed out and are dropped. Events are
         queued for wait_event().
         """
+        return self.command(cmd, arguments)
+
+    def command(self, cmd, arguments=None, timeout=None):
+        """execute() with arguments as a dict and an optional read timeout.
+
+        Holds the QMP lock from the send to the reply, so the keep-alive
+        thread and the caller never read each other's replies.
+        """
+        with self._qmp_lock:
+            old = self._qmp.gettimeout()
+            if timeout is not None:
+                self._qmp.settimeout(timeout)
+            try:
+                result = self._command(cmd, arguments)
+            finally:
+                if timeout is not None:
+                    self._qmp.settimeout(old)
+            if cmd == "stop":
+                self.vm_running = False
+            elif cmd == "cont":
+                self.vm_running = True
+            return result
+
+    def _command(self, cmd, arguments):
         self._qmp_seq += 1
         req_id = f"rc-{self._qmp_seq}"
         msg = {"execute": cmd, "id": req_id}
@@ -245,26 +333,28 @@ class Qemu:
         """Return the first QMP event called `name` (already queued or new)."""
         deadline = time.monotonic() + timeout
         while True:
-            for ev in self.events:
-                if ev["event"] == name:
-                    self.events.remove(ev)
-                    return ev
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise QemuError(f"no {name} event within {timeout}s")
-            self._qmp.settimeout(left)
-            try:
-                resp = self._qmp_read()
-            except socket.timeout:
-                continue
-            finally:
-                self._qmp.settimeout(self.timeout)
-            if "event" in resp:
-                self.events.append(resp)
+            with self._qmp_lock:
+                for ev in self.events:
+                    if ev["event"] == name:
+                        self.events.remove(ev)
+                        return ev
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise QemuError(f"no {name} event within {timeout}s")
+                # Short reads, so the keep-alive thread gets the lock between them.
+                self._qmp.settimeout(min(left, 0.05))
+                try:
+                    resp = self._qmp_read()
+                except socket.timeout:
+                    continue
+                finally:
+                    self._qmp.settimeout(self.timeout)
+                if "event" in resp:
+                    self.events.append(resp)
 
-    def hmp(self, command):
+    def hmp(self, command, timeout=None):
         """Run an HMP (human monitor) command through QMP and return its text."""
-        return self.execute("human-monitor-command", **{"command-line": command})
+        return self.command("human-monitor-command", {"command-line": command}, timeout)
 
     def registers(self):
         """Parse `info registers` into a dict of name -> int (CPU0)."""
