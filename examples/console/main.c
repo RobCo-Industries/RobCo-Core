@@ -15,7 +15,7 @@ static void banner(void)
     console_set_attr(CONSOLE_ATTR_NORMAL);
     console_puts("8x16 cells, Spleen font, four colour schemes.\n");
     console_set_attr(CONSOLE_ATTR_DIM);
-    console_puts("Commands: d s t c x 1-4\n");
+    console_puts("Commands: d s t c x p g 1-4\n");
     console_set_attr(CONSOLE_ATTR_NORMAL);
     console_puts("> ");
 }

@@ -38,7 +38,7 @@ SCHEMES = {
 BANNER = [
     "ROBCO-CORE CONSOLE EXAMPLE",
     "8x16 cells, Spleen font, four colour schemes.",
-    "Commands: d s t c x 1-4",
+    "Commands: d s t c x p g 1-4",
     ">",
 ]
 
