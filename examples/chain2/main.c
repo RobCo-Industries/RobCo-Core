@@ -9,6 +9,7 @@
 #define STAGE "chain2"
 
 static robco_bootinfo_t local;
+static robco_bootinfo_t scratch;
 
 static const char *mode_name(uint32_t mode)
 {
@@ -56,6 +57,18 @@ void robco_main(void)
         uart_flush();
         robco_halt();
     }
+    /*
+     * This stage sets up no framebuffer or console. The block it builds
+     * must still describe the ones the previous stage left running.
+     */
+    bootinfo_build(&scratch, ROBCO_STAGE_BOOTAGENT);
+    k_printf("@RC stage=" STAGE " ev=rebuild id=%u caps=0x%08x fb=0x%08x fb_w=%u fb_h=%u "
+             "cols=%u rows=%u cy=%u scheme=%u fdt=0x%08x\n",
+             (unsigned)scratch.stage, (unsigned)scratch.caps, (unsigned)scratch.fb_addr,
+             (unsigned)scratch.fb_width, (unsigned)scratch.fb_height,
+             (unsigned)scratch.con_cols, (unsigned)scratch.con_rows,
+             (unsigned)scratch.con_cy, (unsigned)scratch.con_scheme,
+             (unsigned)scratch.fdt_addr);
     k_printf("@RC stage=" STAGE " ev=ready\n");
     uart_flush();
 }

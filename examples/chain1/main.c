@@ -3,6 +3,8 @@
 #include <robco/board.h>
 #include <robco/boot.h>
 #include <robco/bootinfo.h>
+#include <robco/console.h>
+#include <robco/fb.h>
 #include <robco/klibc.h>
 #include <robco/rimg.h>
 #include <robco/uart.h>
@@ -48,6 +50,21 @@ void robco_main(void)
              (unsigned)b->midr, b->soc_name, (unsigned)b->periph_base,
              (unsigned)b->board_rev, (unsigned)b->mem_size,
              mode_name(robco_boot_args()->entry_mode));
+
+#if defined(CHAIN1_FB) && CHAIN1_FB
+    /* Hands a live framebuffer and console to the next stage. */
+    rc = fb_init(640, 480, 32);
+    if (rc != 0) {
+        k_printf("@RC stage=" STAGE " ev=error code=fb rc=%d\n", rc);
+        halt();
+    }
+    k_printf("@RC stage=" STAGE " ev=fb addr=0x%08x\n", (unsigned)fb_get()->addr);
+    if (console_init(CONSOLE_SCHEME_AMBER) != 0) {
+        k_printf("@RC stage=" STAGE " ev=error code=console\n");
+        halt();
+    }
+    console_puts("chain1\n");
+#endif
 
     /* The test harness placed the next image in its slot. Nothing reads storage here. */
     rc = rimg_validate((const void *)NEXT_ADDR, NEXT_SIZE, &expect, &h);

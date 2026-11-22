@@ -20,6 +20,8 @@ MACH = {"raspi0": 0xC42, "raspi1ap": 0xC42, "raspi2b": 0xC43, "raspi3b": 0xC43}
 STAGE_BIOS = 1
 STAGE_BOOTAGENT = 2
 BOOT_COLD = 1 << 2
+CAP_FB = 1 << 0
+CAP_PL011 = 1 << 1
 JUMP = re.compile(r"@RC stage=chain1 ev=jump .*\n")
 HALT = re.compile(r"@RC stage=chain1 ev=halt\n")
 READY = re.compile(r"@RC stage=chain2 ev=ready\n")
@@ -154,3 +156,23 @@ def test_chain_bad_bootinfo(board, example_image, chain2):
         info = one(vm, "chain2", "bootinfo")
         assert info["inherited"] == "0"
         assert info["prev_stage"] == str(STAGE_BOOTAGENT)
+
+
+def test_chain_keeps_framebuffer(board, example_image, chain2):
+    img = example_image("chain1", "fb", "-DCHAIN1_FB=1")
+    with boot(img, board, extra_args=chain_args(chain2)) as vm:
+        vm.wait_for(READY, timeout=15)
+        fb = one(vm, "chain1", "fb")["addr"]
+        assert int(fb, 16) != 0
+        assert one(vm, "chain2", "handoff")["trusted"] == "1"
+        rb = one(vm, "chain2", "rebuild")
+        assert rb["id"] == str(STAGE_BOOTAGENT)
+        caps = int(rb["caps"], 16)
+        assert caps & CAP_FB, vm.serial
+        assert caps & CAP_PL011, vm.serial
+        assert rb["fb"] == fb
+        assert (rb["fb_w"], rb["fb_h"]) == ("640", "480")
+        assert (rb["cols"], rb["rows"]) == ("80", "30")
+        assert rb["cy"] == "1"
+        assert rb["scheme"] == "1"
+        assert rb["fdt"] == "0x00101000"

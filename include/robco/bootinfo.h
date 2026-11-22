@@ -144,6 +144,46 @@ int bootinfo_validate(const robco_bootinfo_t *bi);
  */
 uint32_t bootinfo_fw_blob_size(const void *blob, uint32_t max);
 
+/*
+ * Carry-over rule. A field that describes state this stage set up itself
+ * comes from this stage. Any other field is carried over from the
+ * inherited block, because that state still holds after the handoff.
+ * bootinfo_merge() applies the rule per field group:
+ *
+ * - stage, board fields, ROBCO_CAP_LOCAL_INTC: always this stage.
+ * - fw_r0..fw_r2 (BOOTINFO_OWN_FW_REGS): from the firmware, so only a
+ *   cold stage sets them.
+ * - fdt_addr, fdt_size (BOOTINFO_OWN_FW_BLOB): this stage, if it copied
+ *   the blob with bootinfo_copy_fw_blob().
+ * - uart_*, ROBCO_CAP_PL011, ROBCO_CAP_MINIUART (BOOTINFO_OWN_UART):
+ *   this stage, if it configured the UART.
+ * - fb_*, ROBCO_CAP_FB (BOOTINFO_OWN_FB): this stage, if it called
+ *   fb_init(). A new framebuffer without a new console clears con_cols,
+ *   con_rows, con_cx and con_cy, since the old console drew on the old
+ *   framebuffer. con_scheme stays.
+ * - con_* (BOOTINFO_OWN_CON): this stage, if its console is active.
+ * - boot_dev, boot_part_lba, boot_flags, boot_path, cmdline
+ *   (BOOTINFO_OWN_BOOT_DEV): only a cold stage sets them. A loader that
+ *   picks a boot device writes them after bootinfo_build() and calls
+ *   bootinfo_seal().
+ * - Other caps bits: carried over.
+ */
+#define BOOTINFO_OWN_FW_REGS    (1u << 0)
+#define BOOTINFO_OWN_FW_BLOB    (1u << 1)
+#define BOOTINFO_OWN_UART       (1u << 2)
+#define BOOTINFO_OWN_FB         (1u << 3)
+#define BOOTINFO_OWN_CON        (1u << 4)
+#define BOOTINFO_OWN_BOOT_DEV   (1u << 5)
+
+/*
+ * Writes to `out` the merge of `prev`, the inherited block, and `own`,
+ * the fields this stage filled. `own_groups` holds the BOOTINFO_OWN_*
+ * bits of the groups this stage set up. With `prev` NULL, `out` is a copy
+ * of `own`. `out` may equal `prev` or `own`. Does not seal.
+ */
+void bootinfo_merge(robco_bootinfo_t *out, const robco_bootinfo_t *prev,
+                    const robco_bootinfo_t *own, uint32_t own_groups);
+
 /* Hardware side, src/board/bootinfo_build.c. */
 
 /* The trusted or built block, or NULL. See the trust rule above. */
@@ -166,13 +206,10 @@ void bootinfo_receive(void);
 uint32_t bootinfo_copy_fw_blob(uint32_t dest, uint32_t max);
 
 /*
- * Fills `bi` for the next stage and seals it. With an inherited block it
- * keeps the firmware registers, the DTB copy and the boot_* fields from
- * that block. Cold, it takes them from the entry registers and the last
- * bootinfo_copy_fw_blob(), and sets ROBCO_BOOT_COLD. It then refreshes
- * the board, UART, framebuffer and console fields. With an active console
- * con_scheme is console_scheme(). Otherwise it is the inherited value, or
- * 0 when cold.
+ * Fills `bi` for the next stage and seals it, following the carry-over
+ * rule above. Cold, every field comes from this stage: the entry
+ * registers, the last bootinfo_copy_fw_blob(), ROBCO_BOOT_COLD, and the
+ * UART, framebuffer and console if this stage set them up, else 0.
  * After the call, bootinfo_get() returns `bi`.
  */
 void bootinfo_build(robco_bootinfo_t *bi, uint32_t stage_id);

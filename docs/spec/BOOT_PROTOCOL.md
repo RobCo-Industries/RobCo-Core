@@ -247,7 +247,22 @@ RETROS-BIOS and Pip-OS are first stages. They always cold-boot and ignore r3. RA
 
 A trusting stage still reads MIDR. If MIDR differs from `midr`, it cold-boots.
 
-Before the jump, the loader sets `stage` to its own id, updates the fields it changed, and recomputes the CRC. `bootinfo_build(bi, stage)` does this. It keeps the firmware registers, the DTB copy and the `boot_*` fields of a trusted block, refreshes the board, UART, framebuffer and console fields, and seals the block. `bootinfo_seal()` recomputes the CRC after a later change.
+Before the jump, the loader sets `stage` to its own id, updates the fields it changed, and recomputes the CRC. `bootinfo_build(bi, stage)` does this and seals the block. `bootinfo_seal()` recomputes the CRC after a later change.
+
+A stage passes on the state it did not set up itself. Hardware such as a framebuffer stays active across the handoff, so its fields stay valid. The rule: a field that describes state this stage set up comes from this stage. Every other field is carried over from the trusted block. With no trusted block, the stage fills every field itself.
+
+| Field group | Comes from this stage when |
+|---|---|
+| `stage`, `board_rev`, `soc`, `periph_base`, `midr`, `mem_base`, `mem_size`, caps bit 4 | Always |
+| `fw_r0`, `fw_r1`, `fw_r2` | Cold boot only |
+| `fdt_addr`, `fdt_size` | The stage copied the firmware blob |
+| `uart_type`, `uart_clock`, `uart_baud`, caps bits 1 and 2 | The stage configured the UART |
+| `fb_*`, caps bit 0 | The stage called `fb_init()` |
+| `con_cols`, `con_rows`, `con_cx`, `con_cy`, `con_scheme` | The stage's console is active |
+| `boot_dev`, `boot_part_lba`, `boot_flags`, `boot_path`, `cmdline` | Cold boot only |
+| Other caps bits | Never |
+
+A stage that sets up a new framebuffer without a console clears `con_cols`, `con_rows`, `con_cx` and `con_cy`, since the old console drew on the old framebuffer. It keeps `con_scheme`. A loader that picks a boot device writes the `boot_*` fields after `bootinfo_build()` and calls `bootinfo_seal()`. `bootinfo_merge()` in `src/lib/bootinfo.c` holds the rule.
 
 ## DTB and ATAGS
 

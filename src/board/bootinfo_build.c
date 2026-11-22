@@ -67,79 +67,73 @@ void bootinfo_build(robco_bootinfo_t *bi, uint32_t stage_id)
 {
     const robco_board_t *b = board_get();
     const robco_boot_args_t *args = robco_boot_args();
+    const robco_bootinfo_t *prev = (inherited && current != NULL) ? current : NULL;
     const fb_info_t *fb = NULL;
+    robco_bootinfo_t own;
+    uint32_t groups = 0;
     uint32_t clock, baud;
-    uint32_t scheme = 0;
     unsigned cx, cy;
 
-    if (inherited && current != NULL) {
-        if (bi != current) {
-            memmove(bi, current, sizeof(*bi));
-        }
-        scheme = bi->con_scheme;
-    } else {
-        memset(bi, 0, sizeof(*bi));
-        bi->fw_r0 = args->r0;
-        bi->fw_r1 = args->r1;
-        bi->fw_r2 = args->r2;
-        bi->fdt_addr = blob_addr;
-        bi->fdt_size = blob_size;
-        bi->boot_flags = ROBCO_BOOT_COLD;
-    }
-
-    bi->stage = stage_id;
-    bi->board_rev = b->board_rev;
-    bi->soc = (uint32_t)b->soc;
-    bi->periph_base = b->periph_base;
-    bi->midr = b->midr;
-    bi->mem_base = b->mem_base;
-    bi->mem_size = b->mem_size;
-
-    bi->caps = 0;
+    memset(&own, 0, sizeof(own));
+    own.stage = stage_id;
+    own.board_rev = b->board_rev;
+    own.soc = (uint32_t)b->soc;
+    own.periph_base = b->periph_base;
+    own.midr = b->midr;
+    own.mem_base = b->mem_base;
+    own.mem_size = b->mem_size;
     if (b->soc == ROBCO_SOC_BCM2836 || b->soc == ROBCO_SOC_BCM2837) {
-        bi->caps |= ROBCO_CAP_LOCAL_INTC;
+        own.caps |= ROBCO_CAP_LOCAL_INTC;
     }
 
-    bi->uart_type = ROBCO_UART_NONE;
-    bi->uart_clock = 0;
-    bi->uart_baud = 0;
+    own.fw_r0 = args->r0;
+    own.fw_r1 = args->r1;
+    own.fw_r2 = args->r2;
+    own.boot_flags = ROBCO_BOOT_COLD;
+
+    if (blob_size != 0) {
+        own.fdt_addr = blob_addr;
+        own.fdt_size = blob_size;
+        groups |= BOOTINFO_OWN_FW_BLOB;
+    }
+
     if (uart_get_config != NULL && uart_get_config(&clock, &baud) == 0) {
-        bi->uart_type = ROBCO_UART_PL011;
-        bi->uart_clock = clock;
-        bi->uart_baud = baud;
-        bi->caps |= ROBCO_CAP_PL011;
+        own.uart_type = ROBCO_UART_PL011;
+        own.uart_clock = clock;
+        own.uart_baud = baud;
+        own.caps |= ROBCO_CAP_PL011;
+        groups |= BOOTINFO_OWN_UART;
     }
 
     if (fb_get != NULL) {
         fb = fb_get();
     }
-    bi->fb_addr = bi->fb_size = bi->fb_width = bi->fb_height = 0;
-    bi->fb_pitch = bi->fb_depth = bi->fb_order = 0;
     if (fb != NULL) {
-        bi->fb_addr = (uint32_t)fb->addr;
-        bi->fb_size = fb->size;
-        bi->fb_width = fb->width;
-        bi->fb_height = fb->height;
-        bi->fb_pitch = fb->pitch;
-        bi->fb_depth = fb->depth;
-        bi->fb_order = fb->order;
-        bi->caps |= ROBCO_CAP_FB;
+        own.fb_addr = (uint32_t)fb->addr;
+        own.fb_size = fb->size;
+        own.fb_width = fb->width;
+        own.fb_height = fb->height;
+        own.fb_pitch = fb->pitch;
+        own.fb_depth = fb->depth;
+        own.fb_order = fb->order;
+        own.caps |= ROBCO_CAP_FB;
+        groups |= BOOTINFO_OWN_FB;
     }
 
-    bi->con_cols = bi->con_rows = bi->con_cx = bi->con_cy = 0;
-    bi->con_scheme = scheme;
     if (console_cols != NULL && console_rows != NULL && console_get_cursor != NULL &&
         console_cols() != 0) {
         console_get_cursor(&cx, &cy);
-        bi->con_cols = (uint16_t)console_cols();
-        bi->con_rows = (uint16_t)console_rows();
-        bi->con_cx = (uint16_t)cx;
-        bi->con_cy = (uint16_t)cy;
+        own.con_cols = (uint16_t)console_cols();
+        own.con_rows = (uint16_t)console_rows();
+        own.con_cx = (uint16_t)cx;
+        own.con_cy = (uint16_t)cy;
         if (console_scheme != NULL) {
-            bi->con_scheme = console_scheme();
+            own.con_scheme = console_scheme();
         }
+        groups |= BOOTINFO_OWN_CON;
     }
 
+    bootinfo_merge(bi, prev, &own, groups);
     bootinfo_seal(bi);
     current = bi;
 }
