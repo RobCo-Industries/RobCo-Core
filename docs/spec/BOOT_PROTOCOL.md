@@ -188,7 +188,7 @@ _Static_assert(sizeof(robco_bootinfo_t) == 320, "robco_bootinfo_t must be 320 by
 | `0x06A` | 2 | `con_rows` | Text console rows |
 | `0x06C` | 2 | `con_cx` | Cursor column, so the next stage continues the screen |
 | `0x06E` | 2 | `con_cy` | Cursor row |
-| `0x070` | 4 | `con_scheme` | Colour scheme: 0 green, 1 amber, 2 white, 3 blue |
+| `0x070` | 4 | `con_scheme` | Colour scheme: 0 green, 1 amber, 2 blue, 3 white |
 | `0x074` | 4 | `boot_dev` | 0 unknown, 1 SD on EMMC, 2 SD on SDHOST |
 | `0x078` | 4 | `boot_part_lba` | First LBA of the FAT boot partition |
 | `0x07C` | 4 | `boot_flags` | Boot flag bits. See below. |

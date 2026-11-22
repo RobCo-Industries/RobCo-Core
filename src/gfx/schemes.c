@@ -23,7 +23,7 @@ static const console_scheme_t schemes[CONSOLE_SCHEME_COUNT] = {
                               {0xd8, 0xd8, 0xdc}, {0xff, 0xff, 0xff}},
 };
 
-const console_scheme_t *console_scheme(unsigned scheme)
+const console_scheme_t *console_scheme_info(unsigned scheme)
 {
     return scheme < CONSOLE_SCHEME_COUNT ? &schemes[scheme] : NULL;
 }

@@ -12,6 +12,7 @@
 #define ROBCO_CONSOLE_MAX_ROWS 40
 #endif
 
+/* Scheme ids. The boot info con_scheme field uses the same numbers. */
 #define CONSOLE_SCHEME_GREEN    0
 #define CONSOLE_SCHEME_AMBER    1
 #define CONSOLE_SCHEME_BLUE     2
@@ -38,7 +39,7 @@ typedef struct {
 } console_scheme_t;
 
 /* NULL for an unknown id. Defined in schemes.c. */
-const console_scheme_t *console_scheme(unsigned scheme);
+const console_scheme_t *console_scheme_info(unsigned scheme);
 
 /* Needs fb_init first. Clears the screen. Returns 0 or CONSOLE_ERR_*. */
 int console_init(unsigned scheme);
@@ -66,6 +67,8 @@ void console_cursor_show(int on);
 void console_set_attr(unsigned attr);
 /* Redraws the whole screen from the cell buffer. Unknown ids are ignored. */
 void console_set_scheme(unsigned scheme);
+/* The active scheme id, CONSOLE_SCHEME_GREEN before console_init(). */
+unsigned console_scheme(void);
 
 /*
  * Test hook. Writes an "@RC ... ev=screen" header, one "|" line per row

@@ -13,6 +13,7 @@
 #pragma weak console_cols
 #pragma weak console_rows
 #pragma weak console_get_cursor
+#pragma weak console_scheme
 #pragma weak uart_get_config
 
 static const robco_bootinfo_t *current;
@@ -134,6 +135,9 @@ void bootinfo_build(robco_bootinfo_t *bi, uint32_t stage_id)
         bi->con_rows = (uint16_t)console_rows();
         bi->con_cx = (uint16_t)cx;
         bi->con_cy = (uint16_t)cy;
+        if (console_scheme != NULL) {
+            bi->con_scheme = console_scheme();
+        }
     }
 
     bootinfo_seal(bi);

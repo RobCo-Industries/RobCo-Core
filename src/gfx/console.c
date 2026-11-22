@@ -30,7 +30,7 @@ static uint32_t px_bg, px_level[3];
 
 static void load_scheme(unsigned scheme)
 {
-    const console_scheme_t *s = console_scheme(scheme);
+    const console_scheme_t *s = console_scheme_info(scheme);
 
     cur_scheme = scheme;
     px_bg = fb_rgb(s->bg.r, s->bg.g, s->bg.b);
@@ -174,7 +174,7 @@ int console_init(unsigned scheme)
     if (fb == NULL) {
         return CONSOLE_ERR_NO_FB;
     }
-    if (console_scheme(scheme) == NULL) {
+    if (console_scheme_info(scheme) == NULL) {
         return CONSOLE_ERR_SCHEME;
     }
     c = fb->width / FONT_W;
@@ -283,9 +283,14 @@ void console_set_attr(unsigned attr)
     cur_attr = attr & (ATTR_LEVEL | CONSOLE_ATTR_INVERSE);
 }
 
+unsigned console_scheme(void)
+{
+    return cur_scheme;
+}
+
 void console_set_scheme(unsigned scheme)
 {
-    if (!ready || console_scheme(scheme) == NULL) {
+    if (!ready || console_scheme_info(scheme) == NULL) {
         return;
     }
     load_scheme(scheme);
@@ -309,7 +314,7 @@ void console_dump(void (*out)(char))
     k_snprintf(buf, sizeof(buf),
                "@RC stage=%s ev=screen cols=%u rows=%u cx=%u cy=%u scheme=%s\n",
                ROBCO_STAGE_NAME, cols, rows, cx, cy,
-               ready ? console_scheme(cur_scheme)->name : "none");
+               ready ? console_scheme_info(cur_scheme)->name : "none");
     out_str(out, buf);
     for (r = 0; r < rows; r++) {
         end = cols;

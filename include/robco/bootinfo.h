@@ -170,9 +170,9 @@ uint32_t bootinfo_copy_fw_blob(uint32_t dest, uint32_t max);
  * keeps the firmware registers, the DTB copy and the boot_* fields from
  * that block. Cold, it takes them from the entry registers and the last
  * bootinfo_copy_fw_blob(), and sets ROBCO_BOOT_COLD. It then refreshes
- * the board, UART, framebuffer and console fields. con_scheme is the
- * inherited value, or 0 when cold: set it and call bootinfo_seal() again
- * if needed.
+ * the board, UART, framebuffer and console fields. With an active console
+ * con_scheme is console_scheme(). Otherwise it is the inherited value, or
+ * 0 when cold.
  * After the call, bootinfo_get() returns `bi`.
  */
 void bootinfo_build(robco_bootinfo_t *bi, uint32_t stage_id);
