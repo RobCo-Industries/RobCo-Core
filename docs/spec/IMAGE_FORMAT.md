@@ -6,28 +6,32 @@ Every loadable file in the suite uses one format, `rimg`. Stages, ROMs and holot
 
 | File offset | Size | Content |
 |---|---|---|
-| `0x000` | `0x20` | Branch stub |
-| `0x020` | `0x40` | `rimg_header_t` |
-| `0x060` | `0xC0` | META block. Valid only if `flags` bit 0 is set. Zero otherwise. |
-| `0x120` | rest | Code and data |
+| `0x00` | `0x20` | Branch stub |
+| `0x20` | `0x40` | `rimg_header_t` |
+| `0x60` | `0xC0` | META block. Present only if `flags` bit 0 is set. |
+| `0x60` or `0x120` | rest | Code and data |
 
-The area from `0x000` to `0x11F` is always present. `start.S` emits it for stages. `crt0.S` from the Pip-OS SDK emits it for ROMs and holotapes. Code always starts at `0x120`.
+Code follows whatever is present. Stage images have no META block, so their code starts at `0x60`. ROMs and holotapes have one, so their code starts at `0x120`.
 
-The branch stub is eight words. Word 0 is `0xEA000046`, which is `b 0x120`. Words 1 to 7 are zero. They never run.
+`start.S` emits the stub and header for stages. It refuses to build with `flags` bit 0 set. `crt0.S` from the Pip-OS SDK emits the stub, header and META block for ROMs and holotapes.
+
+The branch stub is a branch to the image's entry point, padded with zeros to `0x20`. The encoding is not fixed. Only word 0 runs.
 
 All multi-byte fields are little-endian. Structures are packed with no padding. Every field has a fixed-width type.
 
 ## Header
 
+`include/robco/rimg.h` holds these definitions.
+
 ```c
 #include <stdint.h>
 
-#define RIMG_HDR_OFFSET   0x20u
-#define RIMG_META_OFFSET  0x60u
-#define RIMG_CODE_OFFSET  0x120u
-#define RIMG_HDR_VERSION  1u
-#define RIMG_HDR_SIZE     64u
-#define RIMG_FLAG_META    (1u << 0)
+#define RIMG_HDR_OFFSET   0x20
+#define RIMG_META_OFFSET  0x60
+#define RIMG_HDR_VERSION  1
+#define RIMG_HDR_SIZE     64
+#define RIMG_META_SIZE    192
+#define RIMG_FLAG_META    (1 << 0)
 
 typedef struct __attribute__((packed)) rimg_header {
     char     magic[8];
@@ -84,6 +88,8 @@ _Static_assert(sizeof(rimg_meta_t) == 192, "rimg_meta_t must be 192 bytes");
 
 ## Magics
 
+`rimg.h` defines them as `RIMG_MAGIC_BOOT`, `RIMG_MAGIC_ROM1` and `RIMG_MAGIC_ROBCO78`. `start.S` uses `RIMG_MAGIC_BOOT` unless the project's `robco_config.h` sets `ROBCO_IMG_MAGIC`.
+
 | Magic bytes | Kind | Loaded by | ABI major |
 |---|---|---|---|
 | `"BOOT\0\0\0\0"` | Boot stage or OS | Firmware, RETROS-BIOS, MFBootAgent | 2, the `robco_bootinfo_t` version |
@@ -92,23 +98,24 @@ _Static_assert(sizeof(rimg_meta_t) == 192, "rimg_meta_t must be 192 bytes");
 
 ## Subtypes
 
-| Magic | Value | Meaning | Slot | File |
-|---|---|---|---|---|
-| BOOT | 0 | Operating system, UOS | `0x00400000`-`0x00FFFFFF` | `/ROBCO/UOS.SYS` |
-| BOOT | 1 | Reserved | | |
-| BOOT | 2 | Maintenance image | `0x00400000`-`0x00FFFFFF` | `/ROBCO/MAINT.SYS` |
-| BOOT | 3 | Diagnostics image | `0x00400000`-`0x00FFFFFF` | `/ROBCO/DIAG.SYS` |
-| BOOT | 4 | Boot agent, MFBootAgent | `0x00200000`-`0x003FFFFF` | `/ROBCO/MFBOOT.SYS`, `/ROBCO/MFBOOT.BAK` |
-| BOOT | 5 | BIOS, RETROS-BIOS | `0x00008000`-`0x000FFFFF` | `/RETROS.IMG` |
-| BOOT | 6 | Pip-OS kernel | `0x00008000`-`0x003FFFFF` | `/PIPOS.IMG` |
-| ROM1 | 0 | System ROM, Deitrix | `0x00400000`-`0x007FFFFF` | `/PIPBOY/ROM1.ROM` |
-| ROBCO78 | 0 | Game | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP` |
-| ROBCO78 | 1 | Utility | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP` |
-| ROBCO78 | 2 | Data. Not executable. | none | `/PIPBOY/HOLO/*.HTP`, `/UOS/HOLO/*.HTP` |
+| Magic | Value | `rimg.h` name | Meaning | Slot | File |
+|---|---|---|---|---|---|
+| BOOT | 0 | `RIMG_BOOT_UOS` | Operating system, UOS | `0x00400000`-`0x00FFFFFF` | `/ROBCO/UOS.SYS` |
+| BOOT | 1 | | Reserved | | |
+| BOOT | 2 | `RIMG_BOOT_MAINT` | Maintenance image | `0x00400000`-`0x00FFFFFF` | `/ROBCO/MAINT.SYS` |
+| BOOT | 3 | `RIMG_BOOT_DIAG` | Diagnostics image | `0x00400000`-`0x00FFFFFF` | `/ROBCO/DIAG.SYS` |
+| BOOT | 4 | `RIMG_BOOT_AGENT` | Boot agent, MFBootAgent | `0x00200000`-`0x003FFFFF` | `/ROBCO/MFBOOT.SYS`, `/ROBCO/MFBOOT.BAK` |
+| BOOT | 5 | `RIMG_BOOT_BIOS` | BIOS, RETROS-BIOS | `0x00008000`-`0x000FFFFF` | `/RETROS.IMG` |
+| BOOT | 6 | `RIMG_BOOT_PIPOS` | Pip-OS kernel | `0x00008000`-`0x003FFFFF` | `/PIPOS.IMG` |
+| BOOT | 7 | `RIMG_BOOT_EXAMPLE` | Example or test image. The default in `start.S`. | `0x00008000`-`0x000FFFFF` | none, booted directly in tests |
+| ROM1 | 0 | `RIMG_ROM1_SYSTEM` | System ROM, Deitrix | `0x00400000`-`0x007FFFFF` | `/PIPBOY/ROM1.ROM` |
+| ROBCO78 | 0 | `RIMG_HOLO_GAME` | Game | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP` |
+| ROBCO78 | 1 | `RIMG_HOLO_UTILITY` | Utility | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP` |
+| ROBCO78 | 2 | `RIMG_HOLO_DATA` | Data. Not executable. | none | `/PIPBOY/HOLO/*.HTP`, `/UOS/HOLO/*.HTP` |
 
 Values not listed are reserved. A loader rejects them at the bounds step.
 
-The firmware loads subtypes 5 and 6. It checks nothing. These images do not check themselves either. `tools/rimg.py verify` checks them at build time.
+The firmware loads subtypes 5 and 6, and tests load subtype 7 the same way. It checks nothing. These images do not check themselves either. `tools/rimg.py verify` checks them at build time.
 
 ## CRC
 
@@ -127,7 +134,7 @@ The CRC covers file bytes `[0, file_size)` with the four `crc32` bytes at file o
 
 ## Validation
 
-A loader validates in this order. It stops at the first failure and reports that step's code. The loader reads the first `0x120` bytes for steps 1 to 5. It then reads the whole file into the slot and runs step 6.
+A loader validates in this order. It stops at the first failure and reports that step's code. The loader reads the first `0x60` bytes for steps 1 to 5. It then reads the whole file into the slot and runs step 6.
 
 | Step | Check | Error |
 |---|---|---|
@@ -135,7 +142,7 @@ A loader validates in this order. It stops at the first failure and reports that
 | 0 | Every read succeeds. Applies to all steps. | `RIMG_E_IO` |
 | 1 | `magic` matches a magic the loader accepts for this slot. | `RIMG_E_MAGIC` |
 | 2 | `hdr_version == 1`, `hdr_size == 64`, unknown `flags` bits are 0, `reserved == 0`. | `RIMG_E_VERSION` |
-| 3 | `file_size` equals the size in the FAT directory entry, and is at least `0x120`. | `RIMG_E_SIZE` |
+| 3 | `file_size` equals the size in the FAT directory entry. It is at least `0x60`, or `0x120` if `flags` bit 0 is set. | `RIMG_E_SIZE` |
 | 4 | `subtype` is valid for the magic and has a slot, so data holotapes fail here. `load_addr` equals the slot base. `mem_size >= file_size`. `load_addr + mem_size` does not pass the slot end. | `RIMG_E_BOUNDS` |
 | 5 | `abi_version >> 16` equals the loader's ABI major for this magic. The minor is not checked. | `RIMG_E_ABI` |
 | 6 | The CRC matches. | `RIMG_E_CRC` |
@@ -213,9 +220,9 @@ rimg.py seal IN.bin -o OUT.img [--name NAME] [--image-version X.Y.Z] [--title TE
 
 The input is the raw binary from `objcopy`. The startup code already wrote the stub, magic, `hdr_version`, `hdr_size`, `load_addr`, `mem_size`, `abi_version` and `subtype`. `seal` then:
 
-1. Checks the stub word, magic, `hdr_version` and `hdr_size`. It fails on anything else.
+1. Checks that word 0 is an ARM `b` instruction, then checks the magic, `hdr_version` and `hdr_size`. It fails on anything else.
 2. Sets `name` and `image_version` if given.
-3. With `--title` or `--icon`, writes the META block and sets `flags` bit 0. The icon must be a 32x32 PBM file.
+3. With `--title` or `--icon`, writes the META block and sets `flags` bit 0. The input must already reserve the block at `0x60`, as `crt0.S` does. The icon must be a 32x32 PBM file.
 4. Sets `file_size` to the file length.
 5. Checks `mem_size >= file_size` and the slot bounds.
 6. Computes and writes `crc32`.
