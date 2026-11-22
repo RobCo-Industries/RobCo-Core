@@ -7,9 +7,9 @@
 #define TICK_CHANNEL    1
 
 static volatile uint32_t count;
+static volatile uint32_t wraps;      /* tick_count() wraps, for tick_ms() */
 static volatile uint32_t missed;
 static uint32_t period_us;
-static uint32_t tick_hz;
 static uint32_t next_match;     /* CLO value currently in C1 */
 static void (*volatile callbacks[TICK_MAX_CALLBACKS])(void);
 
@@ -41,6 +41,9 @@ static uint32_t tick_catch_up(void)
     }
     n = late / period_us + 1;
     next_match += n * period_us;
+    if (count + n < count) {
+        wraps++;
+    }
     count += n;
     return n;
 }
@@ -81,17 +84,18 @@ static void tick_isr(unsigned irq, void *arg)
 int tick_init(uint32_t hz)
 {
     uint32_t s;
+    uint32_t p = tick_period_us_for(hz);
 
-    if (hz == 0 || hz > 10000 || period_us) {
+    if (p == 0 || period_us) {
         return -1;
     }
     if (irq_register(IRQ_TIMER1, tick_isr, 0)) {
         return -1;
     }
     s = irq_save();
-    tick_hz = hz;
-    period_us = 1000000u / hz;
+    period_us = p;
     count = 0;
+    wraps = 0;
     missed = 0;
     next_match = timer_now_lo() + period_us;
     timer_compare_set(TICK_CHANNEL, next_match);
@@ -113,10 +117,14 @@ uint32_t tick_missed(void)
 
 uint32_t tick_ms(void)
 {
-    if (!tick_hz) {
-        return 0;
-    }
-    return (uint32_t)((uint64_t)count * 1000u / tick_hz);
+    uint64_t ticks;
+    uint32_t s;
+
+    s = irq_save();
+    ticks = ((uint64_t)wraps << 32) | count;
+    irq_restore(s);
+    /* Truncation wraps the result at 2^32 ms, as the return type says. */
+    return (uint32_t)tick_to_ms(ticks, period_us);
 }
 
 int tick_register(void (*fn)(void))
