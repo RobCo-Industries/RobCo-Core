@@ -143,6 +143,36 @@ int input_ansi_feed(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_
  */
 int input_ansi_poll(input_ansi_t *p, uint32_t now_ms, input_event_t *out);
 
+/* ---- Pure held-key state, src/lib/input_hold.c ---- */
+
+#define INPUT_HOLD_SOURCES  4   /* sources 0 to 3 are tracked, others ignored */
+
+/*
+ * One bit per key code below 32 for each source. A key is down while any
+ * source holds it. A press from a second source on a key already down is
+ * still delivered as an event; the state is the OR of all sources.
+ */
+typedef struct {
+    uint32_t held[INPUT_HOLD_SOURCES];
+    uint16_t rep_code;  /* key to auto-repeat, 0 for none */
+    uint8_t rep_source; /* source the repeat events carry */
+} input_hold_t;
+
+void input_hold_init(input_hold_t *h);
+
+/*
+ * Applies a KEY event; other events are ignored. A press makes its key the
+ * repeat key and returns 1 so the caller restarts the repeat delay. A
+ * release clears only that source's hold. If another source still holds
+ * the repeat key, the repeat goes on from that source without a restart.
+ * A release from a source that did not hold the key changes nothing.
+ * Returns 0 except for a press.
+ */
+int input_hold_update(input_hold_t *h, const input_event_t *ev);
+
+/* Non-zero while any source holds `code`. */
+int input_hold_down(const input_hold_t *h, unsigned code);
+
 /* ---- Queue and key state, src/drv/input.c ---- */
 
 /* Empties the queue and clears counters, key state and repeat. Main context, IRQs masked or not. */
@@ -171,7 +201,7 @@ void input_flush(void);
 /* Counters since input_init(). Either pointer may be 0. */
 void input_stats(uint32_t *pushed, uint32_t *dropped);
 
-/* Non-zero while key `code` is pressed (any source). */
+/* Non-zero while any source holds key `code`. See input_hold_update(). */
 int input_key_down(unsigned code);
 
 /*

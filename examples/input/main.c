@@ -58,7 +58,11 @@ static void print_event(const input_event_t *ev)
     } else {
         k_printf("%u", (unsigned)ev->code);
     }
-    k_printf(" value=%d t_ms=%u\n", (int)ev->value, (unsigned)ev->t_ms);
+    k_printf(" value=%d t_ms=%u", (int)ev->value, (unsigned)ev->t_ms);
+    if (ev->type == INPUT_EV_KEY) {
+        k_printf(" down=%d", input_key_down(ev->code) ? 1 : 0);
+    }
+    k_printf("\n");
 }
 
 void robco_main(void)

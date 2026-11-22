@@ -172,3 +172,35 @@ def test_input_repeat(board, example_image):
         time.sleep(0.5)
         assert [e for e in events(vm, "script") if e[1] == "up"] == tap("up"), vm.serial
         no_exception(vm)
+
+
+def test_input_two_sources_hold(board, example_image):
+    """A console tap on a key the script holds does not release it or stop its repeat."""
+    image = example_image("input", "repeat", "-DINPUT_DEMO_REPEAT=1")
+    with boot(image, board, serial2=True) as vm:
+        start(vm)
+        vm.send("key down 1\n", port=1)
+        wait_count(vm, lambda: replies(vm), 1)
+        wait_count(vm, lambda: events(vm, "script"), 1)
+        vm.send("\x1b[B")
+        wait_count(vm, lambda: events(vm, "serial"), 2)
+        ser = [m for m in markers(vm, "event") if m["src"] == "serial"]
+        # Each source's events pass through; the key stays down after the tap.
+        assert [(m["value"], m["down"]) for m in ser] == [("1", "1"), ("0", "1")], vm.serial
+        tap_ms = int(ser[1]["t_ms"])
+
+        # The repeat goes on after the tap, from the source still holding.
+        def late_repeats():
+            return [m for m in markers(vm, "event")
+                    if m["value"] == "2" and int(m["t_ms"]) > tap_ms + 400]
+        rep = wait_count(vm, late_repeats, 1)
+        assert all(m["src"] == "script" and m["down"] == "1" for m in rep), vm.serial
+
+        vm.send("key down 0\n", port=1)
+        wait_count(vm, lambda: [e for e in events(vm, "script") if e[2] == 0], 1)
+        rel = [m for m in markers(vm, "event") if m["src"] == "script" and m["value"] == "0"]
+        assert rel[0]["down"] == "0", vm.serial
+        time.sleep(0.5)
+        last = markers(vm, "event")[-1]
+        assert last["src"] == "script" and last["value"] == "0", vm.serial
+        no_exception(vm)

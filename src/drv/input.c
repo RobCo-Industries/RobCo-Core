@@ -14,12 +14,10 @@
 #define MAX_POLLERS 4
 
 static input_queue_t queue;
-static uint32_t keys;           /* bit per key code */
+static input_hold_t hold;       /* held keys per source, repeat key */
 
 static uint32_t rep_delay_ms;   /* 0: repeat off */
 static uint32_t rep_rate_ms;
-static uint16_t rep_code;       /* key being repeated, 0 for none */
-static uint8_t rep_source;
 static uint32_t rep_next_ms;
 static int rep_registered;
 
@@ -42,8 +40,7 @@ int input_init(void)
     uint32_t s = irq_save();
 
     input_queue_init(&queue);
-    keys = 0;
-    rep_code = 0;
+    input_hold_init(&hold);
     irq_restore(s);
     return 0;
 }
@@ -51,22 +48,8 @@ int input_init(void)
 /* IRQs masked. */
 static void track_keys(const input_event_t *ev)
 {
-    uint32_t bit;
-
-    if (ev->type != INPUT_EV_KEY || ev->code >= 32) {
-        return;
-    }
-    bit = (uint32_t)1 << ev->code;
-    if (ev->value == INPUT_PRESS) {
-        keys |= bit;
-        rep_code = ev->code;
-        rep_source = ev->source;
+    if (input_hold_update(&hold, ev)) {
         rep_next_ms = ev->t_ms + rep_delay_ms;
-    } else if (ev->value == INPUT_RELEASE) {
-        keys &= ~bit;
-        if (rep_code == ev->code) {
-            rep_code = 0;
-        }
     }
 }
 
@@ -90,7 +73,7 @@ static void repeat_tick(void)
     input_event_t e;
     uint32_t now;
 
-    if (rep_delay_ms == 0 || rep_code == 0) {
+    if (rep_delay_ms == 0 || hold.rep_code == 0) {
         return;
     }
     now = timer_now_ms();
@@ -98,8 +81,8 @@ static void repeat_tick(void)
         return;
     }
     e.type = INPUT_EV_KEY;
-    e.source = rep_source;
-    e.code = rep_code;
+    e.source = hold.rep_source;
+    e.code = hold.rep_code;
     e.value = INPUT_REPEAT;
     e.t_ms = now;
     input_queue_push(&queue, &e);
@@ -126,7 +109,7 @@ int input_set_repeat(uint32_t delay_ms, uint32_t rate_ms)
     s = irq_save();
     rep_delay_ms = delay_ms;
     rep_rate_ms = rate_ms;
-    rep_code = 0;
+    hold.rep_code = 0;
     irq_restore(s);
     return 0;
 }
@@ -230,5 +213,9 @@ void input_stats(uint32_t *pushed, uint32_t *dropped)
 
 int input_key_down(unsigned code)
 {
-    return code < 32 && (keys >> code) & 1;
+    uint32_t s = irq_save();
+    int down = input_hold_down(&hold, code);
+
+    irq_restore(s);
+    return down;
 }
