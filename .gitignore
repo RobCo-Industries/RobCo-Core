@@ -2,3 +2,7 @@
 __pycache__/
 build/
 /local/
+sdboot/
+bootcode.bin
+start.elf
+fixup.dat

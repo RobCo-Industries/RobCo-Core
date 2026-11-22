@@ -64,6 +64,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Image CRC check, validation, `rimg_err_t`, `rimg_validate()` | Implemented |
 | `tools/rimg.py` `seal`, `info` and `verify` | Implemented |
 | Sealing every image in `mk/robco.mk` | Implemented |
+| Firmware download with pinned hashes, `tools/fetch_firmware.sh`, and boot directory, `tools/mkbootdir.sh` | Implemented |
 | Filling the META block in `tools/rimg.py` | Specified |
 | Loading images from the SD card | Specified |
 

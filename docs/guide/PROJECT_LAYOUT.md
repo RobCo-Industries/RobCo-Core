@@ -13,7 +13,7 @@ This page maps the repository and shows where new code and tests go. To use the 
 | `mk/host.mk` | Host unit test build, included by the top-level `Makefile` |
 | `examples/` | Small images that use the library. Each one is also a target test. |
 | `tests/` | Host tests, QEMU harness, target tests, tool tests, canary suite. See [tests/README.md](../../tests/README.md). |
-| `tools/` | Host tools in Python: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `font2c.py` and `font_specimen.py` build and preview fonts |
+| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory |
 | `docs/` | This guide, the [specifications](../spec/README.md) and [FONTS.md](../FONTS.md) |
 | `spikes/` | Three early proofs: UART hello, SD sector read, framebuffer and MMU. They have their own code in `spikes/common/` and do not use the library. |
 | `ci/` | The CI container. See [ci/README.md](../../ci/README.md). |

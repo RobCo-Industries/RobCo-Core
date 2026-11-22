@@ -4,7 +4,7 @@
 
     make venv
     make test-canary
-    make test-tools           # pytest for tools/rimg.py
+    make test-tools           # pytest for tools/ and the Makefile
     make test-target          # spikes and examples on all four boards through boot()
     make test-target BOARD=raspi0   # the same on one board
 
@@ -74,8 +74,12 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   `mem_size` past the slot, no image, `chain2` alone, a corrupt boot
   info block, and a tick in `chain1` that must leave no stale timer
   interrupt for `chain2`.
-- `tools/`: pytest unit tests for `tools/rimg.py` on images built in
-  memory, one case per error code.
+- `tools/`: pytest unit tests for the host tools: `tools/rimg.py` on
+  images built in memory, one case per error code, the font and doc
+  tools, the `SLOT_END` link check, the `BOARD` variable of
+  `test-target`, and the argument handling, refusal cases and
+  `config.txt` of `fetch_firmware.sh` and `mkbootdir.sh`. The firmware
+  download test runs only with `ROBCO_NET_TESTS=1`.
 - `canary/`: checks the QEMU behaviours our code depends on. Run it
   after any QEMU upgrade. A failure means QEMU changed, not our code.
 

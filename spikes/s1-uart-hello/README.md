@@ -15,23 +15,15 @@ make                      # build/s1.elf and build/s1.img
 
 ## SD card
 
-Use a FAT32 partition. Copy these files to its root:
+Build the boot directory, then copy its files to the root of a FAT32 partition:
 
-- `bootcode.bin`, `start.elf`, `fixup.dat` from the official firmware repo: <https://github.com/raspberrypi/firmware/tree/master/boot>
-- `config.txt`, shown below
-- `s1.img`, copied from `build/s1.img`
+```sh
+../../tools/mkbootdir.sh build/s1.img sdboot --kernel-name s1.img
+```
+
+`tools/mkbootdir.sh` fetches `bootcode.bin`, `start.elf` and `fixup.dat` with `tools/fetch_firmware.sh`, which pins one firmware release and checks each file's SHA-256. It adds the image and a `config.txt` with the settings from [BOARD_SUPPORT.md](../../docs/spec/BOARD_SUPPORT.md#configtxt). It never writes to a device.
 
 Do not put any `.dtb` files or an `overlays/` folder on the card. Without a DTB the firmware passes ATAGS in r2 and applies no overlays. We want the plain firmware handoff.
-
-`config.txt`:
-
-```
-kernel=s1.img
-arm_64bit=0
-enable_uart=1
-disable_splash=1
-boot_delay=0
-```
 
 ## Wiring
 

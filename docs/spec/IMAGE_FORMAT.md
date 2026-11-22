@@ -199,8 +199,8 @@ The boot partition is FAT32. Names are 8.3 and upper case.
 | Pip-Boy | `/PIPBOY/ROM1.ROM` | ROM1 0 |
 | Pip-Boy | `/PIPBOY/HOLO/*.HTP` | ROBCO78 0, 1 or 2 |
 | Pip-Boy | `/PIPBOY/SAVE/*.SAV` | Save files, not `rimg` |
-| Both | `/bootcode.bin`, `/start.elf`, `/fixup.dat` | Firmware, fetched by `tools/fetch_firmware.sh`, never committed |
-| Both | `/config.txt` | See [BOARD_SUPPORT.md](./BOARD_SUPPORT.md) |
+| Both | `/bootcode.bin`, `/start.elf`, `/fixup.dat` | Firmware, fetched by `tools/fetch_firmware.sh` at a pinned release with pinned SHA-256 values, never committed |
+| Both | `/config.txt` | See [BOARD_SUPPORT.md](./BOARD_SUPPORT.md). `tools/mkbootdir.sh` writes it with the firmware and the image into a boot directory. |
 
 | Extension | Meaning |
 |---|---|

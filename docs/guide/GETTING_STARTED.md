@@ -363,13 +363,19 @@ The inputs are documented at the top of [robco-ci.yml](../../.github/workflows/r
 
 Not yet validated on hardware. The steps below come from [BOARD_SUPPORT.md](../spec/BOARD_SUPPORT.md#configtxt), not from a run on a real board.
 
-Format a card with one FAT32 partition. Copy these files to its root:
+Build the boot directory with `tools/mkbootdir.sh`:
+
+```sh
+robco-core/tools/mkbootdir.sh build/hello-pi.img sdboot --kernel-name HELLO.IMG
+```
+
+It writes these files into `sdboot/`. It never formats or writes a device.
 
 | File | Source |
 |---|---|
-| `bootcode.bin`, `start.elf`, `fixup.dat` | The `boot/` directory of the [Raspberry Pi firmware repository](https://github.com/raspberrypi/firmware/tree/master/boot) |
-| `HELLO.IMG` | Your `build/hello-pi.img`, renamed to an 8.3 upper-case name |
-| `config.txt` | Below |
+| `bootcode.bin`, `start.elf`, `fixup.dat` | `tools/fetch_firmware.sh` downloads them from the [Raspberry Pi firmware repository](https://github.com/raspberrypi/firmware) at one pinned release and checks each SHA-256 |
+| `HELLO.IMG` | Your `build/hello-pi.img` |
+| `config.txt` | The settings from [BOARD_SUPPORT.md](../spec/BOARD_SUPPORT.md#configtxt), with `kernel=HELLO.IMG` |
 
 `config.txt`:
 
@@ -386,6 +392,8 @@ framebuffer_width=640
 framebuffer_height=480
 framebuffer_depth=32
 ```
+
+Format a card with one FAT32 partition and copy the files in `sdboot/` to its root. `tools/fetch_firmware.sh --check sdboot` checks the firmware files again later.
 
 Put no `.dtb` file and no `overlays/` directory on the card. Without a DTB the firmware passes ATAGS in r2, as QEMU and the test stub do. `arm_64bit=0` makes the firmware load the image at `0x8000` in AArch32 state.
 

@@ -130,6 +130,8 @@ framebuffer_depth=32
 
 `arm_64bit=0` makes the firmware load the image at `0x8000` in AArch32 state. The framebuffer lines set the default mode. Stages still ask for 640x480x32 through the mailbox.
 
+`tools/mkbootdir.sh <image.img> <target-dir> [--kernel-name NAME]` writes a boot directory with these settings, the image and the firmware files from `tools/fetch_firmware.sh`. Copy its files to the card's boot partition.
+
 ## No .dtb on the card
 
 The card holds no `.dtb` file and no `overlays/` folder.
