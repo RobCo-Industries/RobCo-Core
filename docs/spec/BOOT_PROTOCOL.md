@@ -333,16 +333,18 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `halt` | | The stage stops on purpose |
 | `exception` | `type pc lr spsr dfsr dfar` | CPU exception. `type` is `undef`, `svc`, `prefetch_abort`, `data_abort`, `irq`, `fiq` or `reset`. The stage halts after it. |
 | `panic` | `msg` | Fatal software error. `msg` uses `_` for spaces. |
+| `rom_exit` | `status` | The ROM returned or called `exit`. `status` is its exit status. |
+| `rom_kill` | `reason pc` | Pip-OS killed the ROM after a fault. `reason` is `undef`, `prefetch_abort` or `data_abort`. `pc` is the address of the faulting instruction. |
 | `holo_launch` | `path` | Pip-OS starts a holotape |
 | `holo_exit` | `status` | Holotape returned |
-| `holo_kill` | `reason` | Pip-OS killed a holotape |
+| `holo_kill` | `reason pc` | Pip-OS killed a holotape after a fault. `reason` and `pc` work as in `rom_kill`. |
 
 | Stage | Must emit |
 |---|---|
 | `bios` | `boot`, `load`, `fallback`, `error`, `jump`, `shell` |
 | `bootagent` | `boot`, `handoff`, `ready` when the menu shows, `load`, `error`, `jump` |
 | `uos`, `maint`, `diag` | `boot`, `handoff`, `ready` |
-| `pipos` | `boot`, `load`, `error`, `jump` for the ROM, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
+| `pipos` | `boot`, `load`, `error`, `jump` for the ROM, `rom_exit`, `rom_kill`, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
 | `deitrix` | `boot`, `ready` |
 
 All stages emit `exception` and `panic` when those happen. Deitrix runs in USR mode, so it prints through the `log` syscall.
@@ -359,7 +361,8 @@ All stages emit `exception` and `panic` when those happen. Deitrix runs in USR m
 | UOS | Boot info not trusted | Cold-boots and runs |
 | Pip-OS | `ROM1.ROM` fails any step | `ev=error`, then the emergency shell |
 | Pip-OS | A holotape fails any step | `ev=error`. The `launch` syscall returns an error to Deitrix. |
-| Pip-OS | A holotape crashes | `ev=holo_kill`. Control returns to Deitrix in sandbox v2. In v1 the system halts with `ev=exception`. |
+| Pip-OS | The ROM crashes | `ev=rom_kill`. Pip-OS shows the fault on screen and stops running the ROM. |
+| Pip-OS | A holotape crashes | `ev=holo_kill`. Control returns to Deitrix. |
 | Any | CPU exception in a stage | `ev=exception`, then halt |
 
 The emergency shell runs on the PL011 and on the screen console. It accepts at least `help`, `info` and `reboot`. `info` prints the boot info fields. `reboot` uses the watchdog.

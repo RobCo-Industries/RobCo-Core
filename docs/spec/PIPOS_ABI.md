@@ -17,7 +17,7 @@ Pip-OS loads the image as described in [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md) an
 | sp | `0x01800000` | `0x02000000` |
 | r0 | Pointer to `pipos_startup_t` | Pointer to `pipos_startup_t` |
 | r1 to r3 | 0 | 0 |
-| lr | Exit trampoline in Pip-OS | Exit trampoline in Pip-OS |
+| lr | Exit trampoline | Exit trampoline |
 
 Returning from the entry function goes to the exit trampoline. It acts like `exit(r0)`.
 
@@ -52,7 +52,7 @@ _Static_assert(sizeof(pipos_startup_t) == 128, "pipos_startup_t must be 128 byte
 | `0x1C` | 100 | `args` | NUL-terminated argument string from the launcher | draft |
 | | 128 | | Total | |
 
-The struct lives in Pip-OS memory. Pip-OS maps it readable from USR mode in sandbox v2.
+Pip-OS writes the struct and the exit trampoline at the bottom of the image's stack area, at `stack_top - 0x10000`. Both sit in the image's own memory, so the image can overwrite them. Pip-OS never reads them back. An image that overwrites the trampoline must end with `exit`.
 
 ## Syscall convention
 
@@ -188,14 +188,25 @@ Drawing goes to a back buffer. `present` shows it. On HDMI, Pip-OS scales the su
 
 ## Sandbox
 
-The sandbox is weak in v1. This section says what it really does.
+Pip-OS runs every image in USR mode behind an identity map of 1 MiB sections.
 
-| Level | What it gives | What it does not give |
+| Memory | ROM | Holotape |
 |---|---|---|
-| v1 | Code runs in USR mode. Pip-OS checks the CRC before running it. Code is expected to use only syscalls. | No memory protection. USR code can read and write any RAM and any peripheral. A crashing holotape stops the device. |
-| v2 | An identity map of 1 MiB sections. Kernel and MMIO are privileged only. The ROM slot is read only to holotapes. A holotape that faults is killed, and control returns to Deitrix with `-PIP_EFAULT` from `holo_launch`. | No protection between a ROM and its own heap. No limit on CPU time. |
+| Pip-OS kernel, back buffers | No access | No access |
+| Peripherals (MMIO) | No access | No access |
+| ROM slot | Read and write | Read only |
+| ROM heap and stack | Read and write | No access |
+| Holotape slot | No access | Read and write |
+| Holotape heap and stack | No access | Read and write |
 
-v2 depends on the cache and MMU setup proven by the framebuffer spike. Its behaviour on real BCM2837 hardware is pending hardware validation.
+- Pip-OS checks the image's CRC before it runs it.
+- An image that faults is ended. A fault is a bad memory access or an undefined instruction.
+- When a holotape faults, control returns to the ROM and `holo_launch` returns `-PIP_EFAULT`.
+- When the ROM faults, Pip-OS shows the fault on screen and stops running the ROM.
+
+The sandbox does not protect an image from itself: its code, heap and stack are all writable. It sets no limit on CPU time, so an image that loops forever holds the device.
+
+The map depends on the cache and MMU setup proven by the framebuffer spike. Its behaviour on real BCM2837 hardware is pending hardware validation.
 
 RobCo-Core provides the mechanism for both levels in [`umode.h`](../guide/api/umode.md): `umode_run()` runs a program in USR mode and returns on exit, fault or kill, the `svc #0` entry hands each call to a handler, `umode_range_ok()` checks pointers, and with the MMU on the task's regions are the only user-accessible memory. A watchdog built on `umode_request_kill()` can also limit CPU time. Pip-OS decides how it uses them: the syscall table, the regions per level and the policy are its own. The library's system-call path preserves more than this ABI asks: every register but r0, and the flags.
 
