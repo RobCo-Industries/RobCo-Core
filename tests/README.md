@@ -83,7 +83,9 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   serial and script backends, the second over the mini UART.
   `test_rtc.py` attaches QEMU's `ds1338` model at I2C address `0x68`.
   `test_spi.py` attaches a `w25q32` SPI flash. `demo` and `chain1` also
-  run with the MMU and caches on. `test_chain.py` boots `chain1`, which validates
+  run with the MMU and caches on. The `demo` menu variant drives a
+  screen menu with arrow keys on raspi0 and raspi2b, with and without
+  an SD image, and checks the audio clicks. `test_chain.py` boots `chain1`, which validates
   `chain2` (placed at 0x00200000 by a loader device) and hands off to it.
   It also covers a bad CRC, a wrong magic, a wrong `load_addr`, a
   `mem_size` past the slot, no image, `chain2` alone, a corrupt boot

@@ -241,6 +241,7 @@ Sharp edges:
 | Edge | Detail |
 |---|---|
 | Tick resolution. | Changes happen on ticks. At 100 Hz a 25 ms note sounds for 30 ms. Use a faster tick for clicks. |
+| Requests start on the next tick. | A second `audio_tone()` or `audio_beep()` before the next tick replaces the first one, which never sounds. Two key clicks in one tick period give one click. |
 | The tick must run first. | `audio_init()` checks it. Calls before a successful init return `AUDIO_ERR_NO_INIT`. |
 | One voice. | A new sound replaces the old one. There is no mixing. |
 | `audio_play()` keeps the pointer. | Do not pass a stack array that goes out of scope while it plays. |

@@ -1,2 +1,3 @@
 # <build-dir> <extra cflags>
 build/mmu -DDEMO_MMU=1
+build/menu -DDEMO_MENU=1 -DROBCO_AUDIO_BACKEND=2

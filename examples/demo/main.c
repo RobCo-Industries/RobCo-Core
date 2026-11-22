@@ -14,6 +14,8 @@
 #include <robco/timer.h>
 #include <robco/uart.h>
 
+#include "menu.h"
+
 #define TICK_HZ     100
 #define HEAP_SIZE   (1024u * 1024u)
 #define LED_PIN     5
@@ -68,6 +70,10 @@ void robco_main(void)
 
     uart_init(115200);
     k_printf("\n@RC stage=demo ev=boot soc=%s\n", board_get()->soc_name);
+
+#if defined(DEMO_MENU) && DEMO_MENU
+    demo_menu();
+#endif
 
 #if defined(DEMO_MMU) && DEMO_MMU
     /* MMU and caches on before every other component, the framebuffer included. */
