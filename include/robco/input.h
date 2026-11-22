@@ -275,4 +275,76 @@ int input_serial_start(int mode);
  */
 int input_script_start(void);
 
+/* Words a project command line may hold, its name included. */
+#define INPUT_SCRIPT_ARGS_MAX 8
+
+/*
+ * What a project handler gets to answer one line.
+ *   write   Writes text to the script UART. Each line the handler writes
+ *           reaches the host with "| " in front, so it never looks like
+ *           a status line. A line ends at '\n'.
+ *   reason  Set it before returning a negative value: the backend
+ *           answers "err <reason>". NULL gives "err failed".
+ */
+typedef struct input_script_reply {
+    void (*write)(const char *text);
+    const char *reason;
+} input_script_reply_t;
+
+/*
+ * A project command. argv[0] is the command name, argc counts at most
+ * INPUT_SCRIPT_ARGS_MAX words. The strings live until the handler returns.
+ * Return 0 for "ok", a negative value for "err <reason>".
+ */
+typedef int (*input_script_handler_t)(int argc, char *argv[], input_script_reply_t *reply,
+                                      void *ctx);
+
+/*
+ * Passes each line whose first word is not a built-in command to fn, with
+ * ctx. NULL removes the handler: such lines then get "err unknown command".
+ * The handler runs in the context that polls the backend, input_poll() or
+ * input_wait() in the main loop, never in an interrupt. While it runs no
+ * other script line is read. It may call the input API, but not
+ * input_poll() or input_wait().
+ */
+void input_script_set_handler(input_script_handler_t fn, void *ctx);
+
+
+/* ---- Pure script line reader, src/lib/input_line.c ---- */
+
+/* Blanks are spaces and tabs. */
+typedef struct input_line {
+    char buf[INPUT_SCRIPT_LINE_MAX];
+    unsigned len;
+    int overflow;
+    char *line;     /* the line after INPUT_LINE_READY, inside buf */
+} input_line_t;
+
+#define INPUT_LINE_NONE     0   /* no line yet, or a blank line */
+#define INPUT_LINE_READY    1   /* l->line holds the trimmed line, not empty */
+#define INPUT_LINE_LONG     2   /* the line was over INPUT_SCRIPT_LINE_MAX - 1 bytes */
+
+void input_line_init(input_line_t *l);
+
+/*
+ * Feeds one byte. CR or LF ends a line. A blank line gives
+ * INPUT_LINE_NONE. A long line gives INPUT_LINE_LONG once, at its end,
+ * and the next byte starts a new line. l->line stays valid until the
+ * next call.
+ */
+int input_line_feed(input_line_t *l, char c);
+
+/* Cuts leading blanks, trailing blanks and CR. Returns the new start. */
+char *input_line_trim(char *s);
+
+/* Ends the first word of s in place. Returns what follows its blanks. */
+char *input_line_word(char *s);
+
+/*
+ * Splits s in place at runs of blanks into argv[0..argc-1] and sets
+ * argv[argc] to NULL: argv holds max + 1 entries. Returns argc, 0 for
+ * a blank s, or -1 for more than max words.
+ */
+int input_line_split(char *s, char *argv[], int max);
+
 #endif

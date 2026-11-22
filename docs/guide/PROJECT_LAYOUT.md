@@ -9,11 +9,11 @@ This page maps the repository and shows where new code and tests go. To use the 
 | `include/robco/` | Public headers. One header per component. See [API.md](./API.md) and the topic files in [api/](./api/). |
 | `src/` | Library sources. Every `.c` and `.S` file one level below `src/` goes into `librobco.a`. |
 | `ld/image.ld.S` | Linker script, run through the C preprocessor with `LINK_ADDR` and the project's `robco_config.h` |
-| `mk/robco.mk` | Build fragment that projects include. Builds the library, links and seals the image. The optional `make sdimage SDIMAGE_DIR=<dir>` target writes `build/sd.img` with `tools/mksdimage.sh`. |
-| `mk/host.mk` | Host unit test build, included by the top-level `Makefile` |
+| `mk/robco.mk` | Build fragment that projects include. Builds the library, links and seals the image. The optional `make sdimage` target stages `SDIMAGE_DIR`, the `SDIMAGE_FILES` pairs and the project's `sdimage-stage::` rules, then writes `build/sd.img` with `tools/mksdimage.sh`. |
+| `mk/host.mk` | Host unit test build. The top-level `Makefile` includes it for the library's tests, and a project includes it for its own with `HOST_TEST_DIR`. See [host tests in a project](../../tests/README.md#host-tests-in-a-project). |
 | `examples/` | Small images that use the library. Each one is also a target test. |
-| `tests/` | Host tests, QEMU harness, target tests, tool tests, canary suite. See [tests/README.md](../../tests/README.md). |
-| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory, `mksdimage.sh` builds an SD card image from a directory |
+| `tests/` | Host tests, QEMU harness, target tests, tool tests, canary suite. `tests/harness` is also the pytest plugin and the interactive runner projects use. `tests/fixtures/sample-project` is a minimal project the tool tests build. See [tests/README.md](../../tests/README.md). |
+| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory, `mksdimage.sh` builds an SD card image from a directory, `check_pins.sh` checks a project's workflow pins against its submodule |
 | `docs/` | This guide, the [specifications](../spec/README.md), [FONTS.md](../FONTS.md) and [HARDWARE_VALIDATION.md](../HARDWARE_VALIDATION.md) |
 | `spikes/` | Three early proofs: UART hello, SD sector read, framebuffer and MMU. They have their own code in `spikes/common/` and do not use the library. |
 | `ci/` | The CI container. See [ci/README.md](../../ci/README.md). |
@@ -111,7 +111,7 @@ build/fault -DHELLO_FAULT=1
 
 ## Add a host test
 
-Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and built as `build/host/test_<name>`. `rc_test.h` gives `TEST()`, `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. See [tests/README.md](../../tests/README.md#host-tests).
+Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and built as `build/host/test_<name>`. `rc_test.h` gives `TEST()`, `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. See [tests/README.md](../../tests/README.md#host-tests). A project runs its own host tests through the same `mk/host.mk`, see [host tests in a project](../../tests/README.md#host-tests-in-a-project).
 
 ## Tool tests
 
@@ -119,7 +119,7 @@ Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and bui
 
 | File | Tests |
 |---|---|
-| `test_rimg_tool.py` | `tools/rimg.py` on images built in memory, one case per error code |
+| `test_rimg_tool.py` | `tools/rimg.py` on images built in memory, one case per error code, `pack`, the META options and the layout against `rimg.h`. `tests/host/test_rimg_pack.c` reads the images `mk/host.mk` packs, so C and Python agree on META images. |
 | `test_check_docs.py` | `tools/check_docs.py` on small trees in a temp directory |
 | `test_font_tools.py` | `tools/font2c.py` and `tools/font_specimen.py` |
 | `test_scheme_ids.py` | The console scheme ids in `console.h` match `con_scheme` in BOOT_PROTOCOL.md |
@@ -127,6 +127,9 @@ Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and bui
 | `test_makefile.py` | The top-level Makefile, such as the `BOARD` variable of `make test-target` |
 | `test_boot_scripts.py` | `tools/fetch_firmware.sh` and `tools/mkbootdir.sh` |
 | `test_fs_interop.py` | `build/host/fs_tool` against mtools images. It builds the tool itself and skips without mtools. |
+| `test_sample_project.py` | `tests/fixtures/sample-project` built from a copy outside the repository: the image and its host tests through `mk/host.mk` |
+| `test_harness_plugin.py` | `harness.plugin` through pytest on a copy of the sample project outside the repository, and `harness.run` driven through a pipe |
+| `test_check_pins.py` | `tools/check_pins.sh` on the workflows in `tests/fixtures/check-pins`, with hand-made submodule git files and a `git` that exits 128 |
 
 ## Add a target test
 

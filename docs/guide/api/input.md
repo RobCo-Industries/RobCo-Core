@@ -211,7 +211,7 @@ The UART keeps no receive times, so the backend stamps every byte with the time 
 int input_script_start(void);
 ```
 
-Reads lines from the mini UART from `input_poll()` and answers each on the mini UART with `ok` or `err <reason>`, followed by CR LF. Returns `0`, `INPUT_ERR_STATE` on a second call, `INPUT_ERR_NO_UART` before a successful `uart_mini_init()`, or `INPUT_ERR_SPACE` when no poller slot is free. After an error you can call it again. Lines end at CR or LF and hold up to 127 characters. Empty lines get no answer.
+Reads lines from the mini UART from `input_poll()` and answers each on the mini UART with `ok` or `err <reason>`, followed by CR LF. Returns `0`, `INPUT_ERR_STATE` on a second call, `INPUT_ERR_NO_UART` before a successful `uart_mini_init()`, or `INPUT_ERR_SPACE` when no poller slot is free. After an error you can call it again. Lines end at CR or LF and hold up to 127 characters. The backend first cuts the leading and trailing blanks, spaces and tabs, of each line, so built-in and project commands see the same words. A blank line gets no answer.
 
 | Line | Events | Answer |
 |---|---|---|
@@ -224,17 +224,60 @@ Reads lines from the mini UART from `input_poll()` and answers each on the mini 
 | `wait <ms>` | Holds the next lines for at least `<ms>`, unsigned decimal | `ok` when the time passed |
 | `stats` | None | `ok pushed=<n> dropped=<n>` |
 
-Words are separated by one space. When the queue drops an event of the line, the answer is `err full`.
+Words are separated by runs of blanks. For `text`, the string is the rest of the line after the blanks that follow `text`, so a run of blanks inside it stays. When the queue drops an event of the line, the answer is `err full`.
 
 | Answer | Cause |
 |---|---|
-| `err unknown command` | First word is not a command |
+| `err unknown command` | First word is not a command and no handler is set |
 | `err unknown key` | `key` with a name `input_key_name()` does not return |
 | `err bad value` | `key` with a third word other than `1` or `0` |
 | `err bad steps` | `dial` with a value that is not a number, is 0 or is out of range |
 | `err one character` | `char` with zero or more than one character |
 | `err bad time` | `wait` with a value that is not an unsigned number |
-| `err line too long` | Line over 127 characters. The line is ignored. |
+| `err line too long` | Line over 127 characters. The backend drops the line and answers once, at its CR or LF. The next line reads normally. |
+
+#### Project commands
+
+```c
+#define INPUT_SCRIPT_ARGS_MAX 8
+
+typedef struct input_script_reply {
+    void (*write)(const char *text);
+    const char *reason;
+} input_script_reply_t;
+
+typedef int (*input_script_handler_t)(int argc, char *argv[], input_script_reply_t *reply,
+                                      void *ctx);
+
+void input_script_set_handler(input_script_handler_t fn, void *ctx);
+```
+
+A project adds its own test and maintenance commands, such as a screen dump or a state report, without taking keys from the console. `input_script_set_handler()` registers one handler. Each line whose first word is not a built-in command goes to it, split into words at runs of blanks: `argv[0]` is the command, `argc` is at most `INPUT_SCRIPT_ARGS_MAX`. More words get `err too many words` and the handler is not called. `NULL` removes the handler. You can call it before or after `input_script_start()`.
+
+The handler answers in two parts:
+
+| Part | How |
+|---|---|
+| Output lines | `reply->write(text)`. Each line reaches the host with `\| ` in front, so a dump line never looks like a status line. A line ends at `\n`. The backend ends an unfinished last line. |
+| Status line | Return 0 for `ok`. Return a negative value for `err <reason>`, with `reply->reason` set first. Without a reason the answer is `err failed`. |
+
+The handler runs in the context that polls the backend: `input_poll()` or `input_wait()` in the main loop, never an interrupt. No other script line is read while it runs, and the console and GPIO backends in tick mode keep running. It may push events and call the other input functions, but not `input_poll()` or `input_wait()`. A handler that never returns, such as one that triggers a panic, is fine: the status line never comes.
+
+```c
+static int command(int argc, char *argv[], input_script_reply_t *reply, void *ctx)
+{
+    if (k_strcmp(argv[0], "board") != 0 || argc != 1) {
+        reply->reason = "unknown command";
+        return -1;
+    }
+    reply->write("soc=bcm2835\n");
+    return 0;
+}
+
+input_script_set_handler(command, NULL);
+```
+
+In a test, `vm.script("board")` sends the line and returns `ScriptReply(status, lines)`, here `("ok", ["soc=bcm2835"])`. See [tests/README.md](../../../tests/README.md#writing-a-target-test). [examples/input](../../../examples/input/main.c) has a `board` command.
 
 ### Pure modules
 
@@ -281,13 +324,23 @@ int input_hold_down(const input_hold_t *h, unsigned code);
 
 The held-key state behind `input_key_down()` and auto-repeat. It keeps one bit per key code below 32 for each of the sources 0 to 3 (`INPUT_HOLD_SOURCES`). `input_hold_init()` clears the held keys and the repeat key. `input_hold_update()` applies a KEY event and ignores other events, codes above 31 and sources above 3. A press marks the key held by its source, makes it the repeat key and returns `1`, so the caller restarts the repeat delay. A release clears only that source's hold and returns `0`. If another source still holds the repeat key, the repeat goes on from that source. A release from a source that did not hold the key changes nothing. `input_hold_down()` returns non-zero while any source holds `code`. No locking: `src/drv/input.c` masks IRQs around it.
 
+```c
+void input_line_init(input_line_t *l);
+int input_line_feed(input_line_t *l, char c);
+char *input_line_trim(char *s);
+char *input_line_word(char *s);
+int input_line_split(char *s, char *argv[], int max);
+```
+
+The line reader and tokenizer behind the script backend. Blanks are spaces and tabs. `input_line_feed()` takes one byte. CR or LF ends a line: a line with words gives `INPUT_LINE_READY` and `l->line` holds it, trimmed, until the next call. A blank line gives `INPUT_LINE_NONE`, like any other byte. A line over `INPUT_SCRIPT_LINE_MAX - 1` bytes gives `INPUT_LINE_LONG` once, at its end, and the next byte starts a new line. `input_line_trim()` cuts leading blanks and trailing blanks and CR in place and returns the new start. `input_line_word()` ends the first word in place and returns what follows its blanks. `input_line_split()` splits at runs of blanks into `argv`, which holds `max + 1` entries, ends it with `NULL` and returns the word count, `0` for a blank string or `-1` for more than `max` words.
+
 ### Context rules
 
 | Function | Context |
 |---|---|
 | `input_push()`, `input_pending()`, `input_flush()`, `input_stats()`, `input_key_down()` | Any |
 | `input_poll()`, `input_wait()` | Main only. They run the main-loop backends. |
-| `input_init()`, `input_set_repeat()`, `input_gpio_*()` setup, `input_serial_start()`, `input_script_start()`, `input_add_poller()` | Main only |
+| `input_init()`, `input_set_repeat()`, `input_gpio_*()` setup, `input_serial_start()`, `input_script_start()`, `input_script_set_handler()`, `input_add_poller()` | Main only |
 | GPIO sampling, repeat, console in tick mode | IRQ, from tick callbacks |
 
 ### Sharp edges

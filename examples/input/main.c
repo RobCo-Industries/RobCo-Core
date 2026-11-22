@@ -65,6 +65,30 @@ static void print_event(const input_event_t *ev)
     k_printf("\n");
 }
 
+/*
+ * A project command on the script channel. "board" answers two lines,
+ * then ok. "board <args>" and unknown commands answer err.
+ */
+static int script_command(int argc, char *argv[], input_script_reply_t *reply, void *ctx)
+{
+    const robco_board_t *b = ctx;
+    char line[48];
+
+    if (k_strcmp(argv[0], "board") != 0) {
+        reply->reason = "unknown command";
+        return -1;
+    }
+    if (argc > 1) {
+        reply->reason = "board takes no arguments";
+        return -1;
+    }
+    k_snprintf(line, sizeof(line), "soc=%s\n", b->soc_name);
+    reply->write(line);
+    k_snprintf(line, sizeof(line), "base=0x%08x", (unsigned)b->periph_base);
+    reply->write(line);     /* no '\n': the backend ends the line */
+    return 0;
+}
+
 void robco_main(void)
 {
     const robco_board_t *b = board_get();
@@ -97,6 +121,7 @@ void robco_main(void)
 #endif
     input_serial_start(INPUT_SERIAL_MAIN);
     script = input_script_start();
+    input_script_set_handler(script_command, (void *)b);
     k_printf("@RC stage=input ev=init mini=%d gpio=%d repeat=%d script=%d early_script=%d "
              "early_getc=%d\n", mini, gpio, rep, script, early_script, early_getc);
 

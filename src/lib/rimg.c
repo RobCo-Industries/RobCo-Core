@@ -14,6 +14,8 @@ static const char *const magics[KIND_COUNT] = {
     RIMG_MAGIC_BOOT, RIMG_MAGIC_ROM1, RIMG_MAGIC_ROBCO78,
 };
 static const uint32_t abi_majors[KIND_COUNT] = { 2, 1, 1 };
+/* ROMs and holotapes carry the META block, stages do not. */
+static const uint8_t has_meta[KIND_COUNT] = { 0, 1, 1 };
 
 typedef struct {
     uint8_t kind;
@@ -87,9 +89,10 @@ static int check_header(const uint8_t *bytes, size_t avail, const rimg_expect_t 
         return RIMG_E_MAGIC;
     }
 
-    /* 2. Header version, size, flags and reserved. */
+    /* 2. Header version, size, flags and reserved. META as the magic requires. */
     if (h->hdr_version != RIMG_HDR_VERSION || h->hdr_size != RIMG_HDR_SIZE ||
-        (h->flags & ~(uint32_t)RIMG_FLAG_META) != 0 || h->reserved != 0) {
+        (h->flags & ~(uint32_t)RIMG_FLAG_META) != 0 || h->reserved != 0 ||
+        ((h->flags & RIMG_FLAG_META) != 0) != has_meta[kind]) {
         return RIMG_E_VERSION;
     }
 

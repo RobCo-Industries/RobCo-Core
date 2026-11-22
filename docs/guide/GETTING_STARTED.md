@@ -64,7 +64,10 @@ hello-pi/
   main.c
   robco-core/          git submodule
   tests/
+    conftest.py
     test_boot.py
+    host/
+      test_format.c
   build/               created by make
   .venv/               created by make venv
 ```
@@ -80,9 +83,13 @@ LINK_ADDR  := 0x8000
 SRCS       := main.c
 CONFIG_H   := robco_config.h
 
-include $(ROBCO_CORE)/mk/robco.mk
+# Host unit tests in tests/host, see "Test pure code on the host".
+HOST_TEST_DIR := tests/host
 
-.PHONY: venv test
+include $(ROBCO_CORE)/mk/robco.mk
+include $(ROBCO_CORE)/mk/host.mk
+
+.PHONY: venv test test-target check-pins
 venv: .venv/.installed
 
 .venv/.installed: $(ROBCO_CORE)/tests/requirements.txt
@@ -90,11 +97,17 @@ venv: .venv/.installed
 	.venv/bin/pip install -q -r $<
 	touch $@
 
-test: all venv
-	.venv/bin/pytest tests -v
+BOARD ?= all
+test: check-pins test-host test-target
+
+test-target: all venv
+	.venv/bin/pytest tests -v --board $(BOARD)
+
+check-pins:
+	$(ROBCO_CORE)/tools/check_pins.sh .github/workflows/ci.yml
 ```
 
-Recipe lines start with a tab. The first five variables and the `include` are all a build needs. The `venv` and `test` targets are for the test you add below.
+Recipe lines start with a tab. The first five variables and the first `include` are all a build needs. The rest is for the tests you add below. `check-pins` needs the workflow from [Run it in CI](#run-it-in-ci); leave it out of `test` until you add one.
 
 Every variable `mk/robco.mk` reads:
 
@@ -111,6 +124,10 @@ Every variable `mk/robco.mk` reads:
 | `EXTRA_CFLAGS` | empty | Added to every compile, library included |
 | `CI` | empty | `CI=1` adds `-Werror` |
 | `SLOT_END` | empty | Sets `ROBCO_SLOT_END` for the linker script |
+| `SDIMAGE_DIR` | empty | A tree `make sdimage` copies to the card root |
+| `SDIMAGE_FILES` | empty | `source:destination` pairs `make sdimage` copies, such as `$(BUILD)/hello-pi.img:HELLO.IMG` |
+| `SDIMAGE_DEPS` | empty | Extra prerequisites of `make sdimage` |
+| `SDIMAGE_MIB` | `64` | Card size in MiB |
 
 The fragment compiles every `.c` and `.S` file under `robco-core/src/*/` into `build/librobco.a`. The linker keeps only what your image uses.
 
@@ -277,11 +294,27 @@ qemu-system-aarch64 -M raspi3b -nographic \
   -device loader,addr=0x80000,cpu-num=0
 ```
 
-A run by hand starts the image with r0 to r3 at 0 and no ATAGS. Real firmware passes a machine id and ATAGS, and enters `raspi2b` and `raspi3b` in HYP mode. The test harness reproduces that. Use it for anything beyond a first look.
+A run by hand starts the image with r0 to r3 at 0 and no ATAGS. Real firmware passes a machine id and ATAGS, and enters `raspi2b` and `raspi3b` in HYP mode. The test harness reproduces that. Its runner does the same with your terminal as the console:
+
+```sh
+PYTHONPATH=robco-core/tests python3 -m harness.run build/hello-pi.img --board raspi3b
+```
+
+Press Ctrl-A, then x, to quit. `--sd build/sd.img` inserts a card, `--mode svc` enters in SVC mode, and `--serial2 tcp:4555` puts the script channel on a TCP port. See [tests/README.md](../../tests/README.md#run-an-image-by-hand).
 
 ## Test it with the harness
 
 `boot()` in `robco-core/tests/harness/boot.py` boots an image the way the firmware does. It loads a firmware stub at `0x0` that parks the other cores, writes ATAGS at `0x100` and enters the image at `0x8000` with the firmware's registers and mode. It connects to the serial port and kills QEMU when the test ends.
+
+The harness is also a pytest plugin. Enable it with three lines in `tests/conftest.py`:
+
+```python
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../robco-core/tests"))
+pytest_plugins = ["harness.plugin"]
+```
+
+It adds the `--board` option and the `board`, `need_mtools` and `robco_build` fixtures. A test that takes `board` runs once per board and skips a board the installed QEMU lacks. `robco_build(directory)` runs `make` once per session and returns the image path. [tests/README.md](../../tests/README.md#the-harness-in-a-project) lists the details.
 
 Create `tests/test_boot.py`:
 
@@ -290,23 +323,15 @@ Create `tests/test_boot.py`:
 
 import os
 import re
-import sys
 
-import pytest
+from harness.boot import boot
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "robco-core", "tests"))
-
-from harness.boot import boot  # noqa: E402
-
-IMAGE = os.path.join(ROOT, "build", "hello-pi.img")
-BOARDS = os.environ.get("BOARD", "raspi0 raspi2b raspi3b").split()
 
 
-@pytest.mark.parametrize("board", BOARDS)
-def test_boot(board):
-    with boot(IMAGE, board) as vm:
-        vm.wait_for("ev=ready", timeout=10)
+def test_boot(board, robco_build):
+    with boot(robco_build(ROOT), board) as vm:
+        vm.wait_for("ev=ready", timeout=10, line=True)
         boots = [m for m in vm.markers() if m["ev"] == "boot"]
         assert boots[0]["stage"] == "hellopi"
         vm.send("abc")
@@ -316,16 +341,17 @@ def test_boot(board):
 Run it:
 
 ```sh
-make test
+make test-target
 ```
 
 ```
 tests/test_boot.py::test_boot[raspi0] PASSED
+tests/test_boot.py::test_boot[raspi1ap] PASSED
 tests/test_boot.py::test_boot[raspi2b] PASSED
 tests/test_boot.py::test_boot[raspi3b] PASSED
 ```
 
-`make test BOARD=raspi2b` runs one board. The first run creates `.venv` from `robco-core/tests/requirements.txt` and builds the firmware stub inside the submodule's ignored `build/` directory.
+`make test-target BOARD=raspi2b` runs one board. The first run creates `.venv` from `robco-core/tests/requirements.txt` and builds the firmware stub inside the submodule's ignored `build/` directory.
 
 What the test uses:
 
@@ -338,11 +364,33 @@ What the test uses:
 | `vm.serial` | All serial text so far, CRLF turned into LF |
 | `vm.screendump(path)` | Writes the framebuffer as a PPM file |
 
-`boot()` also takes `mode="svc"`, `sd=path` for an SD card image, `serial2=True` for the mini UART and `extra_args=[...]` for QEMU. [tests/README.md](../../tests/README.md#writing-a-target-test) has more examples.
+`boot()` also takes `mode="svc"`, `sd=path` for an SD card image, `serial2=True` for the mini UART and `extra_args=[...]` for QEMU. With `serial2=True`, `vm.script("command")` sends a line on the script channel and returns its status and output lines. Your image can answer its own commands there, such as a screen dump, through `input_script_set_handler()`. See [the input reference](./api/input.md#project-commands). [tests/README.md](../../tests/README.md#writing-a-target-test) has more examples.
+
+## Test pure code on the host
+
+Code that touches no hardware, such as parsers and formatting, builds and runs on your computer too, with ASan and UBSan. `mk/host.mk` builds each `tests/host/test_<name>.c` with the host compiler and links it with the pure part of the library, `robco-core/src/lib`. `HOST_SRCS` adds your own pure files, `HOST_INCLUDES` their include directories.
+
+Create `tests/host/test_format.c`:
+
+```c
+#include <robco/klibc.h>
+
+#include "rc_test.h"
+
+TEST(marker)
+{
+    char buf[32];
+
+    k_snprintf(buf, sizeof(buf), "@RC stage=%s", "hellopi");
+    CHECK_STR(buf, "@RC stage=hellopi");
+}
+```
+
+`make test-host` builds `build/host/test_format` and runs it. `rc_test.h` comes from the library and gives `TEST()`, `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. [tests/README.md](../../tests/README.md#host-tests-in-a-project) lists every variable, such as `HOST_CORE_SETS=fs fatfs` to link the file system.
 
 ## Run it in CI
 
-The library ships a reusable GitHub workflow that runs `make CI=1` and then `make CI=1 test BOARD=<board>` per board, inside the pinned CI container. Read the container tag from `robco-core/ci/IMAGE_TAG` and add `.github/workflows/ci.yml`:
+The library ships a reusable GitHub workflow that runs `make CI=1` and then `make CI=1 test BOARD=<board>` per board, inside the pinned CI container. Add `.github/workflows/ci.yml`:
 
 ```yaml
 name: ci
@@ -352,13 +400,45 @@ permissions:
   packages: read
 jobs:
   ci:
-    uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@main
+    uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@<submodule commit>
     with:
       image-tag: <contents of robco-core/ci/IMAGE_TAG>
       test-targets: test
 ```
 
+Pin both values to the submodule. `<submodule commit>` is the full hash `git -C robco-core rev-parse HEAD` prints, never `main`, so CI runs the same library as your build. The tag comes from `robco-core/ci/IMAGE_TAG` at that commit. The `permissions` block is required: the workflow reads the CI image from the GitHub package registry.
+
+Both values are copies, so they drift when you move the submodule. `tools/check_pins.sh` compares them. Run it from the project root:
+
+```sh
+robco-core/tools/check_pins.sh .github/workflows/ci.yml
+```
+
+It prints `check-pins: ok (<commit>, <tag>)`, or names each value that differs and exits 1. It reads the commit from the submodule's git files, so it also works in the CI container, where git refuses a checkout owned by another user. It checks each job that calls `robco-ci.yml`, and each one needs its own `image-tag` in its `with:` block. It is not a full YAML parser: it reads block mappings and a `with:` flow mapping on one line, such as `with: {image-tag: <tag>}`. On anchors, aliases, `<<:` merges, block scalars, tab indents, a flow mapping over several lines or a `with:` given through an expression, it stops and names the line. It needs `python3`, which the CI image has. Add it to `make test` so CI runs it too.
+
 The inputs are documented at the top of [robco-ci.yml](../../.github/workflows/robco-ci.yml).
+
+## Build a card image for QEMU
+
+`make sdimage` writes `build/sd.img`, a card image with an MBR and one FAT partition. It stages the card in `$(SDIMAGE_STAGE)`, which is `build/sdstage`. It copies `SDIMAGE_DIR`, then each `SDIMAGE_FILES` pair, then runs the double-colon target `sdimage-stage`, then packs the stage with `tools/mksdimage.sh`. Set the variables before the `include`. Add your own steps with `sdimage-stage::` rules anywhere in the Makefile:
+
+```make
+SDIMAGE_FILES := build/hello-pi.img:HELLO.IMG config/HELLO.CFG:HELLO/HELLO.CFG
+
+include $(ROBCO_CORE)/mk/robco.mk
+
+sdimage-stage::
+	mkdir -p $(SDIMAGE_STAGE)/HELLO/SAVE
+```
+
+Each `SDIMAGE_FILES` pair is `source:destination`, the destination relative to the card root. The pairs run in order:
+
+- A file source becomes exactly the destination path. A destination that ends in `/` is a directory: `config/HELLO.CFG:HELLO/` writes `HELLO/HELLO.CFG`.
+- A directory source copies its contents into the destination directory and merges with what is there: `assets:HELLO/ASSETS` writes `assets/LOGO.PBM` as `HELLO/ASSETS/LOGO.PBM`, whether `HELLO/ASSETS` exists or not.
+- Missing parent directories are created. A later pair overwrites a file that `SDIMAGE_DIR` or an earlier pair wrote at the same path.
+- Paths cannot contain spaces.
+
+`boot(image, board, sd="build/sd.img")` inserts the card in a test.
 
 ## Put it on an SD card
 

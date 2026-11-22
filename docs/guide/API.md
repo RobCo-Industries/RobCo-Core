@@ -957,7 +957,7 @@ typedef struct __attribute__((packed)) rimg_meta {
 } rimg_meta_t;
 ```
 
-The META block is [specified](../spec/IMAGE_FORMAT.md#meta-block). No code fills it yet.
+The META block is [specified](../spec/IMAGE_FORMAT.md#meta-block). `tools/rimg.py seal --title --icon` fills it, and `tools/rimg.py pack` wraps a raw payload into a complete image with one. `rimg_validate()` requires it on `ROM1` and `ROBCO78` images and refuses it on `BOOT` images.
 
 ```c
 typedef enum rimg_err {
