@@ -1,2 +1,3 @@
 # <build-dir> <extra cflags>
 build/repeat -DINPUT_DEMO_REPEAT=1
+build/drop_oldest -DINPUT_DEMO_DROP_OLDEST=1
