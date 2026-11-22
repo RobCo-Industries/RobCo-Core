@@ -20,10 +20,10 @@
 #define TAG_SET_DEPTH       0x00048005
 #define TAG_SET_PIXEL_ORDER 0x00048006
 
-/* 36 words used, padded to whole 64-byte lines. */
+/* 36 words used, padded to whole 64-byte lines. Fits ROBCO_MBOX_BOUNCE_SIZE. */
 #define FB_MSG_WORDS        48
 
-/* mbox_call() does the cache maintenance. Own lines: no neighbour shares them. */
+/* mbox_call() does the cache maintenance, whatever the alignment. */
 static uint32_t fb_msg[FB_MSG_WORDS] __attribute__((aligned(CACHE_LINE_MAX)));
 static fb_info_t fb_state;
 static int fb_ready;

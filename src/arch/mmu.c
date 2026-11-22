@@ -3,7 +3,10 @@
 #include <robco/board.h>
 #include <robco/cache.h>
 #include <robco/fb.h>
+#include <robco/mbox.h>
 #include <robco/mmu.h>
+
+#include "../drv/mbox_cache.h"
 
 /* Weak: mmu_init() maps the framebuffer only if the image links fb.c. */
 #pragma weak fb_get
@@ -254,6 +257,8 @@ void mmu_enable(void)
     if (!mmu_ready || mmu_enabled()) {
         return;
     }
+    /* Links the mailbox cache path into every image that turns the D-cache on. */
+    __asm__ volatile("" : : "r"(mbox_cache_begin), "r"(mbox_cache_end));
     s = irq_mask_save();
     smp_state = part == PART_ARM1176 ? -1 : set_smp_bit(part);
 

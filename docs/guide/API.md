@@ -216,12 +216,19 @@ k_printf("@RC stage=hello ev=boot soc=%s base=0x%08x\n", b->soc_name, (unsigned)
 | `MBOX_TAG_ARM_MEMORY` | `0x00010005` | Get ARM memory base and size |
 | `MBOX_TAG_CLOCK_RATE` | `0x00030002` | Get clock rate |
 | `MBOX_CLOCK_UART` | `2` | Clock id of the UART reference clock |
+| `MBOX_ERR` | `-1` | Unknown board, misaligned buffer, timeout or error answer |
+| `MBOX_ERR_SIZE` | `-2` | D-cache on and the message neither fits the bounce buffer nor fills whole 64-byte lines |
+| `ROBCO_MBOX_BOUNCE_SIZE` | `256` | Bytes in the bounce buffer. Set it in `robco_config.h` to a multiple of 64, or the build stops. |
 
 ```c
 int mbox_call(uint32_t *buf);
 ```
 
-Sends a property buffer and waits for the answer. `buf` must be 16-byte aligned, and `buf[0]` holds its size in bytes. Returns `0` when the firmware sets the response bit in `buf[1]`, `-1` on a misaligned buffer, an unknown board, a timeout or an error answer. It busy-waits up to about a million status reads in each direction. With the data cache on, it cleans and invalidates the buffer before the request and invalidates it after the answer. Nothing else may write into the cache lines the buffer touches during the call. It is not reentrant: do not call it from IRQ context while main context may be in a call.
+Sends a property buffer and waits for the answer. `buf` must be 16-byte aligned, and `buf[0]` holds its size in bytes. Returns `0` when the firmware sets the response bit in `buf[1]`, else `MBOX_ERR` or `MBOX_ERR_SIZE`. It busy-waits up to about a million status reads in each direction.
+
+With the data cache on, cache maintenance never touches data next to the message, so the caller's alignment does not matter for correctness. A message that starts on a 64-byte boundary and fills whole 64-byte lines is used in place. Any other message is copied through a driver-owned bounce buffer of `ROBCO_MBOX_BOUNCE_SIZE` bytes, and a larger one fails with `MBOX_ERR_SIZE`. The largest library message, from `fb_init()`, is 136 bytes. With the data cache off, `buf` is used in place with no copy. See [mailbox and framebuffer coherence](./api/memory.md#mailbox-and-framebuffer-coherence).
+
+It is not reentrant: do not call it, or the helpers below, from IRQ context.
 
 ```c
 int mbox_get_board_rev(uint32_t *rev);
@@ -230,6 +237,13 @@ int mbox_get_clock_rate(uint32_t clock_id, uint32_t *hz);
 ```
 
 Each sends one tag and returns `0` on success, `-1` on failure. The output stays untouched on failure. `mbox_get_clock_rate()` also fails when the firmware reports a rate of 0.
+
+```c
+int mbox_plan(uintptr_t buf, uint32_t len, uint32_t line,
+              uintptr_t bounce, uint32_t bounce_size, mbox_plan_t *plan);
+```
+
+The pure rule `mbox_call()` applies with the data cache on. It returns `MBOX_PLAN_DIRECT` when `buf` and `len` are multiples of `line`, `MBOX_PLAN_BOUNCE` when `len` fits the line-aligned bounce buffer, and `MBOX_PLAN_REJECT` otherwise or for a `len` of `0`. `plan->start` and `plan->len` give the range to clean before the call and to invalidate after it: the caller's buffer, or the bounce buffer rounded up to whole lines. `tests/host/test_mbox_plan.c` covers it.
 
 ## PL011 UART (`uart.h`)
 

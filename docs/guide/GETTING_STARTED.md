@@ -154,6 +154,7 @@ Every macro the library reads, with its default when you leave it out:
 | `ROBCO_STACK_ABT_SIZE` | `0x1000` | `ld/image.ld.S` | Abort stack |
 | `ROBCO_STACK_UND_SIZE` | `0x1000` | `ld/image.ld.S` | Undefined instruction stack |
 | `ROBCO_SLOT_END` | Not set | `ld/image.ld.S` | End of the image's slot, such as `0x00100000` for an image at `0x8000`. The link fails if the image does not fit. |
+| `ROBCO_MBOX_BOUNCE_SIZE` | `256` | `mbox.h` | Bounce buffer of `mbox_call()` with the data cache on. A multiple of 64. |
 | `ROBCO_CONSOLE_MAX_COLS` | `100` | `console.h` | Screen console columns |
 | `ROBCO_CONSOLE_MAX_ROWS` | `40` | `console.h` | Screen console rows |
 | `ROBCO_FONT` | `ROBCO_FONT_FIXEDSYS` | `font.h` | Built-in console font: Fixedsys Excelsior, or `ROBCO_FONT_SPLEEN` for Spleen. See [FONTS.md](../FONTS.md). |

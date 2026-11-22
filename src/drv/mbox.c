@@ -5,6 +5,8 @@
 #include <robco/mbox.h>
 #include <robco/mmio.h>
 
+#include "mbox_cache.h"
+
 #define MBOX_OFFSET     0xb880
 #define MBOX_READ       0x00
 #define MBOX_STATUS     0x18
@@ -18,52 +20,49 @@
 #define MBOX_TIMEOUT    1000000
 
 /*
- * Weak: images without src/arch/cache.S never turn the D-cache on, so the
- * buffer needs no maintenance there. With the cache module linked, these
- * calls do nothing while SCTLR.C is clear.
+ * Weak: src/drv/mbox_cache.c comes with mmu_enable(). Images without it
+ * never turn the D-cache on, so the buffer needs no maintenance there.
  */
-#pragma weak cache_flush_range
-#pragma weak cache_invalidate_range
+#pragma weak mbox_cache_begin
+#pragma weak mbox_cache_end
 
-/*
- * The GPU reads and writes the buffer in memory, past the ARM caches.
- * Clean it before the request, so the GPU sees it. Invalidate it after
- * the answer, so the CPU does not read lines it fetched before or during
- * the GPU write. cache_invalidate_range() cleans lines only partly inside
- * the buffer instead of dropping them, so neighbouring data survives.
- */
 int mbox_call(uint32_t *buf)
 {
     const robco_board_t *b = board_get();
+    mbox_plan_t plan = { MBOX_PLAN_DIRECT, 0, 0 };
+    uint32_t *msgbuf = buf;
     uint32_t base;
     uint32_t msg;
     uint32_t size;
     uint32_t i;
 
     if (b->periph_base == 0 || ((uintptr_t)buf & 0xf) != 0) {
-        return -1;
+        return MBOX_ERR;
     }
     base = b->periph_base + MBOX_OFFSET;
     size = buf[0];
-    if (cache_flush_range) {
-        cache_flush_range(buf, size);
+    if (mbox_cache_begin) {
+        msgbuf = mbox_cache_begin(buf, size, &plan);
+        if (!msgbuf) {
+            return MBOX_ERR_SIZE;
+        }
     }
 
     /* The VC sees ARM memory through the bus alias. */
-    msg = (((uint32_t)(uintptr_t)buf) | b->bus_alias) & ~0xfu;
+    msg = (((uint32_t)(uintptr_t)msgbuf) | b->bus_alias) & ~0xfu;
     msg |= MBOX_CHANNEL;
 
     mmio_dsb();
     for (i = 0; mmio_read(base + MBOX_STATUS) & MBOX_FULL; i++) {
         if (i > MBOX_TIMEOUT) {
-            return -1;
+            return MBOX_ERR;
         }
     }
     mmio_write(base + MBOX_WRITE, msg);
 
     for (i = 0;; i++) {
         if (i > MBOX_TIMEOUT) {
-            return -1;
+            return MBOX_ERR;
         }
         if (mmio_read(base + MBOX_STATUS) & MBOX_EMPTY) {
             continue;
@@ -74,17 +73,14 @@ int mbox_call(uint32_t *buf)
         }
     }
     mmio_dmb();
-    if (cache_invalidate_range) {
-        cache_invalidate_range(buf, size);
+    if (mbox_cache_end) {
+        mbox_cache_end(buf, msgbuf, size, &plan);
     }
 
-    return ((volatile uint32_t *)buf)[1] == MBOX_RESPONSE ? 0 : -1;
+    return ((volatile uint32_t *)buf)[1] == MBOX_RESPONSE ? 0 : MBOX_ERR;
 }
 
-/*
- * One cache line of its own: no other data shares it during a call.
- * mbox_call() is not reentrant, so one buffer serves every helper.
- */
+/* mbox_call() is not reentrant, so one buffer serves every helper. */
 static uint32_t tag_buf[16] __attribute__((aligned(CACHE_LINE_MAX)));
 
 /* Single-tag request with two value words. Returns the buffer, values in [5..6], or NULL. */

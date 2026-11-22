@@ -206,7 +206,7 @@ QEMU does not model caches, cache timing, the SMP bit or memory types. These poi
 | Check | How |
 |---|---|
 | Fill and copy run faster with the caches on | `ev=bench` lines of `examples/mmu` |
-| Mailbox answers stay right with the cache on | `ev=mbox phase=on mismatches=0` in `examples/mmu` |
+| Mailbox answers stay right with the cache on | `ev=mbox phase=on mismatches=0` and `ev=guard bad_guard=0 bad_reply=0` in `examples/mmu` |
 | The framebuffer shows every write without a flush | Test pattern of `examples/mmu`, console of `examples/demo` `build/mmu` |
 | `robco_handoff()` from a cached stage | `examples/chain1` `build/mmu` |
 | `mmu_disable()` from cached code returns | `ev=mmu_off` and `ev=mbox phase=after` in `examples/mmu` |
@@ -272,6 +272,8 @@ Invalidates the whole instruction cache and the branch predictor. It applies the
 
 ### Mailbox and framebuffer coherence
 
-`mbox_call()` cleans and invalidates the property buffer before the request, so the GPU reads it from memory. After the answer it calls `cache_invalidate_range()`, so the CPU reads the GPU's answer, not a line prefetched during the call. The buffer stays caller-provided and 16-byte aligned. Its edge lines are cleaned, not dropped. Nothing else may write into the cache lines the buffer shares while the call runs. The library's own buffers are aligned to `CACHE_LINE_MAX` and padded to whole lines.
+The GPU reads and writes the property buffer in memory, past the ARM caches. A clean after the answer would write the CPU's copy of a shared line over the GPU's reply, so `mbox_call()` never runs maintenance on a line that holds other data. With the data cache on, it uses the caller's buffer in place only when the buffer starts on a 64-byte boundary and fills whole 64-byte lines. Otherwise it copies the message into a bounce buffer that is aligned to `CACHE_LINE_MAX` and sized in whole lines. It cleans those lines before the request and invalidates them after the answer, then copies the reply back. Nothing else lives in those lines, so the invalidate loses nothing. A message larger than `ROBCO_MBOX_BOUNCE_SIZE` that is not line-isolated fails with `MBOX_ERR_SIZE`. The bounce buffer and this code come with `mmu_enable()`, so images that never turn the cache on do not link them.
+
+The framebuffer itself is mapped non-cacheable, so it has no such hazard.
 
 `fb_init()` calls `mmu_map(addr, size, MMU_ATTR_FB)` when the image links the MMU module. `mmu_init()` maps the framebuffer when `fb_init()` ran first.
