@@ -49,8 +49,9 @@
 #ifndef ROBCO_IMG_SUBTYPE
 #define ROBCO_IMG_SUBTYPE RIMG_BOOT_EXAMPLE
 #endif
+/* (major << 16) | minor. BOOT images use major 2, the boot info version. */
 #ifndef ROBCO_IMG_ABI_VERSION
-#define ROBCO_IMG_ABI_VERSION 1
+#define ROBCO_IMG_ABI_VERSION (2 << 16)
 #endif
 #ifndef ROBCO_IMG_VERSION
 #define ROBCO_IMG_VERSION 0
