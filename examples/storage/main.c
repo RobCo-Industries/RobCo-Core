@@ -78,6 +78,7 @@ static const char *fs_rc_name(int rc)
     case FS_ERR_NOMEM:       return "nomem";
     case FS_ERR_MKFS:        return "mkfs";
     case FS_ERR_TOOBIG:      return "toobig";
+    case FS_ERR_MOUNTED:     return "mounted";
     default:                 return "unknown";
     }
 }

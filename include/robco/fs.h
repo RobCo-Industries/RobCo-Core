@@ -36,6 +36,7 @@ enum {
     FS_ERR_NOMEM = -18,      /* a work buffer could not be allocated */
     FS_ERR_MKFS = -19,       /* the device cannot hold a FAT volume */
     FS_ERR_TOOBIG = -20,     /* the file is larger than the buffer */
+    FS_ERR_MOUNTED = -21,    /* the device, or blocks of it, are already mounted */
 };
 
 #define FS_VOLUMES   2u   /* volumes mounted at the same time */
@@ -106,6 +107,11 @@ typedef struct {
 
 const char *fs_strerror(int err);
 
+/*
+ * Returns FS_ERR_MOUNTED when a mounted volume already uses dev, or a
+ * part_open() device whose blocks overlap dev's on the same parent.
+ * Other wrapper devices are opaque: never mount two views of one medium.
+ */
 int fs_mount(const char *volume, blk_dev_t *dev);
 /*
  * Flushes the device, then detaches the volume. If the device's sync
@@ -113,6 +119,7 @@ int fs_mount(const char *volume, blk_dev_t *dev);
  * can call it again.
  */
 int fs_unmount(const char *volume);
+/* Returns FS_ERR_MOUNTED for a mounted device, checked as fs_mount() does. */
 int fs_mkfs(blk_dev_t *dev, const fs_mkfs_opts_t *opts);
 int fs_statvfs(const char *volume, fs_statvfs_t *out);
 int fs_chdir(const char *path);

@@ -130,3 +130,17 @@ int part_open(blk_dev_t *dev, const part_info_t *p, blk_dev_t *out)
     out->priv = (void *)(uintptr_t)p;
     return 0;
 }
+
+blk_dev_t *part_parent_of(const blk_dev_t *dev, uint64_t *start_lba)
+{
+    const part_info_t *p;
+
+    if (dev == NULL || dev->read != part_read || dev->priv == NULL) {
+        return NULL;
+    }
+    p = dev->priv;
+    if (start_lba != NULL) {
+        *start_lba = p->start_lba;
+    }
+    return p->dev;
+}

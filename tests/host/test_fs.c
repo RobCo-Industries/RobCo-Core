@@ -399,11 +399,17 @@ TEST(two_volumes)
     memset(disk_b, 0, DISK_SIZE);
     CHECK_EQ(blk_ram_init(&dev_b, disk_b, DISK_SIZE, 0), 0);
     CHECK_EQ(fs_mkfs(&dev_b, NULL), FS_OK);
-    CHECK_EQ(fs_mkfs(&dev_a, NULL), FS_ERR_BUSY); /* mounted */
+    CHECK_EQ(fs_mkfs(&dev_a, NULL), FS_ERR_MOUNTED);
     CHECK_EQ(fs_mount("a", &dev_b), FS_ERR_BUSY);  /* name in use */
     CHECK_EQ(fs_mount("b", &dev_b), FS_OK);
-    CHECK_EQ(fs_mount("c", &dev_b), FS_ERR_BUSY);  /* no free slot */
-    CHECK_EQ(fs_mkfs(&dev_b, NULL), FS_ERR_BUSY);
+    CHECK_EQ(fs_mount("c", &dev_b), FS_ERR_MOUNTED);
+    CHECK_EQ(fs_mkfs(&dev_b, NULL), FS_ERR_MOUNTED);
+    {
+        blk_dev_t other;
+
+        CHECK_EQ(blk_ram_init(&other, disk_b, DISK_SIZE, 0), 0);
+        CHECK_EQ(fs_mount("c", &other), FS_ERR_BUSY); /* no free slot */
+    }
 
     put("a:/SAME.TXT", "on a");
     put("b:/SAME.TXT", "on b");
@@ -419,6 +425,22 @@ TEST(two_volumes)
     CHECK_EQ(fs_read_file("a:/SAME.TXT", buf, sizeof(buf), &n), FS_ERR_NOVOL);
     CHECK_EQ(fs_unmount("b"), FS_OK);
     CHECK_EQ(fs_read_file("/SAME.TXT", buf, sizeof(buf), &n), FS_ERR_NOVOL);
+    reset();
+}
+
+/* One medium under two volume names would corrupt it. */
+TEST(same_device_twice)
+{
+    setup();
+    CHECK_EQ(fs_mount("b", &dev_a), FS_ERR_MOUNTED);
+    CHECK_EQ(fs_mount("a", &dev_a), FS_ERR_BUSY); /* the name is checked first */
+    CHECK_EQ(fs_mkfs(&dev_a, NULL), FS_ERR_MOUNTED);
+    put("/A.TXT", "kept");
+    CHECK_EQ(fs_unmount("a"), FS_OK);
+    CHECK_EQ(fs_mount("b", &dev_a), FS_OK);
+    expect("b:/A.TXT", "kept");
+    CHECK_EQ(fs_mount("a", &dev_a), FS_ERR_MOUNTED);
+    CHECK_STR(fs_strerror(FS_ERR_MOUNTED), "device already mounted");
     reset();
 }
 
@@ -505,10 +527,10 @@ TEST(strerror_names)
 {
     int e;
 
-    for (e = 0; e >= FS_ERR_TOOBIG; e--) {
+    for (e = 0; e >= FS_ERR_MOUNTED; e--) {
         CHECK(strcmp(fs_strerror(e), "unknown error") != 0);
     }
-    CHECK_STR(fs_strerror(FS_ERR_TOOBIG - 1), "unknown error");
+    CHECK_STR(fs_strerror(FS_ERR_MOUNTED - 1), "unknown error");
     CHECK_STR(fs_strerror(1), "unknown error");
     CHECK_STR(fs_strerror(FS_ERR_NOSPC), "no space left");
 }

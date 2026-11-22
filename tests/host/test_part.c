@@ -199,3 +199,44 @@ TEST(fs_in_partition)
     CHECK_MEM(buf, "partition", 9);
     CHECK_EQ(fs_unmount("p0"), FS_OK);
 }
+
+/* Partitions of one disk: overlapping ranges cannot be mounted twice. */
+TEST(mount_overlapping_partitions)
+{
+    blk_dev_t dev = setup();
+    part_info_t p[4], wide;
+    blk_dev_t v0, v0_again, v1, v_wide;
+    uint64_t start = 99;
+
+    entry(0, 0x00, PART_TYPE_FAT16, 64, 1024);
+    entry(1, 0x00, PART_TYPE_FAT16, 2048, 1024);
+    CHECK_EQ(part_scan(&dev, p, 4), 2);
+    CHECK_EQ(part_open(&dev, &p[0], &v0), 0);
+    CHECK_EQ(part_open(&dev, &p[0], &v0_again), 0);
+    CHECK_EQ(part_open(&dev, &p[1], &v1), 0);
+    CHECK(part_parent_of(&v1, &start) == &dev);
+    CHECK_EQ(start, 2048);
+    CHECK(part_parent_of(&dev, &start) == NULL);
+    CHECK(part_parent_of(rc_launder(NULL), NULL) == NULL);
+    CHECK_EQ(fs_mkfs(&v0, NULL), FS_OK);
+    CHECK_EQ(fs_mkfs(&v1, NULL), FS_OK);
+
+    CHECK_EQ(fs_mount("p0", &v0), FS_OK);
+    CHECK_EQ(fs_mount("again", &v0_again), FS_ERR_MOUNTED);
+    CHECK_EQ(fs_mount("whole", &dev), FS_ERR_MOUNTED);
+    CHECK_EQ(fs_mkfs(&dev, NULL), FS_ERR_MOUNTED);
+    CHECK_EQ(fs_mkfs(&v0_again, NULL), FS_ERR_MOUNTED);
+    /* A range that starts inside partition 0. */
+    wide = p[1];
+    wide.start_lba = 1000;
+    wide.block_count = 1100;
+    CHECK_EQ(part_open(&dev, &wide, &v_wide), 0);
+    CHECK_EQ(fs_mount("wide", &v_wide), FS_ERR_MOUNTED);
+    /* The disjoint partition mounts. */
+    CHECK_EQ(fs_mount("p1", &v1), FS_OK);
+    CHECK_EQ(fs_write_file_atomic("p1:/B.TXT", "b", 1), FS_OK);
+    CHECK_EQ(fs_unmount("p0"), FS_OK);
+    CHECK_EQ(fs_mount("again", &v0_again), FS_OK);
+    CHECK_EQ(fs_unmount("again"), FS_OK);
+    CHECK_EQ(fs_unmount("p1"), FS_OK);
+}

@@ -4,6 +4,7 @@
  * objects in caller memory; the asserts below keep fs.h large enough.
  */
 #include <robco/klibc.h>
+#include <robco/part.h>
 
 #include "fs_priv.h"
 
@@ -113,6 +114,7 @@ const char *fs_strerror(int err)
     case FS_ERR_NOMEM:       return "out of memory";
     case FS_ERR_MKFS:        return "cannot format";
     case FS_ERR_TOOBIG:      return "file too big";
+    case FS_ERR_MOUNTED:     return "device already mounted";
     default:                 return "unknown error";
     }
 }
@@ -210,6 +212,55 @@ static int valid_vol_name(const char *name)
     return 1;
 }
 
+/* The device under any part_open() layers, and dev's first block on it. */
+static blk_dev_t *dev_root(blk_dev_t *dev, uint64_t *start)
+{
+    blk_dev_t *parent;
+    uint64_t off;
+    int depth;
+
+    *start = 0;
+    for (depth = 0; depth < 8; depth++) {
+        parent = part_parent_of(dev, &off);
+        if (parent == NULL) {
+            break;
+        }
+        *start += off;
+        dev = parent;
+    }
+    return dev;
+}
+
+/* 1 when a and b reach the same medium through overlapping blocks. */
+static int devs_overlap(blk_dev_t *a, blk_dev_t *b)
+{
+    uint64_t sa, sb, ea, eb;
+
+    if (a == b) {
+        return 1;
+    }
+    if (dev_root(a, &sa) != dev_root(b, &sb)) {
+        return 0;
+    }
+    /* A size of 0 means unknown: the device may reach the end. */
+    ea = a->block_count != 0 ? sa + a->block_count : UINT64_MAX;
+    eb = b->block_count != 0 ? sb + b->block_count : UINT64_MAX;
+    return sa < eb && sb < ea;
+}
+
+/* FS_ERR_MOUNTED when a volume, mounted or being formatted, uses dev. */
+static int check_dev_free(blk_dev_t *dev)
+{
+    int i;
+
+    for (i = 0; i < (int)FF_VOLUMES; i++) {
+        if (fs_vols[i].dev != NULL && devs_overlap(fs_vols[i].dev, dev)) {
+            return FS_ERR_MOUNTED;
+        }
+    }
+    return FS_OK;
+}
+
 int fs_mount(const char *volume, blk_dev_t *dev)
 {
     char drv[3];
@@ -220,6 +271,11 @@ int fs_mount(const char *volume, blk_dev_t *dev)
     }
     if (find_vol(volume, k_strlen(volume)) >= 0) {
         return FS_ERR_BUSY;
+    }
+    /* Two FatFs volumes over one medium keep separate caches and corrupt it. */
+    rc = check_dev_free(dev);
+    if (rc != FS_OK) {
+        return rc;
     }
     for (i = 0; i < (int)FF_VOLUMES && slot < 0; i++) {
         if (fs_vols[i].dev == NULL) {
@@ -860,10 +916,11 @@ int fs_mkfs(blk_dev_t *dev, const fs_mkfs_opts_t *opts)
         (opts != NULL && opts->fmt >= sizeof(fmts))) {
         return FS_ERR_INVAL;
     }
+    rc = check_dev_free(dev);
+    if (rc != FS_OK) {
+        return rc;
+    }
     for (i = 0; i < (int)FF_VOLUMES; i++) {
-        if (fs_vols[i].dev == dev) {
-            return FS_ERR_BUSY;
-        }
         if (fs_vols[i].dev == NULL && slot < 0) {
             slot = i;
         }

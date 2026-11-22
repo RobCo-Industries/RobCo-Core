@@ -47,4 +47,11 @@ int part_scan(blk_dev_t *dev, part_info_t *out, unsigned max);
  */
 int part_open(blk_dev_t *dev, const part_info_t *p, blk_dev_t *out);
 
+/*
+ * When dev came from part_open(), returns its parent device and stores the
+ * partition's first block on the parent in *start_lba. Returns NULL for any
+ * other device. start_lba may be NULL.
+ */
+blk_dev_t *part_parent_of(const blk_dev_t *dev, uint64_t *start_lba);
+
 #endif

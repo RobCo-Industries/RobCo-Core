@@ -148,6 +148,12 @@ Fills `out` with a device whose block 0 is `p->start_lba` on `dev`. `out` has `p
 Returns `BLK_ERR_PARAM` when an argument is NULL, `p->dev` is not `dev`, or `p->block_count` is `0`. A superfloppy entry from a device with unknown size has `block_count` `0`. Returns `BLK_ERR_RANGE` when the partition does not fit the device.
 
 ```c
+blk_dev_t *part_parent_of(const blk_dev_t *dev, uint64_t *start_lba);
+```
+
+When `dev` came from `part_open()`, returns the parent device and stores the partition's first block on it in `*start_lba`. Returns NULL for any other device. `start_lba` may be NULL. `fs_mount()` uses it to refuse overlapping partitions.
+
+```c
 part_info_t parts[PART_MAX];
 blk_dev_t vol;
 
@@ -314,6 +320,7 @@ Every function returns `FS_OK` (`0`) or a count on success, or a negative code:
 | `FS_ERR_NOMEM` | `-18` | `out of memory` | A work buffer was too small |
 | `FS_ERR_MKFS` | `-19` | `cannot format` | The device cannot hold the requested FAT type |
 | `FS_ERR_TOOBIG` | `-20` | `file too big` | The file is larger than the buffer |
+| `FS_ERR_MOUNTED` | `-21` | `device already mounted` | A mounted volume already uses the device or some of its blocks |
 
 Device errors map as follows:
 
@@ -354,10 +361,13 @@ int fs_unmount(const char *volume);
 |---|---|
 | `FS_ERR_INVAL` | Bad name, NULL `dev`, or a block size other than 512 |
 | `FS_ERR_BUSY` | The name is in use, or both slots are taken |
+| `FS_ERR_MOUNTED` | A mounted volume already uses `dev`, or a `part_open()` device whose blocks overlap `dev`'s on the same parent |
 | `FS_ERR_NOFS` | No FAT volume on `dev` |
 | Device error | Block 0 cannot be read |
 
 A read-only device mounts, and every write then returns `FS_ERR_RO`.
+
+Two volumes over one medium keep separate caches and corrupt it at the first write, so `fs_mount()` checks the device first. It compares the device pointer, then follows `part_open()` devices down to their parent with `part_parent_of()` and compares block ranges. A device of unknown size counts as reaching the end of its parent. Other wrapper devices are opaque: the check cannot see that two of them share a medium, so never mount two such views of one card.
 
 `fs_unmount()` calls `blk_sync()` on the device first. If that fails, it returns the device error and the volume stays mounted, so you can call it again. Then it forgets the volume. It does not flush open files: close them first. Handles still open on the volume return `FS_ERR_BADF` afterwards, even after a new mount. Returns `FS_ERR_NOVOL` for a name that is not mounted. If the volume was the default, the default moves to the other mounted volume, if any.
 
@@ -387,12 +397,13 @@ typedef struct {
 } fs_mkfs_opts_t;
 ```
 
-Writes a new empty FAT volume over all of `dev`, with no partition table and two FATs, then syncs the device. `dev` must not be mounted, and one volume slot must be free. NULL `opts` means `FS_MKFS_ANY` with a cluster size picked from the device size. `cluster_bytes` `0` also picks a size.
+Writes a new empty FAT volume over all of `dev`, with no partition table and two FATs, then syncs the device. No mounted volume may use `dev` or any of its blocks, and one volume slot must be free. NULL `opts` means `FS_MKFS_ANY` with a cluster size picked from the device size. `cluster_bytes` `0` also picks a size.
 
 | Result | When |
 |---|---|
 | `FS_ERR_INVAL` | NULL `dev`, a block size other than 512, or an unknown `fmt` |
-| `FS_ERR_BUSY` | `dev` is mounted, or no slot is free |
+| `FS_ERR_MOUNTED` | `dev` or some of its blocks are mounted, checked as `fs_mount()` does |
+| `FS_ERR_BUSY` | No slot is free |
 | `FS_ERR_MKFS` | The device is too small or too large for the requested type |
 | `FS_ERR_RO` | Read-only device or build |
 
