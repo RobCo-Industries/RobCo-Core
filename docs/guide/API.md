@@ -1156,7 +1156,46 @@ void robco_exc_report(uint32_t type, uint32_t pc, uint32_t lr, uint32_t spsr)
 
 Prints `@RC stage=<name> ev=exception type=<type> pc=0x... lr=0x... spsr=0x... dfsr=0x... dfar=0x... ifsr=0x...` through `k_printf()` and halts. `ifsr` is the prefetch abort status. `lr` is the banked LR of the interrupted mode. If the UART is not initialised yet, it calls `uart_init(115200)` first, so a fault before `uart_init()` still prints. On an unknown board that does nothing and the report is silent.
 
-To handle SVC or FIQ yourself, define a strong `robco_vec_svc` or `robco_vec_fiq` in assembly. The library versions are weak. The undefined instruction, prefetch abort and data abort stubs are not replaceable.
+To handle SVC or FIQ yourself, define a strong `robco_vec_svc` or `robco_vec_fiq` in assembly. The library versions are weak. [`umode.h`](./api/umode.md) provides a strong `robco_vec_svc` and `robco_vec_irq` when the image links it. To handle undefined instructions and aborts, use the hook below.
+
+### Exception frames and the fault hook
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `EXC_NOT_HANDLED` | `0` | Hook result: run the fatal path |
+| `EXC_RESUME` | `1` | Hook result: restore every register from the frame |
+| `EXC_FRAME_SIZE` | `80` | `sizeof(exc_frame_t)` |
+| `EXC_FRAME_SP`, `EXC_FRAME_LR`, `EXC_FRAME_PC`, `EXC_FRAME_CPSR`, `EXC_FRAME_FSR`, `EXC_FRAME_FAR` | `52` to `72` | Field offsets for assembly |
+
+```c
+typedef struct exc_frame {
+    uint32_t r[13];     /* r0-r12 */
+    uint32_t sp, lr;    /* banked sp and lr of the mode in cpsr */
+    uint32_t pc;        /* faulting instruction; after the svc for a system call */
+    uint32_t cpsr;      /* cpsr of the interrupted context */
+    uint32_t fsr, far;  /* DFSR/DFAR (data abort), IFSR/IFAR (prefetch abort), else 0 */
+    uint32_t pad;
+} exc_frame_t;
+typedef int (*exc_hook_t)(unsigned type, exc_frame_t *frame);
+```
+
+```c
+exc_hook_t exc_set_hook(exc_hook_t hook);
+```
+
+Installs the hook (`0` removes it) and returns the previous one. Linking this function replaces the default undefined instruction, prefetch abort and data abort stubs with entries that save a full `exc_frame_t` on the ABT or UND stack and call the hook with IRQs masked. The frame `pc` is the faulting instruction in ARM and Thumb state. The hook returns `EXC_RESUME` to restore every register, the banked `sp` and `lr` of the target mode and `cpsr` from the possibly changed frame, then return to `frame->pc`. It can skip an instruction, change the return address or switch the saved mode. Only USR, SYS, SVC and IRQ can be resumed. Any other mode, or `EXC_NOT_HANDLED`, or no hook, runs `robco_exc_report()` with the same one-line format as before. `mmio_probe()` keeps working and takes precedence: the hook never sees a probe fault. Faults in FIQ mode report wrong `r8` to `r12`, and a fault in ABT or UND mode itself reports that mode's `sp` and `lr` as the entry's own. Both stay fatal.
+
+```c
+void exc_print_frame(const exc_frame_t *frame);
+```
+
+Prints `@RC stage=<name> ev=frame r0=0x... ... r12=0x... sp=0x... lr=0x... pc=0x... cpsr=0x... fsr=0x... far=0x...`. Call it from a hook before returning `EXC_NOT_HANDLED` to log the full frame.
+
+```c
+void robco_exc_dispatch(unsigned type, exc_frame_t *frame);
+```
+
+Called by the frame-saving entries. Do not call it. It returns only when the hook resumes a valid mode.
 
 The `hello` fault variant (`examples/hello/VARIANTS`) runs an undefined instruction. On `raspi0` it prints:
 

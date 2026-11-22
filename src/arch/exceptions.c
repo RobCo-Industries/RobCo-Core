@@ -44,6 +44,51 @@ void robco_exc_report(uint32_t type, uint32_t pc, uint32_t lr, uint32_t spsr)
     robco_halt();
 }
 
+#define MODE_MASK 0x1fu
+
+/*
+ * Set by exc_set_hook() in src/arch/exc_frame.S. Defined here so a
+ * reference to it never pulls that object, and its strong vectors, in.
+ */
+exc_hook_t robco_exc_hook;
+
+void exc_print_frame(const exc_frame_t *f)
+{
+    unsigned i;
+
+    k_printf("@RC stage=%s ev=frame", ROBCO_STAGE_NAME);
+    for (i = 0; i < 13; i++) {
+        k_printf(" r%u=0x%08x", i, (unsigned)f->r[i]);
+    }
+    k_printf(" sp=0x%08x lr=0x%08x pc=0x%08x cpsr=0x%08x fsr=0x%08x far=0x%08x\n",
+             (unsigned)f->sp, (unsigned)f->lr, (unsigned)f->pc, (unsigned)f->cpsr,
+             (unsigned)f->fsr, (unsigned)f->far);
+}
+
+/* Modes the resume path can restore: their sp and lr bank differs from ABT and UND. */
+static int resumable(uint32_t cpsr)
+{
+    switch (cpsr & MODE_MASK) {
+    case 0x10: /* USR */
+    case 0x12: /* IRQ */
+    case 0x13: /* SVC */
+    case 0x1f: /* SYS */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+void robco_exc_dispatch(unsigned type, exc_frame_t *frame)
+{
+    exc_hook_t hook = robco_exc_hook;
+
+    if (hook != 0 && hook(type, frame) == EXC_RESUME && resumable(frame->cpsr)) {
+        return;
+    }
+    robco_exc_report(type, frame->pc, frame->lr, frame->cpsr);
+}
+
 /*
  * Default IRQ dispatcher, used when the image does not link the
  * interrupt driver (src/drv/irq_bcm.c). An IRQ is then unexpected.
