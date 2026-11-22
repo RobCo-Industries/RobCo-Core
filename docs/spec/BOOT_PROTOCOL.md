@@ -21,7 +21,7 @@ The chains are separate. MFBootAgent never loads Pip-OS. Every stage also boots 
 Each loader:
 
 1. Mounts the FAT partition on the SD card through FatFs.
-2. Opens the file and validates it as described in [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). Emits `ev=load` before the read and `ev=error` on failure.
+2. Opens the file, reads it into the slot and validates it as described in [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). A failed attempt emits `ev=error` with the code and the path. A switch to the backup file emits `ev=fallback`. Once an image has loaded and passed every check, the stage emits `ev=load` with its path, size and CRC.
 3. Updates the boot info, as described below.
 4. Prepares the CPU for the jump.
 5. Jumps to `load_addr` with the registers in the next table. Emits `ev=jump` right before.
@@ -309,9 +309,13 @@ value  = 1*( VCHAR except SP )
 Example:
 
 ```
-@RC stage=bios ev=load path=/ROBCO/MFBOOT.SYS size=81920
-@RC stage=bios ev=jump addr=0x00200000 next=bootagent
+@RC stage=bios ev=error code=crc path=/ROBCO/MFBOOT.SYS
+@RC stage=bios ev=fallback path=/ROBCO/MFBOOT.BAK from=/ROBCO/MFBOOT.SYS to=/ROBCO/MFBOOT.BAK reason=crc
+@RC stage=bios ev=load path=/ROBCO/MFBOOT.BAK size=81920 crc=0x1c291ca3 addr=0x00200000 name=mfboot
+@RC stage=bios ev=jump entry=0x00200000
 ```
+
+A marker may carry more keys than the table below lists, and a stage may print events the table does not list. Readers ignore keys and events they do not know.
 
 ### Events
 
@@ -319,12 +323,14 @@ Example:
 |---|---|---|
 | `boot` | `midr soc base board_rev mem entry_mode` | First marker of every image. `entry_mode` is the CPU mode at entry, such as `svc` or `hyp`. |
 | `handoff` | `trusted=0\|1` | Result of the trust rule. Not printed by first stages. |
-| `load` | `path size` | Loader opened an image |
-| `fallback` | `path` | Loader moves to a fallback file |
-| `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |
-| `jump` | `addr next` | Last line before entering the next stage |
+| `mount` | `lba blocks` | The stage mounted the FAT partition that holds the next image |
+| `load` | `path size crc addr name` | An image loaded and passed every validation step. `size` is `file_size`, `crc` the header CRC, `addr` the load address, `name` the header name. Without `path`, the image was already in its slot and the stage only validated it. |
+| `fallback` | `path from to reason` | The loader moves to the backup file `path`, the same as `to`. `from` is the primary file and `reason` the code it failed with. |
+| `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md), or `io` when the card or the mount failed. `path` names the file the attempt was for. Other failures use their own `code`, such as `mmu`, with no `path`. On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |
+| `jump` | `entry` | Last line before entering the next stage at `entry` |
 | `ready` | | Stage reached its main screen or prompt |
-| `shell` | `reason` | Stage entered its emergency shell |
+| `shell` | `reason` | Stage entered its emergency shell. `reason` is the `code` of the error that caused it. |
+| `halt` | | The stage stops on purpose |
 | `exception` | `type pc lr spsr dfsr dfar` | CPU exception. `type` is `undef`, `svc`, `prefetch_abort`, `data_abort`, `irq`, `fiq` or `reset`. The stage halts after it. |
 | `panic` | `msg` | Fatal software error. `msg` uses `_` for spaces. |
 | `holo_launch` | `path` | Pip-OS starts a holotape |
@@ -357,3 +363,5 @@ All stages emit `exception` and `panic` when those happen. Deitrix runs in USR m
 | Any | CPU exception in a stage | `ev=exception`, then halt |
 
 The emergency shell runs on the PL011 and on the screen console. It accepts at least `help`, `info` and `reboot`. `info` prints the boot info fields. `reboot` uses the watchdog.
+
+Each real stage provides its own emergency shell. RobCo-Core has none: `loader_load_fallback()` returns the result and prints nothing, and the stage decides what to print and where to go. `examples/chain1`, built with `CHAIN1_SD`, follows the RETROS-BIOS rows above for its markers. Where RETROS-BIOS would enter its shell, it prints `ev=shell` with the reason, then `ev=halt`, and halts.

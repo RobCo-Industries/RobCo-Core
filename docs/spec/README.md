@@ -85,7 +85,9 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | DTB and ATAGS copy, `bootinfo_copy_fw_blob()` | Implemented |
 | Stage loading from the SD card with fallback, `loader_load_fallback()`, in `examples/chain1` | Implemented, pending hardware validation |
 | `BOOT.CFG` | Specified |
-| Other `@RC` events, failure handling, emergency shell | Specified |
+| `mount`, `load`, `fallback`, `error`, `shell`, `halt` and `jump` markers and the RETROS-BIOS failure rows, in `examples/chain1` | Implemented |
+| Emergency shell, a job of each stage | Specified |
+| Other `@RC` events | Specified |
 
 ### PIPOS_ABI.md
 
