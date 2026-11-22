@@ -119,9 +119,18 @@ clean:
 # then packs it:
 #   1. builds SDIMAGE_DEPS and the sources of SDIMAGE_FILES;
 #   2. copies the tree in SDIMAGE_DIR, if set;
-#   3. copies each SDIMAGE_FILES pair "source:destination", the
-#      destination relative to the card root, such as
-#      "$(BUILD)/app.img:APP.IMG" or "boot/APP.CFG:APP/APP.CFG";
+#   3. copies each SDIMAGE_FILES pair "source:destination", in order,
+#      the destination relative to the card root:
+#      - a file source becomes exactly the destination path, such as
+#        "$(BUILD)/app.img:APP.IMG" or "boot/APP.CFG:APP/APP.CFG". A
+#        destination that ends in "/" is a directory: the file goes into
+#        it under its own name, such as "boot/APP.CFG:APP/";
+#      - a directory source copies its contents into the destination
+#        directory, such as "assets:APP/ASSETS". The copy merges with
+#        what is there.
+#      Missing parent directories are created. A later pair overwrites
+#      what an earlier pair or SDIMAGE_DIR put at the same path. Paths
+#      cannot contain spaces;
 #   4. runs the double-colon target sdimage-stage. A project adds its own
 #      steps with "sdimage-stage::" rules that write into $(SDIMAGE_STAGE);
 #   5. writes $(BUILD)/sd.img with tools/mksdimage.sh.
@@ -134,12 +143,24 @@ sdimage: $(SDIMAGE_DEPS) $(ROBCO_SD_SRCS)
 	$(if $(strip $(SDIMAGE_DIR)$(SDIMAGE_FILES)$(SDIMAGE_DEPS)),,$(error nothing for the card: set SDIMAGE_DIR, SDIMAGE_FILES or SDIMAGE_DEPS))
 	rm -rf $(SDIMAGE_STAGE)
 	mkdir -p $(SDIMAGE_STAGE)
+	$(if $(word 2,$(SDIMAGE_DIR)),$(error SDIMAGE_DIR cannot contain spaces))
 	$(if $(strip $(SDIMAGE_DIR)),cp -R $(SDIMAGE_DIR)/. $(SDIMAGE_STAGE)/)
-	@set -e; for p in $(SDIMAGE_FILES); do \
+	@set -e; stage='$(SDIMAGE_STAGE)'; for p in $(SDIMAGE_FILES); do \
 	  case "$$p" in *:?*) ;; *) echo "SDIMAGE_FILES: $$p is not source:destination" >&2; exit 1 ;; esac; \
 	  src=$${p%%:*}; dst=$${p#*:}; \
-	  mkdir -p "$(SDIMAGE_STAGE)/$$(dirname "$$dst")"; \
-	  echo "cp -R $$src $(SDIMAGE_STAGE)/$$dst"; cp -R "$$src" "$(SDIMAGE_STAGE)/$$dst"; \
+	  if [ -d "$$src" ]; then \
+	    out=$$stage/$${dst%/}; \
+	    if [ -e "$$out" ] && [ ! -d "$$out" ]; then \
+	      echo "SDIMAGE_FILES: $$p: $$src is a directory, $$dst a file" >&2; exit 1; fi; \
+	    echo "cp -R $$src/. $$out/"; mkdir -p "$$out"; cp -R "$$src/." "$$out/"; \
+	  elif [ -f "$$src" ]; then \
+	    case "$$dst" in */) out=$$stage/$$dst$$(basename "$$src") ;; *) out=$$stage/$$dst ;; esac; \
+	    if [ -d "$$out" ]; then \
+	      echo "SDIMAGE_FILES: $$p: $$dst is a directory, end it with / to copy into it" >&2; exit 1; fi; \
+	    echo "cp $$src $$out"; mkdir -p "$$(dirname "$$out")"; cp "$$src" "$$out"; \
+	  else \
+	    echo "SDIMAGE_FILES: $$p: $$src is missing" >&2; exit 1; \
+	  fi; \
 	done
 	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) sdimage-stage
 	$(ROBCO_CORE)/tools/mksdimage.sh $(BUILD)/sd.img $(SDIMAGE_MIB) $(SDIMAGE_STAGE)

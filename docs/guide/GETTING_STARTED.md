@@ -431,6 +431,13 @@ sdimage-stage::
 	mkdir -p $(SDIMAGE_STAGE)/HELLO/SAVE
 ```
 
+Each `SDIMAGE_FILES` pair is `source:destination`, the destination relative to the card root. The pairs run in order:
+
+- A file source becomes exactly the destination path. A destination that ends in `/` is a directory: `config/HELLO.CFG:HELLO/` writes `HELLO/HELLO.CFG`.
+- A directory source copies its contents into the destination directory and merges with what is there: `assets:HELLO/ASSETS` writes `assets/LOGO.PBM` as `HELLO/ASSETS/LOGO.PBM`, whether `HELLO/ASSETS` exists or not.
+- Missing parent directories are created. A later pair overwrites a file that `SDIMAGE_DIR` or an earlier pair wrote at the same path.
+- Paths cannot contain spaces.
+
 `boot(image, board, sd="build/sd.img")` inserts the card in a test.
 
 ## Put it on an SD card

@@ -112,3 +112,61 @@ def test_sdimage_rejects_a_bad_pair(project):
     r = make(project, "sdimage", "SDIMAGE_FILES=data/hello.txt", check=False)
     assert r.returncode != 0
     assert "is not source:destination" in r.stderr
+
+
+def write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def staged(project):
+    """The staged tree, as {relative path: content}."""
+    stage = project / "build" / "sdstage"
+    return {p.relative_to(stage).as_posix(): p.read_text()
+            for p in sorted(stage.rglob("*")) if p.is_file()}
+
+
+def test_sdimage_pair_semantics(project):
+    """Files go to exact paths, directories merge, later pairs win."""
+    write(project / "card" / "APP" / "OLD.TXT", "card old\n")
+    write(project / "card" / "APP" / "KEEP.TXT", "card keep\n")
+    write(project / "assets" / "OLD.TXT", "assets old\n")
+    write(project / "assets" / "SUB" / "A.TXT", "assets a\n")
+    write(project / "more" / "B.TXT", "more b\n")
+    write(project / "cfg" / "app.cfg", "cfg\n")
+    write(project / "cfg" / "over.txt", "over\n")
+    pairs = " ".join([
+        "cfg/app.cfg:CONF/APP.CFG",     # file to a new path
+        "cfg/app.cfg:APP/",             # file into a directory
+        "more:NEW/DIR",                 # directory to a new destination
+        "assets:APP",                   # directory into SDIMAGE_DIR's APP
+        "cfg/over.txt:APP/SUB/A.TXT",   # overwrites the file from assets
+    ])
+    r = make(project, "sdimage", "SDIMAGE_DIR=card", f"SDIMAGE_FILES={pairs}", check=False)
+    assert staged(project) == {
+        "APP/KEEP.TXT": "card keep\n",
+        "APP/OLD.TXT": "assets old\n",
+        "APP/SUB/A.TXT": "over\n",
+        "APP/app.cfg": "cfg\n",
+        "CONF/APP.CFG": "cfg\n",
+        "DATA/STAMP.TXT": "staged by sample\n",
+        "NEW/DIR/B.TXT": "more b\n",
+    }, r.stdout + r.stderr
+    if not all(shutil.which(t) for t in MTOOLS):
+        return
+    assert r.returncode == 0, r.stdout + r.stderr
+    card = f"{project / 'build' / 'sd.img'}@@{PART_OFF}"
+    assert mt("mtype", "-i", card, "::/APP/SUB/A.TXT") == b"over\n"
+    assert mt("mtype", "-i", card, "::/APP/OLD.TXT") == b"assets old\n"
+    assert mt("mtype", "-i", card, "::/NEW/DIR/B.TXT") == b"more b\n"
+
+
+def test_sdimage_rejects_a_directory_on_a_file(project):
+    write(project / "cfg" / "app.cfg", "cfg\n")
+    write(project / "more" / "B.TXT", "b\n")
+    r = make(project, "sdimage", "SDIMAGE_FILES=cfg/app.cfg:X more:X", check=False)
+    assert r.returncode != 0 and "is a directory, X a file" in r.stderr
+    r = make(project, "sdimage", "SDIMAGE_FILES=more:X cfg/app.cfg:X", check=False)
+    assert r.returncode != 0 and "end it with / to copy into it" in r.stderr
+    r = make(project, "sdimage", "SDIMAGE_FILES=nothing:X", check=False)
+    assert r.returncode != 0
