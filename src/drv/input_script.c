@@ -15,6 +15,10 @@
  *   text <string>      one CHAR event per character
  *   wait <ms>          holds the next lines for at least ms milliseconds
  *   stats              "ok pushed=<n> dropped=<n>"
+ *
+ * Any other first word goes to the handler of input_script_set_handler(),
+ * if one is set. Its output lines come first, each with "| " in front,
+ * then the status line.
  */
 
 #define DIAL_MAX    1000000
@@ -26,6 +30,9 @@ static int waiting;
 static uint32_t wait_until;
 static int started;
 static int full;    /* a push of the current line was dropped */
+static input_script_handler_t handler;
+static void *handler_ctx;
+static int out_bol = 1; /* the next handler byte starts a line */
 
 static void reply(const char *s)
 {
@@ -94,12 +101,79 @@ static char *split(char *s)
     return s;
 }
 
+/* reply->write for handlers: prefixes every line with "| ". */
+static void handler_write(const char *text)
+{
+    for (; text && *text; text++) {
+        if (out_bol) {
+            uart_mini_puts("| ");
+            out_bol = 0;
+        }
+        uart_mini_putc(*text);
+        if (*text == '\n') {
+            out_bol = 1;
+        }
+    }
+}
+
+/* Runs the project handler on the whole line, split into words. */
+static const char *run_handler(char *cmd)
+{
+    static char buf[INPUT_SCRIPT_LINE_MAX + 8];
+    char *argv[INPUT_SCRIPT_ARGS_MAX + 1];
+    input_script_reply_t r;
+    int argc = 0;
+    int ret;
+    char *s = cmd;
+
+    while (*s) {
+        while (*s == ' ') {
+            *s++ = 0;
+        }
+        if (!*s) {
+            break;
+        }
+        if (argc == INPUT_SCRIPT_ARGS_MAX) {
+            return "err too many words";
+        }
+        argv[argc++] = s;
+        while (*s && *s != ' ') {
+            s++;
+        }
+    }
+    argv[argc] = 0;
+    r.write = handler_write;
+    r.reason = 0;
+    out_bol = 1;
+    ret = handler(argc, argv, &r, handler_ctx);
+    if (!out_bol) {
+        uart_mini_putc('\n');
+        out_bol = 1;
+    }
+    if (ret >= 0) {
+        return "ok";
+    }
+    k_snprintf(buf, sizeof(buf), "err %s", r.reason && *r.reason ? r.reason : "failed");
+    return buf;
+}
+
+void input_script_set_handler(input_script_handler_t fn, void *ctx)
+{
+    handler = 0;
+    handler_ctx = ctx;
+    handler = fn;
+}
+
 /* Returns the reply, or 0 when the reply comes later (wait). */
 static const char *run(char *cmd)
 {
     static char buf[48];
-    char *arg = split(cmd);
+    static char copy[INPUT_SCRIPT_LINE_MAX];
+    char *arg;
     int32_t n;
+
+    k_strncpy(copy, cmd, sizeof(copy));
+    arg = split(cmd);
 
     if (k_strcmp(cmd, "key") == 0) {
         char *val = split(arg);
@@ -144,6 +218,8 @@ static const char *run(char *cmd)
         k_snprintf(buf, sizeof(buf), "ok pushed=%u dropped=%u",
                    (unsigned)pushed, (unsigned)dropped);
         return buf;
+    } else if (handler != 0 && *cmd) {
+        return run_handler(copy);
     } else {
         return "err unknown command";
     }

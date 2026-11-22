@@ -204,6 +204,21 @@ The guest may still be printing when a test reads its output.
 last newline. `vm.wait_for()` searches the raw stream; end the pattern
 in `\n` or pass `line=True` before parsing what it matched.
 
+`vm.script(command, timeout=10)` drives the script channel. It needs
+`serial2=True` and `input_script_start()` in the guest. It sends one
+line on the mini UART and returns `ScriptReply(status, lines)`: the
+status line, such as `ok` or `err unknown key`, and the lines a project
+handler wrote before it, without their `| ` prefix. Send one command at
+a time.
+
+```python
+def test_board_command(board, example_image):
+    with boot(example_image("input"), board, serial2=True) as vm:
+        vm.wait_for("ready\n", timeout=60, port=1)
+        status, lines = vm.script("board")
+        assert status == "ok" and lines[0].startswith("soc=")
+```
+
 ## What QEMU cannot prove
 
 Caches, PWM sound, GPIO input, real SPI signalling and SD pin routing

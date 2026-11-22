@@ -228,13 +228,56 @@ Words are separated by one space. When the queue drops an event of the line, the
 
 | Answer | Cause |
 |---|---|
-| `err unknown command` | First word is not a command |
+| `err unknown command` | First word is not a command and no handler is set |
 | `err unknown key` | `key` with a name `input_key_name()` does not return |
 | `err bad value` | `key` with a third word other than `1` or `0` |
 | `err bad steps` | `dial` with a value that is not a number, is 0 or is out of range |
 | `err one character` | `char` with zero or more than one character |
 | `err bad time` | `wait` with a value that is not an unsigned number |
 | `err line too long` | Line over 127 characters. The line is ignored. |
+
+#### Project commands
+
+```c
+#define INPUT_SCRIPT_ARGS_MAX 8
+
+typedef struct input_script_reply {
+    void (*write)(const char *text);
+    const char *reason;
+} input_script_reply_t;
+
+typedef int (*input_script_handler_t)(int argc, char *argv[], input_script_reply_t *reply,
+                                      void *ctx);
+
+void input_script_set_handler(input_script_handler_t fn, void *ctx);
+```
+
+A project adds its own test and maintenance commands, such as a screen dump or a state report, without taking keys from the console. `input_script_set_handler()` registers one handler. Each line whose first word is not a built-in command goes to it, split into words at spaces: `argv[0]` is the command, `argc` is at most `INPUT_SCRIPT_ARGS_MAX`. More words get `err too many words` and the handler is not called. `NULL` removes the handler. You can call it before or after `input_script_start()`.
+
+The handler answers in two parts:
+
+| Part | How |
+|---|---|
+| Output lines | `reply->write(text)`. Each line reaches the host with `\| ` in front, so a dump line never looks like a status line. A line ends at `\n`. The backend ends an unfinished last line. |
+| Status line | Return 0 for `ok`. Return a negative value for `err <reason>`, with `reply->reason` set first. Without a reason the answer is `err failed`. |
+
+The handler runs in the context that polls the backend: `input_poll()` or `input_wait()` in the main loop, never an interrupt. No other script line is read while it runs, and the console and GPIO backends in tick mode keep running. It may push events and call the other input functions, but not `input_poll()` or `input_wait()`. A handler that never returns, such as one that triggers a panic, is fine: the status line never comes.
+
+```c
+static int command(int argc, char *argv[], input_script_reply_t *reply, void *ctx)
+{
+    if (k_strcmp(argv[0], "board") != 0 || argc != 1) {
+        reply->reason = "unknown command";
+        return -1;
+    }
+    reply->write("soc=bcm2835\n");
+    return 0;
+}
+
+input_script_set_handler(command, NULL);
+```
+
+In a test, `vm.script("board")` sends the line and returns `ScriptReply(status, lines)`, here `("ok", ["soc=bcm2835"])`. See [tests/README.md](../../../tests/README.md#writing-a-target-test). [examples/input](../../../examples/input/main.c) has a `board` command.
 
 ### Pure modules
 
@@ -287,7 +330,7 @@ The held-key state behind `input_key_down()` and auto-repeat. It keeps one bit p
 |---|---|
 | `input_push()`, `input_pending()`, `input_flush()`, `input_stats()`, `input_key_down()` | Any |
 | `input_poll()`, `input_wait()` | Main only. They run the main-loop backends. |
-| `input_init()`, `input_set_repeat()`, `input_gpio_*()` setup, `input_serial_start()`, `input_script_start()`, `input_add_poller()` | Main only |
+| `input_init()`, `input_set_repeat()`, `input_gpio_*()` setup, `input_serial_start()`, `input_script_start()`, `input_script_set_handler()`, `input_add_poller()` | Main only |
 | GPIO sampling, repeat, console in tick mode | IRQ, from tick callbacks |
 
 ### Sharp edges

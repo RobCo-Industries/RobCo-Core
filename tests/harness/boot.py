@@ -13,6 +13,7 @@ and enters the image with r0 = 0, r1 = machine id, r2 = 0x100. On raspi3b
 an AArch64 shim at 0x80000 first drops CPU0 to AArch32.
 """
 
+import collections
 import contextlib
 import os
 import re
@@ -50,6 +51,18 @@ BOARDS = {
     "raspi2b": Board("qemu-system-arm", 1024 << 20, 0xC43, "hyp"),
     "raspi3b": Board("qemu-system-aarch64", 1024 << 20, 0xC43, "hyp", a64=True),
 }
+
+SCRIPT_PORT = 1
+SCRIPT_DATA = "| "
+
+# The answer to one script line: its status line ("ok ...", "err ...")
+# and the lines a project handler wrote before it, without "| ".
+ScriptReply = collections.namedtuple("ScriptReply", "status lines")
+
+
+def is_script_status(line):
+    return line == "ok" or line.startswith(("ok ", "err ")) or line == "err"
+
 
 MARKER_RE = re.compile(r"@RC((?: +[A-Za-z0-9_]+=\S*)+)")
 
@@ -173,6 +186,38 @@ class Vm:
         """Write text to the guest's serial input."""
         data = text.encode() if isinstance(text, str) else text
         self._socks[port].sendall(data)
+
+    def script(self, command, timeout=10.0):
+        """Send one line on the script channel and return its ScriptReply.
+
+        Needs boot(serial2=True) and input_script_start() in the guest.
+        Collects the "| " lines a project handler writes, up to the
+        status line. Send one command at a time: a `wait` command answers
+        later, so its status line would end the next call early.
+        Raises QemuError on timeout or if QEMU exits.
+        """
+        if "\n" in command or "\r" in command:
+            raise ValueError("one command, without a line ending")
+        start = len(self.lines(SCRIPT_PORT))
+        self.send(command + "\n", port=SCRIPT_PORT)
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while True:
+                lines = complete_lines(self._bufs[SCRIPT_PORT].decode("utf-8", "replace"))
+                new = lines.replace("\r", "").splitlines()[start:]
+                for i, line in enumerate(new):
+                    if is_script_status(line):
+                        data = [x[len(SCRIPT_DATA):] for x in new[:i]
+                                if x.startswith(SCRIPT_DATA)]
+                        return ScriptReply(line, data)
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise QemuError(f"timeout ({timeout}s) waiting for the reply to "
+                                    f"{command!r}. script channel:\n{lines}")
+                if self.qemu.proc.poll() is not None:
+                    raise QemuError(f"QEMU exited waiting for the reply to {command!r}.\n"
+                                    f"stderr: {self.qemu.stderr()}\nscript channel:\n{lines}")
+                self._cond.wait(min(left, 0.2))
 
     def markers(self, port=0):
         """All complete `@RC` marker lines seen so far, as dicts."""

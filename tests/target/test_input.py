@@ -207,3 +207,23 @@ def test_input_two_sources_hold(board, example_image):
         last = markers(vm, "event")[-1]
         assert last["src"] == "script" and last["value"] == "0", vm.serial
         no_exception(vm)
+
+
+def test_input_script_handler(board, example_image):
+    """A project command: its lines come before the status, unknown words reach it too."""
+    with boot(example_image("input"), board, serial2=True) as vm:
+        start(vm)
+        soc = markers(vm, "boot")[0]["soc"]
+        base = markers(vm, "boot")[0]["base"]
+        r = vm.script("board")
+        assert r == ("ok", [f"soc={soc}", f"base={base}"]), vm.serial2
+        assert vm.script("board  ") == ("ok", [f"soc={soc}", f"base={base}"]), vm.serial2
+        assert vm.script("board extra") == ("err board takes no arguments", []), vm.serial2
+        assert vm.script("bogus 1 2") == ("err unknown command", []), vm.serial2
+        assert vm.script("bogus 1 2 3 4 5 6 7 8") == ("err too many words", []), vm.serial2
+        # Built-in commands still win over the handler, and events still flow.
+        assert vm.script("key up").status == "ok", vm.serial2
+        assert vm.script("stats").status.startswith("ok pushed="), vm.serial2
+        wait_count(vm, lambda: events(vm, "script"), 2)
+        assert events(vm, "script") == tap("up"), vm.serial
+        no_exception(vm)

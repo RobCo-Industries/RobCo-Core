@@ -275,4 +275,38 @@ int input_serial_start(int mode);
  */
 int input_script_start(void);
 
+/* Words a project command line may hold, its name included. */
+#define INPUT_SCRIPT_ARGS_MAX 8
+
+/*
+ * What a project handler gets to answer one line.
+ *   write   Writes text to the script UART. Each line the handler writes
+ *           reaches the host with "| " in front, so it never looks like
+ *           a status line. A line ends at '\n'.
+ *   reason  Set it before returning a negative value: the backend
+ *           answers "err <reason>". NULL gives "err failed".
+ */
+typedef struct input_script_reply {
+    void (*write)(const char *text);
+    const char *reason;
+} input_script_reply_t;
+
+/*
+ * A project command. argv[0] is the command name, argc counts at most
+ * INPUT_SCRIPT_ARGS_MAX words. The strings live until the handler returns.
+ * Return 0 for "ok", a negative value for "err <reason>".
+ */
+typedef int (*input_script_handler_t)(int argc, char *argv[], input_script_reply_t *reply,
+                                      void *ctx);
+
+/*
+ * Passes each line whose first word is not a built-in command to fn, with
+ * ctx. NULL removes the handler: such lines then get "err unknown command".
+ * The handler runs in the context that polls the backend, input_poll() or
+ * input_wait() in the main loop, never in an interrupt. While it runs no
+ * other script line is read. It may call the input API, but not
+ * input_poll() or input_wait().
+ */
+void input_script_set_handler(input_script_handler_t fn, void *ctx);
+
 #endif
