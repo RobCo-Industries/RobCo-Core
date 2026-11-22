@@ -287,12 +287,16 @@ normal. A match tens of seconds old is not.
 What each part holds:
 
 - `summary`: whether pc or any core register changed across the
-  running samples, and whether CPSR.I masked IRQs.
+  samples, and whether CPSR.I masked IRQs. Fixed registers mean "no"
+  only when the VM ran. When it was stopped, or `cont` failed, or its
+  state is unknown, the summary says "cannot be judged" and why.
 - `keep-alive`: on or off, see [QEMU keep-alive](#qemu-keep-alive).
-- `device registers`: read with the VM stopped, or running when the
-  stop failed.
+- `device registers`: read with the VM stopped by the dump, already
+  stopped, or running when the stop failed.
 - `cpu0 at stop`: pc, lr, sp and CPSR of the stopped VM.
-- Five samples of pc, lr, sp and CPSR, 100 ms apart, while it runs. CPSR shows the mode
+- Five samples of pc, lr, sp and CPSR, 100 ms apart. Their heading
+  says the run state: while running, of the stopped VM, after a failed
+  `cont`, or unknown. CPSR shows the mode
   and the I, F and T bits. pc and lr carry function names when the
   ELF is known. `boot()` uses the `.elf` next to the `.img`, or
   `boot(..., elf=path)`. Without one, the `symbols:` line says why.
@@ -362,7 +366,8 @@ Turn it off to reproduce the stall on purpose:
 ROBCO_QEMU_KEEPALIVE=0 make test-target
 ```
 
-or `boot(..., keepalive=False)` for one boot. `Qemu` objects a test
+or `boot(..., keepalive=False)` for one boot. The whole suite passes
+either way: tests about the keep-alive pass `keepalive=` themselves. `Qemu` objects a test
 builds itself, such as the canary's, have no keep-alive. Neither has
 `Qemu.run_to_exit()`, which runs without QMP, nor `python3 -m harness.run`.
 

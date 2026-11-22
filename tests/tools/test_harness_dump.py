@@ -276,7 +276,7 @@ def test_over_budget_names_each_missing_part():
     assert "interrupt controller @ " in text
     for part in ("local controller", "system timer", "cpu0 sample #1 of 5"):
         assert f"not collected: {part}: over the time budget" in text
-    assert "summary: guest executing: unknown (no running samples)" in text
+    assert "summary: guest executing: unknown (no cpu samples)" in text
 
 
 def test_over_budget_after_the_timer_keeps_one_sample():
@@ -387,3 +387,30 @@ def test_absent_symbol_tool(tmp_path, monkeypatch):
     assert "symbols: none, arm-none-eabi-addr2line and arm-none-eabi-nm not found" in text
     assert text.count(" pc=0x00009740 lr=0x000085a8 ") == 5
     assert "system timer @" in text
+
+
+@pytest.mark.parametrize("state, devices, head, why", [
+    ("stopped", "read with the VM already stopped (no stop, no cont)",
+     "cpu0 samples of the stopped VM", "the VM was stopped during the samples"),
+    ("unknown", "VM run state unknown",
+     "cpu0 samples, VM run state unknown", "the VM run state is unknown"),
+])
+def test_labels_follow_the_run_state(state, devices, head, why):
+    text = "\n".join(dump.collect(fake_hmp("raspi0"), "raspi0", sleep=lambda s: None,
+                                  state=state))
+    assert f"device registers: {devices}" in text
+    assert f"{head} (5, 100 ms apart):" in text
+    assert "while running" not in text
+    assert f"summary: guest executing: cannot be judged ({why})" in text, text
+
+
+def test_failed_stop_and_cont_leave_the_state_unknown():
+    hmp, _, _, log = recorded("raspi0")
+
+    def broken():
+        raise OSError("socket closed")
+    text = "\n".join(dump.collect(hmp, "raspi0", sleep=lambda s: None, pause=broken,
+                                  resume=broken))
+    assert "device registers: VM run state unknown (QMP stop and cont failed)" in text
+    assert "cpu0 samples, VM run state unknown" in text
+    assert "while running" not in text

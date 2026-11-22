@@ -119,8 +119,13 @@ def format_timer(words):
     return lines
 
 
-def summary(samples):
-    """One line: was the guest still executing, were IRQs masked."""
+def summary(samples, why_unknown=None):
+    """One line: was the guest still executing, were IRQs masked.
+
+    why_unknown is None when the VM ran during the samples. Otherwise it
+    says why it may not have run: fixed registers then prove nothing and
+    the line says "cannot be judged" instead of "no".
+    """
     first = samples[0]
     pc_moved = any(s["pc"] != first["pc"] for s in samples)
     keys = ["pc", "lr", "sp", "cpsr"] + [f"r{i}" for i in range(13)]
@@ -130,6 +135,8 @@ def summary(samples):
         run = "yes (pc changed between samples)"
     elif regs_moved:
         run = "yes (pc fixed, registers changed)"
+    elif why_unknown:
+        run = f"cannot be judged ({why_unknown})"
     else:
         run = f"no (pc and registers fixed over {n} samples)"
     masked = [decode_cpsr(s["cpsr"])["I"] for s in samples]
@@ -202,12 +209,30 @@ def nm_lookup(nm_text, addrs):
     return names
 
 
+# Run state of the VM during the cpu samples, as far as the dump knows it:
+# "running"         it ran before the dump, which did not stop it
+# "resumed"         the dump stopped it (QMP stop) and cont succeeded
+# "already stopped" it was stopped before the dump, which left it so
+# "resume failed"   the dump stopped it and cont failed: may still be stopped
+# "unknown"         nobody knows (no state given, or stop and cont failed)
+RUN_STATES = ("running", "resumed", "already stopped", "resume failed", "unknown")
+
+
+def run_state(state, tried_pause, stopped, resumed):
+    """The RUN_STATES entry for the sampling phase."""
+    if tried_pause:
+        if stopped:
+            return "resumed" if resumed else "resume failed"
+        return "running" if resumed else "unknown"
+    return {"running": "running", "stopped": "already stopped"}.get(state, "unknown")
+
+
 class OverBudget(Exception):
     """The dump's time budget ran out before a step."""
 
 
 def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=time.sleep,
-            deadline=None, clock=time.monotonic, pause=None, resume=None):
+            deadline=None, clock=time.monotonic, pause=None, resume=None, state="running"):
     """Build the snapshot text. `hmp(cmd)` runs one HMP command.
 
     Order: pause() (QMP stop), the device registers (interrupt
@@ -216,6 +241,10 @@ def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=ti
     then symbols. resume() runs whenever pause() was tried, also when a
     step failed or the budget ran out. Without pause the devices are
     read on the running VM and the block says so.
+
+    `state` is the run state before the dump: "running", "stopped" or
+    "unknown". The dump tracks it (see RUN_STATES) and every label and
+    the summary say what that state allows, never more.
 
     `deadline` is a `clock()` time. Every step checks it first, and the
     symbol lookup gets only what is left. A failed or late step costs
@@ -246,7 +275,7 @@ def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=ti
             return None, None
         return step(name, lambda: parse_registers(text)), text
 
-    stopped, tried_pause = False, False
+    stopped, tried_pause, resume_error = False, False, None
     hw, stop_regs, first_text = [], None, None
     try:
         if pause is not None:
@@ -286,6 +315,7 @@ def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=ti
             except Exception as e:  # noqa: BLE001 - say so, keep the rest
                 errors.append(e)
                 resumed = False
+                resume_error = f"{type(e).__name__}: {e}"
                 missing.append(f"not collected: resume the VM (cont): {type(e).__name__}: {e};"
                                " the VM may still be stopped")
 
@@ -320,18 +350,37 @@ def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=ti
         return (f"pc={r['pc']:#010x}{sym(r['pc'])} lr={r['lr']:#010x}{sym(r['lr'])}"
                 f" sp={r['sp']:#010x} cpsr={format_cpsr(r['cpsr'])}")
 
-    out = [summary(regs) if regs else "summary: guest executing: unknown (no running samples)"]
+    run = run_state(state, tried_pause, stopped, resumed)
+    hdr = f"{len(regs)}, {int(interval * 1000)} ms apart"
+    if run in ("resumed", "running"):
+        out = [summary(regs) if regs else "summary: guest executing: unknown (no cpu samples)"]
+        samples_head = f"cpu0 samples while running ({hdr}):"
+    else:
+        why = {"already stopped": "the VM was stopped during the samples",
+               "resume failed": f"cont failed ({resume_error}), the VM may still be stopped",
+               "unknown": "the VM run state is unknown"}[run]
+        out = [summary(regs, why) if regs else f"summary: guest executing: unknown ({why})"]
+        samples_head = {"already stopped": f"cpu0 samples of the stopped VM ({hdr}):",
+                        "resume failed": f"cpu0 samples after a failed cont, the VM may"
+                                         f" still be stopped ({hdr}):",
+                        "unknown": f"cpu0 samples, VM run state unknown ({hdr}):"}[run]
     if stopped:
         out.append("device registers: read with the VM stopped (QMP stop, then cont"
                    + (")" if resumed else ", which failed)"))
     elif tried_pause:
-        out.append("device registers: read with the VM running (QMP stop failed)")
+        out.append("device registers: read with the VM running (QMP stop failed)"
+                   if resumed else "device registers: VM run state unknown (QMP stop and"
+                                   " cont failed)")
+    elif run == "already stopped":
+        out.append("device registers: read with the VM already stopped (no stop, no cont)")
+    elif run == "unknown":
+        out.append("device registers: VM run state unknown")
     else:
         out.append("device registers: read with the VM running")
     if stop_regs:
         out.append(f"cpu0 at stop: {fmt(stop_regs)}")
     if regs:
-        out.append(f"cpu0 samples while running ({len(regs)}, {int(interval * 1000)} ms apart):")
+        out.append(samples_head)
         out += [f"  #{i} {fmt(r)}" for i, r in enumerate(regs, 1)]
     if all_regs:
         out.append(sym_note)

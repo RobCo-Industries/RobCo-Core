@@ -7,7 +7,7 @@ import time
 import pytest
 
 from harness.boot import boot
-from harness.qemu import QemuError
+from harness.qemu import KEEPALIVE_ENV, QemuError
 
 READY = re.compile(r"@RC stage=audio ev=ready .*\n")
 
@@ -74,8 +74,9 @@ def test_state_dump_on_demand(board, tmp_path):
     assert "not collected: QEMU has exited" in vm.state_dump()
 
 
-def test_keepalive_on_by_default(board, example_image):
-    with boot(example_image("audio"), board) as vm:
+def test_keepalive_on(board, example_image):
+    # Asks for the pings: passes whatever ROBCO_QEMU_KEEPALIVE says.
+    with boot(example_image("audio"), board, keepalive=True) as vm:
         vm.wait_for(READY, timeout=60)
         before = vm.qmp.keepalive_pings
         time.sleep(0.5)
@@ -87,7 +88,6 @@ def test_keepalive_on_by_default(board, example_image):
 
 
 def test_boot_with_keepalive_off(board, example_image):
-    # Keeps the path without pings alive: ROBCO_QEMU_KEEPALIVE=0 runs it.
     with boot(example_image("audio"), board, keepalive=False) as vm:
         vm.wait_for(READY, timeout=60)
         msg = timeout_error(vm)
@@ -95,3 +95,14 @@ def test_boot_with_keepalive_off(board, example_image):
     block = state_block(msg)
     assert "keep-alive: off" in block, block
     assert "summary: guest executing: " in block, block
+
+
+@pytest.mark.parametrize("env, on", [(None, True), ("0", False)])
+def test_keepalive_follows_the_environment(board, example_image, monkeypatch, env, on):
+    if env is None:
+        monkeypatch.delenv(KEEPALIVE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(KEEPALIVE_ENV, env)
+    with boot(example_image("audio"), board) as vm:
+        vm.wait_for(READY, timeout=60)
+        assert vm.qmp.keepalive_on is on

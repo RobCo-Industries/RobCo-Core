@@ -234,7 +234,8 @@ class Vm:
         Stops the VM (QMP stop), reads the interrupt controller and system
         timer registers and one CPU0 sample, resumes it (cont), then
         samples CPU0's pc, lr, sp and CPSR 5 times, 100 ms apart, while it
-        runs. The VM is resumed even when a step fails. Resolves pc and lr
+        runs. The VM is resumed even when a step fails. A VM that was
+        already stopped stays stopped, and the block says so. Resolves pc and lr
         to symbols when the image's ELF is known.
         Never raises. Each failed or late part becomes one "not collected"
         line and the rest is kept; "state dump failed" means nothing could
@@ -264,7 +265,9 @@ class Vm:
         # Stop the VM so the device reads see the state that stalled it,
         # unless it is already stopped (then leave it as it is).
         pause = resume = None
-        if getattr(q, "vm_running", False) and hasattr(q, "command"):
+        running = getattr(q, "vm_running", None)
+        state = "unknown" if running is None else ("running" if running else "stopped")
+        if running and hasattr(q, "command"):
             def pause():
                 q.command("stop", timeout=read_timeout())
 
@@ -274,7 +277,7 @@ class Vm:
         ka = "on" if getattr(q, "keepalive_on", False) else "off"
         try:
             lines = dump.collect(hmp, machine, self.elf, deadline=deadline,
-                                 pause=pause, resume=resume)
+                                 pause=pause, resume=resume, state=state)
             lines.insert(1, f"keep-alive: {ka}")
         except Exception as e:  # noqa: BLE001 - never mask the caller's error
             lines = [f"state dump failed: {type(e).__name__}: {e}", f"keep-alive: {ka}"]

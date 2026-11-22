@@ -328,7 +328,41 @@ def test_dump_leaves_a_stopped_vm_stopped():
     with wired(hmp_reply(), running=False) as (q, srv):
         text = DumpVm(q).state_dump()
         assert "stop" not in srv.commands() and "cont" not in srv.commands()
-        assert "device registers: read with the VM running" in text
+        assert not q.vm_running
+    assert "device registers: read with the VM already stopped (no stop, no cont)" in text
+    assert "cpu0 samples of the stopped VM (5, 100 ms apart):" in text
+    assert "while running" not in text
+    # Fixed registers on a stopped VM say nothing about execution.
+    assert ("summary: guest executing: cannot be judged (the VM was stopped during the"
+            " samples)") in text, text
+    assert "guest executing: no" not in text
+
+
+def test_dump_says_when_cont_fails():
+    def reply(req):
+        if req["execute"] == "cont":
+            return {"error": {"class": "GenericError", "desc": "cont refused"},
+                    "id": req.get("id")}
+        return hmp_reply()(req)
+    with wired(reply) as (q, srv):
+        text = DumpVm(q).state_dump()
+        assert srv.commands().count("stop") == 1 and srv.commands().count("cont") == 1
+    assert "device registers: read with the VM stopped (QMP stop, then cont, which failed)" \
+        in text
+    assert ("cpu0 samples after a failed cont, the VM may still be stopped"
+            " (5, 100 ms apart):") in text, text
+    assert "while running" not in text
+    assert ("summary: guest executing: cannot be judged (cont failed (QemuError: cont:"
+            " cont refused), the VM may still be stopped)") in text, text
+    assert "not collected: resume the VM (cont): QemuError: cont: cont refused" in text
+
+
+def test_dump_normal_case_labels():
+    with wired(hmp_reply()) as (q, srv):
+        text = DumpVm(q).state_dump()
+    assert "device registers: read with the VM stopped (QMP stop, then cont)" in text
+    assert "cpu0 samples while running (5, 100 ms apart):" in text
+    assert "summary: guest executing: no (pc and registers fixed over 5 samples)" in text
 
 
 def test_dump_resumes_after_a_failed_stop():
