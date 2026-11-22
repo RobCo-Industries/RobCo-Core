@@ -10,6 +10,7 @@ static volatile uint32_t count;
 static volatile uint32_t wraps;      /* tick_count() wraps, for tick_ms() */
 static volatile uint32_t missed;
 static uint32_t period_us;
+static uint32_t rate_hz;        /* tick_init() rate, 0 while stopped */
 static uint32_t next_match;     /* next period boundary not yet counted */
 static void (*volatile callbacks[TICK_MAX_CALLBACKS])(void);
 
@@ -108,6 +109,7 @@ int tick_init(uint32_t hz)
     }
     s = irq_save();
     period_us = p;
+    rate_hz = hz;
     count = 0;
     wraps = 0;
     missed = 0;
@@ -116,6 +118,11 @@ int tick_init(uint32_t hz)
     irq_enable(IRQ_TIMER1);
     irq_restore(s);
     return 0;
+}
+
+uint32_t tick_hz(void)
+{
+    return rate_hz;
 }
 
 uint32_t tick_count(void)
