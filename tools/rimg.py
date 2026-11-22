@@ -2,11 +2,11 @@
 """Seal, inspect and verify rimg images. See docs/spec/IMAGE_FORMAT.md.
 
     rimg.py seal FILE [-o OUT] [--name NAME] [--image-version X.Y.Z]
-                      [--title TEXT] [--icon FILE]
+                      [--title TEXT] [--icon FILE] [--icon-format F]
     rimg.py pack PAYLOAD -o OUT --magic BOOT|ROM1|ROBCO78 --subtype N
                       --load-addr A [--name NAME] [--image-version X.Y.Z]
                       [--abi-version MAJOR.MINOR] [--mem-size N] [--entry OFFSET]
-                      [--meta | --no-meta] [--title TEXT] [--icon FILE]
+                      [--meta | --no-meta] [--title TEXT] [--icon FILE] [--icon-format F]
     rimg.py info FILE
     rimg.py verify FILE [--fat-size N] [--slot-base A --slot-size N]
                         [--magic BOOT|ROM1|ROBCO78] [--abi-major N]
@@ -211,37 +211,58 @@ def _p1_bits(body):
     return bits
 
 
-def parse_icon(data):
+ICON_FORMATS = ("auto", "raw", "pbm")
+
+
+def _parse_pbm_icon(data):
+    """Returns the 128 META icon bytes from a 32x32 PBM (P1 or P4)."""
+    if data[:2] not in (b"P1", b"P4"):
+        raise RimgError(E_IO, "bad PBM header: expected P1 or P4")
+    kind, w, h, end = _pbm_header(data)
+    if (w, h) != (ICON_W, ICON_H):
+        raise RimgError(E_SIZE, f"icon is {w}x{h}, expected {ICON_W}x{ICON_H}")
+    if kind == b"P4":
+        # One whitespace byte after the height, then 4 bytes per row, MSB first.
+        if end >= len(data) or data[end] not in b" \t\r\n\v\f":
+            raise RimgError(E_IO, "bad PBM header")
+        raw = data[end + 1:]
+        if len(raw) != ICON_SIZE:
+            raise RimgError(E_SIZE, f"PBM pixel data is {len(raw)} bytes,"
+                                    f" expected {ICON_SIZE}")
+        return bytes(raw)
+    bits = _p1_bits(data[end:])
+    if len(bits) != ICON_W * ICON_H:
+        raise RimgError(E_SIZE, f"PBM has {len(bits)} pixels,"
+                                f" expected {ICON_W * ICON_H}")
+    out = bytearray(ICON_SIZE)
+    for i, b in enumerate(bits):
+        if b:
+            out[i // 8] |= 0x80 >> (i % 8)
+    return bytes(out)
+
+
+def parse_icon(data, fmt="auto"):
     """Returns the 128 META icon bytes from a 32x32 PBM (P1 or P4) or 128 raw bytes.
 
-    PBM 1 (black) is a lit pixel and 0 (white) is unlit.
+    PBM 1 (black) is a lit pixel and 0 (white) is unlit. With fmt "auto" a
+    file of exactly 128 bytes is raw and any other length is PBM. A 32x32 PBM
+    is never 128 bytes long, so the rule has no ambiguity.
     """
-    if data[:2] in (b"P1", b"P4"):
-        kind, w, h, end = _pbm_header(data)
-        if (w, h) != (ICON_W, ICON_H):
-            raise RimgError(E_SIZE, f"icon is {w}x{h}, expected {ICON_W}x{ICON_H}")
-        if kind == b"P4":
-            # One whitespace byte after the height, then 4 bytes per row, MSB first.
-            if end >= len(data) or data[end] not in b" \t\r\n\v\f":
-                raise RimgError(E_IO, "bad PBM header")
-            raw = data[end + 1:]
-            if len(raw) != ICON_SIZE:
-                raise RimgError(E_SIZE, f"PBM pixel data is {len(raw)} bytes,"
-                                        f" expected {ICON_SIZE}")
-            return bytes(raw)
-        bits = _p1_bits(data[end:])
-        if len(bits) != ICON_W * ICON_H:
-            raise RimgError(E_SIZE, f"PBM has {len(bits)} pixels,"
-                                    f" expected {ICON_W * ICON_H}")
-        out = bytearray(ICON_SIZE)
-        for i, b in enumerate(bits):
-            if b:
-                out[i // 8] |= 0x80 >> (i % 8)
-        return bytes(out)
-    if len(data) == ICON_SIZE:
+    if fmt not in ICON_FORMATS:
+        raise RimgError(E_IO, f"unknown icon format {fmt!r}")
+    if fmt == "raw" or (fmt == "auto" and len(data) == ICON_SIZE):
+        if len(data) != ICON_SIZE:
+            raise RimgError(E_SIZE, f"icon file is {len(data)} bytes (--icon-format raw):"
+                                    f" a raw icon must be {ICON_SIZE} bytes")
         return bytes(data)
-    raise RimgError(E_SIZE, f"icon file is {len(data)} bytes: expected a 32x32 PBM"
-                            f" or {ICON_SIZE} raw bytes")
+    if fmt == "pbm" and len(data) == ICON_SIZE:
+        raise RimgError(E_IO, f"icon is {ICON_SIZE} bytes, which is the raw size:"
+                              " a 32x32 PBM cannot be that long")
+    why = "--icon-format pbm" if fmt == "pbm" else f"not {ICON_SIZE} bytes, so read as PBM"
+    try:
+        return _parse_pbm_icon(data)
+    except RimgError as e:
+        raise RimgError(e.code, f"icon file is {len(data)} bytes ({why}): {e.args[-1]}")
 
 
 def seal(data, name=None, image_version=None, title=None, icon=None):
@@ -394,6 +415,8 @@ def main(argv=None):
     s.add_argument("--image-version", type=parse_version)
     s.add_argument("--title", help="META title, ASCII, at most 64 bytes")
     s.add_argument("--icon", help="META icon: a 32x32 PBM (P1 or P4, 1 is lit) or 128 raw bytes")
+    s.add_argument("--icon-format", choices=ICON_FORMATS, default="auto",
+                   help="auto: 128 bytes is raw, any other length is PBM")
 
     k = sub.add_parser("pack", help="wrap a raw payload into a sealed image")
     k.add_argument("file", metavar="PAYLOAD")
@@ -414,6 +437,8 @@ def main(argv=None):
     k.add_argument("--title")
     k.add_argument("--icon", help="META icon: a 32x32 PBM (P1 or P4, 1 is lit)"
                                   " or 128 raw bytes")
+    k.add_argument("--icon-format", choices=ICON_FORMATS, default="auto",
+                   help="auto: 128 bytes is raw, any other length is PBM")
 
     i = sub.add_parser("info", help="print the header fields")
     i.add_argument("file")
@@ -430,7 +455,8 @@ def main(argv=None):
     try:
         data = read_file(args.file)
         if args.cmd in ("seal", "pack"):
-            icon = None if args.icon is None else parse_icon(read_file(args.icon))
+            icon = None if args.icon is None else parse_icon(read_file(args.icon),
+                                                               args.icon_format)
             if args.cmd == "pack":
                 try:
                     check_entry(args.entry, len(data))

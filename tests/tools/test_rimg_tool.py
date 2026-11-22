@@ -339,6 +339,57 @@ def test_parse_icon_rejects(data, msg):
         rimg.parse_icon(data)
 
 
+
+RAW_ICONS = [b"P1" + bytes(range(126)), b"P4\n32 32\n" + bytes(119), bytes(128), b"\xff" * 128]
+
+
+@pytest.mark.parametrize("raw", RAW_ICONS, ids=["p1", "p4", "zeros", "ones"])
+def test_parse_icon_128_bytes_is_raw(raw):
+    assert len(raw) == 128
+    assert rimg.parse_icon(raw) == raw
+    assert rimg.parse_icon(raw, "raw") == raw
+
+
+@pytest.mark.parametrize("raw", RAW_ICONS, ids=["p1", "p4", "zeros", "ones"])
+def test_seal_stores_raw_icon(tmp_path, raw):
+    p = write(tmp_path, rom_image())
+    icon = write(tmp_path, raw, "icon.bin")
+    r = run("seal", p, "--icon", icon)
+    assert r.returncode == 0, r.stderr
+    assert p.read_bytes()[0xA0:0x120] == raw
+
+
+@pytest.mark.parametrize("size", [127, 129])
+def test_parse_icon_rejects_other_lengths(size):
+    with pytest.raises(rimg.RimgError, match=f"{size} bytes .not 128 bytes, so read as PBM.:"
+                                             " bad PBM header: expected P1 or P4"):
+        rimg.parse_icon(b"\x55" * size)
+
+
+@pytest.mark.parametrize("size", [0, 127, 129])
+def test_parse_icon_raw_format_needs_128_bytes(size):
+    with pytest.raises(rimg.RimgError, match=f"{size} bytes .--icon-format raw."):
+        rimg.parse_icon(bytes(size), "raw")
+
+
+def test_parse_icon_pbm_format_rejects_128_bytes():
+    with pytest.raises(rimg.RimgError, match="a 32x32 PBM cannot be that long"):
+        rimg.parse_icon(RAW_ICONS[0], "pbm")
+    want = frame_icon()
+    assert rimg.parse_icon(b"P4\n32 32\n" + want, "pbm") == want
+
+
+def test_icon_format_option(tmp_path):
+    p = write(tmp_path, rom_image())
+    icon = write(tmp_path, RAW_ICONS[0], "icon.bin")
+    r = run("seal", p, "--icon", icon, "--icon-format", "pbm")
+    assert r.returncode != 0 and "cannot be that long" in r.stderr
+    r = run("seal", p, "--icon", ICON_PBM, "--icon-format", "raw")
+    assert r.returncode != 0 and "--icon-format raw" in r.stderr
+    r = run("seal", p, "--icon", ICON_PBM, "--icon-format", "pbm")
+    assert r.returncode == 0, r.stderr
+    assert p.read_bytes()[0xA0:0x120] == frame_icon()
+
 def test_pack_icon_round_trip(tmp_path):
     rows = p1_rows(diagonal(), "")
     icon = write(tmp_path, ("P1\n# diagonal\n32 32\n" + "\n".join(
