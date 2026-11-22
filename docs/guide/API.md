@@ -1034,14 +1034,14 @@ To load an image from the SD card with these checks and the fallback rule, use t
 | `uart_type` | `ROBCO_UART_NONE` 0, `ROBCO_UART_PL011` 1, `ROBCO_UART_MINI` 2 |
 | `boot_dev` | `ROBCO_BOOT_DEV_UNKNOWN` 0, `ROBCO_BOOT_DEV_EMMC` 1, `ROBCO_BOOT_DEV_SDHOST` 2 |
 | Firmware blob tags | `ROBCO_FDT_MAGIC` `0xD00DFEEDu`, `ROBCO_ATAG_CORE` `0x54410001u`, `ROBCO_ATAG_NONE` `0x00000000u` |
-| `bootinfo_merge()` groups | `BOOTINFO_OWN_FW_REGS` bit 0, `BOOTINFO_OWN_FW_BLOB` bit 1, `BOOTINFO_OWN_UART` bit 2, `BOOTINFO_OWN_FB` bit 3, `BOOTINFO_OWN_CON` bit 4, `BOOTINFO_OWN_BOOT_DEV` bit 5 |
+| `bootinfo_merge()` groups | `BOOTINFO_OWN_FW_REGS` bit 0, `BOOTINFO_OWN_FW_BLOB` bit 1, `BOOTINFO_OWN_UART` bit 2, `BOOTINFO_OWN_FB` bit 3, `BOOTINFO_OWN_CON` bit 4, `BOOTINFO_OWN_BOOT_DEV` bit 5, `BOOTINFO_OWN_MINIUART` bit 6, `BOOTINFO_OWN_SD` bit 7 |
 | Validation results | `BOOTINFO_OK` 0, `BOOTINFO_E_MAGIC` -1, `BOOTINFO_E_VERSION` -2, `BOOTINFO_E_SIZE` -3, `BOOTINFO_E_CRC` -4 |
 
 | Config macro | Default | Meaning |
 |---|---|---|
 | `ROBCO_FIRST_STAGE` | `0` | Set to 1 in a first stage. It then always cold-boots and ignores r3. |
 
-The library sets `ROBCO_CAP_FB`, `ROBCO_CAP_PL011` and `ROBCO_CAP_LOCAL_INTC` only. `bootinfo_build()` does not set `ROBCO_CAP_SD`, `ROBCO_CAP_MINIUART`, `boot_dev` or `boot_path`, even when the image uses the SD or mini UART driver. A loader that picks a boot device fills them.
+`bootinfo_build()` sets every `caps` bit from the drivers this stage has running: `ROBCO_CAP_FB` after `fb_init()`, `ROBCO_CAP_PL011` after `uart_init()`, `ROBCO_CAP_MINIUART` after a successful `uart_mini_init()`, `ROBCO_CAP_SD` while `sd_blkdev()` returns a device, and `ROBCO_CAP_LOCAL_INTC` from the SoC. It holds only weak references to these drivers, so an image without them does not link them. It does not set `boot_dev` or `boot_path`: a loader that picks a boot device fills them.
 
 `robco_bootinfo_t` is a packed struct of 320 bytes. The field list with offsets is in [BOOT_PROTOCOL.md](../spec/BOOT_PROTOCOL.md#boot-info) and in the header.
 
@@ -1087,11 +1087,13 @@ Carry-over rule: a field that describes state this stage set up itself comes fro
 | `stage`, board fields, `ROBCO_CAP_LOCAL_INTC` | None | Always |
 | `fw_r0` to `fw_r2` | `BOOTINFO_OWN_FW_REGS` | The stage is cold |
 | `fdt_addr`, `fdt_size` | `BOOTINFO_OWN_FW_BLOB` | It called `bootinfo_copy_fw_blob()` |
-| `uart_*`, `ROBCO_CAP_PL011`, `ROBCO_CAP_MINIUART` | `BOOTINFO_OWN_UART` | It configured the UART |
+| `uart_*`, `ROBCO_CAP_PL011` | `BOOTINFO_OWN_UART` | It configured the PL011 |
+| `ROBCO_CAP_MINIUART` | `BOOTINFO_OWN_MINIUART` | It initialised the mini UART |
+| `ROBCO_CAP_SD` | `BOOTINFO_OWN_SD` | It initialised the SD card |
 | `fb_*`, `ROBCO_CAP_FB` | `BOOTINFO_OWN_FB` | It called `fb_init()` |
 | `con_*` | `BOOTINFO_OWN_CON` | Its console is active |
 | `boot_dev`, `boot_part_lba`, `boot_flags`, `boot_path`, `cmdline` | `BOOTINFO_OWN_BOOT_DEV` | The stage is cold |
-| Other `caps` bits | None | Never, they are carried over |
+| Other `caps` bits | None | Never. They are reserved and 0. |
 
 A new framebuffer without a new console clears `con_cols`, `con_rows`, `con_cx` and `con_cy`, since the old console drew on the old framebuffer. `con_scheme` stays. A loader that picks a boot device writes the `boot_*` fields after `bootinfo_build()` and calls `bootinfo_seal()`.
 

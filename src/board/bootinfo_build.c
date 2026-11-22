@@ -6,15 +6,19 @@
 #include <robco/console.h>
 #include <robco/fb.h>
 #include <robco/klibc.h>
+#include <robco/sd.h>
 #include <robco/uart.h>
+#include <robco/uart_mini.h>
 
-/* Weak, so an image without a framebuffer, console or UART does not link them in. */
+/* Weak, so an image without a framebuffer, console, UART or SD card does not link them in. */
 #pragma weak fb_get
 #pragma weak console_cols
 #pragma weak console_rows
 #pragma weak console_get_cursor
 #pragma weak console_scheme
 #pragma weak uart_get_config
+#pragma weak uart_mini_ready
+#pragma weak sd_blkdev
 
 static const robco_bootinfo_t *current;
 static int inherited;
@@ -103,6 +107,16 @@ void bootinfo_build(robco_bootinfo_t *bi, uint32_t stage_id)
         own.uart_baud = baud;
         own.caps |= ROBCO_CAP_PL011;
         groups |= BOOTINFO_OWN_UART;
+    }
+
+    if (uart_mini_ready != NULL && uart_mini_ready()) {
+        own.caps |= ROBCO_CAP_MINIUART;
+        groups |= BOOTINFO_OWN_MINIUART;
+    }
+
+    if (sd_blkdev != NULL && sd_blkdev() != NULL) {
+        own.caps |= ROBCO_CAP_SD;
+        groups |= BOOTINFO_OWN_SD;
     }
 
     if (fb_get != NULL) {

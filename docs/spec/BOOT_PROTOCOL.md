@@ -225,7 +225,7 @@ _Static_assert(sizeof(robco_bootinfo_t) == 320, "robco_bootinfo_t must be 320 by
 | 0 | Framebuffer valid |
 | 1 | PL011 initialised |
 | 2 | Mini UART initialised |
-| 3 | SD card initialised and FAT mounted |
+| 3 | SD card initialised |
 | 4 | Local interrupt controller at `0x40000000` present |
 | 5 to 31 | Reserved, 0 |
 
@@ -263,11 +263,13 @@ A stage passes on the state it did not set up itself. Hardware such as a framebu
 | `stage`, `board_rev`, `soc`, `periph_base`, `midr`, `mem_base`, `mem_size`, caps bit 4 | Always |
 | `fw_r0`, `fw_r1`, `fw_r2` | Cold boot only |
 | `fdt_addr`, `fdt_size` | The stage copied the firmware blob |
-| `uart_type`, `uart_clock`, `uart_baud`, caps bits 1 and 2 | The stage configured the UART |
+| `uart_type`, `uart_clock`, `uart_baud`, caps bit 1 | The stage configured the PL011 |
+| caps bit 2 | The stage initialised the mini UART |
+| caps bit 3 | The stage initialised the SD card |
 | `fb_*`, caps bit 0 | The stage called `fb_init()` |
 | `con_cols`, `con_rows`, `con_cx`, `con_cy`, `con_scheme` | The stage's console is active |
 | `boot_dev`, `boot_part_lba`, `boot_flags`, `boot_path`, `cmdline` | Cold boot only |
-| Other caps bits | Never |
+| Other caps bits | Never. They are reserved and 0. |
 
 A stage that sets up a new framebuffer without a console clears `con_cols`, `con_rows`, `con_cx` and `con_cy`, since the old console drew on the old framebuffer. It keeps `con_scheme`. A loader that picks a boot device writes the `boot_*` fields after `bootinfo_build()` and calls `bootinfo_seal()`. `bootinfo_merge()` in `src/lib/bootinfo.c` holds the rule.
 

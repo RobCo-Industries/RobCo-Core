@@ -155,8 +155,12 @@ uint32_t bootinfo_fw_blob_size(const void *blob, uint32_t max);
  *   cold stage sets them.
  * - fdt_addr, fdt_size (BOOTINFO_OWN_FW_BLOB): this stage, if it copied
  *   the blob with bootinfo_copy_fw_blob().
- * - uart_*, ROBCO_CAP_PL011, ROBCO_CAP_MINIUART (BOOTINFO_OWN_UART):
- *   this stage, if it configured the UART.
+ * - uart_*, ROBCO_CAP_PL011 (BOOTINFO_OWN_UART): this stage, if it
+ *   configured the console UART.
+ * - ROBCO_CAP_MINIUART (BOOTINFO_OWN_MINIUART): this stage, if it
+ *   initialised the mini UART.
+ * - ROBCO_CAP_SD (BOOTINFO_OWN_SD): this stage, if it initialised the
+ *   SD card.
  * - fb_*, ROBCO_CAP_FB (BOOTINFO_OWN_FB): this stage, if it called
  *   fb_init(). A new framebuffer without a new console clears con_cols,
  *   con_rows, con_cx and con_cy, since the old console drew on the old
@@ -166,7 +170,7 @@ uint32_t bootinfo_fw_blob_size(const void *blob, uint32_t max);
  *   (BOOTINFO_OWN_BOOT_DEV): only a cold stage sets them. A loader that
  *   picks a boot device writes them after bootinfo_build() and calls
  *   bootinfo_seal().
- * - Other caps bits: carried over.
+ * - Other caps bits: reserved, 0.
  */
 #define BOOTINFO_OWN_FW_REGS    (1u << 0)
 #define BOOTINFO_OWN_FW_BLOB    (1u << 1)
@@ -174,6 +178,8 @@ uint32_t bootinfo_fw_blob_size(const void *blob, uint32_t max);
 #define BOOTINFO_OWN_FB         (1u << 3)
 #define BOOTINFO_OWN_CON        (1u << 4)
 #define BOOTINFO_OWN_BOOT_DEV   (1u << 5)
+#define BOOTINFO_OWN_MINIUART   (1u << 6)
+#define BOOTINFO_OWN_SD         (1u << 7)
 
 /*
  * Writes to `out` the merge of `prev`, the inherited block, and `own`,

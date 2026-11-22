@@ -194,6 +194,8 @@ def test_chain_keeps_framebuffer(board, example_image, chain2, mmu):
         caps = int(rb["caps"], 16)
         assert caps & CAP_FB, vm.serial
         assert caps & CAP_PL011, vm.serial
+        # Neither stage touches the SD card or the mini UART here.
+        assert not caps & ((1 << 3) | (1 << 2)), vm.serial
         assert rb["fb"] == fb
         assert (rb["fb_w"], rb["fb_h"]) == ("640", "480")
         assert (rb["cols"], rb["rows"]) == ("80", "30")
@@ -231,6 +233,7 @@ PRIMARY = "/ROBCO/MFBOOT.SYS"
 BACKUP = "/ROBCO/MFBOOT.BAK"
 BOOT_FALLBACK = 1 << 0
 CAP_SD = 1 << 3
+CAP_MINIUART = 1 << 2
 BOOT_DEV_EMMC = 1
 SHELL = re.compile(r"@RC stage=chain1 ev=shell .*\n")
 
@@ -268,7 +271,11 @@ def sd_boot_ok(board, example_image, sd, loaded, src):
         assert info["path"] == loaded
         assert info["dev"] == str(BOOT_DEV_EMMC)
         assert info["part_lba"] == str(PART_LBA)
-        assert int(info["caps"], 16) & CAP_SD, vm.serial
+        # Set by bootinfo_build() in chain1 from the live drivers.
+        assert int(info["caps"], 16) & (CAP_SD | CAP_MINIUART) == CAP_SD | CAP_MINIUART, vm.serial
+        # chain2 sets up neither, so its own block carries both over.
+        rb = one(vm, "chain2", "rebuild")
+        assert int(rb["caps"], 16) & (CAP_SD | CAP_MINIUART) == CAP_SD | CAP_MINIUART, vm.serial
         assert not events(vm, "chain2", "error"), vm.serial
         return vm, int(info["flags"], 16)
 

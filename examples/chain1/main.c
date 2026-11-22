@@ -16,6 +16,7 @@
 #include <robco/tick.h>
 #include <robco/timer.h>
 #include <robco/uart.h>
+#include <robco/uart_mini.h>
 
 #define STAGE "chain1"
 #define NEXT_ADDR 0x00200000u
@@ -194,6 +195,10 @@ void robco_main(void)
 #endif
 
     fdt_size = bootinfo_copy_fw_blob(ROBCO_HANDOFF_FDT_ADDR, ROBCO_HANDOFF_FDT_MAX);
+#if defined(CHAIN1_SD) && CHAIN1_SD
+    /* bootinfo_build() sets the mini UART and SD caps from the live drivers. */
+    uart_mini_init(115200);
+#endif
     bootinfo_build(bi, ROBCO_STAGE_BIOS);
 #if defined(CHAIN1_BAD_BOOTINFO) && CHAIN1_BAD_BOOTINFO
     /* Breaks the CRC, so the next stage must not trust the block. */
@@ -201,7 +206,6 @@ void robco_main(void)
 #endif
 #if defined(CHAIN1_SD) && CHAIN1_SD
     /* A loader that picks a boot device writes the boot fields after bootinfo_build(). */
-    bi->caps |= ROBCO_CAP_SD;
     bi->boot_dev = ROBCO_BOOT_DEV_EMMC;
     bi->boot_part_lba = part_lba;
     if (res.fallback) {

@@ -226,7 +226,8 @@ TEST(merge_own_groups_replace)
     own.con_cols = 128;
     own.con_scheme = 1;
     bootinfo_merge(&out, &prev, &own,
-                   BOOTINFO_OWN_FW_BLOB | BOOTINFO_OWN_UART | BOOTINFO_OWN_FB | BOOTINFO_OWN_CON);
+                   BOOTINFO_OWN_FW_BLOB | BOOTINFO_OWN_UART | BOOTINFO_OWN_MINIUART |
+                   BOOTINFO_OWN_FB | BOOTINFO_OWN_CON);
     CHECK_EQ(out.fdt_addr, 0x5000);
     CHECK_EQ(out.fdt_size, 0x40);
     CHECK_EQ(out.uart_type, ROBCO_UART_MINI);
@@ -238,6 +239,35 @@ TEST(merge_own_groups_replace)
     CHECK_EQ(out.con_cy, 0);
     CHECK_EQ(out.con_scheme, 1);
     CHECK_EQ(out.fw_r1, 0xc43);
+}
+
+TEST(merge_sd_and_mini_uart_bits)
+{
+    robco_bootinfo_t prev, own, out;
+
+    /* Not set up here: both bits carry over. */
+    fill_prev(&prev);
+    prev.caps |= ROBCO_CAP_MINIUART;
+    fill_own(&own);
+    bootinfo_merge(&out, &prev, &own, 0);
+    CHECK_EQ(out.caps & (ROBCO_CAP_SD | ROBCO_CAP_MINIUART), ROBCO_CAP_SD | ROBCO_CAP_MINIUART);
+
+    /* Set up here: this stage's bits win, and the console UART group leaves them alone. */
+    fill_prev(&prev);
+    prev.caps &= ~ROBCO_CAP_SD;
+    fill_own(&own);
+    own.caps |= ROBCO_CAP_SD | ROBCO_CAP_MINIUART;
+    bootinfo_merge(&out, &prev, &own, BOOTINFO_OWN_SD | BOOTINFO_OWN_MINIUART | BOOTINFO_OWN_UART);
+    CHECK_EQ(out.caps & (ROBCO_CAP_SD | ROBCO_CAP_MINIUART), ROBCO_CAP_SD | ROBCO_CAP_MINIUART);
+    CHECK_EQ(out.caps & ROBCO_CAP_PL011, 0);
+
+    /* A group without its bit clears it. */
+    fill_prev(&prev);
+    prev.caps |= ROBCO_CAP_MINIUART;
+    fill_own(&own);
+    bootinfo_merge(&out, &prev, &own, BOOTINFO_OWN_SD | BOOTINFO_OWN_MINIUART);
+    CHECK_EQ(out.caps & (ROBCO_CAP_SD | ROBCO_CAP_MINIUART), 0);
+    CHECK_EQ(out.caps & ROBCO_CAP_PL011, ROBCO_CAP_PL011);
 }
 
 TEST(merge_new_fb_drops_old_console)
