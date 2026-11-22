@@ -15,11 +15,15 @@ $(VENV)/.installed: tests/requirements.txt
 # test-target rebuilds the spike and example dirs; keep top-level targets serial.
 .NOTPARALLEL:
 
-test: test-host test-tools test-canary test-spikes test-examples test-target
+test: test-host test-tools test-docs test-canary test-spikes test-examples test-target
 
 # Unit tests for the Python tools in tools/.
 test-tools: venv
 	$(VENV)/bin/pytest tests/tools -v
+
+# Links, API coverage, checked commands and banned words in the Markdown files.
+test-docs:
+	$(PYTHON) tools/check_docs.py
 
 test-canary: venv
 	$(VENV)/bin/pytest tests/canary -v
