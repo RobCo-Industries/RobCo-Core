@@ -128,3 +128,12 @@ def test_runner_usage():
     assert ["-serial", "mon:stdio"] == cmd[6:8]
     assert "tcp:127.0.0.1:4555,server=on,wait=off" in cmd
     assert "if=sd,format=raw,file=sd.img" in cmd
+
+
+def test_runner_window():
+    from harness import run
+    plain = run.command("x.img", "raspi3b", sd="sd.img")
+    window = run.command("x.img", "raspi3b", sd="sd.img", window=True)
+    assert plain[3:5] == ["-display", "none"]
+    assert "-display" not in window
+    assert plain[:3] + plain[5:] == window

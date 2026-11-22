@@ -1,14 +1,16 @@
 """Boot an image in QEMU like boot() does, with the console on this terminal.
 
     python3 -m harness.run IMAGE --board BOARD [--sd SD.IMG] [--mode auto|svc]
-                           [--serial2 none|pty|tcp:PORT] [--qemu-arg ARG]...
+                           [--serial2 none|pty|tcp:PORT] [--window]
+                           [--qemu-arg ARG]...
 
 Run it with RobCo-Core's tests/ directory on PYTHONPATH. The guest's
 PL011 console is this terminal, in raw mode while QEMU runs and restored
 on exit. Press Ctrl-A, then x, to quit. Ctrl-A, then c, switches to the
 QEMU monitor and back. --serial2 exposes the mini UART, the script
 channel, on a pty (QEMU prints its path) or on a TCP port on 127.0.0.1.
-The exit status is QEMU's.
+--window opens QEMU's display window with the framebuffer; the console
+stays on this terminal. The exit status is QEMU's.
 """
 
 import argparse
@@ -50,10 +52,14 @@ def serial2_args(spec):
     raise ValueError(f"--serial2 takes none, pty or tcp:PORT, not {spec!r}")
 
 
-def command(image, board, mode="auto", sd=None, serial2="none", extra=()):
-    """The QEMU command line: the console on stdio, then boot()'s arguments."""
+def command(image, board, mode="auto", sd=None, serial2="none", extra=(), window=False):
+    """The QEMU command line: the console on stdio, then boot()'s arguments.
+
+    window=True leaves out -display none, so QEMU opens its default display.
+    """
     s2, _ = serial2_args(serial2)
-    cmd = [BOARDS[board].binary, "-M", board, "-display", "none", "-no-user-config",
+    display = [] if window else ["-display", "none"]
+    cmd = [BOARDS[board].binary, "-M", board] + display + ["-no-user-config",
            "-serial", "mon:stdio"] + s2
     return cmd + boot_args(image, board, mode, sd) + list(extra)
 
@@ -66,10 +72,12 @@ def main(argv=None):
     p.add_argument("--sd", help="SD card image")
     p.add_argument("--mode", default="auto", choices=["auto", "svc", "hyp"])
     p.add_argument("--serial2", default="none", help="none, pty or tcp:PORT")
+    p.add_argument("--window", action="store_true", help="open the QEMU display window")
     p.add_argument("--qemu-arg", action="append", default=[], help="extra QEMU argument")
     args = p.parse_args(argv)
     try:
-        cmd = command(args.image, args.board, args.mode, args.sd, args.serial2, args.qemu_arg)
+        cmd = command(args.image, args.board, args.mode, args.sd, args.serial2, args.qemu_arg,
+                      args.window)
         _, note = serial2_args(args.serial2)
     except ValueError as e:
         p.error(str(e))
