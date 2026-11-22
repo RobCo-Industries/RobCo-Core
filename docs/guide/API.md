@@ -55,7 +55,7 @@ Each function signature below is copied from its header. `tools/check_docs.py` f
 | 6 | `k_heap_init(__heap_start, size)` | Nothing. |
 | 7 | `rng_init()` | Step 1. |
 | 8 | `irq_init()` | Step 1. |
-| 9 | `irq_register()`, `tick_register()`, `tick_init(hz)` | Step 8. |
+| 9 | `irq_register()`, `tick_register()`, `tick_init(hz)` | Step 8. `tick_init()` returns `TICK_ERR_NO_IRQ` before it. |
 | 10 | `irq_cpu_enable()` | Step 9. |
 
 The timer, GPIO, power and mailbox functions need no init call. `examples/demo/main.c` follows this order.
@@ -103,7 +103,7 @@ void robco_handoff(uint32_t entry, const struct robco_bootinfo *bi, uint32_t fdt
     __attribute__((noreturn));
 ```
 
-Jumps to the next stage at `entry`. It masks IRQ and FIQ on the CPU, calls `irq_init()` if the image links the interrupt driver, turns the MMU and data cache off if they are on, invalidates the I-cache and branch predictor, and branches in SVC mode with:
+Jumps to the next stage at `entry`. It masks IRQ and FIQ on the CPU, masks every source at the interrupt controller, turns the MMU and data cache off if they are on, invalidates the I-cache and branch predictor, and branches in SVC mode with:
 
 | Register | Value |
 |---|---|
@@ -384,7 +384,13 @@ typedef void (*irq_handler_t)(unsigned irq, void *arg);
 void irq_init(void);
 ```
 
-Masks IRQs on the CPU, disables every source and FIQ at the controller, clears every handler and the spurious count, and routes the controller to core 0. Call it once, before any `irq_register()`. A second call drops every handler, the tick included.
+Masks IRQs on the CPU, disables every source and FIQ at the controller, clears every handler and the spurious count, and routes the controller to core 0. Call it before `tick_init()`. Only the first call does this. Later calls change nothing, so handlers registered in between, the tick included, stay.
+
+```c
+int irq_ready(void);
+```
+
+Non-zero once `irq_init()` has run. `tick_init()` uses it.
 
 ```c
 int irq_register(unsigned irq, irq_handler_t fn, void *arg);
@@ -439,12 +445,16 @@ Context rules:
 | `TICK_MAX_CALLBACKS` | `4` | Callback slots |
 | `TICK_HZ_MIN` | `1u` | Lowest accepted rate |
 | `TICK_HZ_MAX` | `10000u` | Highest accepted rate, a 100 microsecond period |
+| `TICK_ERR_RANGE` | `-1` | `hz` outside `TICK_HZ_MIN` to `TICK_HZ_MAX` |
+| `TICK_ERR_RUNNING` | `-2` | The tick already runs at another rate |
+| `TICK_ERR_NO_IRQ` | `-3` | `irq_init()` has not run |
+| `TICK_ERR_IRQ_TAKEN` | `-4` | Another handler owns `IRQ_TIMER1` |
 
 ```c
 int tick_init(uint32_t hz);
 ```
 
-Registers the channel 1 handler, arms the first match and enables `IRQ_TIMER1`. Returns `0`, or `-1` if `hz` is outside `TICK_HZ_MIN` to `TICK_HZ_MAX`, the tick already runs, or IRQ 1 is taken. It leaves the CPU IRQ mask as it was: call `irq_cpu_enable()` afterwards. Call `irq_init()` first. Without it, `irq_enable()` does nothing, the tick never fires, and a second `tick_init()` returns `-1`. There is no way to stop the tick.
+Registers the channel 1 handler, arms the first match and enables `IRQ_TIMER1`. Returns `0` or a `TICK_ERR_*` code. It leaves the CPU IRQ mask as it was: call `irq_cpu_enable()` afterwards. Call `irq_init()` first. Before it, `tick_init()` returns `TICK_ERR_NO_IRQ` and changes nothing, so you can call it again after `irq_init()`. While the tick runs, a call with the same rate returns `0` and a call with another rate returns `TICK_ERR_RUNNING`: the rate never changes once set. There is no way to stop the tick.
 
 ```c
 uint32_t tick_count(void);

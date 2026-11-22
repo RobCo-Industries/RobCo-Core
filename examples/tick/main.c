@@ -167,6 +167,10 @@ void robco_main(void)
         k_printf("@RC stage=tick ev=delay ok=%d ms2_us=%u\n", !bad, (unsigned)ms2_us);
     }
 
+#ifdef TICK_ORDER
+    /* Order variant: tick_init() before irq_init() must fail and be retryable. */
+    int early = tick_init(TICK_HZ);
+#endif
     irq_init();
 #ifdef TICK_SLOW
     slow_main();
@@ -176,6 +180,17 @@ void robco_main(void)
 
     start_us = (uint32_t)timer_now_us();
     tick_init(TICK_HZ);
+#ifdef TICK_ORDER
+    {
+        int same, other;
+
+        /* A second irq_init() must keep the tick and channel 3 handlers. */
+        irq_init();
+        same = tick_init(TICK_HZ);
+        other = tick_init(TICK_HZ * 2);
+        k_printf("@RC stage=tick ev=order early=%d same=%d other=%d\n", early, same, other);
+    }
+#endif
     oneshot_deadline = timer_now_lo() + ONESHOT_US;
     timer_compare_set(ONESHOT_CH, oneshot_deadline);
     timer_compare_clear(ONESHOT_CH);

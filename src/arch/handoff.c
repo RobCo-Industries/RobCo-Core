@@ -1,11 +1,16 @@
 #include <stdint.h>
 
+#include <robco/board.h>
 #include <robco/boot.h>
 #include <robco/bootinfo.h>
-#include <robco/irq.h>
+#include <robco/mmio.h>
 
-/* Weak, so an image without the interrupt driver does not link it in. */
-#pragma weak irq_init
+/* Legacy interrupt controller, as in src/drv/irq_bcm.c. */
+#define IC_OFFSET           0xb200
+#define IC_FIQ_CTRL         0x0c
+#define IC_DISABLE1         0x1c
+#define IC_DISABLE2         0x20
+#define IC_DISABLE_BASIC    0x24
 
 #define SCTLR_M (1u << 0)
 #define SCTLR_C (1u << 2)
@@ -13,14 +18,22 @@
 
 void robco_handoff(uint32_t entry, const robco_bootinfo_t *bi, uint32_t fdt_or_atags)
 {
+    const robco_board_t *b = board_get();
     uint32_t mach = robco_boot_args()->r1;
     uint32_t sctlr, midr;
 
     __asm__ volatile("cpsid if" ::: "memory");
 
     /* Every source masked at the controller, the system timer included. */
-    if (irq_init != 0) {
-        irq_init();
+    if (b->periph_base) {
+        uint32_t ic = b->periph_base + IC_OFFSET;
+
+        mmio_dmb();
+        mmio_write(ic + IC_FIQ_CTRL, 0);
+        mmio_write(ic + IC_DISABLE1, 0xffffffff);
+        mmio_write(ic + IC_DISABLE2, 0xffffffff);
+        mmio_write(ic + IC_DISABLE_BASIC, 0xff);
+        mmio_dmb();
     }
 
     /*

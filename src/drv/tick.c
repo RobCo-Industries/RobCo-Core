@@ -86,11 +86,17 @@ int tick_init(uint32_t hz)
     uint32_t s;
     uint32_t p = tick_period_us_for(hz);
 
-    if (p == 0 || period_us) {
-        return -1;
+    if (p == 0) {
+        return TICK_ERR_RANGE;
+    }
+    if (period_us) {
+        return p == period_us ? 0 : TICK_ERR_RUNNING;
+    }
+    if (!irq_ready()) {
+        return TICK_ERR_NO_IRQ;
     }
     if (irq_register(IRQ_TIMER1, tick_isr, 0)) {
-        return -1;
+        return TICK_ERR_IRQ_TAKEN;
     }
     s = irq_save();
     period_us = p;

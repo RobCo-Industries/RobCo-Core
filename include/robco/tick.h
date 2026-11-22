@@ -9,14 +9,21 @@
 #define TICK_HZ_MIN         1u
 #define TICK_HZ_MAX         10000u
 
+/* tick_init() errors. */
+#define TICK_ERR_RANGE      (-1)    /* hz outside TICK_HZ_MIN..TICK_HZ_MAX */
+#define TICK_ERR_RUNNING    (-2)    /* the tick already runs at another rate */
+#define TICK_ERR_NO_IRQ     (-3)    /* irq_init() has not run */
+#define TICK_ERR_IRQ_TAKEN  (-4)    /* another handler owns IRQ_TIMER1 */
+
 /*
  * Starts a periodic tick at `hz` on system timer channel 1 (IRQ 1).
  * Needs irq_init() first. IRQs on the CPU stay as they are.
  * The period is 1000000 / hz microseconds, rounded down, so a rate that
  * does not divide 1000000 runs a little fast: 7000 Hz gives 142 us, or
  * about 7042 Hz. tick_ms() uses the real period, so it stays exact.
- * Returns 0, or -1 if `hz` is outside TICK_HZ_MIN..TICK_HZ_MAX or the
- * tick already runs.
+ * Returns 0 or a TICK_ERR_* code. A failed call changes nothing, so it
+ * can be retried, for example after irq_init(). A call while the tick runs
+ * returns 0 for the same rate and TICK_ERR_RUNNING for another one.
  */
 int tick_init(uint32_t hz);
 

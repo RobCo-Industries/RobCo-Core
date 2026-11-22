@@ -18,8 +18,15 @@
 
 typedef void (*irq_handler_t)(unsigned irq, void *arg);
 
-/* Masks every source and routes the controller to core 0. Call once. */
+/*
+ * Masks every source and routes the controller to core 0. The first call
+ * also clears every handler. Later calls change nothing, so handlers
+ * registered after the first call stay.
+ */
 void irq_init(void);
+
+/* Non-zero once irq_init() has run. */
+int irq_ready(void);
 
 /* Installs a handler. Returns 0, or -1 if `irq` is invalid or taken. */
 int irq_register(unsigned irq, irq_handler_t fn, void *arg);

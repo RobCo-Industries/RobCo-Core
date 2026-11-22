@@ -54,6 +54,10 @@ void irq_init(void)
     const robco_board_t *b = board_get();
     unsigned i;
 
+    /* Idempotent: a second call must not drop registered handlers. */
+    if (ic_base) {
+        return;
+    }
     irq_cpu_disable();
     ic_base = b->periph_base + IC_OFFSET;
     mmio_dmb();
@@ -79,6 +83,11 @@ void irq_init(void)
         mmio_write(LOCAL_GPU_ROUTING, 0);
     }
     mmio_dmb();
+}
+
+int irq_ready(void)
+{
+    return ic_base != 0;
 }
 
 int irq_register(unsigned irq, irq_handler_t fn, void *arg)

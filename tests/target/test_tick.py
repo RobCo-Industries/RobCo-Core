@@ -65,3 +65,17 @@ def test_tick_slow_callback(board, example_image):
         vm.send("echo-slow-7\r")
         vm.wait_for("echo-slow-7\n", timeout=5)
         assert not events(vm, "exception"), vm.serial
+
+
+def test_tick_init_order(board, example_image):
+    """tick_init() before irq_init() fails cleanly, and a second irq_init() keeps handlers."""
+    with boot(example_image("tick", "order", "-DTICK_ORDER=1"), board) as vm:
+        vm.wait_for(DONE, timeout=15)
+        order = events(vm, "order")
+        assert len(order) == 1, vm.serial
+        # TICK_ERR_NO_IRQ, then 0 for the same rate, TICK_ERR_RUNNING for another.
+        assert order[0] == {**order[0], "early": "-3", "same": "0", "other": "-2"}, vm.serial
+        done = events(vm, "done")[0]
+        assert int(done["spurious"]) == 0, vm.serial
+        vm.wait_for(ONESHOT, timeout=5)
+        assert not events(vm, "exception"), vm.serial
