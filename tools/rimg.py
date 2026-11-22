@@ -80,7 +80,11 @@ def image_crc(data, file_size):
 
 
 def validate(data, fat_size=None, magic=None, slot=None, abi_major=None):
-    """Runs validation steps 1 to 6 in order. Returns the header or raises RimgError."""
+    """Runs validation steps 1 to 6 in order. Returns the header or raises RimgError.
+
+    Mirrors rimg_validate() in src/lib/rimg.c check for check. A fat_size,
+    slot size or abi_major of 0 or None means "use the default".
+    """
     h = parse_header(data)
     kind = magic_kind(h["magic"])
     # 1. Magic.
@@ -90,22 +94,25 @@ def validate(data, fat_size=None, magic=None, slot=None, abi_major=None):
     if (h["hdr_version"] != 1 or h["hdr_size"] != HDR_SIZE
             or h["flags"] & ~FLAG_META or h["reserved"] != 0):
         raise RimgError(E_VERSION, "unsupported header version, size, flags or reserved")
-    # 3. File size.
-    expected = len(data) if fat_size is None else fat_size
+    # 3. File size. Like rimg_validate(), file_size must fit the bytes read
+    # in every mode. Without --fat-size the file length is the expected size.
+    expected = len(data) if not fat_size else fat_size
     min_size = HDR_END + (META_SIZE if h["flags"] & FLAG_META else 0)
-    if h["file_size"] != expected or h["file_size"] < min_size:
+    if (h["file_size"] < min_size or h["file_size"] > len(data)
+            or h["file_size"] != expected):
         raise RimgError(E_SIZE, f"file_size {h['file_size']} but expected {expected},"
-                                f" at least {min_size}")
-    # 4. Subtype, slot and memory bounds.
+                                f" at least {min_size}, at most {len(data)} read")
+    # 4. Subtype, slot and memory bounds. A slot size of 0 uses the default.
     default = SLOTS.get((kind, h["subtype"]))
     if default is None:
         raise RimgError(E_BOUNDS, f"subtype {h['subtype']} has no slot for {kind}")
-    base, size = slot if slot is not None else default
+    base, size = slot if slot is not None and slot[1] else default
     if (h["load_addr"] != base or h["mem_size"] < h["file_size"]
             or h["load_addr"] + h["mem_size"] > base + size):
         raise RimgError(E_BOUNDS, f"image does not fit the slot {base:#010x}+{size:#x}")
     # 5. ABI major.
-    want = ABI_MAJOR[kind] if abi_major is None else abi_major
+    # An ABI major of 0 uses the default, as in rimg_validate().
+    want = abi_major if abi_major else ABI_MAJOR[kind]
     if h["abi_version"] >> 16 != want:
         raise RimgError(E_ABI, f"ABI major {h['abi_version'] >> 16}, expected {want}")
     # 6. CRC.

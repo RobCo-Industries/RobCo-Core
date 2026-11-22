@@ -194,3 +194,24 @@ def test_usage_error_exit_code(tmp_path):
     assert run("verify").returncode == rimg.EX_USAGE
     assert run("verify", write(tmp_path, sealed()), "--slot-base", "0x8000").returncode \
         == rimg.EX_USAGE
+
+
+def truncated(keep=0xC0, size=0x100):
+    """Header says `size` bytes, only `keep` exist, CRC over the prefix."""
+    data = make_image(size=size)[:keep]
+    struct.pack_into("<I", data, 0x3C, rimg.image_crc(data, size))
+    return bytes(data)
+
+
+@pytest.mark.parametrize("extra", [[], ["--fat-size", "0x100"], ["--fat-size", "0xc0"]],
+                         ids=["no_fat", "fat_header", "fat_read"])
+def test_verify_truncated(tmp_path, extra):
+    r = run("verify", write(tmp_path, truncated()), *extra)
+    assert (r.returncode, r.stdout.strip()) == (rimg.E_SIZE, "size"), r.stderr
+
+
+def test_verify_zero_means_default(tmp_path):
+    """0 selects the default, like the zero fields of rimg_expect_t."""
+    r = run("verify", write(tmp_path, sealed()), "--fat-size", "0", "--abi-major", "0",
+            "--slot-base", "0", "--slot-size", "0")
+    assert r.returncode == 0, r.stderr
