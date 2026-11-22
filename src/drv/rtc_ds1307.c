@@ -9,16 +9,23 @@
  * Driver for the DS1307 family (DS1307, DS1338) and the DS3231 at 0x68.
  * The register codec is pure, in src/lib/rtc_regs.c.
  *
- * Detection: register 0x12 is battery-backed RAM on a DS1307 or DS1338
- * and the read-only temperature LSB on a DS3231. rtc_init() writes 0x12
- * with bit 0 flipped and reads it back. A changed value means a DS1307
- * family chip, and the old value is written back at once. An unchanged
- * value means a DS3231.
+ * Detection reads only: rtc_init() never writes the chip. Another device
+ * may answer at 0x68, and the DS1307 RAM belongs to the user. rtc_detect()
+ * in src/lib/rtc_regs.c applies the rule. rtc_force_chip() or
+ * ROBCO_RTC_CHIP skips it. Only rtc_set() writes.
  */
+#ifndef ROBCO_RTC_CHIP
+#define ROBCO_RTC_CHIP  RTC_CHIP_AUTO
+#endif
+#if ROBCO_RTC_CHIP != RTC_CHIP_AUTO && ROBCO_RTC_CHIP != RTC_CHIP_DS1307 && \
+    ROBCO_RTC_CHIP != RTC_CHIP_DS3231
+#error "ROBCO_RTC_CHIP must be RTC_CHIP_AUTO, RTC_CHIP_DS1307 or RTC_CHIP_DS3231"
+#endif
+
 #define REG_SECONDS     0x00u
-#define REG_PROBE       0x12u
 #define SEC_CH          0x80u   /* DS1307 clock halt */
 
+static int forced = ROBCO_RTC_CHIP;
 static int present;
 static int chip = RTC_CHIP_NONE;
 
@@ -40,23 +47,28 @@ static int write_reg(uint8_t reg, uint8_t val)
 
 static int detect(void)
 {
-    uint8_t old, back;
-    int rc = read_reg(REG_PROBE, &old);
+    uint8_t ptr = REG_SECONDS;
+    uint8_t r[RTC_PROBE_LEN];
+    int rc = i2c_write_read(RTC_I2C_ADDR, &ptr, 1, r, sizeof(r));
 
-    if (rc >= 0) {
-        rc = write_reg(REG_PROBE, (uint8_t)(old ^ 1u));
-    }
-    if (rc >= 0) {
-        rc = read_reg(REG_PROBE, &back);
-    }
     if (rc < 0) {
         return rc;
     }
-    if (back == old) {
-        return RTC_CHIP_DS3231;
+    if (forced != RTC_CHIP_AUTO) {
+        /* Still read: an all 0x00 or 0xFF answer means no working chip. */
+        return rtc_detect(r) == RTC_CHIP_NONE ? RTC_CHIP_NONE : forced;
     }
-    rc = write_reg(REG_PROBE, old);
-    return rc < 0 ? rc : RTC_CHIP_DS1307;
+    return rtc_detect(r);
+}
+
+int rtc_force_chip(int which)
+{
+    if (which != RTC_CHIP_AUTO && which != RTC_CHIP_DS1307 &&
+        which != RTC_CHIP_DS3231) {
+        return RTC_ERR_ARG;
+    }
+    forced = which;
+    return 0;
 }
 
 int rtc_init(void)
@@ -76,6 +88,9 @@ int rtc_init(void)
     rc = detect();
     if (rc < 0) {
         return rc;
+    }
+    if (rc == RTC_CHIP_NONE) {
+        return RTC_ERR_ABSENT;
     }
     chip = rc;
     present = 1;
@@ -135,7 +150,11 @@ int rtc_set(const datetime_t *dt)
     if (rc < 0 || chip != RTC_CHIP_DS3231) {
         return rc;
     }
-    /* The time is valid again: clear the oscillator-stop flag. */
+    /*
+     * The time is valid again: clear the oscillator-stop flag. Read-modify-
+     * write keeps EN32kHz and the alarm flags. An alarm flag that rises
+     * between the read and the write is cleared, as with any status write.
+     */
     rc = read_reg(RTC_DS3231_STATUS, &status);
     if (rc < 0) {
         return rc;

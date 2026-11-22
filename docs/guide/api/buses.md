@@ -86,12 +86,14 @@ Clock stretching, real rates and the bus timeouts are pending hardware validatio
 | `RTC_ERR_ABSENT` | `-11` | Nothing acknowledges `0x68`, or `rtc_init()` did not find the chip |
 | `RTC_ERR_HALTED` | `-12` | The oscillator is stopped: the time is not valid |
 | `RTC_ERR_DATA` | `-13` | A register holds something that is not a date or time |
+| `RTC_CHIP_AUTO` | `-2` | `rtc_force_chip()` and `ROBCO_RTC_CHIP`: detect the chip |
 | `RTC_CHIP_NONE` | `-1` | `rtc_init()` found no chip |
 | `RTC_CHIP_DS1307` | `0` | DS1307 or DS1338 |
 | `RTC_CHIP_DS3231` | `1` | DS3231 |
 | `RTC_TIME_REGS` | `7u` | Time registers `0x00` to `0x06` |
 | `RTC_DS3231_STATUS` | `0x0fu` | DS3231 status register |
 | `RTC_DS3231_OSF` | `0x80u` | Oscillator-stop flag in the DS3231 status register |
+| `RTC_PROBE_LEN` | `0x1au` | Bytes the detection reads from register `0x00` |
 | `CLOCK_ERR_ARG` | `-1` | NULL |
 | `CLOCK_ERR_UNSET` | `-2` | `clock_set()` never ran |
 
@@ -103,20 +105,38 @@ int rtc_present(void);
 int rtc_chip(void);
 ```
 
-`rtc_init()` probes `0x68`. It needs `i2c_init()` first. It returns `0` when the chip answers, `RTC_ERR_ABSENT` when nothing does, or an I2C error such as `I2C_ERR_INIT`. Then it detects the chip with no configuration. Register `0x12` is battery-backed RAM on a DS1307 or DS1338 and the read-only temperature register on a DS3231. `rtc_init()` writes `0x12` with bit 0 flipped and reads it back. A changed value means a DS1307 or DS1338, and it writes the old value back at once. An unchanged value means a DS3231. When the chip runs and `rtc_get()` succeeds, it also calls `clock_set()` with that time. `rtc_present()` returns `1` after `rtc_init()` found the chip, else `0`. Every other RTC call returns `RTC_ERR_ABSENT` until then. `rtc_chip()` returns the `RTC_CHIP_*` code found, or `RTC_CHIP_NONE`.
+`rtc_init()` probes `0x68`. It needs `i2c_init()` first. It returns `0` when the chip answers, `RTC_ERR_ABSENT` when nothing does, or an I2C error such as `I2C_ERR_INIT`. Then it detects the chip with reads only. It never writes the chip: another device may answer at `0x68`, and the DS1307 RAM belongs to the user. When the chip runs and `rtc_get()` succeeds, it also calls `clock_set()` with that time. `rtc_present()` returns `1` after `rtc_init()` found the chip, else `0`. Every other RTC call returns `RTC_ERR_ABSENT` until then. `rtc_chip()` returns the `RTC_CHIP_*` code found, or `RTC_CHIP_NONE`.
+
+Detection rule. `rtc_init()` reads `RTC_PROBE_LEN` bytes in one transfer from register `0x00`. The DS3231 register pointer wraps from `0x12` to `0x00`, so bytes `0x13` to `0x19` repeat the time registers. On a DS1307 or DS1338 they are RAM. `rtc_detect()` returns `RTC_CHIP_DS3231` only when all of these hold:
+
+- Both copies of the time registers decode as a valid DS3231 time, and the second copy is the same time or one second later, for a tick during the read.
+- Bits 6 to 4 of the status register `0x0F` read `0`.
+- Bits 5 to 0 of the temperature register `0x12` read `0`.
+
+When every byte reads `0x00`, or every byte reads `0xFF`, the device is dead or the bus is stuck: `rtc_init()` returns `RTC_ERR_ABSENT` and `rtc_present()` stays `0`. Anything else means `RTC_CHIP_DS1307`. A DS3231 with an invalid time also lands there. `rtc_set()` then writes a valid time, and the next `rtc_init()` finds the DS3231.
+
+```c
+int rtc_force_chip(int chip);
+```
+
+Skips the detection for the next `rtc_init()`. Takes `RTC_CHIP_AUTO`, `RTC_CHIP_DS1307` or `RTC_CHIP_DS3231`, and returns `0` or `RTC_ERR_ARG`. It overrides `ROBCO_RTC_CHIP`. `rtc_init()` still reads the registers once, and still returns `RTC_ERR_ABSENT` for an all `0x00` or all `0xFF` answer.
+
+| Macro | Default | Meaning |
+|---|---|---|
+| `ROBCO_RTC_CHIP` | `RTC_CHIP_AUTO` | Set in `robco_config.h` to `RTC_CHIP_DS1307` or `RTC_CHIP_DS3231` when the product knows its chip. Any other value stops the build. |
 
 ```c
 int rtc_get(datetime_t *out);
 ```
 
-Reads registers 0 to 6 in one transfer, so the fields belong to the same second. On a DS3231 it also reads the status register. Returns `RTC_ERR_HALTED` when the clock-halt bit is set on a DS1307 or DS1338, or the oscillator-stop flag on a DS3231. Decodes 12-hour mode into 0 to 23. Ignores the DS3231 century bit. Returns `RTC_ERR_DATA` for a BCD digit above 9, a field out of range, a day past the end of the month, or a reserved bit set in the seconds of a DS3231, or in the minute, hour, day or month register. It never returns a half-valid time. The weekday comes from the date. The chip's weekday register is ignored.
+Reads registers 0 to 6 in one transfer, so the fields belong to the same second. It never writes. On a DS3231 it also reads the status register. Returns `RTC_ERR_HALTED` when the clock-halt bit is set on a DS1307 or DS1338, or the oscillator-stop flag on a DS3231. Decodes 12-hour mode into 0 to 23. Ignores the DS3231 century bit. Returns `RTC_ERR_DATA` for a BCD digit above 9, a field out of range, a day past the end of the month, or a reserved bit set in the seconds of a DS3231, or in the minute, hour, day or month register. It never returns a half-valid time. The weekday comes from the date. The chip's weekday register is ignored.
 
 ```c
 int rtc_set(const datetime_t *dt);
 int rtc_running(void);
 ```
 
-`rtc_set()` writes all seven time registers in one transfer, in 24-hour mode, with the clock-halt and century bits clear, so the oscillator starts. It writes the weekday register as 1 (Sunday) to 7. On a DS3231 it then clears the oscillator-stop flag and keeps the other status bits. It does not touch the control register or the RAM. It checks `dt` before presence, so a bad `dt` gives `RTC_ERR_ARG` even without a chip. `rtc_running()` returns `1` when the oscillator runs, `0` when halted, or a negative error. It reads the clock-halt bit, or the oscillator-stop flag on a DS3231.
+`rtc_set()` is the only RTC call that writes the chip. It writes all seven time registers in one transfer, in 24-hour mode, with the clock-halt and century bits clear, so the oscillator starts. It writes the weekday register as 1 (Sunday) to 7. On a DS3231 it then reads the status register and writes it back with only the oscillator-stop flag cleared. `EN32kHz` and the alarm flags keep their value. An alarm flag that rises between the read and the write is lost. It does not touch the control register, the DS1338 register `0x07` or the RAM. `rtc_init()`, `rtc_get()` and `rtc_running()` only read. It checks `dt` before presence, so a bad `dt` gives `RTC_ERR_ARG` even without a chip. `rtc_running()` returns `1` when the oscillator runs, `0` when halted, or a negative error. It reads the clock-halt bit, or the oscillator-stop flag on a DS3231.
 
 ```c
 void clock_set(const datetime_t *dt);
@@ -133,7 +153,8 @@ Context: main context only for the RTC calls. `clock_get()` reads a 64-bit state
 | New chip | A new DS1307 starts halted with garbage in its registers, and a new DS3231 with its oscillator-stop flag set. `rtc_get()` returns `RTC_ERR_HALTED` until `rtc_set()` runs. |
 | 5 V | The DS1307 needs 5 V, and many modules then pull the I2C lines to 5 V. Use a module with 3.3 V pull-ups, or a DS1338 with a 3.3 V supply. |
 | QEMU | The `ds1338` model ignores the clock-halt bit and follows the host clock until the guest sets it. `RTC_ERR_HALTED` is tested only on the host. QEMU has no DS3231 model. |
-| DS3231 | The detection writes register `0x12` for a moment. On a DS1307 or DS1338 that is a RAM byte, restored at once. A power cut between the two writes leaves bit 0 flipped. |
+| DS3231 | A DS3231 with an invalid time, or with the clock running backwards, reads as `RTC_CHIP_DS1307` until `rtc_set()` runs. Set `ROBCO_RTC_CHIP` when the product knows its chip. |
+| DS1307 RAM | A DS1307 or DS1338 is read as a DS3231 only if its RAM at `0x13` holds a valid copy of the current time and bytes `0x0F` and `0x12` have the DS3231 zero bits. |
 | File time stamps | `fs.h` stamps new and modified files with the software clock once it is set. See [File time stamps](./storage.md#file-time-stamps). |
 
 ```c
@@ -155,7 +176,13 @@ int rtc_regs_encode(const datetime_t *dt, uint8_t regs[RTC_TIME_REGS]);
 
 The register codec behind `rtc_get()` and `rtc_set()`, pure in `src/lib/rtc_regs.c` and tested on the host. `rtc_regs_decode()` applies the rules of `rtc_get()` to registers 0 to 6 of `chip`. `status` is the DS3231 status register, ignored for `RTC_CHIP_DS1307`. It returns `0`, `RTC_ERR_HALTED`, `RTC_ERR_DATA`, or `RTC_ERR_ARG` for a NULL pointer or an unknown chip. `rtc_regs_encode()` fills the seven registers as `rtc_set()` writes them, and returns `0` or `RTC_ERR_ARG` for NULL or a time `dt_valid()` rejects.
 
-[`examples/rtc/main.c`](../../../examples/rtc/main.c) scans the bus, checks the error codes, reads, sets and reads back the time, and uses the DS1307 RAM. Real DS1307, DS1338 and DS3231 chips are pending hardware validation. See [hardware validation](../../HARDWARE_VALIDATION.md).
+```c
+int rtc_detect(const uint8_t regs[RTC_PROBE_LEN]);
+```
+
+The detection rule above, pure and tested on the host. `regs` holds `RTC_PROBE_LEN` bytes read from register `0x00`. Returns `RTC_CHIP_DS3231`, `RTC_CHIP_DS1307`, or `RTC_CHIP_NONE` for NULL or an all `0x00` or all `0xFF` dump.
+
+[`examples/rtc/main.c`](../../../examples/rtc/main.c) scans the bus, checks the error codes, reads, sets and reads back the time, and uses the DS1307 RAM. Real DS1307, DS1338 and DS3231 chips, and the read-only detection on them, are pending hardware validation. See [hardware validation](../../HARDWARE_VALIDATION.md).
 
 ## Date and time (`datetime.h`)
 

@@ -54,7 +54,7 @@ def test_rtc_present(board, example_image):
 
         rtc = event(vm, "rtc")
         assert (rtc["present"], rtc["running"], rtc["rc"]) == ("1", "1", "0"), vm.serial
-        # The ds1338 model keeps a write to RAM byte 0x12: the DS1307 family.
+        # The ds1338 RAM does not repeat the time at 0x13: the DS1307 family.
         assert rtc["chip"] == "0", vm.serial
 
         # QEMU's RTC follows the host clock: compare loosely.
