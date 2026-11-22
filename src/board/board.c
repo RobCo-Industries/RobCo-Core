@@ -2,8 +2,11 @@
 
 #include <robco/board.h>
 #include <robco/boot.h>
+#include <robco/exc.h>
+#include <robco/klibc.h>
 #include <robco/mbox.h>
 #include <robco/rimg.h> /* compiles the header size checks */
+#include <robco/uart.h>
 
 extern robco_boot_args_t robco_boot_args_store;
 
@@ -83,7 +86,24 @@ void robco_halt(void)
 
 void robco_start(void)
 {
-    board_get();
-    robco_main();
+    const robco_board_t *b = board_get();
+
+    switch (b->soc) {
+    case ROBCO_SOC_BCM2835:
+    case ROBCO_SOC_BCM2836:
+    case ROBCO_SOC_BCM2837:
+        robco_main();
+        break;
+    case ROBCO_SOC_BCM2711:
+        /* Known base, so report on the PL011. QEMU has no 32-bit raspi4b to test this. */
+        uart_init(115200);
+        k_printf("\n@RC stage=%s ev=error code=unsupported_board midr=0x%08x\n",
+                 ROBCO_STAGE_NAME, (unsigned)b->midr);
+        uart_flush();
+        break;
+    default:
+        /* No known base, so no output. */
+        break;
+    }
     robco_halt();
 }

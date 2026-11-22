@@ -25,7 +25,7 @@ All code runs in AArch32. The build targets ARMv6 with `-mcpu=arm1176jzf-s -marm
 | `0xD08` | BCM2711 | `0x2711` | `0xFE000000` | GIC-400 | Not used |
 | other | unknown | `0` | none | none | none |
 
-On BCM2711 the stage panics with the message `unsupported board`. It prints this on the PL011 only if the base is known, so it tries base `0xFE000000`. On an unknown part the stage halts in a `wfi` loop. It cannot print, because it does not know where the UART is.
+`robco_start()` calls `robco_main()` only on BCM2835, BCM2836 and BCM2837. On BCM2711 it brings up the PL011 at base `0xFE000000`, prints `@RC stage=<name> ev=error code=unsupported_board midr=0x...` and halts. On an unknown part it halts in a `wfi` loop without output, because it does not know where the UART is. No project code runs on either board.
 
 The VC bus alias is the value the VideoCore adds to ARM physical addresses. Drivers OR it into addresses they give to the mailbox. They clear it from addresses they get back, such as the framebuffer address.
 
@@ -133,7 +133,7 @@ Without a DTB the firmware passes an ATAGS list in r2, at `0x100`. It applies no
 
 ## Pi 4
 
-BCM2711 has a row in the detection table so that the code does not design it out. Its peripheral base and GIC differ, and it needs its own firmware files. A stage that detects part `0xD08` panics with `unsupported board`. Support is a later goal.
+BCM2711 has a row in the detection table so that the code does not design it out. Its peripheral base and GIC differ, and it needs its own firmware files. A stage that detects part `0xD08` prints the `unsupported_board` error marker and halts. Support is a later goal.
 
 ## Startup sequence
 
@@ -149,7 +149,7 @@ Every image starts in `src/arch/start.S`. The order is fixed.
 | 6 | Clear SCTLR.V, then write VBAR. | Low vectors plus VBAR put the vector table inside the image. |
 | 7 | Enable cp10 and cp11 in CPACR, flush the prefetch buffer, then set FPEXC.EN. | The current flags emit no VFP code. Enabling access costs nothing and avoids an undefined-instruction trap if a later component uses VFP. |
 | 8 | Zero BSS from `__bss_start` to `__bss_end`. Then store the saved r0 to r3 and entry mode in `robco_boot_args_store`. | C code expects zeroed statics. A loader does not zero BSS for the image. The store sits in `.data`, so the BSS clear cannot erase it. |
-| 9 | Call `robco_start()`. It detects the board with `board_get()`, then calls `robco_main()`. | One C entry point per image. See [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md). |
+| 9 | Call `robco_start()`. It detects the board with `board_get()`, then calls `robco_main()` on a supported SoC. On any other SoC it halts, as the detection table describes. | One C entry point per image. See [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md). |
 | 10 | If `robco_main` returns, mask IRQ and FIQ and park in a `wfi` loop. | There is nowhere to return to. |
 
 ### ARM1176 MPIDR trap
