@@ -8,7 +8,7 @@ Every repo in the suite tests with the same harness from RobCo-Core. QEMU 10.1.2
 |---|---|---|
 | 1. Host tests | C unit tests built for the host from the real sources: klibc, CRC, `rimg`, boot info, tick maths, allocator, partitions, FatFs over a file, input queue and decoders, audio notes and sequencer, date and time, INI. 18 files, about 180 tests. Later: game logic, UI layout. | `tests/host/` |
 | 2. Tool tests | pytest for the host tools, the Makefile, the docs checker, and the file system against mtools | `tests/tools/` |
-| 3. Serial tests | Boot an image in QEMU and assert on `@RC` markers and text. 14 files, each run on every board. | `tests/target/` |
+| 3. Serial tests | Boot an image in QEMU and assert on `@RC` markers and text. 17 files, each run on every board. | `tests/target/` |
 | 4. Screen tests | Console cell grid dumped over the UART, plus QMP `screendump` compared with golden images | `tests/target/`, `tests/golden/` |
 | 5. Input tests | Key input over the console backend on the PL011 and the script backend on the mini UART | `tests/target/test_input.py` |
 | 6. Fault tests | Bad magic, bad CRC, out-of-slot images, a missing next stage, an undefined instruction, MMU faults. Later: truncated file, oversized file, crashing holotape. | `tests/target/` |
@@ -93,6 +93,15 @@ Some tests attach more devices:
 | `0xD69F03E0` | `eret` |
 
 For `mode="svc"` the third word is `0xD2803A60`, `mov x0, #0x1D3`. The stub then runs as on the other boards, but never issues `smc`, because the CPU is already in the right mode. The other cores stay parked by QEMU. No AArch64 toolchain is needed.
+
+### Guest state on timeout
+
+A wait in `boot.py` that times out appends a guest state block to its `QemuError`, after the serial log. It holds five samples of CPU0's pc, lr, sp and CPSR, the interrupt controller and system timer registers, and function names from the image's ELF. `vm.state_dump()` returns the same block. [tests/README.md](../../tests/README.md#when-a-wait-times-out) shows how to read it.
+
+| Board | System timer | Interrupt controller | Local controller |
+|---|---|---|---|
+| `raspi0`, `raspi1ap` | `0x20003000` | `0x2000B200` | none |
+| `raspi2b`, `raspi3b` | `0x3F003000` | `0x3F00B200` | `0x40000000` |
 
 ## Boards and suites
 

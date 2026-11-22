@@ -227,6 +227,79 @@ def test_board_command(board, example_image):
         assert status == "ok" and lines[0].startswith("soc=")
 ```
 
+## When a wait times out
+
+A `vm.wait_for()` or `vm.script()` that times out raises `QemuError`
+with the serial log first, then a guest state block. The block reads
+CPU0 and the hardware over QMP, so it shows where the guest was when
+the test gave up. `vm.state_dump()` returns the same text on demand.
+
+This one is `examples/audio` idle in its `wfi` loop on `raspi0`:
+
+```
+--- guest state at timeout (raspi0) ---
+summary: guest executing: no (pc and registers fixed over 5 samples); IRQs unmasked (CPSR.I=0 in every sample)
+cpu0 samples (5, 100 ms apart):
+  #1 pc=0x000085e8 <robco_main> lr=0x000085c4 <robco_main> sp=0x00015040 cpsr=0xa0000153 svc I=0 F=1 T=0
+  ... samples 2 to 5 are the same
+symbols: audio.elf via arm-none-eabi-addr2line
+interrupt controller @ 0x2000b200:
+  basic_pending=0x00000000 pending1=0x00000000 pending2=0x00000000 fiq_ctrl=0x00000000 enable1=0x00000002 enable2=0x00000000 enable_basic=0x00000000
+system timer @ 0x20003000:
+  CS=0x00000000 (match M3..M0=0000) CLO=0x00581143 CHI=0x00000000
+  C0=0x00000000 match=0 distance=-5771587 us (behind)
+  C1=0x0058122d match=0 distance=+234 us (ahead)
+  C2=0x00000000 match=0 distance=-5771587 us (behind)
+  C3=0x00000000 match=0 distance=-5771587 us (behind)
+info registers (sample #1):
+  CPU#0
+  R00=ffffffff R01=20201000 R02=00000090 R03=ffffff9e
+  ...
+  R12=00000ced R13=00015040 R14=000085c4 R15=000085e8
+  PSR=a0000153 N-C- A S svc32
+--- end of guest state ---
+```
+
+Here the tick is healthy: C1 fires in 234 us and `enable1` has bit 1,
+the C1 interrupt, set.
+
+What each part holds:
+
+- `summary`: whether pc or any core register changed across the
+  samples, and whether CPSR.I masked IRQs.
+- Five samples of pc, lr, sp and CPSR, 100 ms apart. CPSR shows the mode
+  and the I, F and T bits. pc and lr carry function names when the
+  ELF is known. `boot()` uses the `.elf` next to the `.img`, or
+  `boot(..., elf=path)`. Without one, the `symbols:` line says why.
+- The BCM2835 interrupt controller pending and enable registers. On
+  `raspi2b` and `raspi3b` also the local controller at `0x40000000`:
+  control, GPU routing, core 0 timer control and core 0 IRQ source.
+- The system timer: CS, CLO, CHI and C0 to C3. Each compare shows its
+  distance from CLO in microseconds, wrap-safe.
+- The full `info registers` text of the first sample, without the
+  floating-point registers.
+
+How to read the three classic hangs:
+
+- Idle with a dead tick. The summary says not executing and IRQs
+  unmasked. pc sits on a `wfi` in an idle function. Look at the
+  system timer: the tick's compare (C1 or C3) is far behind CLO with its
+  match bit clear, so it fires only after the counter wraps in about
+  71 minutes. Or its bit is clear in `enable1`.
+- Spinning. The summary says executing. pc moves between a few
+  addresses in one function, or stays put while registers change.
+  That function is the loop to look at, for example a poll on a
+  register that never changes.
+- Stuck with IRQs masked. The summary says IRQs masked in every sample.
+  If pc also moves, the guest spins in a critical section and no
+  interrupt can end it. A match bit set in CS or a pending bit
+  confirms an interrupt is waiting.
+
+The dump never hides the original error. If QEMU has exited, the
+block says so. If reading a register fails, the block holds one
+`state dump failed:` line. The dump has an 8 second budget and a
+2 second limit per QMP reply, so a dead socket cannot hang the run.
+
 ## The harness in a project
 
 A project with RobCo-Core in `external/robco-core` enables the plugin
