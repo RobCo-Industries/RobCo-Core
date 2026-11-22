@@ -66,6 +66,24 @@ def test_hello(board, spike_image):
         vm.wait_for(re.compile(r"\nabc"), timeout=5)
 ```
 
+Examples build through the session fixture `example_image`.
+`example_image(name, variant=None, extra_cflags=None)` builds
+`examples/<name>` once per (name, variant) with `CI=1` and returns the
+path of its `.img`. A variant builds into `build/<variant>`:
+
+```python
+from harness.boot import boot
+
+def test_my_example(board, example_image):
+    with boot(example_image("hello"), board) as vm:
+        vm.wait_for("ev=ready", timeout=10)
+
+def test_my_fault(board, example_image):
+    img = example_image("hello", "fault", "-DHELLO_FAULT=1")
+    with boot(img, board) as vm:
+        vm.wait_for("ev=exception", timeout=10)
+```
+
 `boot()` options: `mode="svc"` forces SVC entry, `sd=path` attaches an
 SD image, `serial2=True` adds the mini UART, `extra_args=[...]` goes
 straight to QEMU. `vm.qmp` is the `Qemu` object from `harness/qemu.py`.

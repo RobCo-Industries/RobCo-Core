@@ -1,16 +1,11 @@
 """Boot examples/hello through boot() on every board."""
 
-import os
 import re
-import subprocess
 import time
 
 import pytest
 
 from harness.boot import boot
-
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HELLO = os.path.join(ROOT, "examples", "hello")
 
 SOC = {"raspi0": ("bcm2835", "0x20000000"), "raspi1ap": ("bcm2835", "0x20000000"),
        "raspi2b": ("bcm2836", "0x3f000000"), "raspi3b": ("bcm2837", "0x3f000000")}
@@ -21,22 +16,10 @@ READY = re.compile(r"@RC stage=hello ev=ready\n")
 EXCEPTION = re.compile(r"@RC stage=hello ev=exception .*\n")
 
 
-@pytest.fixture(scope="session")
-def hello_image():
-    """hello_image(fault) builds examples/hello once per variant and returns hello.img."""
-    built = {}
-
-    def get(fault=False):
-        if fault not in built:
-            build = "build/fault" if fault else "build"
-            cmd = ["make", "-s", "-C", HELLO, "CI=1", f"BUILD={build}"]
-            if fault:
-                cmd.append("EXTRA_CFLAGS=-DHELLO_FAULT=1")
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
-            built[fault] = os.path.join(HELLO, build, "hello.img")
-        return built[fault]
-
-    return get
+def hello_image(example_image, fault=False):
+    if fault:
+        return example_image("hello", "fault", "-DHELLO_FAULT=1")
+    return example_image("hello")
 
 
 def events(vm, name):
@@ -56,22 +39,22 @@ def check_boot(vm, board):
 
 
 @pytest.mark.parametrize("fault", [False, True], ids=["normal", "fault"])
-def test_hello_magic(hello_image, fault):
-    with open(hello_image(fault), "rb") as f:
+def test_hello_magic(example_image, fault):
+    with open(hello_image(example_image, fault), "rb") as f:
         head = f.read(0x28)
     assert head[0x20:0x28] == MAGIC
 
 
-def test_hello(board, hello_image):
-    with boot(hello_image(), board) as vm:
+def test_hello(board, example_image):
+    with boot(hello_image(example_image), board) as vm:
         vm.wait_for(READY, timeout=10)
         time.sleep(0.5)  # give a late exception a chance to show up
         check_boot(vm, board)
         assert not events(vm, "exception"), vm.serial
 
 
-def test_hello_fault(board, hello_image):
-    with boot(hello_image(fault=True), board) as vm:
+def test_hello_fault(board, example_image):
+    with boot(hello_image(example_image, fault=True), board) as vm:
         vm.wait_for(EXCEPTION, timeout=10)
         check_boot(vm, board)
         exc = events(vm, "exception")

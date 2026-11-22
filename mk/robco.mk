@@ -45,8 +45,10 @@ ROBCO_LD_RWX := $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx-segments 
 ROBCO_LDFLAGS := $(ROBCO_ARCHFLAGS) -nostdlib -T $(BUILD)/image.ld \
                  -Wl,--gc-sections -Wl,-u,_start -Wl,-Map,$(BUILD)/$(IMAGE).map $(ROBCO_LD_RWX)
 
-ROBCO_SRCS := arch/start.S arch/vectors.S arch/exceptions.c board/board.c \
-              drv/uart_pl011.c drv/mbox.c lib/k_string.c lib/k_printf.c
+# Every .c and .S under src/<dir>/ goes into librobco.a. Sorted for a stable
+# archive order. --gc-sections drops what the image does not use.
+ROBCO_SRCS := $(sort $(patsubst $(ROBCO_CORE)/src/%,%,\
+              $(wildcard $(ROBCO_CORE)/src/*/*.c $(ROBCO_CORE)/src/*/*.S)))
 ROBCO_OBJS := $(addprefix $(BUILD)/robco/,$(addsuffix .o,$(basename $(ROBCO_SRCS))))
 PROJ_OBJS  := $(addprefix $(BUILD)/obj/,$(addsuffix .o,$(basename $(SRCS))))
 

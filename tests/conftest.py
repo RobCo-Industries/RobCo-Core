@@ -4,7 +4,9 @@
                Default: raspi0 and raspi2b. "all" adds raspi1ap and raspi3b.
 """
 
+import glob
 import os
+import re
 import subprocess
 import sys
 
@@ -61,6 +63,41 @@ def spike_image():
             subprocess.run(["make", "-s", "-C", d], check=True, stdout=subprocess.DEVNULL)
             built[name] = os.path.join(d, "build", f"{name}.img")
         return built[name]
+
+    return get
+
+
+def _image_name(example_dir, build_dir):
+    with open(os.path.join(example_dir, "Makefile")) as f:
+        m = re.search(r"^IMAGE\s*[:?]?=\s*(\S+)", f.read(), re.M)
+    if m:
+        return os.path.join(build_dir, m.group(1) + ".img")
+    imgs = glob.glob(os.path.join(build_dir, "*.img"))
+    if len(imgs) != 1:
+        raise RuntimeError(f"expected one .img in {build_dir}, found {imgs}")
+    return imgs[0]
+
+
+@pytest.fixture(scope="session")
+def example_image():
+    """example_image("hello") builds examples/hello once per session and returns its .img path.
+
+    variant names a build dir under the example, "build/<variant>".
+    extra_cflags goes to EXTRA_CFLAGS for that variant.
+    """
+    built = {}
+
+    def get(name, variant=None, extra_cflags=None):
+        key = (name, variant)
+        if key not in built:
+            d = os.path.join(ROOT, "examples", name)
+            build = f"build/{variant}" if variant else "build"
+            cmd = ["make", "-s", "-C", d, "CI=1", f"BUILD={build}"]
+            if extra_cflags:
+                cmd.append(f"EXTRA_CFLAGS={extra_cflags}")
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+            built[key] = _image_name(d, os.path.join(d, build))
+        return built[key]
 
     return get
 

@@ -33,12 +33,21 @@ test-spikes: venv
 	done; \
 	echo "test-spikes: all passed"
 
-# Builds the examples warning-free. test-target boots them.
+# Builds every examples/*/Makefile warning-free. test-target boots them.
+# An example may list extra builds in examples/<name>/VARIANTS, one per
+# line: <build-dir> <extra cflags>. Lines starting with # are skipped.
 test-examples:
 	@set -eu; \
 	fail() { echo "FAIL: $$1" >&2; exit 1; }; \
-	$(MAKE) -C examples/hello CI=1 || fail "hello build"; \
-	$(MAKE) -C examples/hello CI=1 BUILD=build/fault EXTRA_CFLAGS=-DHELLO_FAULT=1 || fail "hello fault build"; \
+	for mk in examples/*/Makefile; do \
+	  d=$${mk%/Makefile}; n=$${d#examples/}; \
+	  $(MAKE) -C $$d CI=1 || fail "$$n build"; \
+	  [ -f $$d/VARIANTS ] || continue; \
+	  while read -r build flags; do \
+	    case "$$build" in ''|'#'*) continue ;; esac; \
+	    $(MAKE) -C $$d CI=1 BUILD=$$build EXTRA_CFLAGS="$$flags" || fail "$$n $$build build"; \
+	  done < $$d/VARIANTS; \
+	done; \
 	echo "test-examples: all passed"
 
 # Target tests: boot spikes and examples through tests/harness/boot.py on every board.
