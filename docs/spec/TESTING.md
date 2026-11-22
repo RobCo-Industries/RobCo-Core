@@ -92,10 +92,12 @@ For `mode="svc"` the third word is `0xD2803A60`, `mov x0, #0x1D3`. The stub then
 
 | QEMU machine | SoC | Suites |
 |---|---|---|
-| `raspi0` | BCM2835 | Canary, full suite |
-| `raspi1ap` | BCM2835 | Canary, spikes |
-| `raspi2b` | BCM2836 | Canary, full suite |
-| `raspi3b` | BCM2837 | Canary, smoke: boot to `ev=ready` |
+| `raspi0` | BCM2835 | Canary, spikes, target tests |
+| `raspi1ap` | BCM2835 | Canary, spikes, target tests |
+| `raspi2b` | BCM2836 | Canary, spikes, target tests |
+| `raspi3b` | BCM2837 | Canary, spikes, target tests |
+
+`make test-target` runs on all four boards. `BOARD=<name>` limits it to one. The Spleen font tests run on `raspi0` and `raspi2b` only. Without `--board`, pytest picks `raspi0` and `raspi2b`. The reusable workflow runs `raspi0` and `raspi2b` unless the caller passes other boards.
 
 Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, audio and the TFT.
 

@@ -140,7 +140,7 @@ Without a DTB the firmware passes an ATAGS list in r2, at `0x100`. It applies no
 
 ## Pi 4
 
-BCM2711 has a row in the detection table so that the code does not design it out. Its peripheral base and GIC differ, and it needs its own firmware files. A stage that detects part `0xD08` prints the `unsupported_board` error marker and halts. Support is a later goal.
+BCM2711 has a row in the detection table so that the code does not design it out. Its peripheral base and GIC differ, and it needs its own firmware files. A stage that detects part `0xD08` prints the `unsupported_board` error marker and halts. Nothing else supports BCM2711.
 
 ## Startup sequence
 
