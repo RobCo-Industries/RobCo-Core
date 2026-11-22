@@ -193,24 +193,49 @@ def _pbm_header(data):
         raise RimgError(E_IO, "bad PBM header")
 
 
+def _p1_bits(body):
+    """Returns the pixel digits of a P1 raster, comments removed."""
+    bits = []
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c == ord("#"):
+            while i < len(body) and body[i] not in b"\r\n":
+                i += 1
+            continue
+        if c in b"01":
+            bits.append(c == ord("1"))
+        elif c not in b" \t\r\n\v\f":
+            raise RimgError(E_IO, f"bad character {chr(c)!r} in PBM pixel data")
+        i += 1
+    return bits
+
+
 def parse_icon(data):
-    """Returns the 128 META icon bytes from a 32x32 PBM (P1 or P4) or 128 raw bytes."""
+    """Returns the 128 META icon bytes from a 32x32 PBM (P1 or P4) or 128 raw bytes.
+
+    PBM 1 (black) is a lit pixel and 0 (white) is unlit.
+    """
     if data[:2] in (b"P1", b"P4"):
         kind, w, h, end = _pbm_header(data)
         if (w, h) != (ICON_W, ICON_H):
             raise RimgError(E_SIZE, f"icon is {w}x{h}, expected {ICON_W}x{ICON_H}")
         if kind == b"P4":
             # One whitespace byte after the height, then 4 bytes per row, MSB first.
-            raw = data[end + 1:end + 1 + ICON_SIZE]
+            if end >= len(data) or data[end] not in b" \t\r\n\v\f":
+                raise RimgError(E_IO, "bad PBM header")
+            raw = data[end + 1:]
             if len(raw) != ICON_SIZE:
-                raise RimgError(E_SIZE, "PBM pixel data is short")
+                raise RimgError(E_SIZE, f"PBM pixel data is {len(raw)} bytes,"
+                                        f" expected {ICON_SIZE}")
             return bytes(raw)
-        bits = [c for c in data[end:].decode("ascii", "replace") if c in "01"]
-        if len(bits) < ICON_W * ICON_H:
-            raise RimgError(E_SIZE, "PBM pixel data is short")
+        bits = _p1_bits(data[end:])
+        if len(bits) != ICON_W * ICON_H:
+            raise RimgError(E_SIZE, f"PBM has {len(bits)} pixels,"
+                                    f" expected {ICON_W * ICON_H}")
         out = bytearray(ICON_SIZE)
-        for i, b in enumerate(bits[:ICON_W * ICON_H]):
-            if b == "1":
+        for i, b in enumerate(bits):
+            if b:
                 out[i // 8] |= 0x80 >> (i % 8)
         return bytes(out)
     if len(data) == ICON_SIZE:
@@ -368,7 +393,7 @@ def main(argv=None):
     s.add_argument("--name")
     s.add_argument("--image-version", type=parse_version)
     s.add_argument("--title", help="META title, ASCII, at most 64 bytes")
-    s.add_argument("--icon", help="META icon: a 32x32 PBM or 128 raw bytes")
+    s.add_argument("--icon", help="META icon: a 32x32 PBM (P1 or P4, 1 is lit) or 128 raw bytes")
 
     k = sub.add_parser("pack", help="wrap a raw payload into a sealed image")
     k.add_argument("file", metavar="PAYLOAD")
@@ -387,7 +412,8 @@ def main(argv=None):
     m.add_argument("--meta", dest="meta", action="store_true", default=None)
     m.add_argument("--no-meta", dest="meta", action="store_false")
     k.add_argument("--title")
-    k.add_argument("--icon")
+    k.add_argument("--icon", help="META icon: a 32x32 PBM (P1 or P4, 1 is lit)"
+                                  " or 128 raw bytes")
 
     i = sub.add_parser("info", help="print the header fields")
     i.add_argument("file")

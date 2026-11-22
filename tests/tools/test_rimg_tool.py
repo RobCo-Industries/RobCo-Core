@@ -290,6 +290,68 @@ def test_parse_icon_formats(tmp_path):
             rimg.parse_icon(bad)
 
 
+def diagonal():
+    return [[x == y for x in range(32)] for y in range(32)]
+
+
+def p1_rows(rows, sep=" "):
+    return [sep.join("1" if v else "0" for v in row) for row in rows]
+
+
+def diagonal_bytes():
+    out = bytearray(128)
+    for y in range(32):
+        out[y * 4 + y // 8] |= 0x80 >> (y % 8)
+    return bytes(out)
+
+
+@pytest.mark.parametrize("text", [
+    "P1\n# row 1 of 11\n32 32\n{rows}",
+    "P1 # 1 1 1\n32 # 10\n32\n# row 1\n{rows}",
+    "P1\n32 32\n{rows_commented}",
+    "P1\n32 32\n{rows_tight}",
+    "P1\n32 32\n{flat}",
+])
+def test_parse_icon_p1_comments_and_spacing(text):
+    rows = p1_rows(diagonal())
+    tight = p1_rows(diagonal(), "")
+    data = text.format(rows="\n".join(rows) + "\n",
+                       rows_commented="".join(f"{r} # row {i} 1 0\n" for i, r in enumerate(rows)),
+                       rows_tight="\n".join(tight), flat="".join(tight))
+    assert rimg.parse_icon(data.encode()) == diagonal_bytes()
+
+
+def test_parse_icon_p4_header_comment():
+    assert rimg.parse_icon(b"P4 # 1 0\n32 # 01\n32\n" + diagonal_bytes()) == diagonal_bytes()
+
+
+@pytest.mark.parametrize("data, msg", [
+    (b"P1\n32 16\n" + b"0" * 512, "32x16"),
+    (b"P1\n32 32\n" + b"0" * 1023, "1023 pixels"),
+    (b"P1\n32 32\n" + b"0" * 1025, "1025 pixels"),
+    (b"P1\n32 32\n" + b"0" * 1023 + b"2", "bad character"),
+    (b"P4\n32 32\n" + bytes(127), "127 bytes"),
+    (b"P4\n32 32\n" + bytes(129), "129 bytes"),
+    (b"P4\n32 32", "bad PBM header"),
+])
+def test_parse_icon_rejects(data, msg):
+    with pytest.raises(rimg.RimgError, match=msg):
+        rimg.parse_icon(data)
+
+
+def test_pack_icon_round_trip(tmp_path):
+    rows = p1_rows(diagonal(), "")
+    icon = write(tmp_path, ("P1\n# diagonal\n32 32\n" + "\n".join(
+        f"{r} # 1" for r in rows) + "\n").encode(), "diag.pbm")
+    payload = write(tmp_path, bytes(16), "payload.bin")
+    out = tmp_path / "rom.img"
+    r = run("pack", payload, "-o", out, "--magic", "ROM1", "--subtype", "0",
+            "--load-addr", "0x400000", "--icon", icon)
+    assert r.returncode == 0, r.stderr
+    assert out.read_bytes()[0xA0:0x120] == diagonal_bytes()
+    assert "icon=set" in run("info", out).stdout
+
+
 def test_seal_sets_title_and_icon(tmp_path):
     p = write(tmp_path, rom_image())
     r = run("seal", p, "--title", "Deitrix", "--icon", ICON_PBM)

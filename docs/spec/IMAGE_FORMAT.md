@@ -225,7 +225,7 @@ The input is the raw binary from `objcopy`. The startup code already wrote the s
 1. Checks that word 0 is an ARM `b` instruction, then checks the magic, `hdr_version` and `hdr_size`. It fails on anything else.
 2. Sets `file_size` to the file length if the header holds 0. It fails if the header holds another non-zero value.
 3. Sets `name` and `image_version` if given.
-4. Sets the META title and icon if given. Both need `flags` bit 0 in the header, and `seal` fails without it. The title is ASCII, at most 64 bytes, NUL-padded. The icon file is a 32x32 PBM, plain (`P1`) or raw (`P4`), or 128 raw bytes in the META layout. Without these options the META bytes stay as the startup code wrote them, blank for a zeroed block.
+4. Sets the META title and icon if given. Both need `flags` bit 0 in the header, and `seal` fails without it. The title is ASCII, at most 64 bytes, NUL-padded. The icon file is a 32x32 PBM, plain (`P1`) or raw (`P4`), or 128 raw bytes in the META layout. PBM 1 (black) is a lit pixel and 0 (white) is unlit. `P1` allows `#` comments anywhere, to the end of the line, and digits with or without whitespace between them. `P4` needs exactly 128 bytes after the single whitespace byte that ends the header. `seal` rejects other dimensions, a wrong pixel count and any other character. Without these options the META bytes stay as the startup code wrote them, blank for a zeroed block.
 5. Computes and writes `crc32`.
 6. Runs validation steps 1 to 6 on the result, with the default slot for the subtype. It fails and writes nothing if one fails.
 
