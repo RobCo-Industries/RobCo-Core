@@ -18,6 +18,8 @@ def test_tick(board, example_image):
     with boot(example_image("tick"), board) as vm:
         vm.wait_for(DONE, timeout=15)
         assert len(events(vm, "boot")) == 1, vm.serial
+        delay = events(vm, "delay")
+        assert len(delay) == 1 and delay[0]["ok"] == "1", vm.serial
 
         done = events(vm, "done")
         assert len(done) == 1, vm.serial

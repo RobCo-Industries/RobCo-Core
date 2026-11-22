@@ -68,6 +68,36 @@ static void slow_main(void)
 }
 #endif
 
+/* Delay edge cases that finish quickly. Returns 0 if all hold. */
+static int check_delays(uint32_t *us_out)
+{
+    uint64_t t0;
+    uint64_t t1;
+    int bad = 0;
+
+    t0 = timer_now_us();
+    timer_delay_us(0);
+    timer_delay_ms(0);
+    t1 = timer_now_us();
+    bad |= t1 - t0 > 1000;
+
+    t0 = timer_now_us();
+    timer_delay_us(1500);
+    t1 = timer_now_us();
+    bad |= t1 - t0 < 1500;
+
+    t0 = timer_now_us();
+    timer_delay_ms(2);
+    t1 = timer_now_us();
+    bad |= t1 - t0 < 2000;
+    *us_out = (uint32_t)(t1 - t0);
+
+    bad |= !timer_expired(0);
+    bad |= timer_expired(UINT64_MAX);
+    bad |= !timer_expired(timer_now_us());
+    return bad;
+}
+
 static const char *mode_name(uint32_t mode)
 {
     switch (mode) {
@@ -129,6 +159,13 @@ void robco_main(void)
              (unsigned)b->midr, b->soc_name, (unsigned)b->periph_base,
              (unsigned)b->board_rev, (unsigned)b->mem_size,
              mode_name(robco_boot_args()->entry_mode));
+
+    {
+        uint32_t ms2_us;
+        int bad = check_delays(&ms2_us);
+
+        k_printf("@RC stage=tick ev=delay ok=%d ms2_us=%u\n", !bad, (unsigned)ms2_us);
+    }
 
     irq_init();
 #ifdef TICK_SLOW

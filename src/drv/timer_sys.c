@@ -39,24 +39,27 @@ uint32_t timer_now_lo(void)
     return mmio_read(st_base() + ST_CLO);
 }
 
+/*
+ * Waits until the 64-bit counter passes `start + us`. The counter wraps
+ * after about 584000 years, so any 64-bit span below that is safe. Wait
+ * one extra count: `start` may have been read just before CLO stepped.
+ */
+static void delay_span(uint64_t us)
+{
+    uint64_t end = timer_now_us() + us;
+
+    while (timer_now_us() <= end) {
+    }
+}
+
 void timer_delay_us(uint32_t us)
 {
-    uint32_t base = st_base();
-    uint32_t start = mmio_read(base + ST_CLO);
-
-    /*
-     * Unsigned difference handles CLO wrapping. Wait one extra count:
-     * `start` may have been read just before CLO stepped.
-     */
-    while (mmio_read(base + ST_CLO) - start <= us) {
-    }
+    delay_span(us);
 }
 
 void timer_delay_ms(uint32_t ms)
 {
-    while (ms--) {
-        timer_delay_us(1000);
-    }
+    delay_span((uint64_t)ms * 1000u);
 }
 
 int timer_expired(uint64_t deadline_us)

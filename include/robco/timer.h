@@ -18,13 +18,17 @@ uint32_t timer_now_ms(void);
 /* Low 32 bits of the counter (CLO). Wraps after about 71 minutes. */
 uint32_t timer_now_lo(void);
 
-/* Busy-waits at least `us` microseconds. */
+/* Busy-waits at least `us` microseconds. Correct up to UINT32_MAX. */
 void timer_delay_us(uint32_t us);
 
-/* Busy-waits at least `ms` milliseconds. */
+/* Busy-waits at least `ms` milliseconds. Correct up to UINT32_MAX (49 days). */
 void timer_delay_ms(uint32_t ms);
 
-/* Non-zero once timer_now_us() has reached `deadline_us`. */
+/*
+ * Non-zero once timer_now_us() has reached `deadline_us`. The 64-bit
+ * counter does not wrap in practice, so a plain compare is exact: 0 has
+ * always expired and UINT64_MAX never does.
+ */
 int timer_expired(uint64_t deadline_us);
 
 /* Sets compare channel `ch` (0..3) to match when CLO equals `clo`. */
