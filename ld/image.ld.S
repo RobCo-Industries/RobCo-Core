@@ -80,6 +80,9 @@ SECTIONS
     }
     __image_mem_end = .;
 
+    /* First free byte after the image. k_heap_init can start here. */
+    __heap_start = ALIGN(16);
+
     __image_file_size = __image_end - __image_start;
     __image_mem_size = __image_mem_end - __image_start;
 
