@@ -40,8 +40,19 @@ Some privileged instructions do not fault in USR mode. They are ignored instead,
 | `UMODE_FAULT` | `3` | Reason: undefined instruction, abort, or `svc` in Thumb state. `type` says which. |
 | `UMODE_KILLED` | `4` | Reason: `umode_request_kill()`. `code` is its reason. |
 | `UMODE_ERR_BUSY` | `-1` | `umode_run()` while a task runs |
-| `UMODE_ERR_ARG` | `-2` | Bad task: see `umode_run()` |
-| `UMODE_ERR_ALIGN` | `-3` | MMU on and a region is not whole megabytes inside RAM |
+| `UMODE_ERR_ARG` | `-2` | NULL argument, no regions, more than `UMODE_MAX_REGIONS`, or unknown region flags |
+| `UMODE_ERR_ALIGN` | `-3` | MMU on and a region start or size is not whole megabytes |
+| `UMODE_ERR_RANGE` | `-4` | A region of size `0`, or one that runs past the top of the address space |
+| `UMODE_ERR_OVERLAP` | `-5` | Two regions share a byte |
+| `UMODE_ERR_SECTION` | `-6` | MMU on and two regions share a megabyte section |
+| `UMODE_ERR_RAM` | `-7` | A region is not entirely inside board RAM |
+| `UMODE_ERR_KERNEL` | `-8` | A region covers the kernel image or its mode stacks |
+| `UMODE_ERR_TABLE` | `-9` | A region covers the level-1 translation table |
+| `UMODE_ERR_VECTORS` | `-10` | A region covers the exception vectors |
+| `UMODE_ERR_PERIPH` | `-11` | A region covers the peripheral window or the core-local peripherals |
+| `UMODE_ERR_ENTRY` | `-12` | `entry` not word-aligned or not inside a region |
+| `UMODE_ERR_SP` | `-13` | `sp` not 8-byte aligned, or the 8 bytes below it are not writable |
+| `UMODE_ERR_STUB` | `-14` | `stub` not word-aligned, not inside writable memory, or on the entry word |
 | `UMODE_ENOSYS` | `38` | A call with no handler installed returns `-38` |
 | `UMODE_STUB_SIZE` | `8u` | Bytes of the return stub |
 
@@ -80,7 +91,9 @@ typedef void (*umode_svc_fn)(exc_frame_t *frame, void *ctx);
 
 ### The return stub
 
-A task returns through `lr`, so `lr` must point at code the task can run. The kernel's own code is privileged-only, so the stub must live in the task's memory. The caller names 8 bytes inside a writable region in `task->stub`. `umode_run()` writes an `svc #0` and a branch to itself there, cleans them to memory, and sets the task's `lr` to the stub. The system-call entry recognises a call from that address and ends the task with `UMODE_RETURNED`. `umode_run()` refuses a stub that is not word-aligned or not entirely inside one writable region, so a wrong address fails at once instead of crashing later. The task must not use those 8 bytes. If it overwrites them, returning from the entry function no longer ends it cleanly.
+A task returns through `lr`, so `lr` must point at code the task can run. The kernel's own code is privileged-only, so the stub must live in the task's memory. The caller names 8 bytes of writable memory in `task->stub`. `umode_run()` writes an `svc #0` and a branch to itself there, cleans them to memory, and sets the task's `lr` to the stub. The system-call entry recognises a call from that address and ends the task with `UMODE_RETURNED`. `umode_run()` refuses a stub that is not word-aligned, not entirely writable or on the entry word, so a wrong address fails at once instead of crashing later. The task must not use those 8 bytes. If it overwrites them, returning from the entry function no longer ends it cleanly.
+
+The task owns the stub, so it can rewrite it or run its `svc` on purpose with any `r0` and `r7`. That only ends the task with `UMODE_RETURNED` and the `r0` it chose. The handler never sees the call. Treat `code` as a value from the task, never as a trusted status.
 
 ### Functions
 
@@ -88,13 +101,9 @@ A task returns through `lr`, so `lr` must point at code the task can run. The ke
 int umode_run(const umode_task_t *task, umode_exit_t *out);
 ```
 
-Runs the task in USR mode until it ends, fills `*out` and returns `0`. On entry the task has `r0` to `r3` from `task->r`, `sp` from `task->sp`, `lr` at the stub, every other register `0`, IRQs on and FIQ masked. It returns in SVC mode on the caller's stack, with `r4` to `r11` and the IRQ and FIQ masks as they were. It can be called again any number of times. Returns, without running anything:
+Runs the task in USR mode until it ends, fills `*out` and returns `0`. On entry the task has `r0` to `r3` from `task->r`, `sp` from `task->sp`, `lr` at the stub, every other register `0`, IRQs on and FIQ masked. It returns in SVC mode on the caller's stack, with `r4` to `r11` and the IRQ and FIQ masks as they were. It can be called again any number of times. It returns `UMODE_ERR_BUSY` while a task runs, including from a system-call handler: no nesting. Otherwise it validates the whole task first (see [Task validation](#task-validation)) and returns the first error found. On any error nothing is mapped, nothing is written and nothing runs.
 
-- `UMODE_ERR_BUSY` while a task runs, including from a system-call handler: no nesting.
-- `UMODE_ERR_ARG` for a NULL argument, no regions or more than `UMODE_MAX_REGIONS`, a region of size `0` or past `0xFFFFFFFF`, a region that overlaps the image, an `entry` that is not word-aligned or not inside a region, an `sp` not 8-byte aligned, or a bad stub.
-- `UMODE_ERR_ALIGN` with the MMU on, for a region that is not whole megabytes or not inside board RAM.
-
-With the MMU on, it maps each region before entry: writable ones as `MMU_ATTR_RAM | MMU_USER_RW`, the others as `MMU_ATTR_RO_CODE | MMU_USER_RO`. After the task ends it maps them back as `MMU_ATTR_RAM`, privileged-only. `mmu_map()` does the TLB and branch predictor maintenance on every CPU type. Load the program while the regions are privileged RAM, then clean it to memory with `cache_clean_range()`. `umode_run()` invalidates the instruction cache before entry. Main context only.
+With the MMU on, it maps each region before entry: writable ones as `MMU_ATTR_RAM | MMU_USER_RW`, the others as `MMU_ATTR_RO_CODE | MMU_USER_RO`. After the task ends it maps them back as `MMU_ATTR_RAM`, privileged-only, on every way out: return, exit, fault and kill. `mmu_map()` does the TLB and branch predictor maintenance on every CPU type. Load the program while the regions are privileged RAM, then clean it to memory with `cache_clean_range()`. `umode_run()` invalidates the instruction cache before entry. Main context only.
 
 ```c
 int umode_active(void);
@@ -135,6 +144,39 @@ long umode_regions_strnlen(const umode_region_t *regions, unsigned count,
 ```
 
 The pure forms on any region list, in `src/lib/umode_check.c`. `tests/host/test_umode_check.c` covers empty ranges, ranges that cross a region end, adjacent regions, wraparound at the top of the address space, zero-length buffers at a region boundary and read-only regions.
+
+```c
+int umode_task_check(const umode_task_t *task, const umode_limits_t *lim);
+```
+
+The whole validation, pure, in `src/lib/umode_check.c`. `umode_run()` calls it with board RAM, the MMU section size (or `0` with the MMU off) and the kernel's forbidden ranges, each with its own error code. Returns `0` or the first `UMODE_ERR_*` found.
+
+### Task validation
+
+`umode_task_check()` checks, in this order:
+
+1. The task, its region list and the limits are not NULL, and there are 1 to `UMODE_MAX_REGIONS` regions with no flag but `UMODE_REGION_WRITE` (`UMODE_ERR_ARG`).
+2. Each region has a size and its last byte does not wrap past the top of the address space (`UMODE_ERR_RANGE`).
+3. No two regions share a byte (`UMODE_ERR_OVERLAP`).
+4. With the MMU on, no two regions share a megabyte section, even with disjoint bytes (`UMODE_ERR_SECTION`), and every start and size is whole megabytes (`UMODE_ERR_ALIGN`).
+5. No region touches kernel memory: the level-1 table (`UMODE_ERR_TABLE`), the vectors (`UMODE_ERR_VECTORS`), the image from `__image_start` to `__image_mem_end`, which includes `.bss` and the mode stacks (`UMODE_ERR_KERNEL`), and the peripheral window plus the core-local peripherals on BCM2836/7 (`UMODE_ERR_PERIPH`).
+6. Each region lies inside board RAM (`UMODE_ERR_RAM`).
+7. `entry` is word-aligned and its word lies in a region (`UMODE_ERR_ENTRY`).
+8. `sp` is 8-byte aligned and `[sp - 8, sp)` is writable, so a full-descending stack may start at a region's end (`UMODE_ERR_SP`).
+9. The stub is word-aligned, its 8 bytes are writable, and it does not overlap the entry word (`UMODE_ERR_STUB`).
+
+The initial registers `r0` to `r3` are data and need no check. Adjacent regions in different sections may have different permissions. The kernel checks hold with the MMU off too, so `umode_range_ok()` never approves kernel memory.
+
+After validation each byte, and with the MMU on each section, belongs to at most one region. The descriptor `umode_run()` writes for a section and the answer of `umode_range_ok()` for any byte in it come from the same region, so the two views cannot disagree. A host test walks every section of an accepted layout to show it.
+
+### Invariants
+
+- The region list and the mappings do not change while a task runs. `umode_run()` copies the list and maps it before entry, and only unmaps it after the task ends. A nested `umode_run()` fails with `UMODE_ERR_BUSY`. There is one task, and it does not run while its handler does. So a pointer that `umode_range_ok()` approves stays valid for the rest of that call.
+- Every return to USR mode uses a status word the library built: `USR | F` at entry, the sanitised frame value after a system call, and the CPU's own saved value after an IRQ. The task cannot mask IRQs, unmask FIQ, enter Thumb through a handler, or reach a privileged mode. A test spins with IRQs "masked" and the watchdog still kills it.
+- The task never sees kernel registers. At entry `r4` to `r12` and the flags are `0`. A system call restores every register from the frame. The kernel's banked `sp` and `lr` are never visible in USR mode.
+- A kill request counts only while a task runs, and `umode_run()` clears it before entry and after exit, with IRQs masked. A request that lands during a task's last call cannot kill the next task.
+- If a handler changes the MMU state, the library prints `ev=umode_mmu_changed nr=<call>` and halts before the task resumes.
+- A fault in a handler prints `ev=umode_call nr=<call>` before the fatal `ev=exception` line.
 
 ### The system-call path
 
@@ -177,11 +219,20 @@ Latency: a task in USR mode ends at the end of the IRQ that made the request, or
 | `umode_request_kill()` from anywhere. | It only sets a flag. |
 | Handlers may sleep with `wfi`. | IRQs are on and return to the handler. |
 
+### What the kernel author must still get right
+
+- Call `umode_run()` from main context only, never from an IRQ handler.
+- Never call `mmu_map()`, `mmu_enable()` or `mmu_disable()` while a task runs, from a handler or from an IRQ handler. The library catches a change of the MMU state at the next system-call exit only.
+- Check every pointer with `umode_range_ok()` or `umode_strnlen_ok()` before using it. A handler that dereferences a bad pointer faults in SVC mode, and that is fatal.
+- Keep task memory away from kernel data the library does not know about: the heap, DMA buffers, the framebuffer and mailbox buffers.
+- Never put a kernel pointer or secret into `frame->r[0]` or any other frame register.
+- Treat `ex.code` and `ex.frame` as data from the task.
+
 ### Sharp edges
 
 | Edge | What happens |
 |---|---|
-| Section granularity. | With the MMU on, regions are whole 1 MiB sections. Everything else in the same megabyte belongs to the task. |
+| Section granularity. | With the MMU on, regions are whole 1 MiB sections, and no two regions share one. |
 | Regions return to `MMU_ATTR_RAM`. | After the task, each region is privileged RAM, whatever it was before. Regions must lie in RAM. |
 | Thumb is not supported. | A task in Thumb state is killed at its first fault or system call. |
 | Handlers are not preemptible by the kill. | A request during a handler waits for the handler to return. |
