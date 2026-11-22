@@ -3,8 +3,11 @@
 ## Run
 
     make venv
+    make test-host            # C unit tests for src/lib and src/fs on the host
+    make test-tools           # pytest for tools/, the Makefile and fs_tool
+    make test-docs            # links, API coverage and words in the Markdown files
     make test-canary
-    make test-tools           # pytest for tools/ and the Makefile
+    make test-examples        # every example and variant, warning-free
     make test-target          # spikes and examples on all four boards through boot()
     make test-target BOARD=raspi0   # the same on one board
 
@@ -23,8 +26,10 @@ missing from the installed QEMU is skipped. V2 is skipped without
     build/host/test_alloc realloc   # run only tests whose name contains "realloc"
 
 `make test` runs them first. Each `tests/host/test_<name>.c` becomes
-`build/host/test_<name>`, linked with every real `src/lib/*.c` and built
-with the host `cc`. Code in `src/lib/` must not touch registers or
+`build/host/test_<name>`, linked with every real `src/lib/*.c`, the file
+system layer (`src/fs/*.c` and FatFs) and the file-backed block device
+in `host/blk_file.c`, and built with the host `cc`. `make test-host` also
+builds `build/host/fs_tool`, which `tools/test_fs_interop.py` runs. Code in `src/lib/` must not touch registers or
 drivers; that code belongs in `src/drv/`, `src/arch/`, `src/board/` or
 `src/gfx/`. ASan and UBSan are on when the compiler supports
 them. The build defines `ROBCO_HOST`, which drops the library's own
@@ -64,11 +69,17 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   cores, writes ATAGS at 0x100, switches to HYP on raspi2b and enters
   the image with r0 = 0, r1 = machine id, r2 = 0x100. `a64_shim.py`
   holds the AArch64 words that drop raspi3b to AArch32 first.
-- `host/`: host unit tests and `rc_test.h`.
+- `host/`: host unit tests, `rc_test.h`, the file-backed block device
+  `blk_file.c` and `fs_tool.c`.
 - `target/`: tests that boot real images. `--board NAME` picks boards
   (repeatable, default raspi0 and raspi2b, `all` for all four). They
   boot the spikes and the examples `hello`, `tick`, `gpio`, `console`,
-  `heap` and `demo`. `test_chain.py` boots `chain1`, which validates
+  `heap`, `demo`, `sdraw`, `mmu`, `input`, `audio`, `rtc` and `spi`.
+  `test_sdraw.py` attaches an SD image. `test_input.py` drives the
+  serial and script backends, the second over the mini UART.
+  `test_rtc.py` attaches QEMU's `ds1338` model at I2C address `0x68`.
+  `test_spi.py` attaches a `w25q32` SPI flash. `demo` and `chain1` also
+  run with the MMU and caches on. `test_chain.py` boots `chain1`, which validates
   `chain2` (placed at 0x00200000 by a loader device) and hands off to it.
   It also covers a bad CRC, a wrong magic, a wrong `load_addr`, a
   `mem_size` past the slot, no image, `chain2` alone, a corrupt boot
@@ -80,6 +91,8 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   `test-target`, and the argument handling, refusal cases and
   `config.txt` of `fetch_firmware.sh` and `mkbootdir.sh`. The firmware
   download test runs only with `ROBCO_NET_TESTS=1`.
+  `test_fs_interop.py` checks `fs_tool` against images made with mtools
+  and, when installed, `fsck.vfat` or `fsck_msdos`.
 - `canary/`: checks the QEMU behaviours our code depends on. Run it
   after any QEMU upgrade. A failure means QEMU changed, not our code.
 
@@ -143,3 +156,9 @@ def test_my_fault(board, example_image):
 SD image, `serial2=True` adds the mini UART, `extra_args=[...]` goes
 straight to QEMU. `vm.qmp` is the `Qemu` object from `harness/qemu.py`.
 QEMU is killed when the `with` block ends, even on failure.
+
+## What QEMU cannot prove
+
+Caches, PWM sound, GPIO input, real SPI signalling and SD pin routing
+on boards with WiFi need a real board. The checklist is in
+[docs/HARDWARE_VALIDATION.md](../docs/HARDWARE_VALIDATION.md).
