@@ -74,6 +74,26 @@ path = /ROBCO/DIAG.SYS
 
 Firmware entry, for comparison: r0 is `0`, r1 is the machine type, r2 points at ATAGS at `0x100`, r3 is undefined.
 
+## Entry API
+
+Every image provides one C entry point:
+
+```c
+void robco_main(void);
+```
+
+`start.S` calls `robco_start()`. It detects the board, then calls `robco_main()`. If `robco_main()` returns, the image halts. See the startup sequence in [BOARD_SUPPORT.md](./BOARD_SUPPORT.md).
+
+`robco_main()` takes no arguments. Code reads the entry state through accessors:
+
+| Accessor | Header | Returns |
+|---|---|---|
+| `robco_boot_args()` | `robco/boot.h` | `robco_boot_args_t`: r0 to r3 at entry and the entry mode, CPSR bits [4:0] |
+| `board_get()` | `robco/board.h` | `robco_board_t`: MIDR, SoC, peripheral base, VC bus alias, board revision, ARM memory |
+| `robco_bootinfo()` | `robco/bootinfo.h` | `const robco_bootinfo_t *`, the trusted or rebuilt boot info. Not implemented yet. |
+
+The accessors return pointers to data the library owns. Callers must not write through them.
+
 ## Boot info
 
 The boot info block lives at `0x00100000` in the terminal chain. Pip-OS keeps its own copy inside its own range. The struct is version 2. It replaces `termlink_info_t` from MFBootAgent.
