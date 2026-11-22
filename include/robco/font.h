@@ -25,4 +25,7 @@
  */
 const uint8_t *font8x16_glyph(uint32_t ch);
 
+/* Short name of the font the table was made from, such as "spleen". */
+const char *font8x16_name(void);
+
 #endif

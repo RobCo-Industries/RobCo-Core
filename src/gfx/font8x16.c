@@ -1,8 +1,9 @@
 /*
  * Generated file. Do not edit.
- * Source: third_party/spleen/spleen-8x16.bdf, Spleen 8x16 by Frederic Cambus.
- * Licence: BSD 2-Clause, see third_party/spleen/LICENSE.
- * Generator: tools/bdf2c.py third_party/spleen/spleen-8x16.bdf > src/gfx/font8x16.c
+ * Source: spleen-8x16.bdf
+ * SHA-256: 3be74111b39d48647a9a944528bd0bfaf0b926817cf85ff3746658c3f7532147
+ * Generator: tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen -o src/gfx/font8x16.c
+ * This table inherits the licence of its source font.
  */
 
 #include <stddef.h>
@@ -161,4 +162,9 @@ const uint8_t *font8x16_glyph(uint32_t ch)
         }
     }
     return font_replacement;
+}
+
+const char *font8x16_name(void)
+{
+    return "spleen";
 }
