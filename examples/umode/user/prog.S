@@ -16,6 +16,7 @@
 #define SYS_KFAULT  6
 #define SYS_BADPSR  7
 #define SYS_KILLEXIT 8
+#define SYS_KMMU    9
 
 #define REG_LOOPS   3000
 
@@ -169,6 +170,12 @@ _ustart:
     mov     r7, #SYS_KILLEXIT
     svc     #0
     b       .
+
+/* 21: asks the kernel to turn the MMU off inside its handler (kmmu build only). */
+    .org    0x540
+    mov     r7, #SYS_KMMU
+    svc     #0
+    bx      lr
 
     .org    0x600
 

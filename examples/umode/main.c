@@ -44,6 +44,7 @@
 #define SYS_KFAULT      6
 #define SYS_BADPSR      7
 #define SYS_KILLEXIT    8
+#define SYS_KMMU        9
 #define E_FAULT         14
 
 extern const char user_prog_start[], user_prog_end[];
@@ -166,6 +167,11 @@ static void on_svc(exc_frame_t *f, void *ctx)
         }
         umode_exit(f, 5);
         break;
+#ifdef UMODE_KMMU
+    case SYS_KMMU:
+        mmu_disable();              /* forbidden: the library halts */
+        break;
+#endif
 #ifdef UMODE_KFAULT
     case SYS_KFAULT:
         /* A fault in a handler is a kernel fault: the hook declines it. */
@@ -389,6 +395,21 @@ void robco_main(void)
         t.regions = regions;
         t.region_count = 2;
         k_printf("@RC stage=umode ev=kfault\n");
+        umode_run(&t, &ex);     /* does not return: fatal */
+    }
+#endif
+#ifdef UMODE_KMMU
+    {
+        static umode_exit_t ex;
+        umode_task_t t;
+
+        k_memset(&t, 0, sizeof(t));
+        t.entry = CODE_BASE + 21 * 0x40u;
+        t.sp = USER_SP;
+        t.stub = STUB_ADDR;
+        t.regions = regions;
+        t.region_count = 2;
+        k_printf("@RC stage=umode ev=kmmu\n");
         umode_run(&t, &ex);     /* does not return: fatal */
     }
 #endif

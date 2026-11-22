@@ -201,3 +201,14 @@ def test_umode_kernel_fault(board, example_image, variant, flag, ev, etype, call
         assert [c["nr"] for c in events(vm, "umode_call")] == ([call] if call else []), vm.serial
         assert not events(vm, "done"), vm.serial
 
+
+MMU_CHANGED = re.compile(r"^@RC stage=umode ev=umode_mmu_changed .*\n", re.M)
+
+
+def test_umode_handler_mmu_change(board, example_image):
+    """A handler that turns the MMU off mid-task halts the kernel before the task resumes."""
+    with boot(example_image("umode", "kmmu", "-DUMODE_KMMU=1"), board) as vm:
+        vm.wait_for(MMU_CHANGED, timeout=180)
+        assert events(vm, "kmmu"), vm.serial
+        assert [c["nr"] for c in events(vm, "umode_mmu_changed")] == ["9"], vm.serial
+        assert not events(vm, "done"), vm.serial

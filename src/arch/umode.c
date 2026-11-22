@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <robco/board.h>
+#include <robco/boot.h>
 #include <robco/cache.h>
 #include <robco/exc.h>
 #include <robco/klibc.h>
@@ -43,6 +44,7 @@ static struct {
     volatile int ended;
     volatile int in_call;   /* a system-call handler runs */
     uint32_t call;          /* its number, frame r7 */
+    int mmu;                /* MMU state at entry; handlers must not change it */
     umode_exit_t *out;
     umode_region_t regions[UMODE_MAX_REGIONS];
     unsigned count;
@@ -139,6 +141,12 @@ int robco_umode_svc_return(exc_frame_t *f)
 {
     if (!U.active) {
         return 0;
+    }
+    if (mmu_enabled() != U.mmu) {
+        /* The task's protection is gone or half-built: a kernel bug. Fatal. */
+        k_printf("\n@RC stage=%s ev=umode_mmu_changed nr=%u\n", ROBCO_STAGE_NAME,
+                 (unsigned)U.call);
+        robco_halt();
     }
     if (U.ended) {
         return 1;
@@ -266,6 +274,7 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
         U.regions[i] = task->regions[i];
     }
     U.count = task->region_count;
+    U.mmu = mmu;
     U.in_call = 0;
     U.stub = task->stub;
     U.out = out;
@@ -302,6 +311,7 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
     exc_set_hook(U.prev_hook);
     __asm__ volatile("msr cpsr_c, %0" :: "r"(cpsr) : "memory");
 
+    /* Every way out comes here: no USR mapping outlives the task. */
     if (mmu) {
         map_regions(0);
     }
