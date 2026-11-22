@@ -13,7 +13,7 @@ import time
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from harness.qemu import Qemu, QemuError, have_machine, loader_words  # noqa: E402
+from harness.qemu import Qemu, have_machine, loader_words  # noqa: E402
 
 ARM = "qemu-system-arm"
 A64 = "qemu-system-aarch64"
@@ -92,9 +92,9 @@ def test_v3_loader_raw_file_at_0x8000(machine, raw_image):
 def test_v5_raspi3b_aarch64_cannot_be_disabled():
     """V5a: raspi3b rejects -global cortex-a53-arm-cpu.aarch64=off."""
     need(A64, "raspi3b")
-    with pytest.raises(QemuError, match="aarch64"):
-        with Qemu(A64, "raspi3b", ["-global", "cortex-a53-arm-cpu.aarch64=off", "-S"]):
-            pass
+    rc, err = Qemu.run_to_exit(A64, "raspi3b", ["-global", "cortex-a53-arm-cpu.aarch64=off", "-S"])
+    assert rc != 0, err
+    assert "aarch64" in err, err
 
 
 EL3_TO_A32 = [0xD2802620, 0xD51E1100, 0xD2803B40, 0xD51E4000,
@@ -202,9 +202,9 @@ def test_v11_sd_card_on_sdhci(machine):
 def test_v11_sd_size_power_of_two(machine):
     """V11: a 48M SD card is rejected (size must be a power of 2)."""
     need(ARM, machine)
-    with pytest.raises(QemuError, match="power of 2"):
-        with Qemu(ARM, machine, ["-S", "-drive", "if=sd,driver=null-co,size=48M"]):
-            pass
+    rc, err = Qemu.run_to_exit(ARM, machine, ["-S", "-drive", "if=sd,driver=null-co,size=48M"])
+    assert rc != 0, err
+    assert "power of 2" in err, err
 
 
 @pytest.mark.parametrize("machine", ARM_MACHINES)

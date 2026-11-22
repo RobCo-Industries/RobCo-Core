@@ -141,6 +141,19 @@ class Qemu:
             raise QemuError("QEMU did not exit in time")
         return self.proc.returncode, self.stderr()
 
+    @classmethod
+    def run_to_exit(cls, binary, machine, args=(), timeout=20.0):
+        """Run QEMU without QMP and wait for it to exit by itself.
+
+        For configurations QEMU must refuse. Returns (returncode, stderr).
+        """
+        q = cls(binary, machine, args, qmp=False, timeout=timeout)
+        try:
+            q.start()
+            return q.wait_exit()
+        finally:
+            q.close()
+
     def close(self):
         for f in (self._qmp_file, self._qmp, self._qt_file, self._qt):
             try:
