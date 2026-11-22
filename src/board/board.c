@@ -3,6 +3,7 @@
 #include <robco/board.h>
 #include <robco/boot.h>
 #include <robco/mbox.h>
+#include <robco/rimg.h> /* compiles the header size checks */
 
 extern robco_boot_args_t robco_boot_args_store;
 

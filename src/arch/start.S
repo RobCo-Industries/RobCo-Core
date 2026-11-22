@@ -8,6 +8,10 @@
 
 #include <robco/rimg.h>
 
+#if ROBCO_IMG_FLAGS & RIMG_FLAG_META
+#error "start.S emits no META block: clear RIMG_FLAG_META in ROBCO_IMG_FLAGS"
+#endif
+
 #define MODE_MASK    0x1f
 #define MODE_FIQ     0x11
 #define MODE_IRQ     0x12
@@ -19,7 +23,7 @@
 #define PSR_F        0x40
 #define PART_ARM1176 0xb76
 
-/* Offset 0x00: branch to the real entry, padded to 0x20. */
+/* Offset 0x00: branch to the entry point, padded to 0x20. */
     .section .text.boot.head, "ax"
     .arm
     .global _start
@@ -27,7 +31,7 @@ _start:
     b       robco_entry
     .balign 32, 0
 
-/* Offset 0x20: image header, see include/robco/rimg.h. */
+/* Offset 0x20: image header, see include/robco/rimg.h. No META block. */
     .section .rimg, "a"
     .global robco_rimg
 robco_rimg:
