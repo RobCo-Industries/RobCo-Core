@@ -103,7 +103,11 @@ char *k_strncpy(char *dst, const char *src, size_t n)
     return dst;
 }
 
-/* GCC may emit calls to these even with -ffreestanding. */
+/*
+ * GCC may emit calls to these even with -ffreestanding. The host test
+ * build sets ROBCO_HOST and uses the host libc ones instead.
+ */
+#ifndef ROBCO_HOST
 void *memset(void *dst, int value, size_t n)
 {
     return k_memset(dst, value, n);
@@ -123,3 +127,4 @@ int memcmp(const void *a, const void *b, size_t n)
 {
     return k_memcmp(a, b, n);
 }
+#endif

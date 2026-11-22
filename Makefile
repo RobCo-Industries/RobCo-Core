@@ -3,7 +3,7 @@ VENV := .venv
 SPIKES := s1-uart-hello s2-sd-read s3-fb-mmu
 MACHINES := raspi0 raspi1ap raspi2b raspi3b
 
-.PHONY: venv test test-canary test-spikes test-examples test-target
+.PHONY: venv test test-host test-canary test-spikes test-examples test-target
 
 venv: $(VENV)/.installed
 
@@ -15,7 +15,7 @@ $(VENV)/.installed: tests/requirements.txt
 # test-target rebuilds the spike and example dirs; keep top-level targets serial.
 .NOTPARALLEL:
 
-test: test-canary test-spikes test-examples test-target
+test: test-host test-canary test-spikes test-examples test-target
 
 test-canary: venv
 	$(VENV)/bin/pytest tests/canary -v
@@ -56,3 +56,6 @@ test-examples:
 # Target tests: boot spikes and examples through tests/harness/boot.py on every board.
 test-target: venv
 	$(VENV)/bin/pytest tests/target -v --board all
+
+# Host unit tests: src/lib built with the host cc, ASan and UBSan.
+include mk/host.mk
