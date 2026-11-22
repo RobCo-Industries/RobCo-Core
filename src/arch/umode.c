@@ -33,7 +33,9 @@ uint32_t robco_umode_kstack;
 /* Non-zero kill reason, only while a task runs. Read by robco_vec_irq. */
 volatile int robco_umode_kill;
 
-extern char __image_start[], __image_mem_end[];
+extern char __image_start[], __image_mem_end[], robco_vectors[];
+/* Address of the level-1 table, src/arch/mmu.c. */
+uintptr_t robco_mmu_table(void);
 
 static struct {
     volatile int active;
@@ -178,43 +180,36 @@ long umode_strnlen_ok(uintptr_t ptr, size_t max)
     return U.active ? umode_regions_strnlen(U.regions, U.count, ptr, max) : -1;
 }
 
-static int overlaps(uint32_t a, uint32_t alen, uint32_t b, uint32_t blen)
-{
-    return a < b + blen && b < a + alen;
-}
+#define LOCAL_PERIPH    0x40000000u /* BCM2836/7 core-local peripherals */
+#define PERIPH_SIZE     0x01000000u
+#define VECTORS_SIZE    0x40u       /* 8 vectors and their literal pool */
 
+/*
+ * Kernel memory the task must never get, then umode_task_check(). The
+ * specific ranges come first, so their own error wins over the image's.
+ */
 static int check_task(const umode_task_t *t, int mmu)
 {
     const robco_board_t *b = board_get();
-    uint32_t img = (uint32_t)(uintptr_t)__image_start;
-    uint32_t img_len = (uint32_t)(uintptr_t)__image_mem_end - img;
-    unsigned i;
+    uintptr_t img = (uintptr_t)__image_start;
+    umode_forbidden_t f[5];
+    umode_limits_t lim;
+    unsigned n = 0;
 
-    if (t->regions == 0 || t->region_count == 0 || t->region_count > UMODE_MAX_REGIONS) {
-        return UMODE_ERR_ARG;
+    f[n++] = (umode_forbidden_t){ robco_mmu_table(), 4096 * 4, UMODE_ERR_TABLE };
+    f[n++] = (umode_forbidden_t){ (uintptr_t)robco_vectors, VECTORS_SIZE, UMODE_ERR_VECTORS };
+    f[n++] = (umode_forbidden_t){ img, (uintptr_t)__image_mem_end - img, UMODE_ERR_KERNEL };
+    f[n++] = (umode_forbidden_t){ b->periph_base, b->periph_base != 0 ? PERIPH_SIZE : 0,
+                                  UMODE_ERR_PERIPH };
+    if (b->soc == ROBCO_SOC_BCM2836 || b->soc == ROBCO_SOC_BCM2837) {
+        f[n++] = (umode_forbidden_t){ LOCAL_PERIPH, MMU_SECTION_SIZE, UMODE_ERR_PERIPH };
     }
-    if ((t->entry & 3) != 0 || (t->sp & 7) != 0 || (t->stub & 3) != 0) {
-        return UMODE_ERR_ARG;
-    }
-    for (i = 0; i < t->region_count; i++) {
-        uint32_t s = t->regions[i].start, n = t->regions[i].size;
-
-        if (n == 0 || s + (n - 1) < s || overlaps(s, n, img, img_len)) {
-            return UMODE_ERR_ARG;
-        }
-        if (mmu && ((s | n) & (MMU_SECTION_SIZE - 1)) != 0) {
-            return UMODE_ERR_ALIGN;
-        }
-        if (mmu && (s < b->mem_base || s - b->mem_base > b->mem_size ||
-                    n > b->mem_size - (s - b->mem_base))) {
-            return UMODE_ERR_ALIGN;
-        }
-    }
-    if (!umode_regions_range_ok(t->regions, t->region_count, t->entry, 4, 0) ||
-        !umode_regions_range_ok(t->regions, t->region_count, t->stub, UMODE_STUB_SIZE, 1)) {
-        return UMODE_ERR_ARG;
-    }
-    return 0;
+    lim.ram_start = b->mem_base;
+    lim.ram_size = b->mem_size;
+    lim.section = mmu ? MMU_SECTION_SIZE : 0;
+    lim.forbidden = f;
+    lim.forbidden_count = n;
+    return umode_task_check(t, &lim);
 }
 
 static void map_regions(int user)

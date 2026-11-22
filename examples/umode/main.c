@@ -224,29 +224,70 @@ static unsigned run_pass(int mmu)
     return n;
 }
 
-/* Error cases of umode_run() itself. */
+/* Runs one task with the given regions, entry at slot 0. Returns umode_run()'s result. */
+static int try_regions(const umode_region_t *r, unsigned n, uint32_t entry, uint32_t sp,
+                       uint32_t stub)
+{
+    static umode_exit_t ex;
+    umode_task_t t;
+
+    k_memset(&t, 0, sizeof(t));
+    t.entry = entry;
+    t.sp = sp;
+    t.stub = stub;
+    t.regions = r;
+    t.region_count = n;
+    return umode_run(&t, &ex);
+}
+
+/*
+ * Error cases of umode_run() itself, then a task that reads the canary:
+ * the refused layouts left nothing mapped for USR mode.
+ */
 static void check_errors(void)
 {
     static umode_exit_t ex;
     static const umode_region_t odd[] = { { CODE_BASE + 0x1000, REGION_SIZE, UMODE_REGION_WRITE } };
+    /* Read-only code, then the same megabyte writable: last-wins would make it writable. */
+    static const umode_region_t overlap[] = {
+        { CODE_BASE, REGION_SIZE, 0 },
+        { CODE_BASE, REGION_SIZE, UMODE_REGION_WRITE },
+    };
+    static const umode_region_t kernel[] = { { 0, REGION_SIZE, UMODE_REGION_WRITE } };
+    static const umode_region_t outside[] = { { 0xe0000000u, REGION_SIZE, UMODE_REGION_WRITE } };
+    umode_region_t periph[1] = { { board_get()->periph_base, REGION_SIZE, UMODE_REGION_WRITE } };
     umode_task_t t;
-    int bad_stub, bad_align;
+    int bad_stub, bad_align, bad_overlap, bad_kernel, bad_periph, bad_ram;
 
+    bad_stub = try_regions(regions, 2, CODE_BASE, USER_SP, CODE_BASE);  /* read-only stub */
+    bad_align = try_regions(odd, 1, CODE_BASE + 0x1000, CODE_BASE + 0x3000, CODE_BASE + 0x2000);
+    bad_overlap = try_regions(overlap, 2, CODE_BASE, CODE_BASE + REGION_SIZE, CODE_BASE + 0x800);
+    bad_kernel = try_regions(kernel, 1, 0x80000, REGION_SIZE, 0x80000 + 0x800);
+    bad_periph = try_regions(periph, 1, periph[0].start, periph[0].start + REGION_SIZE,
+                             periph[0].start + 0x800);
+    bad_ram = try_regions(outside, 1, 0xe0000000u, 0xe0000000u + REGION_SIZE, 0xe0000800u);
+    k_printf("@RC stage=umode ev=errors stub=%d align=%d overlap=%d kernel=%d periph=%d ram=%d "
+             "mmu=%d\n", bad_stub, bad_align, bad_overlap, bad_kernel, bad_periph, bad_ram,
+             mmu_enabled());
+
+    if (!mmu_enabled()) {
+        return;
+    }
+    k_memcpy((void *)(uintptr_t)CODE_BASE, user_prog_start,
+             (uint32_t)(user_prog_end - user_prog_start));
+    cache_clean_range((const void *)(uintptr_t)CODE_BASE,
+                      (uint32_t)(user_prog_end - user_prog_start));
     k_memset(&t, 0, sizeof(t));
-    t.entry = CODE_BASE;
+    t.entry = CODE_BASE + 7 * 0x40u;    /* wrkern */
     t.sp = USER_SP;
-    t.stub = CODE_BASE;     /* inside the read-only region: refused */
+    t.r[0] = (uint32_t)(uintptr_t)&canary;
+    t.stub = STUB_ADDR;
     t.regions = regions;
     t.region_count = 2;
-    bad_stub = umode_run(&t, &ex);
-    t.regions = odd;
-    t.region_count = 1;
-    t.entry = CODE_BASE + 0x1000;
-    t.stub = CODE_BASE + 0x2000;
-    t.sp = CODE_BASE + 0x3000;
-    bad_align = umode_run(&t, &ex);
-    k_printf("@RC stage=umode ev=errors stub=%d align=%d mmu=%d\n", bad_stub, bad_align,
-             mmu_enabled());
+    umode_run(&t, &ex);
+    k_printf("@RC stage=umode ev=refused_after reason=%s type=%s addr=0x%08x canary=%s\n",
+             reason_name(ex.reason), type_name(&ex), (unsigned)ex.addr,
+             canary == CANARY ? "ok" : "bad");
 }
 
 /* A kill request while no task runs is ignored: the next task returns normally. */

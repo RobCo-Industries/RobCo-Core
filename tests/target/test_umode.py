@@ -28,6 +28,9 @@ NO_MMU = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "rdperi
           "spin", "svcspin", "thumb"]
 ALL = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "wrkern", "rdperiph",
        "wrro", "jump", "stack", "spin", "svcspin", "thumb"]
+WATCHDOG = ("spin", "svcspin")
+# umode_run() errors.
+ERR = {"stub": -14, "align": -3, "overlap": -5, "kernel": -9, "periph": -11, "ram": -7}
 
 
 def events(vm, name):
@@ -127,7 +130,7 @@ def test_umode(board, umode_vm):
     ticks = [int(t["ticks"]) for t in tasks]
     assert ticks == sorted(ticks), vm.serial
     for t in tasks:
-        if t["name"] in ("spin", "svcspin"):
+        if t["name"] in WATCHDOG:
             assert int(t["ticks"]) >= 30, vm.serial        # killed after 30 ticks of run time
     done = events(vm, "done")[0]
     assert done["tasks"] == str(len(NO_MMU) + len(ALL)) and done["canary"] == "ok", vm.serial
@@ -138,7 +141,15 @@ def test_umode(board, umode_vm):
     assert [w["text"] for w in writes] == ["hello_from_user_mode"] * 2, vm.serial
 
     errors = events(vm, "errors")
-    assert [(e["stub"], e["align"]) for e in errors] == [("-2", "0"), ("-2", "-3")], vm.serial
+    assert [e["mmu"] for e in errors] == ["0", "1"], vm.serial
+    for e in errors:
+        want = dict(ERR, align=ERR["align"] if e["mmu"] == "1" else 0)
+        assert {k: int(e[k]) for k in ERR} == want, vm.serial
+    # After the refusals, kernel memory is still out of the task's reach.
+    after = events(vm, "refused_after")
+    assert len(after) == 1, vm.serial
+    assert (after[0]["reason"], after[0]["type"]) == ("fault", "data_abort"), vm.serial
+    assert int(after[0]["addr"], 16) == canary_addr and after[0]["canary"] == "ok", vm.serial
     stale = events(vm, "stale")[0]
     assert (stale["rc"], stale["reason"], stale["code"]) == ("0", "returned", "42"), vm.serial
     assert not events(vm, "error"), vm.serial
@@ -162,3 +173,4 @@ def test_umode_kernel_fault(board, example_image, variant, flag, ev, etype):
         assert len(exc) == 1 and exc[0]["type"] == etype, vm.serial
         assert int(exc[0]["spsr"], 16) & 0x1F == 0x13, "taken in SVC mode"
         assert not events(vm, "done"), vm.serial
+

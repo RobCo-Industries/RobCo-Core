@@ -121,6 +121,14 @@ static uint32_t cpu_part(void)
     return (board_get()->midr >> 4) & 0xfff;
 }
 
+/* For umode.c: the table is kernel memory a task must never map. */
+uintptr_t robco_mmu_table(void);
+
+uintptr_t robco_mmu_table(void)
+{
+    return (uintptr_t)l1_table;
+}
+
 int mmu_enabled(void)
 {
     return (sctlr_read() & SCTLR_M) != 0;
