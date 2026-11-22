@@ -98,8 +98,38 @@ def test_stale_tag(tmp_path, no_git):
 def test_no_call(tmp_path, no_git):
     r = run(make_project(tmp_path), "no-call.yml", no_git)
     assert r.returncode == 1
-    assert "does not call RobCo-Core/.github/workflows/robco-ci.yml" in r.stderr
-    assert "sets no image-tag" in r.stderr
+    assert "has no job that calls RobCo-Core/.github/workflows/robco-ci.yml" in r.stderr
+
+
+@pytest.mark.parametrize("fixture", ["quoted.yml", "crlf.yml"])
+def test_good_quoted_and_crlf(tmp_path, no_git, fixture):
+    r = run(make_project(tmp_path), fixture, no_git)
+    assert r.returncode == 0, r.stderr
+
+
+def test_each_calling_job_is_checked(tmp_path, no_git):
+    r = run(make_project(tmp_path), "two-jobs-one-wrong.yml", no_git)
+    assert r.returncode == 1
+    assert f"job ci-extra uses image-tag 000000000000, external/robco-core/ci/IMAGE_TAG is {TAG}" in r.stderr
+    assert "job ci " not in r.stderr
+
+
+@pytest.mark.parametrize("fixture", ["tag-on-other-job.yml", "commented-tag.yml"])
+def test_tag_must_be_in_the_calling_job(tmp_path, no_git, fixture):
+    """An image-tag in another job, or in a comment, does not count."""
+    r = run(make_project(tmp_path), fixture, no_git)
+    assert r.returncode == 1
+    assert "job ci sets no image-tag" in r.stderr
+
+
+def test_no_python3(tmp_path, no_git):
+    stub = tmp_path / "nopy"
+    stub.mkdir()
+    for tool in ("bash", "tr", "head", "awk", "dirname", "git"):
+        src = shutil.which(tool, path=no_git["PATH"])
+        (stub / tool).symlink_to(src)
+    r = run(make_project(tmp_path), "good.yml", dict(no_git, PATH=str(stub)))
+    assert r.returncode == 1 and "python3 is required" in r.stderr
 
 
 def test_unresolved_ref_and_missing_files(tmp_path, no_git):

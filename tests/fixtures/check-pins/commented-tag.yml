@@ -1,0 +1,8 @@
+name: ci
+on: [push]
+jobs:
+  ci:
+    uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@1111111111111111111111111111111111111111
+    with:
+      # image-tag: abc123def456
+      test-targets: test
