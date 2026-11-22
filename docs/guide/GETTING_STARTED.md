@@ -358,7 +358,8 @@ What the test uses:
 | Call | Does |
 |---|---|
 | `boot(image, board)` | Starts QEMU on `raspi0`, `raspi1ap`, `raspi2b` or `raspi3b` and yields a `Vm` |
-| `vm.wait_for(text_or_regex, timeout)` | Waits for serial output. Raises with the whole log on timeout. |
+| `vm.wait_for(text_or_regex, timeout)` | Waits for serial output. Raises with the whole log and a guest state block on timeout. |
+| `vm.state_dump()` | Returns the guest state block: CPU samples, interrupt and timer registers. See [tests/README.md](../../tests/README.md#when-a-wait-times-out). |
 | `vm.markers()` | Every `@RC` line so far, as dicts such as `{"stage": "hellopi", "ev": "boot", ...}` |
 | `vm.send(text)` | Types on the serial input |
 | `vm.serial` | All serial text so far, CRLF turned into LF |

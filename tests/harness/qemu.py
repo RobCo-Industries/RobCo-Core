@@ -51,7 +51,9 @@ class Qemu:
         self.timeout = timeout
         self.tmpdir = tempfile.mkdtemp(prefix="qh")
         self.proc = None
-        self._qmp = self._qmp_file = None
+        self._qmp = None
+        self._qmp_buf = b""  # bytes read past the last complete QMP line
+        self._qmp_seq = 0
         self._qt = self._qt_file = None
         self.events = []
         self.serial_paths = [os.path.join(self.tmpdir, f"serial{i}.txt")
@@ -123,7 +125,7 @@ class Qemu:
                     raise QemuError("QMP connect timeout")
                 time.sleep(0.02)
         s.settimeout(self.timeout)
-        self._qmp, self._qmp_file = s, s.makefile("rwb", buffering=0)
+        self._qmp, self._qmp_buf = s, b""
         self._qmp_read()  # greeting
         self.execute("qmp_capabilities")
 
@@ -156,7 +158,7 @@ class Qemu:
             q.close()
 
     def close(self):
-        for f in (self._qmp_file, self._qmp, self._qt_file, self._qt):
+        for f in (self._qmp, self._qt_file, self._qt):
             try:
                 if f:
                     f.close()
@@ -202,21 +204,38 @@ class Qemu:
     # -- QMP / HMP -------------------------------------------------------
 
     def _qmp_read(self):
-        line = self._qmp_file.readline()
-        if not line:
-            raise QemuError("QMP connection closed: " + self.stderr())
+        """Read one QMP message. Raises socket.timeout and keeps partial input.
+
+        Reads the socket directly and buffers bytes past the line, so a
+        timeout loses nothing and the connection stays usable.
+        """
+        while b"\n" not in self._qmp_buf:
+            chunk = self._qmp.recv(65536)
+            if not chunk:
+                raise QemuError("QMP connection closed: " + self.stderr())
+            self._qmp_buf += chunk
+        line, _, self._qmp_buf = self._qmp_buf.partition(b"\n")
         return json.loads(line)
 
     def execute(self, cmd, **arguments):
-        """Run a QMP command. Returns 'return', raises QemuError on 'error'."""
-        msg = {"execute": cmd}
+        """Run a QMP command. Returns 'return', raises QemuError on 'error'.
+
+        Each command carries a unique id. Replies with another id are late
+        answers to commands that timed out and are dropped. Events are
+        queued for wait_event().
+        """
+        self._qmp_seq += 1
+        req_id = f"rc-{self._qmp_seq}"
+        msg = {"execute": cmd, "id": req_id}
         if arguments:
             msg["arguments"] = arguments
-        self._qmp_file.write(json.dumps(msg).encode() + b"\n")
+        self._qmp.sendall(json.dumps(msg).encode() + b"\n")
         while True:
             resp = self._qmp_read()
             if "event" in resp:
                 self.events.append(resp)
+            elif resp.get("id") != req_id:
+                continue  # stale reply, or a message without an id
             elif "error" in resp:
                 raise QemuError(f"{cmd}: {resp['error'].get('desc')}")
             elif "return" in resp:
