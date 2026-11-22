@@ -25,7 +25,10 @@
 
 /*
  * Undefined instruction. lr_und = faulting instruction + 4 (ARM) or + 2
- * (Thumb). IRQs are masked by the exception entry.
+ * (Thumb). The Thumb offset is 2 for a 32-bit Thumb-2 instruction too:
+ * the CPU sets lr_und from the instruction address, not from its length
+ * (TakeUndefInstrException in the ARMv7 ARM). IRQs are masked by the
+ * exception entry.
  */
     .global robco_vec_undef
 robco_vec_undef:

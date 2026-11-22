@@ -4,7 +4,8 @@
  * with the MMU on (every case). Prints one marker per task:
  *
  *   @RC stage=umode ev=task name=<n> mmu=<0|1> reason=<r> code=<n>
- *       type=<t> pc=0x... addr=0x... status=0x... ticks=<n> canary=<ok|bad>
+ *       type=<t> pc=0x... thumb=<0|1> addr=0x... status=0x... ticks=<n>
+ *       canary=<ok|bad>
  *
  * and at the end "ev=done tasks=<n>", then echoes UART input.
  */
@@ -67,30 +68,32 @@ static const struct {
     int arg;
     int need_mmu;
     int watchdog;
+    int thumb2;     /* needs Thumb-2: skipped on ARM1176 */
 } cases[] = {
-    { "return",     0,  ARG_NONE,     0, 0 },
-    { "exit",       1,  ARG_NONE,     0, 0 },
-    { "regs",       2,  ARG_SCRATCH,  0, 0 },
-    { "badptr",     3,  ARG_KERNEL,   0, 0 },
-    { "priv",       4,  ARG_NONE,     0, 0 },
-    { "undef",      5,  ARG_NONE,     0, 0 },
-    { "rdkern",     6,  ARG_CANARY,   0, 0 },
-    { "wrkern",     7,  ARG_CANARY,   1, 0 },
-    { "rdperiph",   8,  ARG_PERIPH,   0, 0 },
-    { "wrro",       9,  ARG_OWN_CODE, 1, 0 },
-    { "jump",       10, ARG_UNMAPPED, 1, 0 },
-    { "stack",      11, ARG_NONE,     1, 0 },
-    { "spin",       12, ARG_NONE,     0, 1 },
-    { "svcspin",    13, ARG_NONE,     0, 1 },
-    { "thumb",      14, ARG_NONE,     0, 0 },
-    { "init",       16, ARG_NONE,     0, 0 },
-    { "psr",        17, ARG_NONE,     0, 0 },
-    { "cpsid",      18, ARG_NONE,     0, 1 },
-    { "stubsvc",    19, ARG_NONE,     0, 0 },
-    { "killexit",   20, ARG_NONE,     0, 0 },
-    { "afterkill",  0,  ARG_NONE,     0, 0 },
+    { "return",     0,  ARG_NONE,     0, 0, 0 },
+    { "exit",       1,  ARG_NONE,     0, 0, 0 },
+    { "regs",       2,  ARG_SCRATCH,  0, 0, 0 },
+    { "badptr",     3,  ARG_KERNEL,   0, 0, 0 },
+    { "priv",       4,  ARG_NONE,     0, 0, 0 },
+    { "undef",      5,  ARG_NONE,     0, 0, 0 },
+    { "rdkern",     6,  ARG_CANARY,   0, 0, 0 },
+    { "wrkern",     7,  ARG_CANARY,   1, 0, 0 },
+    { "rdperiph",   8,  ARG_PERIPH,   0, 0, 0 },
+    { "wrro",       9,  ARG_OWN_CODE, 1, 0, 0 },
+    { "jump",       10, ARG_UNMAPPED, 1, 0, 0 },
+    { "stack",      11, ARG_NONE,     1, 0, 0 },
+    { "spin",       12, ARG_NONE,     0, 1, 0 },
+    { "svcspin",    13, ARG_NONE,     0, 1, 0 },
+    { "thumb",      14, ARG_NONE,     0, 0, 0 },
+    { "thumb2",     22, ARG_NONE,     0, 0, 1 },
+    { "init",       16, ARG_NONE,     0, 0, 0 },
+    { "psr",        17, ARG_NONE,     0, 0, 0 },
+    { "cpsid",      18, ARG_NONE,     0, 1, 0 },
+    { "stubsvc",    19, ARG_NONE,     0, 0, 0 },
+    { "killexit",   20, ARG_NONE,     0, 0, 0 },
+    { "afterkill",  0,  ARG_NONE,     0, 0, 0 },
     /* Reads the previous tasks' data region without declaring it. */
-    { "peek",       6,  ARG_DATA,     1, 0 },
+    { "peek",       6,  ARG_DATA,     1, 0, 0 },
 };
 
 static const umode_region_t regions[] = {
@@ -253,6 +256,12 @@ static void load_programs(void)
     cache_clean_range((const void *)(uintptr_t)CODE_BASE, len);
 }
 
+/* ARM1176 (part 0xb76) is the only supported CPU without Thumb-2. */
+static int has_thumb2(void)
+{
+    return ((board_get()->midr >> 4) & 0xfffu) != 0xb76u;
+}
+
 static unsigned run_pass(int mmu)
 {
     static umode_exit_t ex;
@@ -261,7 +270,7 @@ static unsigned run_pass(int mmu)
     int rc;
 
     for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        if (cases[i].need_mmu && !mmu) {
+        if ((cases[i].need_mmu && !mmu) || (cases[i].thumb2 && !has_thumb2())) {
             continue;
         }
         load_programs();
@@ -287,9 +296,10 @@ static unsigned run_pass(int mmu)
         }
         n++;
         k_printf("@RC stage=umode ev=task name=%s mmu=%d reason=%s code=%d type=%s pc=0x%08x "
-                 "addr=0x%08x status=0x%08x ticks=%u canary=%s\n",
+                 "thumb=%u addr=0x%08x status=0x%08x ticks=%u canary=%s\n",
                  cases[i].name, mmu, reason_name(ex.reason), ex.code, type_name(&ex),
-                 (unsigned)ex.pc, (unsigned)ex.addr, (unsigned)ex.status,
+                 (unsigned)ex.pc, (unsigned)(ex.frame.cpsr >> 5) & 1u,
+                 (unsigned)ex.addr, (unsigned)ex.status,
                  (unsigned)tick_count(), canary == CANARY ? "ok" : "bad");
     }
     return n;

@@ -27,9 +27,11 @@ WNR = 1 << 11
 # Cases that run with the MMU off too, in order.
 AUDIT = ["init", "psr", "cpsid", "stubsvc", "killexit", "afterkill"]
 NO_MMU = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "rdperiph",
-          "spin", "svcspin", "thumb"] + AUDIT
+          "spin", "svcspin", "thumb", "thumb2"] + AUDIT
 ALL = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "wrkern", "rdperiph",
-       "wrro", "jump", "stack", "spin", "svcspin", "thumb"] + AUDIT + ["peek"]
+       "wrro", "jump", "stack", "spin", "svcspin", "thumb", "thumb2"] + AUDIT + ["peek"]
+# ARM1176 has no Thumb-2: the 32-bit Thumb case runs on the other CPUs only.
+NO_THUMB2 = ("raspi0", "raspi1ap")
 WATCHDOG = ("spin", "svcspin", "cpsid")
 # umode_run() errors per configuration, in order. Alignment is checked only with the MMU on.
 ERRORS = {
@@ -69,8 +71,13 @@ def check_common(t, mmu):
         assert (t["reason"], t["type"]) == ("fault", "undef")
         assert int(t["pc"], 16) == slot(5)
     elif n == "thumb":
-        assert (t["reason"], t["type"]) == ("fault", "undef")
-        assert int(t["pc"], 16) == slot(14, 8)              # exact Thumb address
+        # 16-bit Thumb undefined instruction: pc is its exact address.
+        assert (t["reason"], t["type"], t["thumb"]) == ("fault", "undef", "1")
+        assert int(t["pc"], 16) == slot(14, 8)
+    elif n == "thumb2":
+        # 32-bit Thumb-2 undefined instruction: pc is its first halfword, not the second.
+        assert (t["reason"], t["type"], t["thumb"]) == ("fault", "undef", "1")
+        assert int(t["pc"], 16) == slot(22, 8)
     elif n in ("spin", "svcspin"):
         assert (t["reason"], t["code"]) == ("killed", "1")
         pc = int(t["pc"], 16)
@@ -146,8 +153,11 @@ def test_umode(board, umode_vm):
     tasks = events(vm, "task")
     off = [t for t in tasks if t["mmu"] == "0"]
     on = [t for t in tasks if t["mmu"] == "1"]
-    assert [t["name"] for t in off] == NO_MMU, vm.serial
-    assert [t["name"] for t in on] == ALL, vm.serial
+    skip = ["thumb2"] if board in NO_THUMB2 else []
+    no_mmu = [n for n in NO_MMU if n not in skip]
+    every = [n for n in ALL if n not in skip]
+    assert [t["name"] for t in off] == no_mmu, vm.serial
+    assert [t["name"] for t in on] == every, vm.serial
     assert events(vm, "mmu")[0]["on"] == "1", vm.serial
 
     for t in off:
@@ -163,7 +173,7 @@ def test_umode(board, umode_vm):
         if t["name"] in WATCHDOG:
             assert int(t["ticks"]) >= 30, vm.serial        # killed after 30 ticks of run time
     done = events(vm, "done")[0]
-    assert done["tasks"] == str(len(NO_MMU) + len(ALL)) and done["canary"] == "ok", vm.serial
+    assert done["tasks"] == str(len(no_mmu) + len(every)) and done["canary"] == "ok", vm.serial
     assert int(done["ticks"]) > ticks[0] + 6 * 30, vm.serial
 
     # The bad pointer was refused; the good write printed once per pass.

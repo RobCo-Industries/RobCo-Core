@@ -10,7 +10,7 @@
 
 - One task at a time, on core 0. `umode_run()` blocks until the task ends, then returns to its caller in SVC mode, on the caller's stack.
 - A task ends in one of four ways: it returns from its entry function, a system-call handler calls `umode_exit()`, it faults, or an IRQ handler asks for a kill.
-- Only ARM state is supported. A task that switches to Thumb runs until it faults or makes a system call, and either one ends it with `UMODE_FAULT`, with the right `pc`.
+- Only ARM state is supported. A task that switches to Thumb runs until it faults or makes a system call, and either one ends it with `UMODE_FAULT`, with the right `pc`, for 16-bit and 32-bit Thumb instructions alike.
 - The task runs with IRQs enabled and FIQ masked. The tick, the UART and every other IRQ keep working.
 - The component costs nothing when unused. Its objects stay in the archive unless the image calls `umode_run()`.
 

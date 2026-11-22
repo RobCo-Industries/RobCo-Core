@@ -177,6 +177,19 @@ _ustart:
     svc     #0
     bx      lr
 
+/*
+ * 22: Thumb state, then a 32-bit Thumb-2 undefined instruction at slot + 8
+ * (ARMv7 and later only: ARM1176 has no Thumb-2).
+ */
+    .org    0x580
+    adr     r0, 1f + 1
+    bx      r0
+    .thumb
+1:
+    .hword  0xf7f0, 0xa000                  @ udf.w #0
+    .hword  0x4770                          @ bx lr
+    .arm
+
     .org    0x600
 
 /*

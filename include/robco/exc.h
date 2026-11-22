@@ -34,7 +34,8 @@
 /*
  * Register state of the interrupted context. `sp` and `lr` are the banked
  * registers of the mode in `cpsr`. `pc` is the faulting instruction for
- * undef, prefetch and data aborts (ARM or Thumb), and the instruction
+ * undef, prefetch and data aborts (ARM or Thumb, 16-bit or 32-bit
+ * Thumb instructions alike), and the instruction
  * after the `svc` for a system call. `fsr` and `far` are DFSR and DFAR for
  * a data abort, IFSR and IFAR for a prefetch abort, 0 otherwise.
  */
