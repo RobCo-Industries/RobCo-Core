@@ -1,9 +1,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <robco/cache.h>
 #include <robco/fb.h>
 #include <robco/klibc.h>
 #include <robco/mbox.h>
+#include <robco/mmu.h>
+
+/* Weak: images that never use the MMU do not link it. */
+#pragma weak mmu_map
 
 #define MBOX_RESPONSE       0x80000000u
 
@@ -15,10 +20,11 @@
 #define TAG_SET_DEPTH       0x00048005
 #define TAG_SET_PIXEL_ORDER 0x00048006
 
-#define FB_MSG_WORDS        36
+/* 36 words used, padded to whole 64-byte lines. */
+#define FB_MSG_WORDS        48
 
-/* The data cache is off, so the buffer needs no cache maintenance. */
-static uint32_t fb_msg[FB_MSG_WORDS] __attribute__((aligned(16)));
+/* mbox_call() does the cache maintenance. Own lines: no neighbour shares them. */
+static uint32_t fb_msg[FB_MSG_WORDS] __attribute__((aligned(CACHE_LINE_MAX)));
 static fb_info_t fb_state;
 static int fb_ready;
 
@@ -89,6 +95,15 @@ int fb_init(uint32_t width, uint32_t height, uint32_t depth)
     info.order = m[ord_rb];
     if (info.addr == NULL || info.pitch < width * 4 || info.size < info.pitch * height) {
         return FB_ERR_BUFFER;
+    }
+
+    /*
+     * The buffer lies in GPU memory, outside the RAM map. Map it
+     * non-cacheable so CPU writes reach the GPU without a flush. Covers
+     * fb_init() after mmu_enable(); mmu_init() covers the other order.
+     */
+    if (mmu_map) {
+        mmu_map((uint32_t)(uintptr_t)info.addr, info.size, MMU_ATTR_FB);
     }
 
     fb_state = info;
