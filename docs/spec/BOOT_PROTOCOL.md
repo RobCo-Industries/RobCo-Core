@@ -24,7 +24,7 @@ Each loader:
 2. Opens the file and validates it as described in [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). Emits `ev=load` before the read and `ev=error` on failure.
 3. Updates the boot info, as described below.
 4. Prepares the CPU for the jump.
-5. Jumps to `load_addr` with the registers in the next table. Emits `ev=jump` just before.
+5. Jumps to `load_addr` with the registers in the next table. Emits `ev=jump` right before.
 
 CPU state at the jump between terminal stages:
 
@@ -32,9 +32,9 @@ CPU state at the jump between terminal stages:
 |---|---|
 | Mode | SVC |
 | IRQ, FIQ | Masked in CPSR. Every source and FIQ routing disabled at the controller. |
-| MMU | Off |
-| D-cache | Cleaned to memory, then off |
-| I-cache | Invalidated |
+| MMU | Off, even if the previous stage had it on |
+| D-cache | Cleaned and invalidated, then off |
+| I-cache | Invalidated. Off when the previous stage used `mmu.h`. |
 | Timers | System timer channels 1 and 3 parked a full counter wrap ahead, their match flags cleared |
 | UART | PL011 left on, FIFO drained |
 | Framebuffer | Left on. Its address is in the boot info. |
@@ -44,11 +44,11 @@ CPU state at the jump between terminal stages:
 1. Masks IRQ and FIQ on the CPU.
 2. Disables FIQ routing and every IRQ source at the interrupt controller: pending 1, pending 2 and basic.
 3. Sets system timer compare channels 1 and 3, the channels the ARM side owns, to one tick before the current counter value, so they cannot match for about 71 minutes. Then it clears their match flags. The next stage takes no stale timer interrupt when it unmasks a timer source.
-4. Turns the MMU and D-cache off if they are on. Only on ARM1176 does it clean the D-cache first.
+4. If the MMU or D-cache is on and the image links `mmu_disable()`, which any image that uses `mmu.h` or `cache.h` does, it calls it. `mmu_disable()` cleans and invalidates the whole D-cache on every supported CPU, then turns the MMU, D-cache and I-cache off. Otherwise it turns the MMU and D-cache off, and cleans the D-cache first only on ARM1176.
 5. Invalidates the I-cache and the branch predictor.
 6. Jumps to `entry` in SVC mode with IRQ and FIQ masked and the registers below.
 
-The caller must call `robco_handoff()` with the MMU and D-cache off, or with the D-cache already cleaned to memory. On ARMv7 and later the function does not clean the D-cache, so an image that turned it on must clean it, by set and way or by address range over everything it wrote, before the call. The library never turns the MMU or D-cache on, so an image that uses only the library meets this contract. The caller drains the UART with `uart_flush()`.
+The caller may call `robco_handoff()` with the MMU and caches on or off when it turned them on with `mmu.h`. The next stage then starts with them off and every dirty line in memory. An image that turned the caches on by its own code, without linking `mmu.h` or `cache.h`, must clean them first on ARMv7 and later. The caller drains the UART with `uart_flush()`. The cache behaviour of the handoff is pending hardware validation.
 
 Pip-OS enters ROMs and holotapes differently, in USR mode. See [PIPOS_ABI.md](./PIPOS_ABI.md).
 
