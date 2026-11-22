@@ -39,6 +39,8 @@ CPU state at the jump between terminal stages:
 | UART | PL011 left on, FIFO drained |
 | Framebuffer | Left on. Its address is in the boot info. |
 
+`robco_handoff(entry, bi, fdt_or_atags)` in `src/arch/handoff.c` does steps 4 and 5. It masks IRQ and FIQ, masks every source at the interrupt controller if the image links the driver, invalidates the I-cache and branch predictor, and jumps in SVC mode. If the MMU or D-cache is on, it turns them off. Only on ARM1176 does it clean the D-cache first. On ARMv7 the image must clean it before the call. The library never turns the D-cache on. The caller drains the UART with `uart_flush()`.
+
 Pip-OS enters ROMs and holotapes differently, in USR mode. See [PIPOS_ABI.md](./PIPOS_ABI.md).
 
 ### BOOT.CFG
@@ -235,13 +237,15 @@ A stage trusts the boot info only if all of these hold:
 2. `magic` is `0x524F4243`, `version` is 2 and `size` is 320.
 3. The CRC matches.
 
+`robco_start()` applies the trust rule before `robco_main()`, unless the project's `robco_config.h` sets `ROBCO_FIRST_STAGE` to 1. `bootinfo_inherited()` gives the result and `bootinfo_get()` the trusted block. A cold-booted image gets `NULL` from `bootinfo_get()` until it calls `bootinfo_build()`.
+
 If any check fails, the stage cold-boots. It detects the board, queries the mailbox and builds a fresh block. It sets `boot_flags` bit 2. Then it continues as normal. This is why every stage can run alone.
 
 RETROS-BIOS and Pip-OS are first stages. They always cold-boot and ignore r3. RAM can keep an old block across a watchdog reset, and the firmware does not define r3.
 
 A trusting stage still reads MIDR. If MIDR differs from `midr`, it cold-boots.
 
-Before the jump, the loader sets `stage` to its own id, updates the fields it changed, and recomputes the CRC.
+Before the jump, the loader sets `stage` to its own id, updates the fields it changed, and recomputes the CRC. `bootinfo_build(bi, stage)` does this. It keeps the firmware registers, the DTB copy and the `boot_*` fields of a trusted block, refreshes the board, UART, framebuffer and console fields, and seals the block. `bootinfo_seal()` recomputes the CRC after a later change.
 
 ## DTB and ATAGS
 
@@ -254,6 +258,8 @@ The first stage copies what the firmware passed in r2 to `0x00101000`.
 If the size is above `0x1F000`, the stage does not copy. It sets `fdt_addr` and `fdt_size` to 0 and passes r2 = 0. With no `.dtb` on the card, the firmware passes ATAGS.
 
 Later stages pass `fdt_addr` on unchanged. No stage edits the copy.
+
+`bootinfo_copy_fw_blob(dest, max)` applies these rules to the saved r2 and returns the size. `bootinfo_build()` records the copy in a cold-built block.
 
 ## Serial markers
 

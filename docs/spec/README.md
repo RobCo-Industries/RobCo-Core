@@ -48,7 +48,8 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | QEMU firmware stub range | Implemented |
 | `__heap_start` and the heap allocator, `k_malloc()` | Implemented |
 | MMU with an identity map | Specified |
-| Terminal and Pip-Boy chain slots | Specified |
+| Slot bounds checked by `rimg_validate()` and `tools/rimg.py` | Implemented |
+| Handoff range: boot info at `0x00100000`, DTB or ATAGS copy at `0x00101000` | Implemented |
 
 ### IMAGE_FORMAT.md
 
@@ -58,8 +59,11 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Magic and subtype constants in `rimg.h` | Implemented |
 | META block | Specified |
 | CRC-32 function, `crc32()` | Implemented |
-| Image CRC check, validation, `rimg_err_t` | Specified |
-| `tools/rimg.py`, sealing images | Specified |
+| Image CRC check, validation, `rimg_err_t`, `rimg_validate()` | Implemented |
+| `tools/rimg.py` `seal`, `info` and `verify` | Implemented |
+| Sealing every image in `mk/robco.mk` | Implemented |
+| Filling the META block in `tools/rimg.py` | Specified |
+| Loading images from the SD card | Specified |
 
 ### BOOT_PROTOCOL.md
 
@@ -67,8 +71,10 @@ Each table lists the parts of one document. "Implemented" means the code in this
 |---|---|
 | `robco_main(void)`, `robco_boot_args()`, `board_get()` | Implemented |
 | `ev=exception` marker | Implemented |
-| Boot info block: `robco_bootinfo_t`, trust rule, `robco_bootinfo()` | Specified |
-| Stage loading, DTB and ATAGS copy, `BOOT.CFG` | Specified |
+| Boot info block: `robco_bootinfo_t`, trust rule, `bootinfo_get()` | Implemented |
+| Register handoff, `robco_handoff()` | Implemented |
+| DTB and ATAGS copy, `bootinfo_copy_fw_blob()` | Implemented |
+| Stage loading from the SD card, `BOOT.CFG` | Specified |
 | Other `@RC` events, failure handling, emergency shell | Specified |
 
 ### PIPOS_ABI.md
@@ -85,7 +91,9 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Firmware stub and `boot()` | Implemented |
 | `sdimage.py` | Implemented |
 | Serial tests in `tests/target/` | Implemented |
-| Host tests for klibc, CRC-32 and the allocator | Implemented |
+| Host tests for klibc, CRC-32, the allocator, `rimg_validate()` and the boot info | Implemented |
+| Unit tests for `tools/rimg.py` | Implemented |
+| Two-stage chain boot in QEMU | Implemented |
 | Console grid dump and a screendump golden | Implemented |
 | Other host tests, input tests, fault tests | Specified |
 | `expect.py`, `screen.py`, `inputs.py` | Specified |

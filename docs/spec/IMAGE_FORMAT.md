@@ -173,6 +173,8 @@ typedef enum rimg_err {
 | `RIMG_E_ABI` | 7 | `abi` |
 | `RIMG_E_CRC` | 8 | `crc` |
 
+`rimg_validate()` in `src/lib/rimg.c` runs steps 1 to 6 on an image already in memory. `rimg_expect_t` gives the accepted magic, the slot, the ABI major and the FAT size. Step 3 also fails when `file_size` is larger than the readable bytes. `rimg_strerror()` returns the `@RC` name. `tools/rimg.py verify` runs the same steps.
+
 A loader that fails at step 6 has already overwritten the slot. That is fine, because the slot belongs to the image being loaded.
 
 The loader does not zero BSS. The image's own startup code does that.
