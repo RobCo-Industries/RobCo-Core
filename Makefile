@@ -46,3 +46,9 @@ test-examples:
 	  examples/hello/run-qemu.sh $$m --fault || fail "hello --fault on $$m"; \
 	done; \
 	echo "test-examples: all passed"
+
+# Target tests: boot spikes through tests/harness/boot.py on every board.
+.PHONY: test-target
+test: test-target
+test-target: venv
+	$(VENV)/bin/pytest tests/target -v --board all

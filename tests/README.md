@@ -4,6 +4,7 @@
 
     make venv
     make test-canary
+    make test-target          # spikes on all four boards through boot()
 
 Needs `qemu-system-arm` and `qemu-system-aarch64` on `PATH`. A machine
 missing from the installed QEMU is skipped. V2 is skipped without
@@ -15,6 +16,15 @@ missing from the installed QEMU is skipped. V2 is skipped without
   QMP) and qtest. It can poke instruction words with `-device loader`
   and capture serial output to files. It kills QEMU on exit, even after
   a timeout or a failed test.
+- `harness/boot.py`: boots a raw image at 0x8000 like the GPU firmware.
+  Gives serial read and write, `@RC` marker parsing and screendumps.
+- `harness/sdimage.py`: builds MBR + FAT SD images with mtools.
+- `fwstub/`: the firmware stub `boot()` loads at 0x0. It parks secondary
+  cores, writes ATAGS at 0x100, switches to HYP on raspi2b and enters
+  the image with r0 = 0, r1 = machine id, r2 = 0x100. `a64_shim.py`
+  holds the AArch64 words that drop raspi3b to AArch32 first.
+- `target/`: tests that boot real images. `--board NAME` picks boards
+  (repeatable, default raspi0 and raspi2b, `all` for all four).
 - `canary/`: checks the QEMU behaviours our code depends on. Run it
   after any QEMU upgrade. A failure means QEMU changed, not our code.
 
@@ -37,3 +47,26 @@ missing from the installed QEMU is skipped. V2 is skipped without
 | V15 | raspi0, 1ap, 2b | First `-serial` is the PL011, second is the mini UART. | Serial capture order in tests. |
 
 V4 and V8 are not checked here.
+
+## Writing a target test
+
+Put it under `tests/target/`. Take the `board` fixture to run it on each
+`--board`:
+
+```python
+import re
+from harness.boot import boot
+
+def test_hello(board, spike_image):
+    with boot(spike_image("s1"), board) as vm:
+        vm.wait_for("type to echo", timeout=10)
+        hello = [m for m in vm.markers() if m["ev"] == "hello"]
+        assert hello[0]["fw_r2"] == "0x100"
+        vm.send("abc")
+        vm.wait_for(re.compile(r"\nabc"), timeout=5)
+```
+
+`boot()` options: `mode="svc"` forces SVC entry, `sd=path` attaches an
+SD image, `serial2=True` adds the mini UART, `extra_args=[...]` goes
+straight to QEMU. `vm.qmp` is the `Qemu` object from `harness/qemu.py`.
+QEMU is killed when the `with` block ends, even on failure.
