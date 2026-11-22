@@ -1,9 +1,13 @@
 """Boot examples/console on every board and check the screen as text and pixels.
 
-Set ROBCO_UPDATE_GOLDEN=1 to rewrite tests/golden/console_banner_green.png
-from the current run instead of comparing against it.
+The default build uses Fixedsys Excelsior. The spleen variant is also
+checked on raspi0 and raspi2b.
+
+Set ROBCO_UPDATE_GOLDEN=1 to rewrite the golden banner images in
+tests/golden/ from the current run instead of comparing against them.
 """
 
+import contextlib
 import os
 import re
 import subprocess
@@ -17,8 +21,12 @@ from harness.boot import BOARDS, boot
 from harness.qemu import have_machine
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-FONT_C = os.path.join(ROOT, "src", "gfx", "font8x16_spleen.c")
+FONT_C = os.path.join(ROOT, "src", "gfx", "font8x16_fixedsys.c")
+SPLEEN_C = os.path.join(ROOT, "src", "gfx", "font8x16_spleen.c")
 GOLDEN = os.path.join(ROOT, "tests", "golden", "console_banner_green.png")
+SPLEEN_GOLDEN = os.path.join(ROOT, "tests", "golden", "console_banner_green_spleen.png")
+SPLEEN_CFLAGS = "-DROBCO_FONT=ROBCO_FONT_SPLEEN"
+SPLEEN_BOARDS = ("raspi0", "raspi2b")
 
 W, H = 640, 480
 COLS, ROWS = 80, 30
@@ -37,7 +45,7 @@ SCHEMES = {
 
 BANNER = [
     "ROBCO-CORE CONSOLE EXAMPLE",
-    "8x16 cells, Spleen font, four colour schemes.",
+    "8x16 cells, four colour schemes.",
     "Commands: d s t c x p g 1-4",
     ">",
 ]
@@ -52,14 +60,10 @@ TEXT_ROWS = [
 ]
 
 
-def load_font():
+def load_font(path=FONT_C):
     """Glyph rows from the generated table, keyed by code point."""
-    glyphs = {}
-    row_re = re.compile(r"\{((?:0x[0-9a-f]{2}, ){15}0x[0-9a-f]{2})\}, /\* U\+([0-9A-F]{4}) \*/")
-    with open(FONT_C) as f:
-        for m in row_re.finditer(f.read()):
-            glyphs[int(m.group(2), 16)] = [int(v, 16) for v in m.group(1).split(", ")]
-    return glyphs
+    with open(path) as f:
+        return load_font_text(f.read())
 
 
 def load_table(path=FONT_C):
@@ -125,9 +129,9 @@ class Console:
         return img
 
 
-@pytest.fixture
-def console(board, example_image, tmp_path):
-    with boot(example_image("console"), board) as vm:
+@contextlib.contextmanager
+def booted(image, board, tmp_path):
+    with boot(image, board) as vm:
         vm.wait_for(READY, timeout=10)
         fb = [m for m in vm.markers() if m.get("ev") == "fb"]
         assert fb and (fb[0]["w"], fb[0]["h"], fb[0]["order"]) == ("640", "480", "rgb"), vm.serial
@@ -136,15 +140,32 @@ def console(board, example_image, tmp_path):
         assert "ev=exception" not in vm.serial, vm.serial
 
 
-def check_cells(img, colour, skip):
-    """Samples the centre and two corners of every cell except `skip`."""
+@pytest.fixture
+def console(board, example_image, tmp_path):
+    with booted(example_image("console"), board, tmp_path) as c:
+        yield c
+
+
+@pytest.fixture
+def spleen_console(board, example_image, tmp_path):
+    if board not in SPLEEN_BOARDS:
+        pytest.skip("the spleen variant is checked on raspi0 and raspi2b")
+    with booted(example_image("console", "spleen", SPLEEN_CFLAGS), board, tmp_path) as c:
+        yield c
+
+
+def check_cells(img, colour, skip, top=0):
+    """Samples the centre and two corners of every cell except `skip`.
+
+    `top` is the first sampled row. The Fixedsys full block leaves row 0 empty.
+    """
     bad = []
     for row in range(ROWS):
         for col in range(COLS):
             if (col, row) == skip:
                 continue
             x, y = col * FW, row * FH
-            for p in ((x + 4, y + 8), (x, y), (x + 7, y + 15)):
+            for p in ((x + 4, y + 8), (x, y + top), (x + 7, y + 15)):
                 if img.getpixel(p) != colour:
                     bad.append((p, img.getpixel(p)))
     assert not bad, f"{len(bad)} pixels differ, first {bad[:5]}, want {colour}"
@@ -187,14 +208,17 @@ def test_console_text(console):
         assert rows2 == rows and (head2["cx"], head2["cy"]) == (head["cx"], head["cy"])
 
 
+def check_golden(img, path):
+    if os.environ.get("ROBCO_UPDATE_GOLDEN"):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        img.save(path)
+    with Image.open(path) as golden:
+        assert golden.convert("RGB").tobytes() == img.tobytes(), f"banner differs from {path}"
+
+
 def test_console_pixels(console):
     _, bg, dim, normal, bright = SCHEMES["1"]
-    img = console.shot()
-    if os.environ.get("ROBCO_UPDATE_GOLDEN"):
-        os.makedirs(os.path.dirname(GOLDEN), exist_ok=True)
-        img.save(GOLDEN)
-    with Image.open(GOLDEN) as golden:
-        assert golden.convert("RGB").tobytes() == img.tobytes(), "banner differs from golden"
+    check_golden(console.shot(), GOLDEN)
 
     font = load_font()
     console.cmd("c")
@@ -208,17 +232,34 @@ def test_console_pixels(console):
     # The cursor at (0,5) is the inverted empty cell.
     check_glyph(img, font[ord(" ")], 0, 5, bg, normal)
 
+    block = load_table()[0xDB]
+    top = next(y for y in range(FH) if block[y])
     for key, (name, bg, _dim, normal, _bright) in SCHEMES.items():
         console.cmd(key)
         console.cmd("x")
-        check_cells(console.shot(), normal, skip=(COLS - 1, ROWS - 1))
+        check_cells(console.shot(), normal, skip=(COLS - 1, ROWS - 1), top=top)
         console.cmd("c")
         check_cells(console.shot(), bg, skip=(0, 0))
 
 
+def font_names(console):
+    return [m["name"] for m in console.vm.markers() if m.get("ev") == "font"]
+
+
 def test_console_font_marker(console):
-    names = [m["name"] for m in console.vm.markers() if m.get("ev") == "font"]
-    assert names == ["spleen"], console.vm.serial
+    assert font_names(console) == ["fixedsys-excelsior"], console.vm.serial
+
+
+def test_console_spleen(spleen_console):
+    assert font_names(spleen_console) == ["spleen"], spleen_console.vm.serial
+    check_golden(spleen_console.shot(), SPLEEN_GOLDEN)
+    _, bg, _dim, normal, _bright = SCHEMES["1"]
+    font = load_font(SPLEEN_C)
+    spleen_console.cmd("c")
+    spleen_console.cmd("t")
+    img = spleen_console.shot()
+    check_glyph(img, font[ord("A")], 0, 0, normal, bg)
+    check_glyph(img, font[ord("X")], 2, 1, normal, bg)
 
 
 def check_glyph_grid(console, table):
@@ -236,20 +277,26 @@ def test_console_every_glyph(console):
     check_glyph_grid(console, load_table())
 
 
+def test_console_every_glyph_spleen(spleen_console):
+    check_glyph_grid(spleen_console, load_table(SPLEEN_C))
+
+
 EXAMPLE = os.path.join(ROOT, "examples", "console")
 
 
-def test_console_font_override(tmp_path):
-    """A project font in SRCS replaces the built-in one at link time."""
+@pytest.mark.parametrize("selection", ["fixedsys", "spleen"])
+def test_console_font_override(tmp_path, selection):
+    """A project font in SRCS replaces the selected built-in one at link time."""
     if not have_machine(BOARDS["raspi0"].binary, "raspi0"):
         pytest.skip("qemu-system-arm -M raspi0 not available")
     font_c = tmp_path / "font8x16_override.c"
     subprocess.run([sys.executable, os.path.join(ROOT, "tools", "font2c.py"),
                     os.path.join(ROOT, "third_party", "spleen", "spleen-8x16.bdf"),
                     "--name", "override-test", "-o", str(font_c)], check=True, cwd=ROOT)
-    build = "build/override-test"
-    subprocess.run(["make", "-s", "-C", EXAMPLE, "CI=1", f"BUILD={build}", f"FONT_C={font_c}"],
-                   check=True, stdout=subprocess.DEVNULL)
+    build = f"build/override-test-{selection}"
+    cflags = SPLEEN_CFLAGS if selection == "spleen" else ""
+    subprocess.run(["make", "-s", "-C", EXAMPLE, "CI=1", f"BUILD={build}", f"FONT_C={font_c}",
+                    f"EXTRA_CFLAGS={cflags}"], check=True, stdout=subprocess.DEVNULL)
     elf = os.path.join(EXAMPLE, build, "console.elf")
     nm = subprocess.run(["arm-none-eabi-nm", elf], check=True, capture_output=True, text=True).stdout
     for sym in ("font_ascii", "font8x16_glyph", "font8x16_name"):

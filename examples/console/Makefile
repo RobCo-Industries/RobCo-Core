@@ -1,7 +1,8 @@
 # Framebuffer console example, driven by one-letter UART commands.
 #
-# FONT_C=/path/to/font8x16.c builds with a table from tools/font2c.py
-# instead of the built-in Spleen font. See docs/FONTS.md.
+# The built-in font is Fixedsys Excelsior. The spleen variant in VARIANTS
+# builds with Spleen instead. FONT_C=/path/to/font8x16.c builds with a
+# table from tools/font2c.py in place of either. See docs/FONTS.md.
 
 ROBCO_CORE ?= ../..
 IMAGE      := console

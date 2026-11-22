@@ -2,8 +2,9 @@
 """Boot the console example in QEMU and save a screenshot of its specimen page.
 
 Usage:
-    tools/font_specimen.py -o spleen-green.png
-    tools/font_specimen.py --font-c local/font8x16_fixedsys.c --scheme amber -o fixedsys-amber.png
+    tools/font_specimen.py -o fixedsys-green.png
+    tools/font_specimen.py --font spleen --scheme amber -o spleen-amber.png
+    tools/font_specimen.py --font-c local/font8x16_myfont.c -o myfont-green.png
 
 Writes the PNG and a 2x nearest-neighbour copy next to it (name@2x.png).
 Needs Pillow, the Arm toolchain and QEMU. Run it with .venv/bin/python.
@@ -25,17 +26,19 @@ from harness.boot import BOARDS, boot  # noqa: E402
 
 EXAMPLE = os.path.join(ROOT, "examples", "console")
 SCHEMES = {"green": "1", "amber": "2", "blue": "3", "white": "4"}
+FONTS = {"fixedsys": "ROBCO_FONT_FIXEDSYS", "spleen": "ROBCO_FONT_SPLEEN"}
 
 
-def build(font_c):
+def build(font, font_c):
     """Build the example and return the image path. Each font gets its own build dir."""
     if font_c:
         font_c = os.path.abspath(font_c)
         tag = hashlib.sha256(font_c.encode()).hexdigest()[:12]
         build_dir = f"build/specimen-{tag}"
     else:
-        build_dir = "build/specimen-builtin"
-    cmd = ["make", "-s", "-C", EXAMPLE, "CI=1", f"BUILD={build_dir}"]
+        build_dir = f"build/specimen-{font}"
+    cmd = ["make", "-s", "-C", EXAMPLE, "CI=1", f"BUILD={build_dir}",
+           f"EXTRA_CFLAGS=-DROBCO_FONT={FONTS[font]}"]
     if font_c:
         cmd.append(f"FONT_C={font_c}")
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
@@ -55,7 +58,8 @@ def command(vm, c, timeout=10):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--font-c", help="table from tools/font2c.py (default: built-in font)")
+    ap.add_argument("--font", choices=list(FONTS), default="fixedsys", help="built-in font (default fixedsys)")
+    ap.add_argument("--font-c", help="table from tools/font2c.py, used instead of the built-in font")
     ap.add_argument("--scheme", choices=list(SCHEMES), default="green")
     ap.add_argument("--board", choices=list(BOARDS), default="raspi2b")
     ap.add_argument("-o", dest="out", required=True, help="output PNG")
@@ -63,7 +67,7 @@ def main():
 
     from PIL import Image
 
-    image = build(args.font_c)
+    image = build(args.font, args.font_c)
     with boot(image, args.board) as vm:
         vm.wait_for(re.compile(r"@RC stage=console ev=ready\n"), timeout=10)
         name = next((m["name"] for m in vm.markers() if m.get("ev") == "font"), "?")

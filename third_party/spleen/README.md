@@ -9,4 +9,4 @@ Bitmap font by Frederic Cambus, BSD 2-Clause (see `LICENSE`).
 
 `src/gfx/font8x16_spleen.c` is generated from the BDF:
 
-    tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen -o src/gfx/font8x16_spleen.c
+    tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen --select ROBCO_FONT_SPLEEN -o src/gfx/font8x16_spleen.c

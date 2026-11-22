@@ -1,7 +1,4 @@
-"""Checks for tools/font2c.py. Host only, no QEMU.
-
-Set ROBCO_TEST_TTF to a pixel TTF file to also test the outline path.
-"""
+"""Checks for tools/font2c.py. Host only, no QEMU."""
 
 import os
 import re
@@ -13,7 +10,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOL = os.path.join(ROOT, "tools", "font2c.py")
 SPLEEN = "third_party/spleen/spleen-8x16.bdf"
-COMMITTED = os.path.join(ROOT, "src", "gfx", "font8x16_spleen.c")
+FIXEDSYS = "third_party/fixedsys-excelsior/FSEX302.ttf"
 GLYPH_COUNT = 95 + 23
 
 
@@ -46,14 +43,29 @@ def full_ascii(skip=()):
     return {cp: ((8, 16, 0, -4), [cp & 0xFF] * 16) for cp in range(0x20, 0x7F) if cp not in skip}
 
 
-def test_spleen_regenerates_identically(tmp_path):
+@pytest.mark.parametrize("src, name, select, committed", [
+    (SPLEEN, "spleen", "ROBCO_FONT_SPLEEN", "src/gfx/font8x16_spleen.c"),
+    (FIXEDSYS, "fixedsys-excelsior", "ROBCO_FONT_FIXEDSYS", "src/gfx/font8x16_fixedsys.c"),
+])
+def test_table_regenerates_identically(tmp_path, src, name, select, committed):
+    if src.endswith(".ttf"):
+        pytest.importorskip("PIL")
     out = tmp_path / "font8x16.c"
-    run(SPLEEN, "--name", "spleen", "-o", str(out))
-    with open(COMMITTED) as f:
-        committed = f.read()
+    run(src, "--name", name, "--select", select, "-o", str(out))
+    with open(os.path.join(ROOT, committed)) as f:
+        want = f.read()
     # The generator line names the output, so compare with the committed path in it.
-    got = out.read_text().replace(str(out), "src/gfx/font8x16_spleen.c")
-    assert got == committed
+    got = out.read_text().replace(str(out), committed)
+    assert got == want
+
+
+def test_select_wraps_table(tmp_path):
+    out = tmp_path / "f.c"
+    run(SPLEEN, "--name", "t", "--select", "ROBCO_FONT_SPLEEN", "-o", str(out))
+    text = out.read_text()
+    assert "#if ROBCO_FONT == ROBCO_FONT_SPLEEN\n" in text
+    assert text.endswith("#endif /* ROBCO_FONT == ROBCO_FONT_SPLEEN */\n")
+    run(SPLEEN, "--name", "t", "--select", "SPLEEN", "-o", str(out), ok=False)
 
 
 def test_header_and_name(tmp_path):
@@ -103,16 +115,13 @@ def test_unknown_type(tmp_path):
     assert "unknown font type" in r.stderr
 
 
-TTF = os.environ.get("ROBCO_TEST_TTF")
-
-
-@pytest.mark.skipif(not TTF, reason="set ROBCO_TEST_TTF to a pixel TTF file to test the outline path")
 def test_ttf(tmp_path):
     pytest.importorskip("PIL")
     out = tmp_path / "f.c"
-    r = run(TTF, "--name", "ttf-test", "-o", str(out))
+    r = run(FIXEDSYS, "--name", "ttf-test", "-o", str(out))
     text = out.read_text()
     assert 'return "ttf-test";' in text
     assert re.search(r"Generator: tools/font2c.py .* --size 16 -o ", text)
     assert len(re.findall(r"/\* U\+00[2-7][0-9A-F] \*/", text)) == 95
-    print(r.stderr)
+    assert "#if" not in text
+    assert f"{GLYPH_COUNT} of {GLYPH_COUNT} glyphs" in r.stderr

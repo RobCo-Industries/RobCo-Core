@@ -2,7 +2,7 @@
  * Generated file. Do not edit.
  * Source: spleen-8x16.bdf
  * SHA-256: 3be74111b39d48647a9a944528bd0bfaf0b926817cf85ff3746658c3f7532147
- * Generator: tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen -o src/gfx/font8x16_spleen.c
+ * Generator: tools/font2c.py third_party/spleen/spleen-8x16.bdf --name spleen --select ROBCO_FONT_SPLEEN -o src/gfx/font8x16_spleen.c
  * This table inherits the licence of its source font.
  */
 
@@ -10,6 +10,9 @@
 #include <stdint.h>
 
 #include <robco/font.h>
+
+/* Built only when robco_config.h selects this font. */
+#if ROBCO_FONT == ROBCO_FONT_SPLEEN
 
 /* U+0020 to U+007E, 16 rows each, bit 7 is the left pixel. */
 static const uint8_t font_ascii[95][FONT_H] = {
@@ -168,3 +171,5 @@ const char *font8x16_name(void)
 {
     return "spleen";
 }
+
+#endif /* ROBCO_FONT == ROBCO_FONT_SPLEEN */
