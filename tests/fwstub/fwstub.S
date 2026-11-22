@@ -6,7 +6,8 @@
  *   1. Park secondary cores in a wfi loop (multi-core parts only).
  *   2. Read the parameter block at PARAMS (poked by the harness).
  *   3. Write ATAGS at 0x100: CORE, MEM, NONE.
- *   4. Optionally switch Secure SVC to Non-secure HYP with smc.
+ *   4. Optionally switch Secure SVC to Non-secure HYP with smc. The
+ *      monitor sets NSACR and SCR the way the firmware armstub does.
  *   5. r0 = 0, r1 = machine id, r2 = 0x100, jump to 0x8000.
  *
  * Layout: 0x000 reset and monitor vectors, 0x100-0x3ff ATAGS area,
@@ -115,6 +116,10 @@ park:
 
 /* Monitor mode: go Non-secure with HYP enabled, return to HYP. */
 mon_smc:
+    /* NSACR: cp0 to cp13 usable from Non-secure state, plus NS_SMP.
+     * Without cp10/cp11 (VFP) here, Non-secure VFP access is undefined. */
+    ldr     r0, =0x43fff
+    mcr     p15, 0, r0, c1, c1, 2
     ldr     r0, =0x131                      @ SCR: NS, FW, AW, HCE
     mcr     p15, 0, r0, c1, c1, 0
     mov     r0, #0
