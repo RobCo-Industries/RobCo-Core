@@ -41,7 +41,7 @@ TEST(strings)
     FMT("abc", "%2s", "abc");
     fmt_raw(out, sizeof(out), "%05s", "abc");
     CHECK_STR(out, "  abc");
-    FMT("(null)", "%s", (const char *)NULL);
+    FMT("(null)", "%s", (const char *)rc_launder(NULL));
 }
 
 TEST(chars)

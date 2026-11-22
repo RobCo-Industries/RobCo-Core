@@ -31,6 +31,18 @@ static void rc_register(rc_test_t *t)
     rc_tests_tail = &t->next;
 }
 
+/*
+ * Returns p, but the compiler cannot see the value. Use it where a test
+ * passes something invalid on purpose (a NULL string, a freed or foreign
+ * pointer), so GCC does not reject the call at compile time.
+ */
+static inline void *rc_launder(const void *p)
+{
+    void *volatile v = (void *)(uintptr_t)p;
+
+    return v;
+}
+
 #define TEST(name)                                                        \
     static void rc_test_##name(void);                                     \
     static rc_test_t rc_entry_##name = { #name, rc_test_##name, NULL };   \

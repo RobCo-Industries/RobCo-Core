@@ -183,20 +183,20 @@ TEST(double_and_bad_free)
     size_t initial = setup();
     char *a = k_malloc(40);
     char *b = k_malloc(40);
-    int local;
+    int local = 0;
 
     k_free(a);
-    k_free(a);
+    k_free(rc_launder(a));
     CHECK_EQ(stats().bad_frees, 1);
     CHECK_EQ(k_heap_check(), 0);
-    k_free(b + 1);
-    k_free(b + 8);
-    k_free(&local);
-    k_free(arena + ARENA_SIZE + 64);
+    k_free(rc_launder(b + 1));
+    k_free(rc_launder(b + 8));
+    k_free(rc_launder(&local));
+    k_free(rc_launder((void *)((uintptr_t)arena + ARENA_SIZE + 64)));
     CHECK_EQ(stats().bad_frees, 5);
     CHECK_EQ(stats().allocs, 1);
     CHECK_EQ(k_heap_check(), 0);
-    CHECK(k_realloc(a, 10) == NULL);
+    CHECK(k_realloc(rc_launder(a), 10) == NULL);
     CHECK_EQ(stats().bad_frees, 6);
     k_free(b);
     CHECK_EQ(stats().largest_free, initial);
@@ -212,7 +212,7 @@ TEST(header_corruption_detected)
     a = k_malloc(24);
     b = k_malloc(24);
     CHECK(b != NULL);
-    memset(a, 0x41, 64);   /* overruns into b's header */
+    memset(rc_launder(a), 0x41, 64);   /* overruns into b's header */
     CHECK(k_heap_check() != 0);
     k_free(b);
     CHECK_EQ(stats().bad_frees, 1);
