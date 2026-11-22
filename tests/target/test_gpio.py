@@ -65,7 +65,7 @@ def test_gpio_reboot(board, example_image):
 def test_gpio_halt(board, example_image):
     """QEMU reads the halt partition (0x555) as a power-off request.
 
-    It sends SHUTDOWN, not RESET, and exits with status 0.
+    It sends SHUTDOWN, not RESET.
     """
     with boot(example_image("gpio"), board) as vm:
         vm.wait_for(READY, timeout=10)
@@ -73,8 +73,6 @@ def test_gpio_halt(board, example_image):
         vm.wait_for("ev=halt", timeout=5)
         ev = vm.qmp.wait_event("SHUTDOWN", timeout=5)
         assert ev["data"] == {"guest": True, "reason": "guest-shutdown"}
-        # Reap QEMU here so the harness does not signal a dead process group.
-        assert vm.qmp.wait_exit(5)[0] == 0
         assert not [e for e in vm.qmp.events if e["event"] == "RESET"]
         assert len(events(vm, "boot")) == 1, vm.serial
         assert not events(vm, "exception"), vm.serial

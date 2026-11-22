@@ -162,17 +162,36 @@ class Qemu:
                     f.close()
             except OSError:
                 pass
-        if self.proc and self.proc.poll() is None:
-            try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
-                self.proc.wait(3)
-            except (subprocess.TimeoutExpired, ProcessLookupError):
-                try:
-                    os.killpg(self.proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                self.proc.wait(3)
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        try:
+            if self.proc:
+                self._stop_proc()
+        finally:
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _signal_group(self, sig):
+        # The process may exit at any time, for example after a guest
+        # power-off. macOS then reports EPERM for the group, not ESRCH.
+        if self.proc.poll() is not None:
+            return
+        try:
+            os.killpg(self.proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def _stop_proc(self):
+        """Stop and reap QEMU. Safe when it has already exited."""
+        self._signal_group(signal.SIGTERM)
+        try:
+            self.proc.wait(3)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        self._signal_group(signal.SIGKILL)
+        try:
+            self.proc.wait(3)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
 
     def __enter__(self):
         return self.start()
