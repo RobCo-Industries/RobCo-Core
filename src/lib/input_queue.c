@@ -42,3 +42,18 @@ unsigned input_queue_count(const input_queue_t *q)
 {
     return (unsigned)(q->head - q->tail);
 }
+
+int input_queue_push_oldest(input_queue_t *q, const input_event_t *ev)
+{
+    int ret = 0;
+
+    if (q->head - q->tail >= INPUT_QUEUE_LEN) {
+        q->tail++;
+        q->dropped++;
+        ret = INPUT_DROPPED_OLDEST;
+    }
+    q->buf[q->head % INPUT_QUEUE_LEN] = *ev;
+    q->head++;
+    q->pushed++;
+    return ret;
+}

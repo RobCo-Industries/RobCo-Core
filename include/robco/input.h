@@ -55,6 +55,16 @@ typedef struct {
 #define INPUT_ERR_STATE     (-6)    /* wrong call order */
 #define INPUT_ERR_NO_UART   (-7)    /* the UART the backend reads is not initialised */
 
+/* input_push() under INPUT_DROP_OLDEST: the event was queued, the oldest one dropped. */
+#define INPUT_DROPPED_OLDEST 1
+
+/* Overflow policies, input_set_overflow(). */
+#define INPUT_DROP_NEWEST   0       /* a full queue refuses the new event (default) */
+#define INPUT_DROP_OLDEST   1       /* a full queue drops its oldest event for the new one */
+
+/* Dials with a running total, input_dial_total(). Covers INPUT_GPIO_MAX_DIALS. */
+#define INPUT_DIAL_COUNT    2
+
 /* ---- Pure ring queue, src/lib/input_queue.c ---- */
 
 #define INPUT_QUEUE_LEN     32u     /* power of two */
@@ -73,6 +83,12 @@ int input_queue_push(input_queue_t *q, const input_event_t *ev);
 /* Removes the oldest event into *ev. Returns 1, or 0 when empty. */
 int input_queue_pop(input_queue_t *q, input_event_t *ev);
 unsigned input_queue_count(const input_queue_t *q);
+
+/*
+ * Like input_queue_push(), but a full queue first drops its oldest event
+ * and counts it in `dropped`. Returns 0, or INPUT_DROPPED_OLDEST.
+ */
+int input_queue_push_oldest(input_queue_t *q, const input_event_t *ev);
 
 /* ---- Pure debouncer, src/lib/input_debounce.c ---- */
 
@@ -176,14 +192,47 @@ int input_hold_update(input_hold_t *h, const input_event_t *ev);
 /* Non-zero while any source holds `code`. */
 int input_hold_down(const input_hold_t *h, unsigned code);
 
+/* ---- Pure input state, src/lib/input_core.c ---- */
+
+/*
+ * The queue, the held keys, the dial totals and the overflow policy that
+ * src/drv/input.c keeps. The caller provides mutual exclusion.
+ */
+typedef struct {
+    input_queue_t queue;
+    input_hold_t hold;
+    uint32_t dial_total[INPUT_DIAL_COUNT];  /* wraps; read through input_core_dial_total() */
+    int policy;                             /* INPUT_DROP_* */
+} input_core_t;
+
+/* Empties everything and sets INPUT_DROP_NEWEST. */
+void input_core_init(input_core_t *c);
+
+/*
+ * Updates the held keys and the dial totals, then queues the event under
+ * the policy. Sets *pressed (if not 0) to input_hold_update()'s result.
+ * Returns 0, INPUT_ERR_FULL (INPUT_DROP_NEWEST) or INPUT_DROPPED_OLDEST.
+ */
+int input_core_push(input_core_t *c, const input_event_t *ev, int *pressed);
+
+/* Running sum of the steps of `dial`, wrapping at 32 bits. 0 for dial >= INPUT_DIAL_COUNT. */
+int32_t input_core_dial_total(const input_core_t *c, unsigned dial);
+
 /* ---- Queue and key state, src/drv/input.c ---- */
 
-/* Empties the queue and clears counters, key state and repeat. Main context, IRQs masked or not. */
+/*
+ * Empties the queue and clears counters, key state, dial totals and
+ * repeat. Sets the overflow policy back to INPUT_DROP_NEWEST. Main
+ * context, IRQs masked or not.
+ */
 int input_init(void);
 
 /*
  * Adds an event and stamps t_ms. Any context. For KEY events it also
- * updates the key state and the repeat timer. Returns 0 or INPUT_ERR_FULL.
+ * updates the key state and the repeat timer, for DIAL events the dial
+ * total, even when the queue drops an event. Returns 0, INPUT_ERR_FULL
+ * (INPUT_DROP_NEWEST: this event was dropped) or INPUT_DROPPED_OLDEST
+ * (INPUT_DROP_OLDEST: this event was queued, the oldest one dropped).
  */
 int input_push(const input_event_t *ev);
 
@@ -206,6 +255,19 @@ void input_stats(uint32_t *pushed, uint32_t *dropped);
 
 /* Non-zero while any source holds key `code`. See input_hold_update(). */
 int input_key_down(unsigned code);
+
+/*
+ * Signed detent steps of `dial` since input_init(), counting events the
+ * queue dropped. Wraps as a 32-bit two's-complement counter: take
+ * differences. 0 for dial >= INPUT_DIAL_COUNT. Any context.
+ */
+int32_t input_dial_total(unsigned dial);
+
+/* INPUT_DROP_NEWEST (default) or INPUT_DROP_OLDEST. Other values are ignored. Any context. */
+void input_set_overflow(int policy);
+
+/* Events dropped since input_init(), under either policy. Any context. */
+unsigned input_dropped(void);
 
 /*
  * Auto-repeat for a held key: the first repeat after `delay_ms`, then one
