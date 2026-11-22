@@ -71,8 +71,8 @@ def check(machine):
     errors = []
     with qemu_for(machine) as q, tempfile.TemporaryDirectory(prefix="s3shot") as tmp:
         wait_done(q)
-        out = os.path.join(tmp, "screen.png")
-        q.execute("screendump", filename=out, format="png")
+        out = os.path.join(tmp, "screen.ppm")
+        q.execute("screendump", filename=out)  # PPM: CI QEMU has no libpng
         with Image.open(out) as shot:
             img = shot.convert("RGB")
 
