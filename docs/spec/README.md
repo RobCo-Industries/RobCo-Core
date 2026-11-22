@@ -43,7 +43,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Default pins for I2C, SPI and audio | Implemented |
 | Input from GPIO buttons, a dial and serial lines, `input_*()` | Implemented, pending hardware validation |
 | PWM audio with a trace backend, `audio_*()` | Implemented, pending hardware validation |
-| I2C, SPI, DS1307 RTC | Implemented, pending hardware validation |
+| I2C, SPI, DS1307, DS1338 and DS3231 RTC | Implemented, pending hardware validation |
 
 ### MEMORY_MAP.md
 

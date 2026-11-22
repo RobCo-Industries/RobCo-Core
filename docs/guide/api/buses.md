@@ -1,6 +1,6 @@
 # Buses, clock and configuration
 
-This page covers the I2C and SPI masters, the DS1307 real-time clock with its software clock, date and time arithmetic, and the INI parser. Return codes and context rules follow the [Conventions](../API.md#conventions).
+This page covers the I2C and SPI masters, the DS1307, DS1338 and DS3231 real-time clocks with the software clock, date and time arithmetic, and the INI parser. Return codes and context rules follow the [Conventions](../API.md#conventions).
 
 ## I2C master (`i2c.h`)
 
@@ -77,7 +77,7 @@ Clock stretching, real rates and the bus timeouts are pending hardware validatio
 
 ## Real-time clock and software clock (`rtc.h`)
 
-`rtc.h` reads and sets a DS1307 at I2C address `0x68`, and keeps a software clock for boards without one. The DS1338 and DS1340 share the DS1307 time registers. The DS1337 and DS3231 share registers 0 to 6 but have no clock-halt bit and use bit 7 of the month as a century flag. `rtc_get()` rejects that bit, so they are not supported. The chip holds UTC by convention.
+`rtc.h` reads and sets a DS1307, DS1338 or DS3231 at I2C address `0x68`, and keeps a software clock for boards without one. The chips share the time registers `0x00` to `0x06`. The DS1307 and DS1338 stop the clock with bit 7 of the seconds, the clock-halt bit. The DS3231 has no such bit, uses bit 7 of the month as a century bit, and flags a stopped oscillator in bit 7 of its status register `0x0F`. The chip holds UTC by convention. DS3231 support is pending hardware validation.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -86,6 +86,12 @@ Clock stretching, real rates and the bus timeouts are pending hardware validatio
 | `RTC_ERR_ABSENT` | `-11` | Nothing acknowledges `0x68`, or `rtc_init()` did not find the chip |
 | `RTC_ERR_HALTED` | `-12` | The oscillator is stopped: the time is not valid |
 | `RTC_ERR_DATA` | `-13` | A register holds something that is not a date or time |
+| `RTC_CHIP_NONE` | `-1` | `rtc_init()` found no chip |
+| `RTC_CHIP_DS1307` | `0` | DS1307 or DS1338 |
+| `RTC_CHIP_DS3231` | `1` | DS3231 |
+| `RTC_TIME_REGS` | `7u` | Time registers `0x00` to `0x06` |
+| `RTC_DS3231_STATUS` | `0x0fu` | DS3231 status register |
+| `RTC_DS3231_OSF` | `0x80u` | Oscillator-stop flag in the DS3231 status register |
 | `CLOCK_ERR_ARG` | `-1` | NULL |
 | `CLOCK_ERR_UNSET` | `-2` | `clock_set()` never ran |
 
@@ -94,22 +100,23 @@ The RTC functions also pass `I2C_ERR_*` codes through. The two ranges do not ove
 ```c
 int rtc_init(void);
 int rtc_present(void);
+int rtc_chip(void);
 ```
 
-`rtc_init()` probes `0x68`. It needs `i2c_init()` first. It returns `0` when the chip answers, `RTC_ERR_ABSENT` when nothing does, or an I2C error such as `I2C_ERR_INIT`. When the chip runs and `rtc_get()` succeeds, it also calls `clock_set()` with that time. `rtc_present()` returns `1` after `rtc_init()` found the chip, else `0`. Every other RTC call returns `RTC_ERR_ABSENT` until then.
+`rtc_init()` probes `0x68`. It needs `i2c_init()` first. It returns `0` when the chip answers, `RTC_ERR_ABSENT` when nothing does, or an I2C error such as `I2C_ERR_INIT`. Then it detects the chip with no configuration. Register `0x12` is battery-backed RAM on a DS1307 or DS1338 and the read-only temperature register on a DS3231. `rtc_init()` writes `0x12` with bit 0 flipped and reads it back. A changed value means a DS1307 or DS1338, and it writes the old value back at once. An unchanged value means a DS3231. When the chip runs and `rtc_get()` succeeds, it also calls `clock_set()` with that time. `rtc_present()` returns `1` after `rtc_init()` found the chip, else `0`. Every other RTC call returns `RTC_ERR_ABSENT` until then. `rtc_chip()` returns the `RTC_CHIP_*` code found, or `RTC_CHIP_NONE`.
 
 ```c
 int rtc_get(datetime_t *out);
 ```
 
-Reads registers 0 to 6 in one transfer, so the fields belong to the same second. Returns `RTC_ERR_HALTED` when the clock-halt bit is set. Decodes 12-hour mode into 0 to 23. Returns `RTC_ERR_DATA` for a BCD digit above 9, a field out of range, a day past the end of the month, or a reserved bit set in the minute, hour, day or month register. It never returns a half-valid time. The weekday comes from the date. The chip's weekday register is ignored.
+Reads registers 0 to 6 in one transfer, so the fields belong to the same second. On a DS3231 it also reads the status register. Returns `RTC_ERR_HALTED` when the clock-halt bit is set on a DS1307 or DS1338, or the oscillator-stop flag on a DS3231. Decodes 12-hour mode into 0 to 23. Ignores the DS3231 century bit. Returns `RTC_ERR_DATA` for a BCD digit above 9, a field out of range, a day past the end of the month, or a reserved bit set in the seconds of a DS3231, or in the minute, hour, day or month register. It never returns a half-valid time. The weekday comes from the date. The chip's weekday register is ignored.
 
 ```c
 int rtc_set(const datetime_t *dt);
 int rtc_running(void);
 ```
 
-`rtc_set()` writes all seven time registers in one transfer, in 24-hour mode, with the clock-halt bit clear, so the oscillator starts. It writes the weekday register as 1 (Sunday) to 7. It does not touch the control register or the RAM. It checks `dt` before presence, so a bad `dt` gives `RTC_ERR_ARG` even without a chip. `rtc_running()` reads register 0 and returns `1` when the oscillator runs, `0` when halted, or a negative error.
+`rtc_set()` writes all seven time registers in one transfer, in 24-hour mode, with the clock-halt and century bits clear, so the oscillator starts. It writes the weekday register as 1 (Sunday) to 7. On a DS3231 it then clears the oscillator-stop flag and keeps the other status bits. It does not touch the control register or the RAM. It checks `dt` before presence, so a bad `dt` gives `RTC_ERR_ARG` even without a chip. `rtc_running()` returns `1` when the oscillator runs, `0` when halted, or a negative error. It reads the clock-halt bit, or the oscillator-stop flag on a DS3231.
 
 ```c
 void clock_set(const datetime_t *dt);
@@ -123,10 +130,11 @@ Context: main context only for the RTC calls. `clock_get()` reads a 64-bit state
 | Sharp edge | Detail |
 |---|---|
 | Drift | The software clock drifts with the system timer crystal, about as much as the RTC. It does not survive a reset. `rtc_init()` seeds it again. |
-| New chip | A new DS1307 starts halted with garbage in its registers. `rtc_get()` returns `RTC_ERR_HALTED` until `rtc_set()` runs. |
+| New chip | A new DS1307 starts halted with garbage in its registers, and a new DS3231 with its oscillator-stop flag set. `rtc_get()` returns `RTC_ERR_HALTED` until `rtc_set()` runs. |
 | 5 V | The DS1307 needs 5 V, and many modules then pull the I2C lines to 5 V. Use a module with 3.3 V pull-ups, or a DS1338 with a 3.3 V supply. |
-| QEMU | The `ds1338` model ignores the clock-halt bit and follows the host clock until the guest sets it. `RTC_ERR_HALTED` is not tested. |
-| Filesystem | `fs.h` does not use this clock. `ffconf.h` sets `FF_FS_NORTC` to 1, so FAT timestamps stay fixed at 2026-01-01 and `fs_time_hook()` is not called. |
+| QEMU | The `ds1338` model ignores the clock-halt bit and follows the host clock until the guest sets it. `RTC_ERR_HALTED` is tested only on the host. QEMU has no DS3231 model. |
+| DS3231 | The detection writes register `0x12` for a moment. On a DS1307 or DS1338 that is a RAM byte, restored at once. A power cut between the two writes leaves bit 0 flipped. |
+| File time stamps | `fs.h` stamps new and modified files with the software clock once it is set. See [File time stamps](./storage.md#file-time-stamps). |
 
 ```c
 datetime_t now;
@@ -139,7 +147,15 @@ if (clock_get(&now) == 0 && dt_format_iso(&now, iso, sizeof(iso)) > 0) {
 }
 ```
 
-[`examples/rtc/main.c`](../../../examples/rtc/main.c) scans the bus, checks the error codes, reads, sets and reads back the time, and uses the DS1307 RAM. A real DS1307 is pending hardware validation. See [hardware validation](../../HARDWARE_VALIDATION.md).
+```c
+int rtc_regs_decode(int chip, const uint8_t regs[RTC_TIME_REGS], uint8_t status,
+                    datetime_t *out);
+int rtc_regs_encode(const datetime_t *dt, uint8_t regs[RTC_TIME_REGS]);
+```
+
+The register codec behind `rtc_get()` and `rtc_set()`, pure in `src/lib/rtc_regs.c` and tested on the host. `rtc_regs_decode()` applies the rules of `rtc_get()` to registers 0 to 6 of `chip`. `status` is the DS3231 status register, ignored for `RTC_CHIP_DS1307`. It returns `0`, `RTC_ERR_HALTED`, `RTC_ERR_DATA`, or `RTC_ERR_ARG` for a NULL pointer or an unknown chip. `rtc_regs_encode()` fills the seven registers as `rtc_set()` writes them, and returns `0` or `RTC_ERR_ARG` for NULL or a time `dt_valid()` rejects.
+
+[`examples/rtc/main.c`](../../../examples/rtc/main.c) scans the bus, checks the error codes, reads, sets and reads back the time, and uses the DS1307 RAM. Real DS1307, DS1338 and DS3231 chips are pending hardware validation. See [hardware validation](../../HARDWARE_VALIDATION.md).
 
 ## Date and time (`datetime.h`)
 

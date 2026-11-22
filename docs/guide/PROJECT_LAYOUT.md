@@ -30,7 +30,7 @@ This page maps the repository and shows where new code and tests go. To use the 
 | `src/drv/` | Drivers: mailbox, PL011 and mini UART, system timer, interrupt controller, tick, GPIO, power, RNG, framebuffer, SD card, input backends, audio, I2C, RTC, SPI | Yes |
 | `src/gfx/` | Screen console, colour schemes, font table | Through `fb.h` |
 | `src/fs/` | The FAT file system layer over FatFs, its configuration `ffconf.h`, its glue to `blk.h` and the file side of the stage loader | No |
-| `src/lib/` | klibc, `k_printf`, CRC-32, heap, `rimg_validate()`, boot info, the stage loader core, RAM disk, partitions, input queue and decoders, audio sequencer and notes, date and time, INI parser | No |
+| `src/lib/` | klibc, `k_printf`, CRC-32, heap, `rimg_validate()`, boot info, the stage loader core, RAM disk, partitions, input queue and decoders, audio sequencer and notes, date and time, the RTC register codec, INI parser | No |
 
 `src/lib/` holds only code that runs unchanged on the host. It must not read registers, call drivers, use assembly or assume 32-bit pointers. `make test-host` builds every `src/lib/*.c` with the host compiler, ASan and UBSan and runs the tests in `tests/host/`. Code that needs hardware goes in one of the other directories.
 
@@ -74,13 +74,13 @@ This page maps the repository and shows where new code and tests go. To use the 
 
 ## Add a component with host-testable logic
 
-Split a component in two when part of it is pure logic. The logic goes in `src/lib/` and runs in the host tests. The register access goes in `src/drv/` and runs only in QEMU or on a board. The DS1307 real-time clock is the worked example.
+Split a component in two when part of it is pure logic. The logic goes in `src/lib/` and runs in the host tests. The register access goes in `src/drv/` and runs only in QEMU or on a board. The real-time clock is the worked example.
 
 | Step | Real-time clock example |
 |---|---|
-| 1. Put the pure logic in `src/lib/<name>.c`, with its own header. It takes and returns plain values. | `src/lib/datetime.c` and `include/robco/datetime.h`: calendar maths, BCD, FAT stamps, ISO 8601. No register, no timer. |
-| 2. Test it on the host in `tests/host/test_<name>.c`. Cover the edges: ranges, invalid input, round trips. | `tests/host/test_datetime.c` |
-| 3. Put the register access in `src/drv/<name>.c`, with its own header. It reads the hardware and calls the pure code for every decision. | `src/drv/rtc_ds1307.c` and `include/robco/rtc.h`: I2C transfers through `i2c.h`, then `dt_bcd_decode()` and `dt_valid()` on the bytes. |
+| 1. Put the pure logic in `src/lib/<name>.c`, with its own header. It takes and returns plain values. | `src/lib/datetime.c` and `include/robco/datetime.h`: calendar maths, BCD, FAT stamps, ISO 8601. `src/lib/rtc_regs.c`: the register codec of each chip. No register access, no timer. |
+| 2. Test it on the host in `tests/host/test_<name>.c`. Cover the edges: ranges, invalid input, round trips. | `tests/host/test_datetime.c` and `tests/host/test_rtc_regs.c` |
+| 3. Put the register access in `src/drv/<name>.c`, with its own header. It reads the hardware and calls the pure code for every decision. | `src/drv/rtc_ds1307.c` and `include/robco/rtc.h`: I2C transfers through `i2c.h` and chip detection, then `rtc_regs_decode()` and `rtc_regs_encode()` on the bytes. |
 | 4. Add an example that prints `@RC` markers, and a target test that boots it. | `examples/rtc/` and `tests/target/test_rtc.py`, which attaches the QEMU DS1338 model to the I2C bus |
 | 5. Document both headers. List what QEMU cannot prove in [HARDWARE_VALIDATION.md](../HARDWARE_VALIDATION.md). | [Date and time](./api/buses.md#date-and-time-datetimeh), [Real-time clock](./api/buses.md#real-time-clock-and-software-clock-rtch) |
 

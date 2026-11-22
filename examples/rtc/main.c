@@ -127,7 +127,8 @@ void robco_main(void)
 
     rc = rtc_init();
     running = rtc_present() ? rtc_running() : 0;
-    k_printf("@RC stage=rtc ev=rtc present=%d running=%d rc=%d\n", rtc_present(), running, rc);
+    k_printf("@RC stage=rtc ev=rtc present=%d running=%d rc=%d chip=%d\n", rtc_present(), running,
+             rc, rtc_chip());
     print_clock("clock0");
 
     if (rtc_present()) {

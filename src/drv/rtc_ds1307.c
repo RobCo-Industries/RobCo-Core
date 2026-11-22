@@ -5,53 +5,58 @@
 #include <robco/rtc.h>
 #include <robco/timer.h>
 
-#define REG_SECONDS     0x00
-#define SEC_CH          0x80u   /* clock halt */
-#define HOUR_12         0x40u   /* 12-hour mode */
-#define HOUR_PM         0x20u
+/*
+ * Driver for the DS1307 family (DS1307, DS1338) and the DS3231 at 0x68.
+ * The register codec is pure, in src/lib/rtc_regs.c.
+ *
+ * Detection: register 0x12 is battery-backed RAM on a DS1307 or DS1338
+ * and the read-only temperature LSB on a DS3231. rtc_init() writes 0x12
+ * with bit 0 flipped and reads it back. A changed value means a DS1307
+ * family chip, and the old value is written back at once. An unchanged
+ * value means a DS3231.
+ */
+#define REG_SECONDS     0x00u
+#define REG_PROBE       0x12u
+#define SEC_CH          0x80u   /* DS1307 clock halt */
 
 static int present;
+static int chip = RTC_CHIP_NONE;
 
 static int clock_is_set;
 static uint32_t clock_base_s;   /* seconds since 2000 at clock_base_us */
 static uint64_t clock_base_us;
 
-/* Decodes BCD after masking, and checks lo <= value <= hi. */
-static int field(uint8_t raw, uint8_t mask, int lo, int hi)
+static int read_reg(uint8_t reg, uint8_t *val)
 {
-    int v = dt_bcd_decode(raw & mask);
-
-    if (v < lo || v > hi) {
-        return -1;
-    }
-    return v;
+    return i2c_write_read(RTC_I2C_ADDR, &reg, 1, val, 1);
 }
 
-static int decode_hour(uint8_t raw)
+static int write_reg(uint8_t reg, uint8_t val)
 {
-    int h;
+    uint8_t buf[2] = { reg, val };
 
-    if (!(raw & HOUR_12)) {
-        return field(raw, 0x3f, 0, 23);
-    }
-    h = field(raw, 0x1f, 1, 12);
-    if (h < 0) {
-        return -1;
-    }
-    if (h == 12) {
-        h = 0;
-    }
-    return (raw & HOUR_PM) ? h + 12 : h;
+    return i2c_write(RTC_I2C_ADDR, buf, sizeof(buf));
 }
 
-static int read_regs(uint8_t regs[7])
+static int detect(void)
 {
-    uint8_t ptr = REG_SECONDS;
+    uint8_t old, back;
+    int rc = read_reg(REG_PROBE, &old);
 
-    if (!present) {
-        return RTC_ERR_ABSENT;
+    if (rc >= 0) {
+        rc = write_reg(REG_PROBE, (uint8_t)(old ^ 1u));
     }
-    return i2c_write_read(RTC_I2C_ADDR, &ptr, 1, regs, 7);
+    if (rc >= 0) {
+        rc = read_reg(REG_PROBE, &back);
+    }
+    if (rc < 0) {
+        return rc;
+    }
+    if (back == old) {
+        return RTC_CHIP_DS3231;
+    }
+    rc = write_reg(REG_PROBE, old);
+    return rc < 0 ? rc : RTC_CHIP_DS1307;
 }
 
 int rtc_init(void)
@@ -60,6 +65,7 @@ int rtc_init(void)
     int rc;
 
     present = 0;
+    chip = RTC_CHIP_NONE;
     rc = i2c_probe(RTC_I2C_ADDR);
     if (rc < 0) {
         return rc;
@@ -67,6 +73,11 @@ int rtc_init(void)
     if (rc == 0) {
         return RTC_ERR_ABSENT;
     }
+    rc = detect();
+    if (rc < 0) {
+        return rc;
+    }
+    chip = rc;
     present = 1;
     if (rtc_get(&now) == 0) {
         clock_set(&now);
@@ -79,82 +90,73 @@ int rtc_present(void)
     return present;
 }
 
+int rtc_chip(void)
+{
+    return chip;
+}
+
 int rtc_get(datetime_t *out)
 {
-    uint8_t r[7];
-    int sec, min, hour, day, mon, year;
+    uint8_t ptr = REG_SECONDS;
+    uint8_t r[RTC_TIME_REGS];
+    uint8_t status = 0;
     int rc;
 
     if (out == NULL) {
         return RTC_ERR_ARG;
     }
-    rc = read_regs(r);
+    if (!present) {
+        return RTC_ERR_ABSENT;
+    }
+    rc = i2c_write_read(RTC_I2C_ADDR, &ptr, 1, r, sizeof(r));
+    if (rc >= 0 && chip == RTC_CHIP_DS3231) {
+        rc = read_reg(RTC_DS3231_STATUS, &status);
+    }
     if (rc < 0) {
         return rc;
     }
-    if (r[0] & SEC_CH) {
-        return RTC_ERR_HALTED;
-    }
-    sec = field(r[0], 0x7f, 0, 59);
-    min = field(r[1], 0x7f, 0, 59);
-    hour = decode_hour(r[2]);
-    day = field(r[4], 0x3f, 1, 31);
-    mon = field(r[5], 0x1f, 1, 12);
-    year = field(r[6], 0xff, 0, 99);
-    if (sec < 0 || min < 0 || hour < 0 || day < 0 || mon < 0 || year < 0
-        || (r[1] & 0x80u) || (r[2] & 0x80u) || (r[4] & 0xc0u) || (r[5] & 0xe0u)) {
-        return RTC_ERR_DATA;
-    }
-    if (day > (int)dt_days_in_month(2000u + (unsigned)year, (unsigned)mon)) {
-        return RTC_ERR_DATA;
-    }
-    out->year = (uint16_t)(2000 + year);
-    out->month = (uint8_t)mon;
-    out->day = (uint8_t)day;
-    out->hour = (uint8_t)hour;
-    out->minute = (uint8_t)min;
-    out->second = (uint8_t)sec;
-    out->weekday = (uint8_t)dt_weekday(out->year, out->month, out->day);
-    return 0;
+    return rtc_regs_decode(chip, r, status, out);
 }
 
 int rtc_set(const datetime_t *dt)
 {
-    uint8_t buf[8];
-    int wd;
+    uint8_t buf[1 + RTC_TIME_REGS];
+    uint8_t status;
+    int rc;
 
-    if (dt == NULL || dt_valid(dt) != 0) {
+    if (rtc_regs_encode(dt, buf + 1) != 0) {
         return RTC_ERR_ARG;
     }
     if (!present) {
         return RTC_ERR_ABSENT;
     }
-    wd = dt_weekday(dt->year, dt->month, dt->day);
     buf[0] = REG_SECONDS;
-    buf[1] = dt_bcd_encode(dt->second);     /* CH = 0 starts the oscillator */
-    buf[2] = dt_bcd_encode(dt->minute);
-    buf[3] = dt_bcd_encode(dt->hour);       /* bit 6 = 0: 24-hour mode */
-    buf[4] = (uint8_t)(wd + 1);             /* 1 Sunday to 7 Saturday */
-    buf[5] = dt_bcd_encode(dt->day);
-    buf[6] = dt_bcd_encode(dt->month);
-    buf[7] = dt_bcd_encode(dt->year - 2000u);
-    return i2c_write(RTC_I2C_ADDR, buf, sizeof(buf));
+    rc = i2c_write(RTC_I2C_ADDR, buf, sizeof(buf));
+    if (rc < 0 || chip != RTC_CHIP_DS3231) {
+        return rc;
+    }
+    /* The time is valid again: clear the oscillator-stop flag. */
+    rc = read_reg(RTC_DS3231_STATUS, &status);
+    if (rc < 0) {
+        return rc;
+    }
+    return write_reg(RTC_DS3231_STATUS, (uint8_t)(status & ~RTC_DS3231_OSF));
 }
 
 int rtc_running(void)
 {
-    uint8_t ptr = REG_SECONDS;
-    uint8_t sec;
+    uint8_t v;
     int rc;
 
     if (!present) {
         return RTC_ERR_ABSENT;
     }
-    rc = i2c_write_read(RTC_I2C_ADDR, &ptr, 1, &sec, 1);
-    if (rc < 0) {
-        return rc;
+    if (chip == RTC_CHIP_DS3231) {
+        rc = read_reg(RTC_DS3231_STATUS, &v);
+        return rc < 0 ? rc : (v & RTC_DS3231_OSF) ? 0 : 1;
     }
-    return (sec & SEC_CH) ? 0 : 1;
+    rc = read_reg(REG_SECONDS, &v);
+    return rc < 0 ? rc : (v & SEC_CH) ? 0 : 1;
 }
 
 void clock_set(const datetime_t *dt)
