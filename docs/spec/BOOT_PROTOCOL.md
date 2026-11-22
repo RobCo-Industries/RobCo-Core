@@ -333,8 +333,8 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `halt` | | The stage stops on purpose |
 | `exception` | `type pc lr spsr dfsr dfar` | CPU exception. `type` is `undef`, `svc`, `prefetch_abort`, `data_abort`, `irq`, `fiq` or `reset`. The stage halts after it. |
 | `panic` | `msg` | Fatal software error. `msg` uses `_` for spaces. |
-| `rom_exit` | `status` | The ROM returned or called `exit`. `status` is its exit status. |
-| `rom_kill` | `reason pc` | Pip-OS killed the ROM after a fault. `reason` is `undef`, `prefetch_abort` or `data_abort`. `pc` is the address of the faulting instruction. |
+| `rom_exit` | `status` | The ROM returned or called `exit`. `status` is its exit status, 0 to 255. |
+| `rom_kill` | `reason pc` | Pip-OS killed the ROM after a fault. `reason` is `undef`, `prefetch_abort` or `data_abort` for a fault, `thumb_svc` for a system call made in Thumb state, or `killed` when Pip-OS stopped the ROM for another reason. `pc` is the address of the instruction. |
 | `holo_launch` | `path` | Pip-OS starts a holotape |
 | `holo_exit` | `status` | Holotape returned |
 | `holo_kill` | `reason pc` | Pip-OS killed a holotape after a fault. `reason` and `pc` work as in `rom_kill`. |
