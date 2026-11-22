@@ -9,6 +9,7 @@ This page covers the input event queue with its GPIO, console and script backend
 | Part | File | Touches hardware |
 |---|---|---|
 | Ring queue | `src/lib/input_queue.c` | No |
+| Queue, key and dial state | `src/lib/input_core.c` | No |
 | Debouncer | `src/lib/input_debounce.c` | No |
 | Quadrature decoder | `src/lib/input_quad.c` | No |
 | ANSI/VT parser | `src/lib/input_ansi.c` | No |
@@ -83,13 +84,13 @@ The GPIO backend, auto-repeat and the console backend in tick mode each take one
 int input_init(void);
 ```
 
-Empties the queue, clears the counters and the key state, and stops a repeat in progress. It keeps the repeat delay and rate and the registered pollers. Returns `0`. Call it once before any backend starts.
+Empties the queue, clears the counters, the key state and the dial totals, sets the overflow policy back to `INPUT_DROP_NEWEST`, and stops a repeat in progress. It keeps the repeat delay and rate and the registered pollers. Returns `0`. Call it once before any backend starts.
 
 ```c
 int input_push(const input_event_t *ev);
 ```
 
-Copies the event into the queue and stamps `t_ms` with `timer_now_ms()`. For a KEY event it also updates the key state and the repeat timer. Returns `0`, or `INPUT_ERR_FULL` when the queue holds `INPUT_QUEUE_LEN` (32) events: the new event is dropped and counted, the queued ones stay. Safe from any context. Backends call it. A project can call it too, for example to inject events from its own driver.
+Copies the event into the queue and stamps `t_ms` with `timer_now_ms()`. For a KEY event it also updates the key state and the repeat timer. For a DIAL event it adds the steps to the dial total. Both happen before the queue sees the event, so they hold even when an event is dropped. When the queue holds `INPUT_QUEUE_LEN` (32) events, the overflow policy decides. Returns `0`, `INPUT_ERR_FULL` under `INPUT_DROP_NEWEST` (the new event is dropped and counted, the queued ones stay), or `INPUT_DROPPED_OLDEST` (1) under `INPUT_DROP_OLDEST` (the new event is queued, the oldest one is dropped and counted). A non-zero return always means an event was lost. Safe from any context. Backends call it. A project can call it too, for example to inject events from its own driver.
 
 ```c
 int input_poll(input_event_t *ev);
@@ -130,6 +131,31 @@ const char *input_key_name(unsigned code);
 ```
 
 `input_add_poller()` adds a function that `input_poll()` runs in main context. Returns `0`, `INPUT_ERR_ARG` for a null function, or `INPUT_ERR_SPACE` past four pollers. Backends use it. There is no way to remove one. `input_key_name()` returns `"up"`, `"down"`, `"left"`, `"right"`, `"select"`, `"back"`, `"f1"` to `"f4"` or `"dial_push"`, or 0 for an unknown code.
+
+```c
+int32_t input_dial_total(unsigned dial);
+```
+
+Returns the sum of the signed detent steps of DIAL events with code `dial` since `input_init()`. It counts the events the queue dropped, so a caller that reads it never loses steps. The sum wraps as a 32-bit two's-complement counter: keep the last value and take the difference. Returns `0` for a dial at or above `INPUT_DIAL_COUNT` (2, which covers `INPUT_GPIO_MAX_DIALS` and the script channel's dial 0). DIAL events with a higher code still reach the queue. Safe from any context.
+
+```c
+#define INPUT_DROP_NEWEST   0
+#define INPUT_DROP_OLDEST   1
+void input_set_overflow(int policy);
+unsigned input_dropped(void);
+```
+
+`input_set_overflow()` picks what a full queue does. `INPUT_DROP_NEWEST`, the default, refuses the new event. `INPUT_DROP_OLDEST` drops the oldest queued event and appends the new one, so the queue keeps the latest 32. Other values change nothing. `input_init()` sets the default again. `input_dropped()` returns the events dropped since `input_init()` under either policy, the same count as `input_stats()`. Both are safe from any context.
+
+| On overflow | `INPUT_DROP_NEWEST` | `INPUT_DROP_OLDEST` |
+|---|---|---|
+| Queued events | The oldest 32 stay | The newest 32 stay |
+| `input_push()` returns | `INPUT_ERR_FULL` | `INPUT_DROPPED_OLDEST` |
+| Key state, `input_key_down()` | Kept | Kept |
+| Dial totals, `input_dial_total()` | Kept | Kept |
+| `input_dropped()` | Counts the new event | Counts the old event |
+| `pushed` in `input_stats()` | Not counted | Counted |
+| Script answer | `err full` | `ok dropped` |
 
 ### GPIO buttons and dial
 
@@ -224,7 +250,7 @@ Reads lines from the mini UART from `input_poll()` and answers each on the mini 
 | `wait <ms>` | Holds the next lines for at least `<ms>`, unsigned decimal | `ok` when the time passed |
 | `stats` | None | `ok pushed=<n> dropped=<n>` |
 
-Words are separated by runs of blanks. For `text`, the string is the rest of the line after the blanks that follow `text`, so a run of blanks inside it stays. When the queue drops an event of the line, the answer is `err full`.
+Words are separated by runs of blanks. For `text`, the string is the rest of the line after the blanks that follow `text`, so a run of blanks inside it stays. When the queue drops an event of the line, the answer is `err full` under `INPUT_DROP_NEWEST`. Under `INPUT_DROP_OLDEST` every event of the line was queued but older ones were dropped, and the answer is `ok dropped`.
 
 | Answer | Cause |
 |---|---|
@@ -293,6 +319,20 @@ unsigned input_queue_count(const input_queue_t *q);
 A ring of `INPUT_QUEUE_LEN` events with free-running indices and `pushed` and `dropped` counters. Push returns `0` or `INPUT_ERR_FULL` and drops the new event. Pop returns `1` or `0`. No locking: the caller masks IRQs.
 
 ```c
+int input_queue_push_oldest(input_queue_t *q, const input_event_t *ev);
+```
+
+Like `input_queue_push()`, but a full queue drops its oldest event first and counts it in `dropped`. Always appends. Returns `0` or `INPUT_DROPPED_OLDEST`.
+
+```c
+void input_core_init(input_core_t *c);
+int input_core_push(input_core_t *c, const input_event_t *ev, int *pressed);
+int32_t input_core_dial_total(const input_core_t *c, unsigned dial);
+```
+
+The state behind `input_push()`: a queue, the held keys, the dial totals and the overflow policy in `c->policy`. `input_core_init()` empties it all and sets `INPUT_DROP_NEWEST`. `input_core_push()` updates the held keys and the dial totals, then queues the event under the policy, and returns what `input_push()` returns. It stores the result of `input_hold_update()` in `*pressed` when `pressed` is not 0. `input_core_dial_total()` reads a total as `input_dial_total()` does. No locking: `src/drv/input.c` masks IRQs around it.
+
+```c
 void input_debounce_init(input_debounce_t *d, unsigned stable_samples, uint32_t active_low);
 uint32_t input_debounce_feed(input_debounce_t *d, uint32_t levels,
                              uint32_t *pressed, uint32_t *released);
@@ -338,7 +378,7 @@ The line reader and tokenizer behind the script backend. Blanks are spaces and t
 
 | Function | Context |
 |---|---|
-| `input_push()`, `input_pending()`, `input_flush()`, `input_stats()`, `input_key_down()` | Any |
+| `input_push()`, `input_pending()`, `input_flush()`, `input_stats()`, `input_key_down()`, `input_dial_total()`, `input_set_overflow()`, `input_dropped()` | Any |
 | `input_poll()`, `input_wait()` | Main only. They run the main-loop backends. |
 | `input_init()`, `input_set_repeat()`, `input_gpio_*()` setup, `input_serial_start()`, `input_script_start()`, `input_script_set_handler()`, `input_add_poller()` | Main only |
 | GPIO sampling, repeat, console in tick mode | IRQ, from tick callbacks |
@@ -348,7 +388,7 @@ The line reader and tokenizer behind the script backend. Blanks are spaces and t
 | Edge | Detail |
 |---|---|
 | One consumer. | Only one loop should call `input_poll()` or `input_wait()`. |
-| Drops keep the newest out. | A full queue refuses the new event. A dropped release still clears the key state, but the consumer never sees it. |
+| Drops keep the newest out by default. | A full queue refuses the new event unless `input_set_overflow(INPUT_DROP_OLDEST)` is set. Under either policy a dropped release still clears the key state and a dropped DIAL event still counts in `input_dial_total()`, but the consumer never sees the event. |
 | The guard is final. | A `disabled_stuck` backend never restarts. If one button is held at power-on and the others are wired, the guard passes. |
 | No resync on the dial. | A missed sample that looks legal shifts the detent phase by one transition until power-off. |
 | Repeat follows the last press. | Pressing a second key moves the repeat to it. Releasing the second key stops repeat even if the first is still held. Releasing a key on one source keeps the repeat while another source holds it. |

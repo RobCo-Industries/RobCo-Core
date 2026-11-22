@@ -66,14 +66,64 @@ static void print_event(const input_event_t *ev)
 }
 
 /*
- * A project command on the script channel. "board" answers two lines,
- * then ok. "board <args>" and unknown commands answer err.
+ * "burst <n>": pushes n DIAL events in one go, before the main loop can
+ * take any. Event i (1 to n) is on dial i % 2 with value i, negated when
+ * i is a multiple of 3. Answers "pushed=<n> full=<n> oldest=<n>": the
+ * input_push() results.
+ */
+static int burst(int argc, char *argv[], input_script_reply_t *reply)
+{
+    input_event_t e;
+    char line[64];
+    unsigned n = 0, i, full = 0, oldest = 0;
+    const char *p;
+    int r;
+
+    if (argc != 2 || argv[1][0] == 0) {
+        reply->reason = "burst takes a count";
+        return -1;
+    }
+    for (p = argv[1]; *p; p++) {
+        if (*p < '0' || *p > '9' || n > 1000) {
+            reply->reason = "bad count";
+            return -1;
+        }
+        n = n * 10 + (unsigned)(*p - '0');
+    }
+    for (i = 1; i <= n; i++) {
+        e.type = INPUT_EV_DIAL;
+        e.source = INPUT_SRC_SCRIPT;
+        e.code = (uint16_t)(i % 2);
+        e.value = i % 3 ? (int32_t)i : -(int32_t)i;
+        e.t_ms = 0;
+        r = input_push(&e);
+        full += r == INPUT_ERR_FULL;
+        oldest += r == INPUT_DROPPED_OLDEST;
+    }
+    k_snprintf(line, sizeof(line), "pushed=%u full=%u oldest=%u", n, full, oldest);
+    reply->write(line);
+    return 0;
+}
+
+/*
+ * Project commands on the script channel. "board" answers two lines,
+ * then ok. "totals" answers "dial0=<n> dial1=<n> dropped=<n>". "burst"
+ * is above. Other arguments and unknown commands answer err.
  */
 static int script_command(int argc, char *argv[], input_script_reply_t *reply, void *ctx)
 {
     const robco_board_t *b = ctx;
-    char line[48];
+    char line[64];
 
+    if (k_strcmp(argv[0], "burst") == 0) {
+        return burst(argc, argv, reply);
+    }
+    if (k_strcmp(argv[0], "totals") == 0) {
+        k_snprintf(line, sizeof(line), "dial0=%d dial1=%d dropped=%u",
+                   (int)input_dial_total(0), (int)input_dial_total(1), input_dropped());
+        reply->write(line);
+        return 0;
+    }
     if (k_strcmp(argv[0], "board") != 0) {
         reply->reason = "unknown command";
         return -1;
@@ -111,6 +161,9 @@ void robco_main(void)
     irq_cpu_enable();
 
     input_init();
+#if defined(INPUT_DEMO_DROP_OLDEST) && INPUT_DEMO_DROP_OLDEST
+    input_set_overflow(INPUT_DROP_OLDEST);
+#endif
     for (i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
         input_gpio_add_button(buttons[i].pin, buttons[i].code, 0, GPIO_PULL_UP);
     }

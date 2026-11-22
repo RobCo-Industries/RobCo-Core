@@ -7,7 +7,10 @@
 
 /*
  * Line commands on the mini UART, read from input_poll(). Each line gets
- * one reply, "ok" or "err <reason>":
+ * one reply, "ok" or "err <reason>". When a push drops an event, the
+ * reply is "err full" under INPUT_DROP_NEWEST (a pushed event was lost)
+ * or "ok dropped" under INPUT_DROP_OLDEST (all pushed events were queued,
+ * older ones were lost):
  *
  *   key <name> [1|0]   press and release, or press only, or release only
  *   dial <+n|-n>       one DIAL event on dial 0 with value n
@@ -32,7 +35,7 @@ static input_line_t rd;
 static int waiting;
 static uint32_t wait_until;
 static int started;
-static int full;    /* a push of the current line was dropped */
+static int full;    /* a push of the current line dropped an event: 1 newest, 2 oldest */
 static input_script_handler_t handler;
 static void *handler_ctx;
 static int out_bol = 1; /* the next handler byte starts a line */
@@ -52,8 +55,12 @@ static void push(uint8_t type, uint16_t code, int32_t value)
     e.code = code;
     e.value = value;
     e.t_ms = 0;
-    if (input_push(&e) != 0) {
+    int r = input_push(&e);
+
+    if (r == INPUT_ERR_FULL) {
         full = 1;
+    } else if (r == INPUT_DROPPED_OLDEST && !full) {
+        full = 2;
     }
 }
 
@@ -201,7 +208,7 @@ static const char *run(char *cmd)
     } else {
         return "err unknown command";
     }
-    return full ? "err full" : "ok";
+    return full == 1 ? "err full" : full == 2 ? "ok dropped" : "ok";
 }
 
 /* Main context, from input_poll(). */
