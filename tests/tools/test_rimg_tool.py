@@ -1,6 +1,7 @@
 """Unit tests for tools/rimg.py on synthetic images built in memory."""
 
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -145,10 +146,14 @@ CASES = [
     ("reserved", lambda: sealed(reserved=1), [], rimg.E_VERSION),
     ("size_fat", lambda: sealed(), ["--fat-size", "0x200"], rimg.E_SIZE),
     ("size_header", lambda: sealed(file_size=0x80), [], rimg.E_SIZE),
-    ("size_meta", lambda: sealed(flags=1, size=0x100), [], rimg.E_SIZE),
+    ("size_meta", lambda: sealed(magic=b"ROM1\0\0\0\0", flags=1, size=0x100), [],
+     rimg.E_SIZE),
+    ("version_meta_boot", lambda: sealed(flags=1), [], rimg.E_VERSION),
+    ("version_meta_rom", lambda: sealed(magic=b"ROM1\0\0\0\0", subtype=0, abi=1 << 16,
+                                        load_addr=0x400000), [], rimg.E_VERSION),
     ("bounds_subtype", lambda: sealed(subtype=1), [], rimg.E_BOUNDS),
-    ("bounds_data_holo", lambda: sealed(magic=b"ROBCO78\0", subtype=2, abi=1 << 16,
-                                        load_addr=0x800000), [], rimg.E_BOUNDS),
+    ("bounds_data_holo", lambda: sealed(magic=b"ROBCO78\0", subtype=2, abi=1 << 16, flags=1,
+                                        size=0x200, load_addr=0x800000), [], rimg.E_BOUNDS),
     ("bounds_load_addr", lambda: sealed(load_addr=0x9000), [], rimg.E_BOUNDS),
     ("bounds_mem_small", lambda: sealed(mem_size=0x80), [], rimg.E_BOUNDS),
     ("bounds_slot_end", lambda: sealed(mem_size=0xF8001), [], rimg.E_BOUNDS),
@@ -215,3 +220,185 @@ def test_verify_zero_means_default(tmp_path):
     r = run("verify", write(tmp_path, sealed()), "--fat-size", "0", "--abi-major", "0",
             "--slot-base", "0", "--slot-size", "0")
     assert r.returncode == 0, r.stderr
+
+
+# ---- META, pack and the layout shared with include/robco/rimg.h ----
+
+ICON_PBM = os.path.join(ROOT, "tests", "host", "icon.pbm")
+RIMG_H = os.path.join(ROOT, "include", "robco", "rimg.h")
+
+
+def frame_icon():
+    out = bytearray(128)
+    for y in range(32):
+        for x in range(32):
+            if x in (0, 31) or y in (0, 31) or x == y:
+                out[y * 4 + x // 8] |= 0x80 >> (x % 8)
+    return bytes(out)
+
+
+def rom_image(flags=1, size=0x200):
+    """An unsealed ROM1 image with a zeroed META block, as crt0.S emits it."""
+    data = make_image(magic=b"ROM1\0\0\0\0", load_addr=0x400000, subtype=0, abi=1 << 16,
+                      flags=flags, size=size)
+    data[0x60:0x120] = bytes(0xC0)
+    return data
+
+
+def test_layout_matches_rimg_h():
+    with open(RIMG_H) as f:
+        text = f.read()
+    defines = dict(re.findall(r"^#define\s+(RIMG_\w+)\s+(.+?)\s*$", text, re.M))
+
+    def num(name):
+        return eval(defines[name].replace("(", " (").strip())  # "(1 << 0)" and hex
+
+    assert num("RIMG_HDR_OFFSET") == rimg.HDR_OFFSET
+    assert num("RIMG_META_OFFSET") == rimg.META_OFFSET
+    assert num("RIMG_HDR_SIZE") == rimg.HDR_SIZE == struct.calcsize(rimg.HDR_FMT)
+    assert num("RIMG_META_SIZE") == rimg.META_SIZE == rimg.TITLE_SIZE + rimg.ICON_SIZE
+    assert num("RIMG_FLAG_META") == rimg.FLAG_META
+    for kind, raw in rimg.MAGICS.items():
+        c = defines[f"RIMG_MAGIC_{kind}"].strip('"').encode().decode("unicode_escape")
+        assert c.encode("latin-1") == raw
+    # The header struct: the same fields, sizes and order as HDR_FMT.
+    body = re.search(r"typedef struct __attribute__\(\(packed\)\) rimg_header \{(.*?)\}",
+                     text, re.S).group(1)
+    sizes = {"uint16_t": "H", "uint32_t": "I"}
+    fmt, names = "<", []
+    for ctype, name, arr in re.findall(r"(\w+)\s+(\w+)(?:\[(\d+)\])?;", body):
+        fmt += f"{arr}s" if arr else sizes[ctype]
+        names.append(name)
+    assert fmt == rimg.HDR_FMT
+    assert tuple(names) == rimg.FIELDS
+    meta = re.search(r"rimg_meta \{(.*?)\}", text, re.S).group(1)
+    assert re.findall(r"\[(\d+)\]", meta) == [str(rimg.TITLE_SIZE), str(rimg.ICON_SIZE)]
+    # The ROM1 and holotape subtypes pack uses.
+    assert num("RIMG_ROM1_SYSTEM") == 0 and num("RIMG_HOLO_UTILITY") == 1
+
+
+def test_parse_icon_formats(tmp_path):
+    want = frame_icon()
+    with open(ICON_PBM, "rb") as f:
+        assert rimg.parse_icon(f.read()) == want
+    p4 = b"P4\n# comment\n32 32\n" + want
+    assert rimg.parse_icon(p4) == want
+    assert rimg.parse_icon(want) == want
+    for bad in (b"P1\n16 16\n" + b"0 " * 256, b"P4\n32 32\n" + want[:10], b"\0" * 127,
+                b"P1\n32\n"):
+        with pytest.raises(rimg.RimgError):
+            rimg.parse_icon(bad)
+
+
+def test_seal_sets_title_and_icon(tmp_path):
+    p = write(tmp_path, rom_image())
+    r = run("seal", p, "--title", "Deitrix", "--icon", ICON_PBM)
+    assert r.returncode == 0, r.stderr
+    data = p.read_bytes()
+    assert data[0x60:0x60 + 64] == b"Deitrix".ljust(64, b"\0")
+    assert data[0xA0:0x120] == frame_icon()
+    assert run("verify", p).stdout.strip() == "ok"
+    info = run("info", p).stdout.splitlines()
+    assert "title=Deitrix" in info and "icon=set" in info and info[-1] == "crc_ok=1"
+
+
+def test_seal_keeps_meta_without_options(tmp_path):
+    data = rom_image()
+    data[0x60:0x63] = b"Old"
+    p = write(tmp_path, data)
+    assert run("seal", p).returncode == 0
+    lines = run("info", p).stdout.splitlines()
+    assert "title=Old" in lines and "icon=blank" in lines
+
+
+@pytest.mark.parametrize("args, msg", [
+    (["--title", "x" * 65], "longer than 64"),
+    (["--title", "café"], "not ASCII"),
+])
+def test_seal_rejects_bad_title(tmp_path, args, msg):
+    p = write(tmp_path, rom_image())
+    before = p.read_bytes()
+    r = run("seal", p, *args)
+    assert r.returncode == 1 and msg in r.stderr
+    assert p.read_bytes() == before
+
+
+def test_seal_meta_options_need_the_flag(tmp_path):
+    p = write(tmp_path, make_image())
+    r = run("seal", p, "--title", "x")
+    assert r.returncode == 1 and "META flag" in r.stderr
+    raw = write(tmp_path, bytes(128), "icon.bin")
+    r = run("seal", p, "--icon", raw)
+    assert r.returncode == 1 and "META flag" in r.stderr
+
+
+def test_seal_rejects_bad_icon_file(tmp_path):
+    p = write(tmp_path, rom_image())
+    bad = write(tmp_path, b"\1" * 100, "icon.bin")
+    r = run("seal", p, "--icon", bad)
+    assert r.returncode == 1 and "100 bytes" in r.stderr
+
+
+def test_pack_rom_round_trip(tmp_path):
+    payload = write(tmp_path, b"\x01\x02\x03\x04" * 10, "payload.bin")
+    out = tmp_path / "rom.img"
+    r = run("pack", payload, "-o", out, "--magic", "ROM1", "--subtype", "0",
+            "--load-addr", "0x400000", "--name", "DEITRIX", "--image-version", "3.0.3",
+            "--title", "Deitrix test ROM", "--icon", ICON_PBM, "--mem-size", "0x8000")
+    assert r.returncode == 0, r.stderr
+    data = out.read_bytes()
+    assert len(data) == 0x120 + 40
+    assert struct.unpack_from("<I", data, 0)[0] == 0xEA000046  # b 0x120
+    h = rimg.validate(data, magic="ROM1")
+    assert (h["flags"], h["load_addr"], h["file_size"], h["mem_size"]) == \
+        (1, 0x400000, len(data), 0x8000)
+    assert (h["abi_version"], h["image_version"], h["subtype"]) == (1 << 16, 0x30003, 0)
+    assert h["name"].rstrip(b"\0") == b"DEITRIX"
+    assert data[0xA0:0x120] == frame_icon()
+    assert data[0x120:] == b"\x01\x02\x03\x04" * 10
+    assert run("verify", out, "--magic", "ROM1").stdout.strip() == "ok"
+
+
+def test_pack_defaults_follow_the_magic(tmp_path):
+    payload = write(tmp_path, b"abcd", "payload.bin")
+    holo, boot = tmp_path / "holo.img", tmp_path / "boot.img"
+    assert run("pack", payload, "-o", holo, "--magic", "ROBCO78", "--subtype", "1",
+               "--load-addr", "0x800000").returncode == 0
+    assert run("pack", payload, "-o", boot, "--magic", "BOOT", "--subtype", "7",
+               "--load-addr", "0x8000", "--abi-version", "2.5", "--entry", "0x0").returncode == 0
+    lines = run("info", holo).stdout.splitlines()
+    assert "flags=0x1" in lines and "title=" in lines and "icon=blank" in lines
+    h = rimg.validate(boot.read_bytes())
+    assert (h["flags"], h["abi_version"], h["file_size"]) == (0, (2 << 16) | 5, 0x64)
+    assert struct.unpack_from("<I", boot.read_bytes(), 0)[0] == 0xEA000016  # b 0x60
+    assert "title=" not in "\n".join(run("info", boot).stdout.splitlines())
+
+
+def test_pack_entry_offset(tmp_path):
+    payload = write(tmp_path, bytes(64), "payload.bin")
+    out = tmp_path / "boot.img"
+    assert run("pack", payload, "-o", out, "--magic", "BOOT", "--subtype", "7",
+               "--load-addr", "0x8000", "--entry", "0x20").returncode == 0
+    assert struct.unpack_from("<I", out.read_bytes(), 0)[0] == 0xEA00001E  # b 0x80
+
+
+@pytest.mark.parametrize("args, msg", [
+    (["--magic", "BOOT", "--subtype", "7", "--load-addr", "0x8000", "--title", "x"], "META"),
+    (["--magic", "BOOT", "--subtype", "7", "--load-addr", "0x8000", "--meta"], "META flag"),
+    (["--magic", "ROM1", "--subtype", "0", "--load-addr", "0x400000", "--no-meta"], "META flag"),
+    (["--magic", "ROM1", "--subtype", "0", "--load-addr", "0x500000"], "bounds"),
+    (["--magic", "BOOT", "--subtype", "7", "--load-addr", "0x8000", "--entry", "2"], "entry"),
+])
+def test_pack_refuses_bad_images(tmp_path, args, msg):
+    payload = write(tmp_path, b"abcd", "payload.bin")
+    out = tmp_path / "out.img"
+    r = run("pack", payload, "-o", out, *args)
+    assert r.returncode == 1 and msg in r.stderr, r.stderr
+    assert not out.exists()
+
+
+def test_pack_usage(tmp_path):
+    payload = write(tmp_path, b"abcd", "payload.bin")
+    assert run("pack", payload, "--magic", "ROM1").returncode == rimg.EX_USAGE
+    assert run("pack", payload, "-o", tmp_path / "x", "--magic", "ROM1", "--subtype", "0",
+               "--load-addr", "0x400000", "--abi-version", "1").returncode == rimg.EX_USAGE

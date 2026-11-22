@@ -141,7 +141,7 @@ A loader validates in this order. It stops at the first failure and reports that
 | 0 | The file exists and opens. | `RIMG_E_NOFILE` |
 | 0 | Every read succeeds. Applies to all steps. | `RIMG_E_IO` |
 | 1 | `magic` matches a magic the loader accepts for this slot. | `RIMG_E_MAGIC` |
-| 2 | `hdr_version == 1`, `hdr_size == 64`, unknown `flags` bits are 0, `reserved == 0`. | `RIMG_E_VERSION` |
+| 2 | `hdr_version == 1`, `hdr_size == 64`, unknown `flags` bits are 0, `reserved == 0`. `flags` bit 0 is set for `ROM1` and `ROBCO78` and clear for `BOOT`. | `RIMG_E_VERSION` |
 | 3 | `file_size` equals the size in the FAT directory entry. It is at least `0x60`, or `0x120` if `flags` bit 0 is set. | `RIMG_E_SIZE` |
 | 4 | `subtype` is valid for the magic and has a slot, so data holotapes fail here. `load_addr` equals the slot base. `mem_size >= file_size`. `load_addr + mem_size` does not pass the slot end. | `RIMG_E_BOUNDS` |
 | 5 | `abi_version >> 16` equals the loader's ABI major for this magic. The minor is not checked. | `RIMG_E_ABI` |
@@ -217,7 +217,7 @@ The boot partition is FAT32. Names are 8.3 and upper case.
 ### seal
 
 ```
-rimg.py seal FILE [-o OUT] [--name NAME] [--image-version X.Y.Z]
+rimg.py seal FILE [-o OUT] [--name NAME] [--image-version X.Y.Z] [--title TEXT] [--icon FILE]
 ```
 
 The input is the raw binary from `objcopy`. The startup code already wrote the stub, magic, `hdr_version`, `hdr_size`, `load_addr`, `file_size`, `mem_size`, `abi_version` and `subtype`. `seal` writes the result in place, or to `OUT` with `-o`. It:
@@ -225,12 +225,31 @@ The input is the raw binary from `objcopy`. The startup code already wrote the s
 1. Checks that word 0 is an ARM `b` instruction, then checks the magic, `hdr_version` and `hdr_size`. It fails on anything else.
 2. Sets `file_size` to the file length if the header holds 0. It fails if the header holds another non-zero value.
 3. Sets `name` and `image_version` if given.
-4. Computes and writes `crc32`.
-5. Runs validation steps 1 to 6 on the result, with the default slot for the subtype. It fails and writes nothing if one fails.
+4. Sets the META title and icon if given. Both need `flags` bit 0 in the header, and `seal` fails without it. The title is ASCII, at most 64 bytes, NUL-padded. The icon file is a 32x32 PBM, plain (`P1`) or raw (`P4`), or 128 raw bytes in the META layout. Without these options the META bytes stay as the startup code wrote them, blank for a zeroed block.
+5. Computes and writes `crc32`.
+6. Runs validation steps 1 to 6 on the result, with the default slot for the subtype. It fails and writes nothing if one fails.
 
-`seal` exits 0 on success and 1 on a bad image. Filling the META block is not implemented yet.
+`seal` exits 0 on success and 1 on a bad image.
 
 `mk/robco.mk` seals every image it builds.
+
+### pack
+
+```
+rimg.py pack PAYLOAD -o OUT --magic BOOT|ROM1|ROBCO78 --subtype N --load-addr A
+             [--name NAME] [--image-version X.Y.Z] [--abi-version MAJOR.MINOR]
+             [--mem-size N] [--entry OFFSET] [--meta | --no-meta]
+             [--title TEXT] [--icon FILE]
+```
+
+Wraps a raw payload into a complete image, for tests and for builds that do not use `start.S`. The payload is code linked for `load_addr + 0x60`, or `load_addr + 0x120` with a META block. `pack`:
+
+1. Writes word 0 as an ARM `b` to the payload start plus `--entry`, 0 by default.
+2. Writes the header: the magic, `hdr_version` 1, `hdr_size` 64, `load_addr`, `subtype`, `name`, `image_version` and `abi_version`. The ABI version defaults to the major of the magic with minor 0. `file_size` is the image length. `mem_size` defaults to it.
+3. Adds the META block when the magic needs one, `ROM1` and `ROBCO78`, or as `--meta` and `--no-meta` say. The title is empty and the icon blank unless given, with the same rules as `seal`.
+4. Seals the result as `seal` does, so validation steps 1 to 6 must pass. It writes nothing otherwise.
+
+`pack` exits 0 on success and 1 on a bad input.
 
 ### info
 
@@ -238,7 +257,7 @@ The input is the raw binary from `objcopy`. The startup code already wrote the s
 rimg.py info FILE
 ```
 
-Prints every header field, one per line as `field=value`. Numbers are in hex with `0x`. `magic` and `name` print as text without the NUL padding. Prints the META title if present. The last line is `crc_ok=1` or `crc_ok=0`. Exits 0 if the header parses.
+Prints every header field, one per line as `field=value`. Numbers are in hex with `0x`. `magic` and `name` print as text without the NUL padding. With `flags` bit 0 set it also prints `title=` with the META title and `icon=set` or `icon=blank`, blank meaning all 128 icon bytes are 0. The last line is `crc_ok=1` or `crc_ok=0`. Exits 0 if the header parses.
 
 ### verify
 
@@ -246,7 +265,7 @@ Prints every header field, one per line as `field=value`. Numbers are in hex wit
 rimg.py verify FILE [--fat-size N] [--slot-base A --slot-size N] [--magic BOOT|ROM1|ROBCO78] [--abi-major N]
 ```
 
-Runs validation steps 1 to 6.
+Runs validation steps 1 to 6. Step 2 also checks that the META flag matches the magic.
 
 - Step 1 accepts any of the three magics, or only `--magic`.
 - Step 3 compares with `--fat-size`, or with the file's own size if absent.

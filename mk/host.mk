@@ -22,7 +22,8 @@
 # Without HOST_TEST_DIR the file builds RobCo-Core's own tests: every
 # tests/host/test_<name>.c with the file system, build/host/fs_tool for
 # tests/tools, the read-only file system test, which links a second copy
-# of the file system built with ROBCO_FS_READONLY=1.
+# of the file system built with ROBCO_FS_READONLY=1, and the images
+# tools/rimg.py packs for test_rimg_pack.
 #
 # Options: ROBCO_CORE (default: the current directory), HOST_CC (default
 # cc), HOST_BUILD (default $(BUILD)/host, or build/host), HOST_SANITIZE=0
@@ -30,6 +31,7 @@
 # cannot use them.
 
 ROBCO_CORE    ?= .
+PYTHON        ?= python3
 HOST_CC       ?= cc
 HOST_SANITIZE ?= 1
 HOST_BUILD    ?= $(or $(BUILD),build)/host
@@ -97,7 +99,10 @@ HOST_RO_IMG := $(HOST_BUILD)/fs_readonly.img
 HOST_ALL := $(HOST_TESTS)
 HOST_RUN := $(HOST_TESTS)
 ifeq ($(ROBCO_HOST_SELF),1)
-HOST_ALL += $(HOST_BUILD)/fs_tool $(HOST_BUILD)/test_fs_readonly $(HOST_RO_IMG)
+HOST_RIMG_DIR := $(HOST_BUILD)/rimg
+HOST_CFLAGS += -DROBCO_HOST_RIMG_DIR='"$(HOST_RIMG_DIR)"'
+HOST_RIMG_IMGS := $(HOST_RIMG_DIR)/rom1.img $(HOST_RIMG_DIR)/holo.img $(HOST_RIMG_DIR)/boot.img
+HOST_ALL += $(HOST_BUILD)/fs_tool $(HOST_BUILD)/test_fs_readonly $(HOST_RO_IMG) $(HOST_RIMG_IMGS)
 HOST_RUN += $(HOST_BUILD)/test_fs_readonly
 endif
 
@@ -147,6 +152,29 @@ $(HOST_RO_IMG): $(HOST_BUILD)/fs_tool tests/host/rc_test.h
 $(HOST_BUILD)/fs_tool: tests/host/fs_tool.c $(HOST_LINK) $(HOST_HDRS)
 	@mkdir -p $(HOST_BUILD)
 	$(HOST_CC) $(HOST_CFLAGS) -o $@ $< $(HOST_LINK)
+
+# Images packed by tools/rimg.py for tests/host/test_rimg_pack.c, which
+# runs from the root and reads them from $(HOST_RIMG_DIR).
+HOST_RIMG_PAYLOAD := $(HOST_RIMG_DIR)/payload.bin
+$(HOST_RIMG_PAYLOAD):
+	@mkdir -p $(dir $@)
+	printf 'payload bytes for the rimg pack round trip\n' > $@
+
+$(HOST_RIMG_DIR)/rom1.img: $(HOST_RIMG_PAYLOAD) tools/rimg.py tests/host/icon.pbm
+	$(PYTHON) tools/rimg.py pack $< -o $@ --magic ROM1 --subtype 0 --load-addr 0x400000 \
+	    --name DEITRIX --image-version 3.0.3 --title "Deitrix test ROM" --icon tests/host/icon.pbm
+	$(PYTHON) tools/rimg.py verify $@ >/dev/null
+
+$(HOST_RIMG_DIR)/holo.img: $(HOST_RIMG_PAYLOAD) tools/rimg.py
+	$(PYTHON) tools/rimg.py pack $< -o $@ --magic ROBCO78 --subtype 1 --load-addr 0x800000 \
+	    --name HOLO --mem-size 0x10000
+	$(PYTHON) tools/rimg.py verify $@ >/dev/null
+
+$(HOST_RIMG_DIR)/boot.img: $(HOST_RIMG_PAYLOAD) tools/rimg.py
+	$(PYTHON) tools/rimg.py pack $< -o $@ --magic BOOT --subtype 7 --load-addr 0x8000
+	$(PYTHON) tools/rimg.py verify $@ >/dev/null
+
+$(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
 endif
 
 # Runs every binary, then fails if any failed.

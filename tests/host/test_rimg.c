@@ -107,6 +107,26 @@ TEST(version)
     CHECK_EQ(check(NULL), RIMG_E_VERSION);
 }
 
+TEST(meta_follows_magic)
+{
+    /* A stage must not carry META. */
+    build();
+    hdr()->flags = RIMG_FLAG_META;
+    reseal();
+    CHECK_EQ(check(NULL), RIMG_E_VERSION);
+    /* A ROM must. */
+    build();
+    memcpy(hdr()->magic, RIMG_MAGIC_ROM1, 8);
+    hdr()->load_addr = 0x400000;
+    hdr()->abi_version = 1 << 16;
+    hdr()->subtype = RIMG_ROM1_SYSTEM;
+    reseal();
+    CHECK_EQ(check(NULL), RIMG_E_VERSION);
+    hdr()->flags = RIMG_FLAG_META;
+    reseal();
+    CHECK_EQ(check(NULL), RIMG_OK);
+}
+
 TEST(size)
 {
     rimg_expect_t e = { NULL, 0, 0, 0, IMG_SIZE + 4 };
@@ -117,6 +137,7 @@ TEST(size)
     hdr()->file_size = 0x5c;
     CHECK_EQ(check(NULL), RIMG_E_SIZE);
     build();
+    memcpy(hdr()->magic, RIMG_MAGIC_ROM1, 8);
     hdr()->flags = RIMG_FLAG_META;
     hdr()->file_size = 0x100;
     CHECK_EQ(check(NULL), RIMG_E_SIZE);
@@ -144,6 +165,7 @@ TEST(bounds)
     CHECK_EQ(check(NULL), RIMG_E_BOUNDS);
     build();
     memcpy(hdr()->magic, RIMG_MAGIC_ROBCO78, 8);
+    hdr()->flags = RIMG_FLAG_META;
     hdr()->subtype = RIMG_HOLO_DATA;
     hdr()->load_addr = 0x800000;
     hdr()->abi_version = 1 << 16;

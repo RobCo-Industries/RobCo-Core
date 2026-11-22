@@ -119,7 +119,7 @@ Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and bui
 
 | File | Tests |
 |---|---|
-| `test_rimg_tool.py` | `tools/rimg.py` on images built in memory, one case per error code |
+| `test_rimg_tool.py` | `tools/rimg.py` on images built in memory, one case per error code, `pack`, the META options and the layout against `rimg.h`. `tests/host/test_rimg_pack.c` reads the images `mk/host.mk` packs, so C and Python agree on META images. |
 | `test_check_docs.py` | `tools/check_docs.py` on small trees in a temp directory |
 | `test_font_tools.py` | `tools/font2c.py` and `tools/font_specimen.py` |
 | `test_scheme_ids.py` | The console scheme ids in `console.h` match `con_scheme` in BOOT_PROTOCOL.md |
