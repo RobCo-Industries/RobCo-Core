@@ -132,7 +132,9 @@ void input_ansi_init(input_ansi_t *p, uint32_t esc_timeout_ms);
 
 /*
  * Feeds one byte received at `now_ms`. Writes up to INPUT_ANSI_OUT_MAX
- * events to out[] and returns their count. Keys come out as INPUT_EV_KEY
+ * events to out[] and returns their count. When the ESC timeout already
+ * passed at `now_ms`, the pending ESC or sequence is resolved first, as
+ * input_ansi_poll() does, and the byte starts afresh. Keys come out as INPUT_EV_KEY
  * with value INPUT_PRESS; the caller adds the release. source and t_ms
  * are left 0.
  */

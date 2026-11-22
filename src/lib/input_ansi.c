@@ -104,7 +104,8 @@ static int csi_final(input_ansi_t *p, uint8_t b, input_event_t *out)
     return 0;
 }
 
-int input_ansi_feed(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_t *out)
+/* One byte with no timeout check. Writes at most one event, or two after a lone ESC. */
+static int feed_byte(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_t *out)
 {
     int n;
 
@@ -190,4 +191,16 @@ int input_ansi_poll(input_ansi_t *p, uint32_t now_ms, input_event_t *out)
     /* An unfinished sequence timed out: drop it. */
     p->state = ST_GROUND;
     return 0;
+}
+
+/*
+ * The timeout is checked before the byte. A byte fed after the timeout
+ * cannot extend the old sequence: a lone ESC becomes BACK first, and an
+ * unfinished sequence is dropped first.
+ */
+int input_ansi_feed(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_t *out)
+{
+    int n = input_ansi_poll(p, now_ms, out);
+
+    return n + feed_byte(p, byte, now_ms, out + n);
 }

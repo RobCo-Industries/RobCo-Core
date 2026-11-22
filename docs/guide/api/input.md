@@ -202,6 +202,8 @@ Reads the PL011 console through the ANSI parser. `INPUT_SERIAL_MAIN` reads from 
 
 A terminal sends a key once, so each key gives a press and a release. An arrow with modifier parameters, such as `ESC [ 1 ; 5 A`, gives the plain arrow. `ESC [ 11 ; 5 ~` gives nothing. ESC followed by a control byte or another ESC counts as a lone ESC at once. A sequence still unfinished 100 ms after its ESC is dropped.
 
+The UART keeps no receive times, so the backend stamps every byte with the time of the poll that read it. Bytes read in the same poll as the ESC still form a sequence with it. If the next poll that finds bytes starts 100 ms or more after the poll that read the ESC, the ESC becomes BACK first and the waiting bytes count on their own. So ESC, a long gap, then `[A` gives BACK, `[` and `A`. A program that stops polling for longer than the timeout can split a real sequence this way.
+
 ### Script backend
 
 ```c
@@ -269,7 +271,7 @@ int input_ansi_feed(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_
 int input_ansi_poll(input_ansi_t *p, uint32_t now_ms, input_event_t *out);
 ```
 
-The parser behind the console backend. `input_ansi_feed()` writes up to `INPUT_ANSI_OUT_MAX` (2) events and returns their count. Keys come out as presses only, with `source` and `t_ms` 0. Call `input_ansi_poll()` when no byte came. It turns a lone ESC into BACK once `esc_timeout_ms` passed since the ESC, and drops an unfinished sequence after the same time. It returns 0 or 1. Sequences may arrive split across calls.
+The parser behind the console backend. `input_ansi_feed()` writes up to `INPUT_ANSI_OUT_MAX` (2) events and returns their count. Keys come out as presses only, with `source` and `t_ms` 0. Call `input_ansi_poll()` when no byte came. It turns a lone ESC into BACK once `esc_timeout_ms` passed since the ESC, and drops an unfinished sequence after the same time. It returns 0 or 1. `input_ansi_feed()` makes the same check before it takes the byte, so a byte fed after the timeout never joins the old sequence. Sequences may arrive split across calls within the timeout.
 
 ```c
 void input_hold_init(input_hold_t *h);

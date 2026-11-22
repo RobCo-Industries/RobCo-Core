@@ -9,6 +9,12 @@
  * Reads the PL011 console through the ANSI parser. Nothing reads the UART
  * until input_serial_start(): code that calls uart_poll() itself keeps
  * every byte until then.
+ *
+ * The UART keeps no receive times, so every byte read in one call gets
+ * the time of that call. An ESC counts from the call that read it. Bytes
+ * read in the same call as the ESC still form a sequence with it. When a
+ * later call starts after the timeout, the parser turns the ESC into BACK
+ * before it takes the waiting bytes, even if they came in early.
  */
 
 #define BYTES_PER_CALL  64  /* bounds the time spent in one call */

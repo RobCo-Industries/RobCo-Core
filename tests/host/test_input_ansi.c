@@ -264,3 +264,84 @@ TEST(ansi_unfinished_sequence_dropped)
     CHECK_EQ(log.n, 2);
     CHECK_KEY(log, 1, INPUT_KEY_SELECT);
 }
+
+TEST(ansi_esc_then_printable_in_time)
+{
+    input_ansi_t p;
+    evlog_t log = { .n = 0 };
+
+    /* Alt plus a key is swallowed, even split across calls. */
+    input_ansi_init(&p, 50);
+    feed(&p, &log, "\x1b", 100);
+    feed(&p, &log, "x", 149);
+    CHECK_EQ(log.n, 0);
+    feed(&p, &log, "y", 150);
+    CHECK_EQ(log.n, 1);
+    CHECK_CHAR(log, 0, 'y');
+}
+
+TEST(ansi_late_byte_after_esc)
+{
+    input_ansi_t p;
+    evlog_t log = { .n = 0 };
+
+    /* No poll ran during the gap: BACK comes before the byte. */
+    input_ansi_init(&p, 50);
+    feed(&p, &log, "\x1b", 100);
+    feed(&p, &log, "x", 400);
+    CHECK_EQ(log.n, 2);
+    CHECK_KEY(log, 0, INPUT_KEY_BACK);
+    CHECK_CHAR(log, 1, 'x');
+}
+
+TEST(ansi_late_csi_after_esc)
+{
+    input_ansi_t p;
+    evlog_t log = { .n = 0 };
+
+    /* The late "[A" does not join the old ESC: BACK, '[', 'A'. */
+    input_ansi_init(&p, 50);
+    feed(&p, &log, "\x1b", 100);
+    feed(&p, &log, "[A", 400);
+    CHECK_EQ(log.n, 3);
+    CHECK_KEY(log, 0, INPUT_KEY_BACK);
+    CHECK_CHAR(log, 1, '[');
+    CHECK_CHAR(log, 2, 'A');
+    /* A late byte after an unfinished sequence drops the sequence. */
+    feed(&p, &log, "\x1b[", 500);
+    feed(&p, &log, "B", 600);
+    CHECK_EQ(log.n, 4);
+    CHECK_CHAR(log, 3, 'B');
+}
+
+TEST(ansi_arrow_split_in_time)
+{
+    input_ansi_t p;
+    evlog_t log = { .n = 0 };
+
+    input_ansi_init(&p, 50);
+    feed(&p, &log, "\x1b", 100);
+    feed(&p, &log, "[", 120);
+    feed(&p, &log, "A", 149);
+    CHECK_EQ(log.n, 1);
+    CHECK_KEY(log, 0, INPUT_KEY_UP);
+}
+
+TEST(ansi_late_byte_across_wrap)
+{
+    input_ansi_t p;
+    evlog_t log = { .n = 0 };
+
+    input_ansi_init(&p, 50);
+    feed(&p, &log, "\x1b", 0xfffffff0u);
+    feed(&p, &log, "[", 0x10);
+    CHECK_EQ(log.n, 0);
+    feed(&p, &log, "A", 0x21);
+    CHECK_EQ(log.n, 1);
+    CHECK_KEY(log, 0, INPUT_KEY_UP);
+    feed(&p, &log, "\x1b", 0xffffffe0u);
+    feed(&p, &log, "x", 0x20);
+    CHECK_EQ(log.n, 3);
+    CHECK_KEY(log, 1, INPUT_KEY_BACK);
+    CHECK_CHAR(log, 2, 'x');
+}
