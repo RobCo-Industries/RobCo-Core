@@ -43,7 +43,7 @@ RUN apt-get update \
       gcc-arm-none-eabi binutils-arm-none-eabi \
       gcc libc6-dev \
       make git mtools dosfstools \
-      python3 python3-venv python3-pip ca-certificates \
+      python3 python3-venv python3-pip ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=qemu-build /out/usr/local/ /usr/local/
 RUN qemu-system-arm --version \

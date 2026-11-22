@@ -35,14 +35,18 @@ usage() {
     exit 2
 }
 
+# Linux has sha256sum, macOS has shasum. Pick one before any work, since
+# a die inside $(sha256 ...) would only leave the subshell.
+if command -v sha256sum > /dev/null; then
+    SHA256=(sha256sum)
+elif command -v shasum > /dev/null; then
+    SHA256=(shasum -a 256)
+else
+    SHA256=()
+fi
+
 sha256() {
-    if command -v sha256sum > /dev/null; then
-        sha256sum "$1" | cut -d' ' -f1
-    elif command -v shasum > /dev/null; then
-        shasum -a 256 "$1" | cut -d' ' -f1
-    else
-        die "needs sha256sum or shasum"
-    fi
+    "${SHA256[@]}" "$1" | cut -d' ' -f1
 }
 
 # Fails unless every firmware file in $1 is a regular file with the pinned hash.
@@ -82,6 +86,7 @@ done
 
 if [ "$check" -eq 1 ]; then
     [ -d "$target" ] || die "$target is not a directory"
+    [ ${#SHA256[@]} -gt 0 ] || die "needs sha256sum or shasum"
     verify_dir "$target" || die "check failed for $target"
     echo "fetch_firmware: $target matches tag $FIRMWARE_TAG"
     exit 0
@@ -101,6 +106,7 @@ for f in "${FILES[@]}"; do
     fi
 done
 command -v curl > /dev/null || die "needs curl"
+[ ${#SHA256[@]} -gt 0 ] || die "needs sha256sum or shasum"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/fetch_firmware.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT

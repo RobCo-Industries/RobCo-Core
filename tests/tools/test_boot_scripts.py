@@ -1,12 +1,13 @@
 """Tests for tools/fetch_firmware.sh and tools/mkbootdir.sh.
 
 Everything here runs offline except test_download, which needs
-ROBCO_NET_TESTS=1.
+ROBCO_NET_TESTS=1. Tests that run curl skip when it is not on PATH.
 """
 
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 
 import pytest
@@ -17,6 +18,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 FETCH = ROOT / "tools/fetch_firmware.sh"
 MKBOOT = ROOT / "tools/mkbootdir.sh"
 FIRMWARE = ("bootcode.bin", "start.elf", "fixup.dat")
+
+needs_curl = pytest.mark.skipif(shutil.which("curl") is None,
+                                reason="fetch_firmware.sh downloads with curl, which is not on PATH")
+needs_sha256 = pytest.mark.skipif(shutil.which("sha256sum") is None and shutil.which("shasum") is None,
+                                  reason="fetch_firmware.sh needs sha256sum or shasum")
 
 
 def run(*args, env=None):
@@ -61,6 +67,8 @@ def test_fetch_refuses_symlink(tmp_path):
     assert outside.read_text() == "keep"
 
 
+@needs_curl
+@needs_sha256
 def test_fetch_rejects_bad_hash(tmp_path):
     mirror = tmp_path / "mirror"
     mirror.mkdir()
@@ -72,6 +80,7 @@ def test_fetch_rejects_bad_hash(tmp_path):
     assert not any((target / f).exists() for f in FIRMWARE)
 
 
+@needs_sha256
 def test_fetch_check_fails_on_wrong_files(tmp_path):
     for f in FIRMWARE:
         (tmp_path / f).write_bytes(b"x")
@@ -122,6 +131,8 @@ def test_mkbootdir_refuses_bad_image(tmp_path):
 
 @pytest.mark.skipif(os.environ.get("ROBCO_NET_TESTS") != "1",
                     reason="downloads firmware; set ROBCO_NET_TESTS=1")
+@needs_curl
+@needs_sha256
 def test_download(image, tmp_path):
     target = tmp_path / "boot"
     r = run(MKBOOT, image, target, "--kernel-name", "RETROS.IMG")

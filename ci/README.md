@@ -16,6 +16,7 @@ QEMU is 8.x and its raspi machine models differ.
   libasan and libubsan, so the host tests run with sanitizers.
 - `make`, `git`, `mtools`, `dosfstools`
 - `python3`, `python3-venv`, `python3-pip`, `ca-certificates`
+- `curl` for `tools/fetch_firmware.sh` and its tests
 
 ## Tag
 
