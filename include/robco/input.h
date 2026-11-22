@@ -1,0 +1,242 @@
+#ifndef ROBCO_INPUT_H
+#define ROBCO_INPUT_H
+
+#include <stdint.h>
+
+/*
+ * Input events from GPIO buttons, a rotary dial and serial lines.
+ * Backends push events into one queue. The main loop reads them.
+ */
+
+/* Event types. */
+#define INPUT_EV_KEY        1   /* value: 1 press, 0 release, 2 repeat */
+#define INPUT_EV_DIAL       2   /* code: dial index, value: signed detent steps */
+#define INPUT_EV_CHAR       3   /* code: character or control code from a serial line */
+
+/* Key values. */
+#define INPUT_RELEASE       0
+#define INPUT_PRESS         1
+#define INPUT_REPEAT        2
+
+/* Sources. */
+#define INPUT_SRC_GPIO      0
+#define INPUT_SRC_SERIAL    1
+#define INPUT_SRC_SCRIPT    2
+
+/* Logical key codes. 0 is no key. */
+#define INPUT_KEY_NONE      0
+#define INPUT_KEY_UP        1
+#define INPUT_KEY_DOWN      2
+#define INPUT_KEY_LEFT      3
+#define INPUT_KEY_RIGHT     4
+#define INPUT_KEY_SELECT    5
+#define INPUT_KEY_BACK      6
+#define INPUT_KEY_F1        7
+#define INPUT_KEY_F2        8
+#define INPUT_KEY_F3        9
+#define INPUT_KEY_F4        10
+#define INPUT_KEY_DIAL_PUSH 11
+#define INPUT_KEY_COUNT     12
+
+typedef struct {
+    uint8_t type;       /* INPUT_EV_* */
+    uint8_t source;     /* INPUT_SRC_* */
+    uint16_t code;      /* INPUT_KEY_*, dial index or character */
+    int32_t value;
+    uint32_t t_ms;      /* timer_now_ms() when pushed */
+} input_event_t;
+
+/* Errors. */
+#define INPUT_ERR_FULL      (-1)    /* queue full, event dropped and counted */
+#define INPUT_ERR_ARG       (-2)    /* bad argument */
+#define INPUT_ERR_NO_IRQ    (-3)    /* irq_init() has not run */
+#define INPUT_ERR_TICK      (-4)    /* the tick does not run at the given rate */
+#define INPUT_ERR_SPACE     (-5)    /* a fixed table is full */
+#define INPUT_ERR_STATE     (-6)    /* wrong call order */
+
+/* ---- Pure ring queue, src/lib/input_queue.c ---- */
+
+#define INPUT_QUEUE_LEN     32u     /* power of two */
+
+typedef struct {
+    input_event_t buf[INPUT_QUEUE_LEN];
+    uint32_t head;      /* next write, free-running */
+    uint32_t tail;      /* next read, free-running */
+    uint32_t pushed;    /* events accepted */
+    uint32_t dropped;   /* events refused because the queue was full */
+} input_queue_t;
+
+void input_queue_init(input_queue_t *q);
+/* Appends a copy. Returns 0, or INPUT_ERR_FULL and counts a drop. */
+int input_queue_push(input_queue_t *q, const input_event_t *ev);
+/* Removes the oldest event into *ev. Returns 1, or 0 when empty. */
+int input_queue_pop(input_queue_t *q, input_event_t *ev);
+unsigned input_queue_count(const input_queue_t *q);
+
+/* ---- Pure debouncer, src/lib/input_debounce.c ---- */
+
+#define INPUT_DEBOUNCE_LINES 32
+
+typedef struct {
+    uint32_t active_low;    /* bit n set: line n is pressed when it reads 0 */
+    uint32_t state;         /* debounced pressed state, bit per line */
+    uint8_t count[INPUT_DEBOUNCE_LINES];
+    uint8_t stable;         /* samples a new level must hold */
+} input_debounce_t;
+
+/* `stable_samples` 1 to 255. Every line starts released. */
+void input_debounce_init(input_debounce_t *d, unsigned stable_samples, uint32_t active_low);
+
+/*
+ * Feeds one sample of every line, bit n for line n. Stores the lines that
+ * became pressed and released at this sample. Returns the debounced state.
+ */
+uint32_t input_debounce_feed(input_debounce_t *d, uint32_t levels,
+                             uint32_t *pressed, uint32_t *released);
+
+/* Samples needed to cover `ms` at `hz` samples per second, rounded up, 1 to 255. */
+unsigned input_debounce_samples(unsigned ms, unsigned hz);
+
+/* ---- Pure quadrature decoder, src/lib/input_quad.c ---- */
+
+typedef struct {
+    uint8_t prev;       /* last A/B state, (A << 1) | B */
+    int8_t acc;         /* transitions not yet turned into a detent */
+    uint8_t per_detent; /* transitions per detent: 1, 2 or 4 */
+    uint8_t reverse;
+    uint32_t invalid;   /* rejected double transitions */
+} input_quad_t;
+
+/* `per_detent` 1, 2 or 4 (other values become 4). a, b: initial levels. */
+void input_quad_init(input_quad_t *q, unsigned per_detent, int reverse, int a, int b);
+
+/* Feeds one A/B sample. Returns the detent steps completed: -1, 0 or 1. */
+int input_quad_feed(input_quad_t *q, int a, int b);
+
+/* ---- Pure ANSI/VT input parser, src/lib/input_ansi.c ---- */
+
+#define INPUT_ANSI_OUT_MAX  2   /* events one call can produce */
+
+typedef struct {
+    uint8_t state;
+    uint8_t last_cr;
+    uint8_t nparam;
+    uint16_t param;
+    uint32_t esc_ms;
+    uint32_t timeout_ms;
+} input_ansi_t;
+
+/* `esc_timeout_ms`: how long a lone ESC waits before it counts as BACK. */
+void input_ansi_init(input_ansi_t *p, uint32_t esc_timeout_ms);
+
+/*
+ * Feeds one byte received at `now_ms`. Writes up to INPUT_ANSI_OUT_MAX
+ * events to out[] and returns their count. Keys come out as INPUT_EV_KEY
+ * with value INPUT_PRESS; the caller adds the release. source and t_ms
+ * are left 0.
+ */
+int input_ansi_feed(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_t *out);
+
+/*
+ * Call it when no byte came. Resolves a lone ESC into BACK once the
+ * timeout passed, and drops an unfinished sequence. Returns 0 or 1.
+ */
+int input_ansi_poll(input_ansi_t *p, uint32_t now_ms, input_event_t *out);
+
+/* ---- Queue and key state, src/drv/input.c ---- */
+
+/* Empties the queue and clears counters, key state and repeat. Main context, IRQs masked or not. */
+int input_init(void);
+
+/*
+ * Adds an event and stamps t_ms. Any context. For KEY events it also
+ * updates the key state and the repeat timer. Returns 0 or INPUT_ERR_FULL.
+ */
+int input_push(const input_event_t *ev);
+
+/* Runs the main-loop backends, then takes the oldest event. Returns 1 or 0. Main context. */
+int input_poll(input_event_t *ev);
+
+#define INPUT_WAIT_FOREVER  0xffffffffu
+
+/*
+ * Like input_poll(), but waits up to `timeout_ms` for an event. Sleeps in
+ * wfi between checks when CPU IRQs are on and the tick runs. Main context.
+ */
+int input_wait(input_event_t *ev, uint32_t timeout_ms);
+
+unsigned input_pending(void);
+void input_flush(void);
+
+/* Counters since input_init(). Either pointer may be 0. */
+void input_stats(uint32_t *pushed, uint32_t *dropped);
+
+/* Non-zero while key `code` is pressed (any source). */
+int input_key_down(unsigned code);
+
+/*
+ * Auto-repeat for a held key: the first repeat after `delay_ms`, then one
+ * every `rate_ms`. delay_ms 0 turns it off (the default). Generated from a
+ * tick callback, so the tick must run. Returns 0, INPUT_ERR_ARG, or
+ * INPUT_ERR_SPACE when no tick callback slot is free.
+ */
+int input_set_repeat(uint32_t delay_ms, uint32_t rate_ms);
+
+/* For backends: a function input_poll() calls from main context. Max 4. */
+int input_add_poller(void (*fn)(void));
+
+/* Name of a key code ("up", "f1", ...), or 0 if unknown. */
+const char *input_key_name(unsigned code);
+
+/* ---- GPIO backend, src/drv/input_gpio.c ---- */
+
+#define INPUT_GPIO_MAX_BUTTONS  16
+#define INPUT_GPIO_MAX_DIALS    2
+#define INPUT_GPIO_NO_PIN       (-1)
+#define INPUT_GPIO_GUARD_MS     100
+
+enum {
+    INPUT_GPIO_OFF = 0,         /* input_gpio_start() not called or failed */
+    INPUT_GPIO_CHECKING,        /* stuck-line guard still sampling */
+    INPUT_GPIO_ACTIVE,
+    INPUT_GPIO_DISABLED_STUCK,  /* every button read active for the whole guard */
+};
+
+/* `active_level` 0 (pressed reads low) or 1. `pull` a GPIO_PULL_* code. Before start. */
+int input_gpio_add_button(unsigned pin, unsigned code, int active_level, unsigned pull);
+
+/*
+ * A quadrature dial on pin_a and pin_b with pull-ups, and an optional
+ * active-low push button (INPUT_GPIO_NO_PIN for none). Swap the pins to
+ * reverse the direction. Dial index is the order of the calls. Before start.
+ */
+int input_gpio_add_dial(unsigned pin_a, unsigned pin_b, int push_pin, unsigned per_detent);
+
+/*
+ * Configures the pins and starts sampling from a tick callback. `tick_hz`
+ * must be the running tick rate: tick_init(tick_hz) is called and must
+ * return 0. Returns 0, INPUT_ERR_NO_IRQ, INPUT_ERR_TICK, INPUT_ERR_SPACE
+ * or INPUT_ERR_STATE. Main context.
+ */
+int input_gpio_start(uint32_t tick_hz, unsigned debounce_ms);
+
+int input_gpio_status(void);
+const char *input_gpio_status_name(int status);
+
+/* ---- Serial backend on the PL011 console, src/drv/input_serial.c ---- */
+
+#define INPUT_SERIAL_MAIN   0   /* read from input_poll() */
+#define INPUT_SERIAL_TICK   1   /* read from a tick callback */
+#define INPUT_SERIAL_ESC_MS 100
+
+/* Starts reading the console UART through the ANSI parser. Call uart_init() first. */
+int input_serial_start(int mode);
+
+/* ---- Script backend on the mini UART, src/drv/input_script.c ---- */
+
+#define INPUT_SCRIPT_LINE_MAX 128
+
+/* Starts reading script lines from the mini UART. Call uart_mini_init() first. */
+int input_script_start(void);
+
+#endif
