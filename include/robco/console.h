@@ -41,7 +41,11 @@ typedef struct {
 /* NULL for an unknown id. Defined in schemes.c. */
 const console_scheme_t *console_scheme_info(unsigned scheme);
 
-/* Needs fb_init first. Clears the screen. Returns 0 or CONSOLE_ERR_*. */
+/*
+ * Needs fb_init first. Clears the screen and resets the grid, cursor and
+ * attribute. Call it again after every successful fb_init(): until then
+ * the console draws nothing and console_cols() returns 0.
+ */
 int console_init(unsigned scheme);
 
 /*
@@ -58,12 +62,17 @@ void console_puts(const char *s);
 void console_clear(void);
 void console_set_cursor(unsigned col, unsigned row);
 void console_get_cursor(unsigned *col, unsigned *row);
+/* 0 before console_init() and while the console is stale. */
 unsigned console_cols(void);
 unsigned console_rows(void);
 /* Block cursor drawn by inverting the cell under it. Off after init. */
 void console_cursor_show(int on);
 
-/* Applies to characters written after the call. */
+/*
+ * Applies to characters written after the call. `attr` is a brightness,
+ * optionally ORed with CONSOLE_ATTR_INVERSE. Any other value is ignored
+ * and the attribute stays as it was.
+ */
 void console_set_attr(unsigned attr);
 /* Redraws the whole screen from the cell buffer. Unknown ids are ignored. */
 void console_set_scheme(unsigned scheme);

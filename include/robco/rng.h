@@ -13,7 +13,7 @@ int rng_init(void);
 /* Fills buf with len random bytes. Blocks with a timeout; negative on error. */
 int rng_read(void *buf, size_t len);
 
-/* Returns one random word, or 0 if the generator timed out. */
-uint32_t rng_u32(void);
+/* Stores one random word in *out. Returns 0, or a negative error and leaves *out alone. */
+int rng_u32(uint32_t *out);
 
 #endif

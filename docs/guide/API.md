@@ -607,10 +607,10 @@ int rng_read(void *buf, size_t len);
 Fills `buf` with `len` random bytes. It busy-waits for each word, up to a million status reads. Returns `0` or a negative error. Before `rng_init()` it may time out.
 
 ```c
-uint32_t rng_u32(void);
+int rng_u32(uint32_t *out);
 ```
 
-Returns one random word, or `0` on a timeout. A random `0` and a failure look the same: use `rng_read()` when that matters.
+Stores one random word in `*out`. Returns `0`, or a negative error as `rng_read()` does and leaves `*out` untouched.
 
 ## Framebuffer (`fb.h`)
 
@@ -636,7 +636,7 @@ typedef struct {
 int fb_init(uint32_t width, uint32_t height, uint32_t depth);
 ```
 
-Sends one property message that sets the size and depth, asks for RGB order, allocates the buffer and reads the pitch and the actual order. Only `depth == 32` works. Returns `0`, or a negative `FB_ERR_*` and keeps the previous state. A second successful call replaces the buffer, but the console keeps its old grid size.
+Sends one property message that sets the size and depth, asks for RGB order, allocates the buffer and reads the pitch and the actual order. Only `depth == 32` works. Returns `0`, or a negative `FB_ERR_*` and keeps the previous state. A second successful call replaces the buffer. The console then draws nothing and `console_cols()` returns `0` until you call `console_init()` again, which sizes the grid for the new mode.
 
 ```c
 const fb_info_t *fb_get(void);
@@ -719,7 +719,7 @@ Returns the colours and name (`green`, `amber`, `blue`, `white`) of a scheme, or
 int console_init(unsigned scheme);
 ```
 
-Sizes the grid from the framebuffer, loads the scheme, clears the screen and puts the cursor at 0,0 with attribute normal and the cursor hidden. Returns `0` or a `CONSOLE_ERR_*`.
+Sizes the grid from the framebuffer, loads the scheme, clears the screen and puts the cursor at 0,0 with attribute normal and the cursor hidden. Returns `0` or a `CONSOLE_ERR_*`. Call it again after every successful `fb_init()`: until then the console is stale and every drawing call does nothing.
 
 ```c
 void console_putc(char c);
@@ -727,7 +727,7 @@ void console_write(const char *s, size_t n);
 void console_puts(const char *s);
 ```
 
-Write text at the cursor with the current attribute. Before `console_init()` they do nothing.
+Write text at the cursor with the current attribute. Before `console_init()`, or while the console is stale after `fb_init()`, they do nothing.
 
 | Byte | Effect |
 |---|---|
@@ -750,7 +750,7 @@ unsigned console_rows(void);
 void console_cursor_show(int on);
 ```
 
-`console_clear()` blanks the grid and homes the cursor. `console_set_cursor()` clamps to the grid. `console_get_cursor()` accepts NULL for either output. `console_cols()` and `console_rows()` return `0` before `console_init()`. `console_cursor_show()` draws a block cursor by inverting the cell under it. It is off after init.
+`console_clear()` blanks the grid and homes the cursor. `console_set_cursor()` clamps to the grid. `console_get_cursor()` accepts NULL for either output. `console_cols()` and `console_rows()` return `0` before `console_init()` and while the console is stale. `console_cursor_show()` draws a block cursor by inverting the cell under it. It is off after init.
 
 ```c
 void console_set_attr(unsigned attr);
@@ -758,7 +758,7 @@ void console_set_scheme(unsigned scheme);
 unsigned console_scheme(void);
 ```
 
-`console_set_attr()` applies to characters written after the call. A brightness of `3` draws as normal. `console_set_scheme()` redraws the whole screen in the new colours and ignores unknown ids. `console_scheme()` returns the active id, `CONSOLE_SCHEME_GREEN` before `console_init()`.
+`console_set_attr()` applies to characters written after the call. It accepts a brightness, optionally ORed with `CONSOLE_ATTR_INVERSE`. It ignores any other value, such as a brightness of `3` or an unknown bit, and keeps the current attribute. `console_set_scheme()` redraws the whole screen in the new colours and ignores unknown ids. `console_scheme()` returns the active id, `CONSOLE_SCHEME_GREEN` before `console_init()`.
 
 ```c
 void console_dump(void (*out)(char));
@@ -1157,7 +1157,7 @@ void robco_exc_report(uint32_t type, uint32_t pc, uint32_t lr, uint32_t spsr)
     __attribute__((noreturn));
 ```
 
-Prints `@RC stage=<name> ev=exception type=<type> pc=0x... lr=0x... spsr=0x... dfsr=0x... dfar=0x...` through `k_printf()` and halts. `lr` is the banked LR of the interrupted mode. Before `uart_init()` there is no console hook, so the report is silent.
+Prints `@RC stage=<name> ev=exception type=<type> pc=0x... lr=0x... spsr=0x... dfsr=0x... dfar=0x...` through `k_printf()` and halts. `lr` is the banked LR of the interrupted mode. If the UART is not initialised yet, it calls `uart_init(115200)` first, so a fault before `uart_init()` still prints. On an unknown board that does nothing and the report is silent.
 
 To handle SVC or FIQ yourself, define a strong `robco_vec_svc` or `robco_vec_fiq` in assembly. The library versions are weak. The undefined instruction, prefetch abort and data abort stubs are not replaceable.
 
@@ -1198,7 +1198,7 @@ Busy-waits about `count` loop iterations. The time depends on the CPU clock. Use
 int mmio_probe(uint32_t addr, uint32_t *value);
 ```
 
-Reads a 32-bit register that may not exist. Returns `0` and stores the value, or non-zero if the read took a data abort. Use it for blocks that QEMU does not model, such as PWM on `raspi0`.
+Reads a 32-bit register that may not exist. Returns `0` and stores the value, or non-zero if the read took a data abort. Use it for blocks that QEMU does not model, such as PWM on `raspi0`. It masks IRQs on the CPU for the whole probe and restores the mask after.
 
 Sharp edges of `mmio_probe()`:
 
@@ -1207,7 +1207,7 @@ Sharp edges of `mmio_probe()`:
 | Synchronous aborts only. | An asynchronous external abort arrives later and is reported as a normal exception. |
 | Only that one load. | The data abort stub compares the faulting PC with the probe instruction. Any other abort still halts. |
 | `0` does not prove the block exists. | It proves only that the read did not abort. Unmapped addresses on real hardware may return a value without an abort. |
-| Not reentrant. | One global flag records the fault. Do not probe from IRQ context while main context may probe. |
+| Not reentrant. | One global flag records the fault. Because IRQs stay masked during a probe, an IRQ handler can probe safely: it never runs inside a probe of the main flow. Do not probe from an abort handler. |
 
 From `examples/hello/main.c`:
 

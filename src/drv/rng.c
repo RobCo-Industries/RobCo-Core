@@ -73,12 +73,13 @@ int rng_read(void *buf, size_t len)
     return 0;
 }
 
-uint32_t rng_u32(void)
+int rng_u32(uint32_t *out)
 {
-    uint32_t w = 0;
+    uint32_t w;
+    int rc = rng_read(&w, sizeof(w));
 
-    if (rng_read(&w, sizeof(w)) < 0) {
-        return 0;
+    if (rc == 0) {
+        *out = w;
     }
-    return w;
+    return rc;
 }

@@ -186,6 +186,34 @@ static void fill_blocks(void)
     }
 }
 
+/* Unknown attribute values must leave the current one alone. */
+static void attr_test(void)
+{
+    console_clear();
+    console_set_attr(CONSOLE_ATTR_BRIGHT);
+    console_set_attr(3);
+    console_set_attr(8);
+    console_putc((char)FONT_CH_BLOCK);
+    console_set_attr(CONSOLE_ATTR_NORMAL);
+}
+
+/* A second fb_init() leaves the console stale until console_init() runs again. */
+static void remode(void)
+{
+    unsigned stale;
+    int rc;
+
+    rc = fb_init(800, 600, 32);
+    stale = console_cols();
+    console_puts("lost\n");
+    if (rc == 0) {
+        rc = console_init(CONSOLE_SCHEME_GREEN);
+    }
+    console_puts("new mode\n");
+    k_printf("@RC stage=console ev=remode rc=%d stale_cols=%u cols=%u rows=%u\n", rc,
+             stale, console_cols(), console_rows());
+}
+
 void robco_main(void)
 {
     const robco_board_t *b = board_get();
@@ -245,6 +273,12 @@ void robco_main(void)
             break;
         case 'g':
             glyph_grid();
+            break;
+        case 'a':
+            attr_test();
+            break;
+        case 'r':
+            remode();
             break;
         default:
             continue;

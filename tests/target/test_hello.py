@@ -60,3 +60,13 @@ def test_hello_fault(board, example_image):
         exc = events(vm, "exception")
         assert len(exc) == 1, vm.serial
         assert exc[0]["type"] == "undef"
+
+
+def test_hello_fault_before_uart_init(board, example_image):
+    """The exception report brings the UART up when the image has not."""
+    img = example_image("hello", "earlyfault", "-DHELLO_EARLY_FAULT=1")
+    with boot(img, board) as vm:
+        vm.wait_for(EXCEPTION, timeout=10)
+        assert not events(vm, "boot"), vm.serial
+        exc = events(vm, "exception")
+        assert len(exc) == 1 and exc[0]["type"] == "undef", vm.serial

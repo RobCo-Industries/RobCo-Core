@@ -19,6 +19,8 @@ typedef struct {
 /*
  * Allocates a framebuffer with one property message. Only depth 32.
  * Returns 0, or a negative FB_ERR_* and leaves the previous state alone.
+ * After a second successful call the console is stale: call console_init()
+ * again to size its grid for the new mode.
  */
 int fb_init(uint32_t width, uint32_t height, uint32_t depth);
 

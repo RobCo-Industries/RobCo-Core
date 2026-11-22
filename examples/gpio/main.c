@@ -54,8 +54,13 @@ void robco_main(void)
     k_printf("@RC stage=gpio ev=badpin rc=%d\n", bad_pin_rejected());
 
     rc = rng_init();
-    a = rng_u32();
-    b = rng_u32();
+    a = b = 0;
+    if (rc == 0) {
+        rc = rng_u32(&a);
+    }
+    if (rc == 0) {
+        rc = rng_u32(&b);
+    }
     k_printf("@RC stage=gpio ev=rng a=0x%08x b=0x%08x rc=%d\n", (unsigned)a, (unsigned)b, rc);
 
     k_printf("@RC stage=gpio ev=ready\n");

@@ -308,3 +308,23 @@ def test_console_font_override(tmp_path, selection):
         assert names == ["override-test"], vm.serial
         check_glyph_grid(Console(vm, tmp_path), load_table(str(font_c)))
         assert "ev=exception" not in vm.serial, vm.serial
+
+
+def test_console_unknown_attr_ignored(console):
+    """console_set_attr() ignores 3 and 8, so the block stays bright."""
+    bright = SCHEMES["1"][4]
+    console.cmd("a")
+    img = console.shot()
+    assert img.getpixel((4, 8)) == bright
+
+
+def test_console_reinit_after_fb_init(console):
+    """A second fb_init() makes the console stale until console_init() resizes the grid."""
+    out = console.cmd("r")
+    m = re.search(r"ev=remode (.*)\n", out)
+    assert m, out
+    info = dict(tok.split("=", 1) for tok in m.group(1).split())
+    assert info == {"rc": "0", "stale_cols": "0", "cols": "100", "rows": "37"}, out
+    head, rows = console.dump()
+    assert (head["cols"], head["rows"]) == ("100", "37")
+    assert rows[0] == "new mode" and "lost" not in "".join(rows), rows

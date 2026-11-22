@@ -4,6 +4,7 @@
 #include <robco/exc.h>
 #include <robco/irq.h>
 #include <robco/klibc.h>
+#include <robco/uart.h>
 
 static const char *const exc_names[] = {
     "reset", "undef", "svc", "prefetch_abort",
@@ -14,9 +15,18 @@ void robco_exc_report(uint32_t type, uint32_t pc, uint32_t lr, uint32_t spsr)
 {
     uint32_t dfsr;
     uint32_t dfar;
+    uint32_t clock, baud;
 
     __asm__ volatile("mrc p15, 0, %0, c5, c0, 0" : "=r"(dfsr));
     __asm__ volatile("mrc p15, 0, %0, c6, c0, 0" : "=r"(dfar));
+
+    /*
+     * A fault before uart_init() would be silent. Bring the UART up here.
+     * uart_init() does nothing on an unknown board.
+     */
+    if (uart_get_config(&clock, &baud) != 0) {
+        uart_init(115200);
+    }
 
     k_printf("\n@RC stage=%s ev=exception type=%s pc=0x%08x lr=0x%08x spsr=0x%08x "
              "dfsr=0x%08x dfar=0x%08x\n",

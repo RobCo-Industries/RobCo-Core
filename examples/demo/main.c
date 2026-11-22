@@ -45,12 +45,16 @@ static void heap_read_stats(k_heap_stats_t *st)
 static void status(uint32_t start_ms)
 {
     k_heap_stats_t st;
+    uint32_t rnd = 0;
 
+    if (rng_u32(&rnd) != 0) {
+        fail("rng_u32", 0);
+    }
     heap_read_stats(&st);
     k_printf("uptime=%ums ticks=%u used=%u free=%u allocs=%u rng=0x%08x gpio%d=%d\n",
              (unsigned)(timer_now_ms() - start_ms), (unsigned)tick_count(),
              (unsigned)st.used, (unsigned)st.free, (unsigned)st.allocs,
-             (unsigned)rng_u32(), LED_PIN, gpio_read(LED_PIN));
+             (unsigned)rnd, LED_PIN, gpio_read(LED_PIN));
 }
 
 void robco_main(void)

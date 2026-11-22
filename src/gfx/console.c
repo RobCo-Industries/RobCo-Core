@@ -25,8 +25,27 @@ static int cursor_on;
 /* Set after a write to the last column: the next printable char wraps. */
 static int wrap_pending;
 static int ready;
+/* The framebuffer the grid was sized for. Another one makes the console stale. */
+static const uint8_t *grid_fb;
+static uint32_t grid_w, grid_h;
 /* Pixel words for the active scheme: background, dim, normal, bright. */
 static uint32_t px_bg, px_level[3];
+
+/*
+ * Non-zero while console_init() has run on the active framebuffer. After
+ * another fb_init() the grid no longer matches, so the console draws
+ * nothing until console_init() runs again.
+ */
+static int con_ready(void)
+{
+    const fb_info_t *fb;
+
+    if (!ready) {
+        return 0;
+    }
+    fb = fb_get();
+    return fb != NULL && fb->addr == grid_fb && fb->width == grid_w && fb->height == grid_h;
+}
 
 static void load_scheme(unsigned scheme)
 {
@@ -191,13 +210,16 @@ int console_init(unsigned scheme)
     load_scheme(scheme);
     clear_cells();
     fb_clear(px_bg);
+    grid_fb = fb->addr;
+    grid_w = fb->width;
+    grid_h = fb->height;
     ready = 1;
     return 0;
 }
 
 void console_putc(char c)
 {
-    if (!ready) {
+    if (!con_ready()) {
         return;
     }
     cursor_hide_raw();
@@ -209,7 +231,7 @@ void console_write(const char *s, size_t n)
 {
     size_t i;
 
-    if (!ready) {
+    if (!con_ready()) {
         return;
     }
     cursor_hide_raw();
@@ -226,7 +248,7 @@ void console_puts(const char *s)
 
 void console_clear(void)
 {
-    if (!ready) {
+    if (!con_ready()) {
         return;
     }
     clear_cells();
@@ -238,7 +260,7 @@ void console_clear(void)
 
 void console_set_cursor(unsigned col, unsigned row)
 {
-    if (!ready) {
+    if (!con_ready()) {
         return;
     }
     cursor_hide_raw();
@@ -260,17 +282,17 @@ void console_get_cursor(unsigned *col, unsigned *row)
 
 unsigned console_cols(void)
 {
-    return cols;
+    return con_ready() ? cols : 0;
 }
 
 unsigned console_rows(void)
 {
-    return rows;
+    return con_ready() ? rows : 0;
 }
 
 void console_cursor_show(int on)
 {
-    if (!ready) {
+    if (!con_ready()) {
         return;
     }
     cursor_hide_raw();
@@ -280,7 +302,11 @@ void console_cursor_show(int on)
 
 void console_set_attr(unsigned attr)
 {
-    cur_attr = attr & (ATTR_LEVEL | CONSOLE_ATTR_INVERSE);
+    /* Only a defined brightness, optionally with INVERSE. Ignore the rest. */
+    if ((attr & ~(ATTR_LEVEL | CONSOLE_ATTR_INVERSE)) != 0 || (attr & ATTR_LEVEL) == ATTR_LEVEL) {
+        return;
+    }
+    cur_attr = attr;
 }
 
 unsigned console_scheme(void)
@@ -290,7 +316,7 @@ unsigned console_scheme(void)
 
 void console_set_scheme(unsigned scheme)
 {
-    if (!ready || console_scheme_info(scheme) == NULL) {
+    if (!con_ready() || console_scheme_info(scheme) == NULL) {
         return;
     }
     load_scheme(scheme);

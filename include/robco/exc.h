@@ -19,7 +19,8 @@
 #include <stdint.h>
 
 /*
- * Prints one "@RC ... ev=exception" line and halts. Used by the default
+ * Prints one "@RC ... ev=exception" line and halts. Starts the UART first
+ * if it is not initialised and the board is known. Used by the default
  * vector stubs. The FIQ and SVC stubs (robco_vec_fiq, robco_vec_svc) are
  * weak and can be replaced by a strong definition. The IRQ entry
  * (robco_vec_irq) calls robco_irq_dispatch(), which src/drv/irq_bcm.c
