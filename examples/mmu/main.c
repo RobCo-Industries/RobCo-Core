@@ -35,6 +35,18 @@ static struct {
     uint32_t tail[4];
 } shared __attribute__((aligned(CACHE_LINE_MAX)));
 
+/*
+ * A 40-byte message 32 bytes into a 64-byte line: misaligned at both ends
+ * for 32 and 64-byte lines. The guards share its lines and change between
+ * calls.
+ */
+#define GUARD_MSG_WORDS 10
+static struct {
+    uint32_t lo[8];
+    uint32_t msg[GUARD_MSG_WORDS];
+    uint32_t hi[6];
+} guarded __attribute__((aligned(CACHE_LINE_MAX)));
+
 static void fail(const char *what, int rc)
 {
     k_printf("@RC stage=" STAGE " ev=error what=%s rc=%d\n", what, rc);
@@ -94,6 +106,34 @@ static int mbox_values(uint32_t *rev, uint32_t *clk, uint32_t *raw, uint32_t see
     return bad ? -2 : 0;
 }
 
+/* Returns 0, or bit 0 for a lost guard and bit 1 for a wrong reply. */
+static int mbox_guarded(uint32_t rev, uint32_t seed)
+{
+    unsigned i;
+    int bad = 0;
+
+    for (i = 0; i < 8; i++) {
+        guarded.lo[i] = seed ^ i;
+    }
+    for (i = 0; i < 6; i++) {
+        guarded.hi[i] = ~(seed ^ i);
+    }
+    k_memset(guarded.msg, 0, sizeof(guarded.msg));
+    guarded.msg[0] = sizeof(guarded.msg);
+    guarded.msg[2] = MBOX_TAG_BOARD_REV;
+    guarded.msg[3] = 8;
+    if (mbox_call(guarded.msg) != 0 || guarded.msg[5] != rev) {
+        bad |= 2;
+    }
+    for (i = 0; i < 8; i++) {
+        bad |= guarded.lo[i] != (seed ^ i);
+    }
+    for (i = 0; i < 6; i++) {
+        bad |= guarded.hi[i] != ~(seed ^ i);
+    }
+    return bad;
+}
+
 static void draw_pattern(void)
 {
     static const uint8_t bars[8][3] = {
@@ -123,7 +163,7 @@ void robco_main(void)
 {
     const robco_board_t *b = board_get();
     uint32_t rev0, clk0, raw0, rev, clk, raw, value;
-    unsigned i, mismatches = 0;
+    unsigned i, mismatches = 0, bad_guard, bad_reply;
     uint64_t deadline;
     int rc;
 
@@ -187,6 +227,15 @@ void robco_main(void)
     }
     k_printf("@RC stage=" STAGE " ev=mbox phase=on loops=%u mismatches=%u rev=0x%08x clk=%u "
              "raw=0x%08x\n", LOOPS, mismatches, (unsigned)rev, (unsigned)clk, (unsigned)raw);
+
+    /* Misaligned message, guards rewritten before every call. */
+    for (i = 0, bad_guard = 0, bad_reply = 0; i < LOOPS; i++) {
+        rc = mbox_guarded(rev0, 0x5a000000u + i);
+        bad_guard += (rc & 1) != 0;
+        bad_reply += (rc & 2) != 0;
+    }
+    k_printf("@RC stage=" STAGE " ev=guard loops=%u bad_guard=%u bad_reply=%u\n",
+             LOOPS, bad_guard, bad_reply);
 
     /* No flush between drawing and the GPU reading the frame. */
     draw_pattern();

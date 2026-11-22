@@ -11,6 +11,7 @@ Every item needs a 3.3 V USB serial adapter on GPIO 14 and 15 for the `@RC` line
 | UART | All | `spikes/s1-uart-hello` | The hello line and the echo on every board. On a Pi 3 or Zero 2 W, the PL011 works without `dtoverlay=disable-bt`. |
 | MMU | All | `examples/mmu` | `ev=bench caches=on` with `fill_us` and `copy_us` well below the `caches=off` line |
 | Mailbox with caches | All | `examples/mmu` | `ev=mbox phase=on mismatches=0`, and the same rev, clock and raw values before, on and after |
+| Misaligned mailbox buffer with caches | All | `examples/mmu`, then the same image in a loop of many boots or with `LOOPS` raised | `ev=guard loops=100 bad_guard=0 bad_reply=0` on every run: replies stay right and the neighbouring guards survive |
 | `mmu_disable()` | All | `examples/mmu` | `ev=mmu_off` with SCTLR M, C and I clear, then `ev=mbox phase=after` |
 | SMP bit | Pi 2, Pi 3, Zero 2 W | `examples/mmu` | `smp=1` on the `ev=mmu` line. `0` means the firmware locked the register: check data cache coherence again. |
 | MMU faults, XP bit | Pi Zero or Pi 1 | `examples/mmu` variants `build/fault_ro` and `build/fault_unmapped` | A data abort with `dfar=0x01c00000`, status `0xd` and bit 11 set, then `dfar=0x60000000`, status `0x5` |

@@ -14,7 +14,7 @@ from harness.boot import boot
 PATTERN = re.compile(r"^@RC stage=mmu ev=pattern\n", re.M)
 DONE = re.compile(r"^@RC stage=mmu ev=done\n", re.M)
 EXCEPTION = re.compile(r"^@RC stage=mmu ev=exception .*\n", re.M)
-ORDER = ["boot", "mbox", "bench", "mmu", "bench", "probe", "mbox", "pattern",
+ORDER = ["boot", "mbox", "bench", "mmu", "bench", "probe", "mbox", "guard", "pattern",
          "mmu_off", "mbox", "done"]
 PART = {"raspi0": 0xB76, "raspi1ap": 0xB76, "raspi2b": 0xC07, "raspi3b": 0xD03}
 SCTLR_M, SCTLR_C, SCTLR_Z, SCTLR_I, SCTLR_XP = 1 << 0, 1 << 2, 1 << 11, 1 << 12, 1 << 23
@@ -90,6 +90,9 @@ def test_mmu(board, example_image, tmp_path):
         for key in ("rev", "clk", "raw"):
             assert before[key] == on[key] == after[key], key
         assert before["rev"] == before["raw"], vm.serial
+        guard = events(vm, "guard")[0]
+        assert guard["loops"] == "100", vm.serial
+        assert guard["bad_guard"] == "0" and guard["bad_reply"] == "0", vm.serial
         assert not events(vm, "exception") and not events(vm, "error"), vm.serial
 
 
