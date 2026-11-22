@@ -1,15 +1,11 @@
 #include <stdint.h>
 
 #include <robco/board.h>
+#include <robco/gpio.h>
 #include <robco/klibc.h>
 #include <robco/mbox.h>
 #include <robco/mmio.h>
 #include <robco/uart.h>
-
-#define GPIO_OFFSET     0x200000
-#define GPFSEL1         0x04
-#define GPPUD           0x94
-#define GPPUDCLK0       0x98
 
 #define UART_OFFSET     0x201000
 #define UART_DR         0x00
@@ -35,15 +31,12 @@ static uint32_t uart_base;
 void uart_init(uint32_t baud)
 {
     const robco_board_t *b = board_get();
-    uint32_t gpio;
-    uint32_t sel;
     uint32_t clk;
     uint32_t div64;
 
     if (b->periph_base == 0 || baud == 0) {
         return;
     }
-    gpio = b->periph_base + GPIO_OFFSET;
     uart_base = b->periph_base + UART_OFFSET;
 
     /* The firmware may leave the UART clock unset in the mailbox. */
@@ -57,21 +50,13 @@ void uart_init(uint32_t baud)
     }
     mmio_write(uart_base + UART_LCRH, 0);
 
-    /* GPIO14/15 to ALT0 (bits 14:12 and 17:15 of GPFSEL1). */
-    sel = mmio_read(gpio + GPFSEL1);
-    sel &= ~((7u << 12) | (7u << 15));
-    sel |= (4u << 12) | (4u << 15);
-    mmio_write(gpio + GPFSEL1, sel);
+    /* GPIO14/15 to ALT0. */
+    gpio_set_function(14, GPIO_FN_ALT0);
+    gpio_set_function(15, GPIO_FN_ALT0);
 
-    /* No pulls on GPIO14/15. BCM2711 replaced this sequence, skip it there. */
-    if (b->soc != ROBCO_SOC_BCM2711) {
-        mmio_write(gpio + GPPUD, 0);
-        mmio_delay(150);
-        mmio_write(gpio + GPPUDCLK0, (1u << 14) | (1u << 15));
-        mmio_delay(150);
-        mmio_write(gpio + GPPUD, 0);
-        mmio_write(gpio + GPPUDCLK0, 0);
-    }
+    /* No pulls on GPIO14/15. gpio_set_pull() refuses BCM2711, which is fine. */
+    gpio_set_pull(14, GPIO_PULL_NONE);
+    gpio_set_pull(15, GPIO_PULL_NONE);
 
     /* divisor = clk / (16 * baud), in 1/64 units, rounded. */
     div64 = (clk * 4u + baud / 2u) / baud;
