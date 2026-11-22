@@ -9,7 +9,8 @@ QEMU is 8.x and its raspi machine models differ.
 - Ubuntu 24.04
 - QEMU 10.1.2 in `/usr/local`: `qemu-system-arm` and
   `qemu-system-aarch64` only, built from the release tarball with a
-  pinned SHA-256. No GUI, no docs, no tools, no slirp.
+  pinned SHA-256. No GUI, no docs, no tools, no slirp. Pixman is
+  enabled because QMP `screendump` needs it; the image build checks it.
 - `gcc-arm-none-eabi`, `binutils-arm-none-eabi`
 - `make`, `git`, `mtools`, `dosfstools`
 - `python3`, `python3-venv`, `python3-pip`, `ca-certificates`

@@ -24,6 +24,7 @@ RUN ./configure \
       --target-list=arm-softmmu,aarch64-softmmu \
       --without-default-features \
       --enable-fdt=system \
+      --enable-pixman \
       --disable-docs \
       --disable-tools \
       --disable-guest-agent \
@@ -45,4 +46,7 @@ RUN apt-get update \
 COPY --from=qemu-build /out/usr/local/ /usr/local/
 RUN qemu-system-arm --version \
  && qemu-system-arm -M help | grep raspi0 \
- && qemu-system-aarch64 -M help | grep raspi3b
+ && qemu-system-aarch64 -M help | grep raspi3b \
+ && printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"query-commands"}' '{"execute":"quit"}' \
+      | timeout 20 qemu-system-arm -M raspi0 -display none -S -monitor none -serial null -qmp stdio \
+      | grep -q '"screendump"'
