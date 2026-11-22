@@ -154,6 +154,7 @@ Every macro the library reads, with its default when you leave it out:
 | `ROBCO_STACK_UND_SIZE` | `0x1000` | `ld/image.ld.S` | Undefined instruction stack |
 | `ROBCO_CONSOLE_MAX_COLS` | `100` | `console.h` | Screen console columns |
 | `ROBCO_CONSOLE_MAX_ROWS` | `40` | `console.h` | Screen console rows |
+| `ROBCO_FONT` | `ROBCO_FONT_FIXEDSYS` | `font.h` | Built-in console font: Fixedsys Excelsior, or `ROBCO_FONT_SPLEEN` for Spleen. See [FONTS.md](../FONTS.md). |
 
 `RIMG_BOOT_EXAMPLE` has the slot `0x00008000` to `0x000FFFFF`. A real stage uses its own subtype, such as `RIMG_BOOT_BIOS`. The subtypes and their slots are in [API.md](./API.md#image-header-rimgh).
 

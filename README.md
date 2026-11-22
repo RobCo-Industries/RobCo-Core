@@ -17,7 +17,7 @@ Two boot chains will use it:
 
 - Startup, board detection, the mailbox, exception reports and the stage handoff.
 - Drivers: PL011 UART, system timer, interrupt controller, periodic tick, GPIO, reboot and halt, hardware RNG, framebuffer.
-- A screen console with four colour schemes. See [FONTS.md](./docs/FONTS.md) for its font.
+- A screen console with four colour schemes and two built-in 8x16 fonts, Fixedsys Excelsior by default and Spleen. See [FONTS.md](./docs/FONTS.md).
 - Hardware-independent code: klibc, `k_printf`, CRC-32, a heap, `rimg` image validation and the boot info block.
 - `tools/rimg.py` to seal and check images. Every build seals its image.
 - Examples in `examples/`, a QEMU test harness, host unit tests, target tests on four QEMU boards, a canary suite and a pinned CI container.

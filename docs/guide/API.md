@@ -437,12 +437,14 @@ Context rules:
 | Constant | Value | Meaning |
 |---|---|---|
 | `TICK_MAX_CALLBACKS` | `4` | Callback slots |
+| `TICK_HZ_MIN` | `1u` | Lowest accepted rate |
+| `TICK_HZ_MAX` | `10000u` | Highest accepted rate, a 100 microsecond period |
 
 ```c
 int tick_init(uint32_t hz);
 ```
 
-Registers the channel 1 handler, arms the first match and enables `IRQ_TIMER1`. Returns `0`, or `-1` if `hz` is 0, above 10000, the tick already runs, or IRQ 1 is taken. It leaves the CPU IRQ mask as it was: call `irq_cpu_enable()` afterwards. Call `irq_init()` first. Without it, `irq_enable()` does nothing, the tick never fires, and a second `tick_init()` returns `-1`. There is no way to stop the tick.
+Registers the channel 1 handler, arms the first match and enables `IRQ_TIMER1`. Returns `0`, or `-1` if `hz` is outside `TICK_HZ_MIN` to `TICK_HZ_MAX`, the tick already runs, or IRQ 1 is taken. It leaves the CPU IRQ mask as it was: call `irq_cpu_enable()` afterwards. Call `irq_init()` first. Without it, `irq_enable()` does nothing, the tick never fires, and a second `tick_init()` returns `-1`. There is no way to stop the tick.
 
 ```c
 uint32_t tick_count(void);
@@ -450,7 +452,7 @@ uint32_t tick_missed(void);
 uint32_t tick_ms(void);
 ```
 
-`tick_count()` is the number of periods since `tick_init()`, counted even when the handler ran late. `tick_missed()` counts periods that passed without a callback run. `tick_ms()` converts the count to milliseconds, or returns `0` before `tick_init()`. All three are safe from any context.
+`tick_count()` is the number of periods since `tick_init()`, counted even when the handler ran late. `tick_missed()` counts periods that passed without a callback run. `tick_ms()` converts the count to milliseconds with the programmed period, or returns `0` before `tick_init()`. It counts past a `tick_count()` wrap and wraps itself at 2^32 ms. `tick_count()` and `tick_missed()` are safe from any context. `tick_ms()` uses a 64-bit division: keep it out of IRQ context.
 
 ```c
 int tick_register(void (*fn)(void));
@@ -463,8 +465,15 @@ Sharp edges:
 | Edge | Detail |
 |---|---|
 | Callbacks run in IRQ context. | IRQs are masked. Do not block, do not call the heap, keep them short. |
-| One run per interrupt. | If callbacks or a masked section make the handler late, it counts the skipped periods in `tick_count()` and `tick_missed()` and runs the callbacks once. |
-| Period resolution. | The period is `1000000 / hz` microseconds, rounded down. |
+| At most one run per interrupt. | If callbacks or a masked section make the handler late, it counts the skipped periods in `tick_count()` and `tick_missed()` and runs the callbacks once. |
+| Period resolution. | The period is `1000000 / hz` microseconds, rounded down. 7000 Hz gives 142 microseconds, about 7042 Hz. `tick_ms()` uses the real period, so it stays exact. |
+
+```c
+uint32_t tick_period_us_for(uint32_t hz);
+uint64_t tick_to_ms(uint64_t ticks, uint32_t period_us);
+```
+
+Pure functions in `src/lib/tick_conv.c`, tested on the host. `tick_period_us_for()` returns the period in microseconds for `hz`, or `0` if `hz` is out of range. `tick_to_ms()` converts `ticks` periods of `period_us` to milliseconds, rounded down. It is exact for `ticks` below 2^44.
 
 From `examples/tick/main.c`:
 
@@ -774,7 +783,11 @@ console_set_attr(CONSOLE_ATTR_NORMAL);
 
 ## Console font (`font.h`)
 
-`font.h` gives the 8x16 glyph table the console draws with. You rarely call it directly. Which font the table holds and how to build another one is in [FONTS.md](../FONTS.md).
+`font.h` gives the 8x16 glyph table the console draws with. You rarely call it directly. The library has two built-in fonts. Set `ROBCO_FONT` in `robco_config.h` to pick one. The sources, licences and how to build another table are in [FONTS.md](../FONTS.md).
+
+| Config macro | Default | Meaning |
+|---|---|---|
+| `ROBCO_FONT` | `ROBCO_FONT_FIXEDSYS` | `ROBCO_FONT_FIXEDSYS` (1) for Fixedsys Excelsior, `ROBCO_FONT_SPLEEN` (2) for Spleen. Any other value stops the build. |
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -795,7 +808,7 @@ Returns 16 bytes, one per row, bit 7 on the left. Takes printable ASCII, a CP437
 const char *font8x16_name(void);
 ```
 
-Short name of the font the table was built from.
+Short name of the font the table was built from: `fixedsys-excelsior` or `spleen` for the built-in tables.
 
 ## Heap (`alloc.h`)
 
@@ -971,7 +984,7 @@ int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
                   const rimg_header_t **out);
 ```
 
-Runs [validation steps 1 to 6](../spec/IMAGE_FORMAT.md#validation) on an image in memory. `avail` is the number of readable bytes at `image`. Returns `RIMG_OK` and sets `*out` (if not NULL) to the header, or the code of the first failed step. Fewer than `0x60` bytes gives `RIMG_E_IO`. `expect` may be NULL. It touches no hardware and is safe from any context.
+Runs [validation steps 1 to 6](../spec/IMAGE_FORMAT.md#validation) on an image in memory. `avail` is the number of readable bytes at `image`, and the image's `file_size` must not exceed it. Returns `RIMG_OK` and sets `*out` (if not NULL) to the header, or the code of the first failed step. Fewer than `0x60` bytes gives `RIMG_E_IO`. `expect` may be NULL. It touches no hardware and is safe from any context.
 
 ```c
 const char *rimg_strerror(int code);
@@ -1020,6 +1033,7 @@ Loading an image from the SD card is [specified](../spec/BOOT_PROTOCOL.md#findin
 | `uart_type` | `ROBCO_UART_NONE` 0, `ROBCO_UART_PL011` 1, `ROBCO_UART_MINI` 2 |
 | `boot_dev` | `ROBCO_BOOT_DEV_UNKNOWN` 0, `ROBCO_BOOT_DEV_EMMC` 1, `ROBCO_BOOT_DEV_SDHOST` 2 |
 | Firmware blob tags | `ROBCO_FDT_MAGIC` `0xD00DFEEDu`, `ROBCO_ATAG_CORE` `0x54410001u`, `ROBCO_ATAG_NONE` `0x00000000u` |
+| `bootinfo_merge()` groups | `BOOTINFO_OWN_FW_REGS` bit 0, `BOOTINFO_OWN_FW_BLOB` bit 1, `BOOTINFO_OWN_UART` bit 2, `BOOTINFO_OWN_FB` bit 3, `BOOTINFO_OWN_CON` bit 4, `BOOTINFO_OWN_BOOT_DEV` bit 5 |
 | Validation results | `BOOTINFO_OK` 0, `BOOTINFO_E_MAGIC` -1, `BOOTINFO_E_VERSION` -2, `BOOTINFO_E_SIZE` -3, `BOOTINFO_E_CRC` -4 |
 
 | Config macro | Default | Meaning |
@@ -1063,7 +1077,29 @@ Copies the FDT or ATAGS found at the saved firmware r2 to `dest`. Returns the si
 void bootinfo_build(robco_bootinfo_t *bi, uint32_t stage_id);
 ```
 
-Fills `bi` for the next stage and seals it. With an inherited block it keeps the firmware registers, the blob copy and the `boot_*` fields. Cold, it takes them from the entry registers and the last `bootinfo_copy_fw_blob()`, and sets `ROBCO_BOOT_COLD`. It then refreshes the board, UART, framebuffer and console fields from the components the image links. After the call `bootinfo_get()` returns `bi`.
+Fills `bi` for the next stage and seals it, following the carry-over rule below. Cold, every field comes from this stage: the entry registers, the last `bootinfo_copy_fw_blob()`, `ROBCO_BOOT_COLD`, and the UART, framebuffer and console if this stage set them up, else `0`. After the call `bootinfo_get()` returns `bi`.
+
+Carry-over rule: a field that describes state this stage set up itself comes from this stage. Any other field is carried over from the inherited block, because that state still holds after the handoff.
+
+| Field group | `own_groups` bit | Comes from this stage when |
+|---|---|---|
+| `stage`, board fields, `ROBCO_CAP_LOCAL_INTC` | None | Always |
+| `fw_r0` to `fw_r2` | `BOOTINFO_OWN_FW_REGS` | The stage is cold |
+| `fdt_addr`, `fdt_size` | `BOOTINFO_OWN_FW_BLOB` | It called `bootinfo_copy_fw_blob()` |
+| `uart_*`, `ROBCO_CAP_PL011`, `ROBCO_CAP_MINIUART` | `BOOTINFO_OWN_UART` | It configured the UART |
+| `fb_*`, `ROBCO_CAP_FB` | `BOOTINFO_OWN_FB` | It called `fb_init()` |
+| `con_*` | `BOOTINFO_OWN_CON` | Its console is active |
+| `boot_dev`, `boot_part_lba`, `boot_flags`, `boot_path`, `cmdline` | `BOOTINFO_OWN_BOOT_DEV` | The stage is cold |
+| Other `caps` bits | None | Never, they are carried over |
+
+A new framebuffer without a new console clears `con_cols`, `con_rows`, `con_cx` and `con_cy`, since the old console drew on the old framebuffer. `con_scheme` stays. A loader that picks a boot device writes the `boot_*` fields after `bootinfo_build()` and calls `bootinfo_seal()`.
+
+```c
+void bootinfo_merge(robco_bootinfo_t *out, const robco_bootinfo_t *prev,
+                    const robco_bootinfo_t *own, uint32_t own_groups);
+```
+
+Pure function in `src/lib/bootinfo.c`, used by `bootinfo_build()` and tested on the host. Writes to `out` the merge of `prev`, the inherited block, and `own`, the fields this stage filled. `own_groups` holds the `BOOTINFO_OWN_*` bits of the groups this stage set up. With `prev` NULL, `out` is a copy of `own`. `out` may equal `prev` or `own`. It does not seal.
 
 From `examples/chain2/main.c`, a stage that also runs alone:
 
