@@ -85,7 +85,7 @@ robco_vec_svc:
  * stack, calls robco_irq_dispatch(pc, spsr) and returns to the
  * interrupted code. IRQs stay masked throughout: no nesting. Eight
  * words are pushed so sp keeps the 8-byte alignment the AAPCS needs.
- * Weak: src/arch/umode.S replaces it with a copy that can end a user task.
+ * Weak: src/arch/umode_entry.S replaces it with a copy that can end a user task.
  */
     .weak   robco_vec_irq
 robco_vec_irq:
