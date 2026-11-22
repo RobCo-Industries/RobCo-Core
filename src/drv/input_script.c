@@ -19,13 +19,16 @@
  * Any other first word goes to the handler of input_script_set_handler(),
  * if one is set. Its output lines come first, each with "| " in front,
  * then the status line.
+ *
+ * src/lib/input_line.c reads the lines. Each line loses its leading and
+ * trailing blanks first, so built-in and project commands see the same
+ * words. A blank line gets no reply. A line too long for the buffer gets
+ * one "err line too long" when it ends, and the next line reads normally.
  */
 
 #define DIAL_MAX    1000000
 
-static char line[INPUT_SCRIPT_LINE_MAX];
-static unsigned len;
-static int overflow;
+static input_line_t rd;
 static int waiting;
 static uint32_t wait_until;
 static int started;
@@ -89,18 +92,6 @@ static unsigned key_code(const char *name)
     return INPUT_KEY_NONE;
 }
 
-/* Splits "word rest" in place. Returns the rest, after one space, or "". */
-static char *split(char *s)
-{
-    while (*s && *s != ' ') {
-        s++;
-    }
-    if (*s == ' ') {
-        *s++ = 0;
-    }
-    return s;
-}
-
 /* reply->write for handlers: prefixes every line with "| ". */
 static void handler_write(const char *text)
 {
@@ -122,26 +113,12 @@ static const char *run_handler(char *cmd)
     static char buf[INPUT_SCRIPT_LINE_MAX + 8];
     char *argv[INPUT_SCRIPT_ARGS_MAX + 1];
     input_script_reply_t r;
-    int argc = 0;
+    int argc = input_line_split(cmd, argv, INPUT_SCRIPT_ARGS_MAX);
     int ret;
-    char *s = cmd;
 
-    while (*s) {
-        while (*s == ' ') {
-            *s++ = 0;
-        }
-        if (!*s) {
-            break;
-        }
-        if (argc == INPUT_SCRIPT_ARGS_MAX) {
-            return "err too many words";
-        }
-        argv[argc++] = s;
-        while (*s && *s != ' ') {
-            s++;
-        }
+    if (argc < 0) {
+        return "err too many words";
     }
-    argv[argc] = 0;
     r.write = handler_write;
     r.reason = 0;
     out_bol = 1;
@@ -164,7 +141,8 @@ void input_script_set_handler(input_script_handler_t fn, void *ctx)
     handler = fn;
 }
 
-/* Returns the reply, or 0 when the reply comes later (wait). */
+/* Runs a trimmed, non-empty line. Returns the reply, or 0 when the reply
+ * comes later (wait). */
 static const char *run(char *cmd)
 {
     static char buf[48];
@@ -173,10 +151,10 @@ static const char *run(char *cmd)
     int32_t n;
 
     k_strncpy(copy, cmd, sizeof(copy));
-    arg = split(cmd);
+    arg = input_line_word(cmd);
 
     if (k_strcmp(cmd, "key") == 0) {
-        char *val = split(arg);
+        char *val = input_line_word(arg);
         unsigned code = key_code(arg);
 
         if (code == INPUT_KEY_NONE) {
@@ -218,30 +196,12 @@ static const char *run(char *cmd)
         k_snprintf(buf, sizeof(buf), "ok pushed=%u dropped=%u",
                    (unsigned)pushed, (unsigned)dropped);
         return buf;
-    } else if (handler != 0 && *cmd) {
+    } else if (handler != 0) {
         return run_handler(copy);
     } else {
         return "err unknown command";
     }
     return full ? "err full" : "ok";
-}
-
-static void end_line(void)
-{
-    const char *r;
-
-    if (overflow) {
-        r = "err line too long";
-    } else {
-        line[len] = 0;
-        full = 0;
-        r = run(line);
-    }
-    if (r) {
-        reply(r);
-    }
-    len = 0;
-    overflow = 0;
 }
 
 /* Main context, from input_poll(). */
@@ -257,14 +217,21 @@ static void script_service(void)
         reply("ok");
     }
     while (!waiting && (c = uart_mini_poll()) >= 0) {
-        if (c == '\r' || c == '\n') {
-            if (len || overflow) {
-                end_line();
-            }
-        } else if (len < sizeof(line) - 1) {
-            line[len++] = (char)c;
-        } else {
-            overflow = 1;
+        const char *r = 0;
+
+        switch (input_line_feed(&rd, (char)c)) {
+        case INPUT_LINE_LONG:
+            r = "err line too long";
+            break;
+        case INPUT_LINE_READY:
+            full = 0;
+            r = run(rd.line);
+            break;
+        default:
+            continue;
+        }
+        if (r) {
+            reply(r);
         }
     }
 }
@@ -279,8 +246,7 @@ int input_script_start(void)
     if (!uart_mini_ready()) {
         return INPUT_ERR_NO_UART;
     }
-    len = 0;
-    overflow = 0;
+    input_line_init(&rd);
     waiting = 0;
     ret = input_add_poller(script_service);
     if (ret == 0) {

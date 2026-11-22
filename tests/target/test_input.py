@@ -218,6 +218,13 @@ def test_input_script_handler(board, example_image):
         r = vm.script("board")
         assert r == ("ok", [f"soc={soc}", f"base={base}"]), vm.serial2
         assert vm.script("board  ") == ("ok", [f"soc={soc}", f"base={base}"]), vm.serial2
+        # Leading blanks reach the handler too, and a blank line gets no reply.
+        assert vm.script(" board") == ("ok", [f"soc={soc}", f"base={base}"]), vm.serial2
+        assert vm.script("\t board \t") == ("ok", [f"soc={soc}", f"base={base}"]), vm.serial2
+        before = len(vm.lines(1))
+        vm.send(" \t \n", port=1)
+        assert vm.script("  stats").status.startswith("ok pushed="), vm.serial2
+        assert len(vm.lines(1)) == before + 1, vm.serial2
         assert vm.script("board extra") == ("err board takes no arguments", []), vm.serial2
         assert vm.script("bogus 1 2") == ("err unknown command", []), vm.serial2
         assert vm.script("bogus 1 2 3 4 5 6 7 8") == ("err too many words", []), vm.serial2

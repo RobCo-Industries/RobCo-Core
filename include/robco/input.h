@@ -309,4 +309,42 @@ typedef int (*input_script_handler_t)(int argc, char *argv[], input_script_reply
  */
 void input_script_set_handler(input_script_handler_t fn, void *ctx);
 
+
+/* ---- Pure script line reader, src/lib/input_line.c ---- */
+
+/* Blanks are spaces and tabs. */
+typedef struct input_line {
+    char buf[INPUT_SCRIPT_LINE_MAX];
+    unsigned len;
+    int overflow;
+    char *line;     /* the line after INPUT_LINE_READY, inside buf */
+} input_line_t;
+
+#define INPUT_LINE_NONE     0   /* no line yet, or a blank line */
+#define INPUT_LINE_READY    1   /* l->line holds the trimmed line, not empty */
+#define INPUT_LINE_LONG     2   /* the line was over INPUT_SCRIPT_LINE_MAX - 1 bytes */
+
+void input_line_init(input_line_t *l);
+
+/*
+ * Feeds one byte. CR or LF ends a line. A blank line gives
+ * INPUT_LINE_NONE. A long line gives INPUT_LINE_LONG once, at its end,
+ * and the next byte starts a new line. l->line stays valid until the
+ * next call.
+ */
+int input_line_feed(input_line_t *l, char c);
+
+/* Cuts leading blanks, trailing blanks and CR. Returns the new start. */
+char *input_line_trim(char *s);
+
+/* Ends the first word of s in place. Returns what follows its blanks. */
+char *input_line_word(char *s);
+
+/*
+ * Splits s in place at runs of blanks into argv[0..argc-1] and sets
+ * argv[argc] to NULL: argv holds max + 1 entries. Returns argc, 0 for
+ * a blank s, or -1 for more than max words.
+ */
+int input_line_split(char *s, char *argv[], int max);
+
 #endif
