@@ -1,0 +1,77 @@
+# Hardware validation
+
+QEMU runs every target test, but it cannot prove the items below. Run them on a real Pi Zero or Pi 1 (BCM2835) and on a real Pi 3 or Zero 2 W (BCM2837). A Pi 2 (BCM2836) adds the Cortex-A7 cases. Write each result back into the spec, as [TESTING.md](./spec/TESTING.md#hardware-checklists) describes.
+
+Every item needs a 3.3 V USB serial adapter on GPIO 14 and 15 for the `@RC` lines. [GETTING_STARTED.md](./guide/GETTING_STARTED.md#put-it-on-an-sd-card) shows how to build the card and wire the adapter. The groups below list what you need on top of it.
+
+## Serial adapter only
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| UART | All | `spikes/s1-uart-hello` | The hello line and the echo on every board. On a Pi 3 or Zero 2 W, the PL011 works without `dtoverlay=disable-bt`. |
+| MMU | All | `examples/mmu` | `ev=bench caches=on` with `fill_us` and `copy_us` well below the `caches=off` line |
+| Mailbox with caches | All | `examples/mmu` | `ev=mbox phase=on mismatches=0`, and the same rev, clock and raw values before, on and after |
+| `mmu_disable()` | All | `examples/mmu` | `ev=mmu_off` with SCTLR M, C and I clear, then `ev=mbox phase=after` |
+| SMP bit | Pi 2, Pi 3, Zero 2 W | `examples/mmu` | `smp=1` on the `ev=mmu` line. `0` means the firmware locked the register: check data cache coherence again. |
+| MMU faults, XP bit | Pi Zero or Pi 1 | `examples/mmu` variants `build/fault_ro` and `build/fault_unmapped` | A data abort with `dfar=0x01c00000`, status `0xd` and bit 11 set, then `dfar=0x60000000`, status `0x5` |
+| Audio probe | All | `examples/audio` | `ev=backend name=pwm probe_pwm=ok err=0` and the expected pins |
+| Mini UART script channel | Pi 3 or Zero 2 W first | `examples/input`, with the adapter on GPIO 14 and 15 at ALT5 and `core_freq` fixed in `config.txt` | `ready`, then `ok` answers at 115200 baud |
+| Input stuck-line guard | All, nothing wired | `examples/input` | `ev=gpio status=active`, not `disabled_stuck`, since the pull-ups read high |
+
+## HDMI screen
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| Framebuffer with caches | All | `examples/mmu` | 8 bars and 3 corner squares, no stale or torn rows |
+| Console with caches | All | `examples/demo` variant `build/mmu` | Console text appears as it is written |
+| Spike baseline | All | `spikes/s3-fb-mmu` | The same screen, `ev=fill` times and `smp_write=` on the `ev=mmu` line |
+| VC bus alias | All | `examples/console` | The console draws. The alias in [BOARD_SUPPORT.md](./spec/BOARD_SUPPORT.md#detection-table) is right. |
+
+## SD card
+
+Use a spare card: `w` in `sdraw` overwrites raw blocks.
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| SD pin routing | Pi 3, Zero 2 W, Zero W. Pi Zero or Pi 1 as control. | `spikes/s2-sd-read`, then `examples/sdraw` | Before the remux `pins=48-53 fsel=444444` and `pins=34-39 fsel=777777`, then `fsel=777777` on 48 to 53, `ev=card`, and `ev=read ok=1 sig=0xaa55` |
+| SD init and transfers | All, with an SDSC and an SDHC card | `examples/sdraw`: `i`, `r 0 1`, `w` and `v` on a scratch block, `u`, `s` | `ev=card rc=ok`, a clock near 25000000, `mismatches=0`, the same CRC from `r` and `u` |
+| SD retries | All, an old card helps | `examples/sdraw`, `r` and `w` of up to 256 blocks | No `rc=io` or `rc=timeout`, and correct data |
+| No card | All | `examples/sdraw` with the slot empty | `rc=nocard` at once, then `rc=nomedia` for `r 0 1` |
+| FAT on a real card | All | No example yet | Mount the boot partition with `part_scan()` and `part_open()`, read `config.txt`, and cut the power during `fs_write_file_atomic()` |
+| Handoff with caches | All | `examples/chain1` variants `build/mmu` and `build/mmufb` | The next stage accepts the boot info and runs |
+
+## Buttons and encoder
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| GPIO buttons | All | `examples/input`, buttons on the pins in [BOARD_SUPPORT.md](./spec/BOARD_SUPPORT.md#pins) | `ev=gpio status=active`, one press and one release per click |
+| Rotary dial | All | `examples/input` | One dial event per detent, positive for clockwise. Swap A and B if the sign is wrong. |
+
+## Speaker or piezo
+
+Use the audio jack on a Pi 1, 2 or 3. On a Pi Zero, add a filter or a piezo on GPIO 18, as [the audio wiring](./guide/api/audio.md#audio-audioh) shows.
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| PWM sound | All | `examples/audio` | The beep, the arpeggio, the tune at 60% volume, the looped alarm for about 700 ms, and the 440 Hz tone cut by 880 Hz. Keys `b`, `s`, `t`, `l`, `i` and `a` replay each case. |
+| Forced PWM | A board where the probe says `ignored` | `examples/audio` variant `build/pwm` | The sound still plays |
+
+## RTC module
+
+Use a DS1338, or a DS1307 module with 3.3 V pull-ups. A logic analyser helps.
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| I2C rate and errors | All. The Pi 3 core clock varies. | `examples/rtc` | SCL at or below 100 kHz, the scan finds `0x68`, `errors=0` |
+| DS1307 behaviour | All | `examples/rtc` | `ev=rtc present=1 running=1`, the set time reads back, the time moves on by 2 s, `ev=nvram ... same=1`, `ev=h12 ... hour=23` |
+| New chip | Any | `examples/rtc` on a chip never set | `RTC_ERR_HALTED` until `rtc_set()` runs |
+| Drift and battery | Any | `examples/rtc` over hours, with a power cut | The software clock stays near the RTC, and the RTC keeps time through the cut |
+
+## SPI device
+
+Use a W25Qxx flash, a logic analyser, or both.
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| SPI data path | All | `examples/spi` with a flash on CE0 | The JEDEC id of the part, such as `ef40xx` for Winbond |
+| SPI signalling | All | `examples/spi` with a logic analyser | Rates at or below 1 MHz, the clock polarity and phase of each mode, chip select levels with and without `SPI_CS_HIGH`, CE1, the gap every 16 bytes, no hang |
