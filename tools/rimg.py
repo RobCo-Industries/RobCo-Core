@@ -265,9 +265,20 @@ def seal(data, name=None, image_version=None, title=None, icon=None):
 
 def branch_to(offset):
     """The ARM instruction `b offset`, placed at address 0."""
-    if offset < 8 or offset % 4:
-        raise RimgError(E_VERSION, f"entry offset {offset:#x} is not a word after 0x8")
-    return 0xEA000000 | (((offset - 8) >> 2) & 0x00FFFFFF)
+    if offset % 4:
+        raise RimgError(E_VERSION, f"branch target {offset:#x} is not word aligned")
+    words = (offset - 8) >> 2
+    # B holds a signed 24-bit word offset from PC + 8.
+    if not -(1 << 23) <= words < (1 << 23):
+        raise RimgError(E_VERSION, f"branch target {offset:#x} is out of range for b")
+    return 0xEA000000 | (words & 0x00FFFFFF)
+
+
+def check_entry(entry, payload_len):
+    """Raises ValueError unless entry is a word offset inside the payload."""
+    if entry < 0 or entry % 4 or entry + 4 > payload_len:
+        raise ValueError(f"entry offset {entry:#x} must be a multiple of 4 and point at"
+                         f" a word inside the {payload_len}-byte payload")
 
 
 def pack(payload, magic, subtype, load_addr, name=None, image_version=0, abi_version=None,
@@ -285,6 +296,10 @@ def pack(payload, magic, subtype, load_addr, name=None, image_version=0, abi_ver
         meta = HAS_META[magic]
     if not meta and (title is not None or icon is not None):
         raise RimgError(E_VERSION, "a title or an icon needs META")
+    try:
+        check_entry(entry, len(payload))
+    except ValueError as e:
+        raise RimgError(E_SIZE, str(e))
     code = HDR_END + (META_SIZE if meta else 0)
     size = code + len(payload)
     if abi_version is None:
@@ -366,7 +381,8 @@ def main(argv=None):
     k.add_argument("--abi-version", type=parse_abi)
     k.add_argument("--mem-size", type=int_arg)
     k.add_argument("--entry", type=int_arg, default=0,
-                   help="entry point as an offset into the payload")
+                   help="entry point as an offset into the payload: a multiple of 4,"
+                        " at least 4 bytes before its end")
     m = k.add_mutually_exclusive_group()
     m.add_argument("--meta", dest="meta", action="store_true", default=None)
     m.add_argument("--no-meta", dest="meta", action="store_false")
@@ -389,6 +405,11 @@ def main(argv=None):
         data = read_file(args.file)
         if args.cmd in ("seal", "pack"):
             icon = None if args.icon is None else parse_icon(read_file(args.icon))
+            if args.cmd == "pack":
+                try:
+                    check_entry(args.entry, len(data))
+                except ValueError as e:
+                    p.error(str(e))
             if args.cmd == "seal":
                 out = seal(data, args.name, args.image_version, args.title, icon)
             else:

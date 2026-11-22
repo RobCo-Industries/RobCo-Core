@@ -387,7 +387,6 @@ def test_pack_entry_offset(tmp_path):
     (["--magic", "BOOT", "--subtype", "7", "--load-addr", "0x8000", "--meta"], "META flag"),
     (["--magic", "ROM1", "--subtype", "0", "--load-addr", "0x400000", "--no-meta"], "META flag"),
     (["--magic", "ROM1", "--subtype", "0", "--load-addr", "0x500000"], "bounds"),
-    (["--magic", "BOOT", "--subtype", "7", "--load-addr", "0x8000", "--entry", "2"], "entry"),
 ])
 def test_pack_refuses_bad_images(tmp_path, args, msg):
     payload = write(tmp_path, b"abcd", "payload.bin")
@@ -395,6 +394,34 @@ def test_pack_refuses_bad_images(tmp_path, args, msg):
     r = run("pack", payload, "-o", out, *args)
     assert r.returncode == 1 and msg in r.stderr, r.stderr
     assert not out.exists()
+
+
+@pytest.mark.parametrize("entry", ["-4", "2", "0x40", "0x44", "0x1000"])
+def test_pack_rejects_bad_entry(tmp_path, entry):
+    payload = write(tmp_path, bytes(64), "payload.bin")
+    out = tmp_path / "out.img"
+    r = run("pack", payload, "-o", out, "--magic", "BOOT", "--subtype", "7",
+            "--load-addr", "0x8000", "--entry", entry)
+    assert r.returncode == rimg.EX_USAGE and "entry offset" in r.stderr, r.stderr
+    assert not out.exists()
+    with pytest.raises(rimg.RimgError):
+        rimg.pack(bytes(64), "BOOT", 7, 0x8000, entry=int(entry, 0))
+
+
+@pytest.mark.parametrize("entry, word", [(0, 0xEA000016), (0x3C, 0xEA000025)])
+def test_pack_entry_bounds_that_work(tmp_path, entry, word):
+    data = rimg.pack(bytes(64), "BOOT", 7, 0x8000, entry=entry)
+    assert struct.unpack_from("<I", data, 0)[0] == word  # b 0x60 + entry
+
+
+def test_branch_range():
+    assert rimg.branch_to(8) == 0xEA000000
+    assert rimg.branch_to(0) == 0xEAFFFFFE
+    assert rimg.branch_to(8 + 4 * ((1 << 23) - 1)) == 0xEA7FFFFF
+    assert rimg.branch_to(8 - 4 * (1 << 23)) == 0xEA800000
+    for bad in (8 + 4 * (1 << 23), 8 - 4 * (1 << 23) - 4, 6):
+        with pytest.raises(rimg.RimgError):
+            rimg.branch_to(bad)
 
 
 def test_pack_usage(tmp_path):

@@ -244,12 +244,12 @@ rimg.py pack PAYLOAD -o OUT --magic BOOT|ROM1|ROBCO78 --subtype N --load-addr A
 
 Wraps a raw payload into a complete image, for tests and for builds that do not use `start.S`. The payload is code linked for `load_addr + 0x60`, or `load_addr + 0x120` with a META block. `pack`:
 
-1. Writes word 0 as an ARM `b` to the payload start plus `--entry`, 0 by default.
+1. Writes word 0 as an ARM `b` to the payload start plus `--entry`, 0 by default. `--entry` must be a multiple of 4 and point at a whole word inside the payload. `pack` rejects any other value as a usage error. `verify` and the C validator do not check the branch, since the stub encoding is not fixed.
 2. Writes the header: the magic, `hdr_version` 1, `hdr_size` 64, `load_addr`, `subtype`, `name`, `image_version` and `abi_version`. The ABI version defaults to the major of the magic with minor 0. `file_size` is the image length. `mem_size` defaults to it.
 3. Adds the META block when the magic needs one, `ROM1` and `ROBCO78`, or as `--meta` and `--no-meta` say. The title is empty and the icon blank unless given, with the same rules as `seal`.
 4. Seals the result as `seal` does, so validation steps 1 to 6 must pass. It writes nothing otherwise.
 
-`pack` exits 0 on success and 1 on a bad input.
+`pack` exits 0 on success, 64 on a usage error such as a bad `--entry`, and 1 on a bad input.
 
 ### info
 
