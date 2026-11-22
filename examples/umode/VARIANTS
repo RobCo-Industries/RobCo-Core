@@ -1,0 +1,4 @@
+# <build-dir> <extra cflags>
+build/kfault -DUMODE_KFAULT=1
+build/ksvc -DUMODE_KSVC=1
+build/kmmu -DUMODE_KMMU=1

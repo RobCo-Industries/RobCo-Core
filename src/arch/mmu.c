@@ -31,16 +31,36 @@
 #define SECT_TEX(x)  ((uint32_t)(x) << 12)
 #define SECT_APX     (1u << 15)
 
-#define AP_RW        (SECT_AP1 | SECT_AP0)          /* AP[2:0] 011: full access */
-#define AP_RO        (SECT_APX | SECT_AP0)          /* AP[2:0] 101: PL1 read-only */
+/*
+ * Access permissions, AP[2:0] = APX:AP[1:0] with the ARMv6/v7 APX bit
+ * (ARM1176 needs SCTLR.XP). Same meaning on ARMv6 and ARMv7:
+ *
+ *   attribute                        AP[2:0]  privileged  user
+ *   MMU_ATTR_RAM                     001      read-write  none
+ *   MMU_ATTR_RAM | MMU_USER_RO       010      read-write  read-only
+ *   MMU_ATTR_RAM | MMU_USER_RW       011      read-write  read-write
+ *   MMU_ATTR_RO_CODE                 101      read-only   none
+ *   MMU_ATTR_RO_CODE | MMU_USER_RO   110      read-only   read-only
+ *   MMU_ATTR_DEVICE, MMU_ATTR_FB     001      read-write  none
+ *
+ * Device and framebuffer sections reject both user flags.
+ * MMU_ATTR_RO_CODE | MMU_USER_RW is rejected: the user could write what
+ * the kernel cannot.
+ */
+#define AP_PRW       (SECT_AP0)                     /* 001: PL1 read-write, user none */
+#define AP_PRW_URO   (SECT_AP1)                     /* 010: PL1 read-write, user read-only */
+#define AP_PRW_URW   (SECT_AP1 | SECT_AP0)          /* 011: full access */
+#define AP_PRO       (SECT_APX | SECT_AP0)          /* 101: PL1 read-only, user none */
+#define AP_PRO_URO   (SECT_APX | SECT_AP1)          /* 110: read-only for both */
+#define AP_MASK      (SECT_APX | SECT_AP1 | SECT_AP0)
 
 /* Normal, inner and outer write-back write-allocate: TEX 001, C 1, B 1. */
-#define DESC_RAM     (SECT | AP_RW | SECT_TEX(1) | SECT_C | SECT_B)
+#define DESC_RAM     (SECT | AP_PRW | SECT_TEX(1) | SECT_C | SECT_B)
 /* Shareable device: TEX 000, C 0, B 1. Writes may be buffered, never merged or cached. */
-#define DESC_DEVICE  (SECT | AP_RW | SECT_B | SECT_XN)
+#define DESC_DEVICE  (SECT | AP_PRW | SECT_B | SECT_XN)
 /* Normal, inner and outer non-cacheable: TEX 001, C 0, B 0. Writes merge in the write buffer. */
-#define DESC_FB      (SECT | AP_RW | SECT_TEX(1) | SECT_XN)
-#define DESC_RO_CODE (SECT | AP_RO | SECT_TEX(1) | SECT_C | SECT_B)
+#define DESC_FB      (SECT | AP_PRW | SECT_TEX(1) | SECT_XN)
+#define DESC_RO_CODE (SECT | AP_PRO | SECT_TEX(1) | SECT_C | SECT_B)
 
 #define SCTLR_M      (1u << 0)
 #define SCTLR_A      (1u << 1)
@@ -101,9 +121,27 @@ static uint32_t cpu_part(void)
     return (board_get()->midr >> 4) & 0xfff;
 }
 
+/* For umode.c: the table is kernel memory a task must never map. */
+uintptr_t robco_mmu_table(void);
+
+uintptr_t robco_mmu_table(void)
+{
+    return (uintptr_t)l1_table;
+}
+
 int mmu_enabled(void)
 {
     return (sctlr_read() & SCTLR_M) != 0;
+}
+
+int mmu_section_user(uint32_t addr)
+{
+    uint32_t d = l1_table[addr >> 20];
+
+    if ((d & 3) != SECT || !(d & SECT_AP1)) {
+        return 0;               /* unmapped, or AP[1] clear: no user access */
+    }
+    return (d & AP_MASK) == AP_PRW_URW ? 2 : 1;
 }
 
 static int cached(uint32_t d)
@@ -137,11 +175,28 @@ int mmu_map(uint32_t start, uint32_t size, unsigned attr)
         [MMU_ATTR_FB] = DESC_FB,
         [MMU_ATTR_RO_CODE] = DESC_RO_CODE,
     };
-    uint32_t first, last, i, d, s;
+    unsigned type = attr & MMU_ATTR_TYPE_MASK;
+    unsigned user = attr & (MMU_USER_RW | MMU_USER_RO);
+    uint32_t first, last, i, d, s, ap;
     int on, flushed = 0;
 
-    if (size == 0 || attr >= sizeof(desc) / sizeof(desc[0]) || start + (size - 1) < start) {
+    if (size == 0 || type >= sizeof(desc) / sizeof(desc[0]) || start + (size - 1) < start) {
         return MMU_ERR_ARG;
+    }
+    if ((attr & ~(MMU_ATTR_TYPE_MASK | MMU_USER_RW | MMU_USER_RO)) != 0 ||
+        user == (MMU_USER_RW | MMU_USER_RO)) {
+        return MMU_ERR_ARG;
+    }
+    /* User flags: RAM takes either, read-only code only MMU_USER_RO. */
+    ap = 0;
+    if (user != 0) {
+        if (type == MMU_ATTR_RAM) {
+            ap = user == MMU_USER_RW ? AP_PRW_URW : AP_PRW_URO;
+        } else if (type == MMU_ATTR_RO_CODE && user == MMU_USER_RO) {
+            ap = AP_PRO_URO;
+        } else {
+            return MMU_ERR_ARG;
+        }
     }
     first = start >> 20;
     last = (start + (size - 1)) >> 20;
@@ -149,7 +204,10 @@ int mmu_map(uint32_t start, uint32_t size, unsigned attr)
     s = irq_mask_save();
     on = mmu_enabled();
     for (i = first; i <= last; i++) {
-        d = attr == MMU_ATTR_NONE ? 0 : (i << 20) | desc[attr];
+        d = type == MMU_ATTR_NONE ? 0 : (i << 20) | desc[type];
+        if (ap != 0) {
+            d = (d & ~AP_MASK) | ap;
+        }
         /*
          * A section that stops being cacheable may hold dirty lines.
          * Write them back while the old mapping still allows it.

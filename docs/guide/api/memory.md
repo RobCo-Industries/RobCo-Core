@@ -91,12 +91,35 @@ Call them early in `robco_main()`, before `irq_cpu_enable()`. `fb_init()` may co
 | Constant | Value | Type | Cached | Execute | Access |
 |---|---|---|---|---|---|
 | `MMU_ATTR_NONE` | `0` | Unmapped | | | Any access faults |
-| `MMU_ATTR_RAM` | `1` | Normal, write-back write-allocate (TEX 001, C 1, B 1) | Yes | Yes | Read and write |
-| `MMU_ATTR_DEVICE` | `2` | Shareable device (TEX 000, C 0, B 1) | No | Never | Read and write |
-| `MMU_ATTR_FB` | `3` | Normal, non-cacheable (TEX 001, C 0, B 0) | No, writes merge in the write buffer | Never | Read and write |
+| `MMU_ATTR_RAM` | `1` | Normal, write-back write-allocate (TEX 001, C 1, B 1) | Yes | Yes | Read and write at PL1, no user access |
+| `MMU_ATTR_DEVICE` | `2` | Shareable device (TEX 000, C 0, B 1) | No | Never | Read and write at PL1, no user access |
+| `MMU_ATTR_FB` | `3` | Normal, non-cacheable (TEX 001, C 0, B 0) | No, writes merge in the write buffer | Never | Read and write at PL1, no user access |
 | `MMU_ATTR_RO_CODE` | `4` | Normal, write-back write-allocate (TEX 001, C 1, B 1) | Yes | Yes | Read only at PL1, no user access |
 
 Every section uses domain 0. TEX remap and the access flag are off.
+
+### Permissions
+
+Every section is privileged-only by default: code in USR mode faults on any access. The library runs in SVC mode, so this changes nothing for it. To give USR mode access, OR one permission flag into the type passed to `mmu_map()`. [`umode.h`](umode.md) does this for a task's regions.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `MMU_ATTR_TYPE_MASK` | `0xffu` | The memory type bits of `attr` |
+| `MMU_USER_RW` | `0x100u` | USR mode may read and write |
+| `MMU_USER_RO` | `0x200u` | USR mode may read |
+
+The access permission bits AP[2:0] (APX and AP[1:0]) per attribute. They mean the same on ARMv6 (with SCTLR.XP) and ARMv7.
+
+| Attribute | AP[2:0] | Privileged | User |
+|---|---|---|---|
+| `MMU_ATTR_RAM` | `001` | Read and write | None |
+| `MMU_ATTR_RAM \| MMU_USER_RO` | `010` | Read and write | Read |
+| `MMU_ATTR_RAM \| MMU_USER_RW` | `011` | Read and write | Read and write |
+| `MMU_ATTR_RO_CODE` | `101` | Read | None |
+| `MMU_ATTR_RO_CODE \| MMU_USER_RO` | `110` | Read | Read |
+| `MMU_ATTR_DEVICE`, `MMU_ATTR_FB` | `001` | Read and write | None |
+
+`mmu_map()` returns `MMU_ERR_ARG` for a user flag on device or framebuffer memory, for `MMU_ATTR_RO_CODE | MMU_USER_RW`, for both flags at once and for unknown bits. RAM and read-only code with a user flag stay executable from USR mode.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -141,7 +164,7 @@ Builds the default map in the table. Does not enable the MMU. Returns `0`, `MMU_
 int mmu_map(uint32_t start, uint32_t size, unsigned attr);
 ```
 
-Sets every 1 MiB section that overlaps `start` to `start + size - 1` to `attr`. The range is rounded out to whole sections. Returns `0`, or `MMU_ERR_ARG` for a size of `0`, a range past `0xFFFFFFFF` or an unknown `attr`. It does not need `mmu_init()` first, but `mmu_init()` clears the table. With the MMU off it only edits the table. With the MMU on it:
+Sets every 1 MiB section that overlaps `start` to `start + size - 1` to `attr`. The range is rounded out to whole sections. Returns `0`, or `MMU_ERR_ARG` for a size of `0`, a range past `0xFFFFFFFF` or an unknown or invalid `attr` (see [permissions](#permissions)). It does not need `mmu_init()` first, but `mmu_init()` clears the table. With the MMU off it only edits the table. With the MMU on it:
 
 1. Cleans and invalidates the data cache over each section that stops being cacheable, while the old mapping still holds.
 2. Writes the descriptors and cleans them to memory. Table walks do not read the data cache.
@@ -168,6 +191,12 @@ void mmu_disable(void);
 ```
 
 Cleans and invalidates the whole data cache, then clears SCTLR M, C and I, then invalidates the data cache, the instruction cache, the branch predictor and the TLB again. It is written in assembly and touches no memory between the clean and the SCTLR write, so it is safe to call from cached code. The identity map keeps the next instruction at the same address after the MMU is off. It masks IRQs and FIQs while it runs and restores the mask on return. Does nothing if the MMU and data cache are already off. `robco_handoff()` calls it. It lives in `src/arch/cache.S`, so an image that uses `mmu.h` or `cache.h` links it.
+
+```c
+int mmu_section_user(uint32_t addr);
+```
+
+Returns the USR-mode access the table gives the 1 MiB section that holds `addr`: `0` none or unmapped, `1` read-only, `2` read-write. It reads the table only, so it works with the MMU on or off. [`umode_run()`](umode.md) uses it to refuse a stray user mapping. Any context.
 
 ```c
 int mmu_enabled(void);

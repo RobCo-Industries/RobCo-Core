@@ -31,10 +31,16 @@ robco_vec_reset:
     mov     r0, #ROBCO_EXC_RESET
     mov     r1, #0
     b       robco_exc_common
+/*
+ * Weak: src/arch/exc_frame.S replaces undef, prefetch and data abort with
+ * frame-saving entries when the image links exc_set_hook().
+ */
+    .weak   robco_vec_undef
 robco_vec_undef:
     mov     r0, #ROBCO_EXC_UNDEF
     sub     r1, lr, #4
     b       robco_exc_common
+    .weak   robco_vec_pabt
 robco_vec_pabt:
     mov     r0, #ROBCO_EXC_PABT
     sub     r1, lr, #4
@@ -48,6 +54,7 @@ robco_vec_unused:
  * Data abort. A fault on the probe load is expected: flag it and resume
  * at the next instruction. Anything else is reported.
  */
+    .weak   robco_vec_dabt
 robco_vec_dabt:
     sub     lr, lr, #8                      @ faulting instruction
     push    {r0, r1}
@@ -78,7 +85,9 @@ robco_vec_svc:
  * stack, calls robco_irq_dispatch(pc, spsr) and returns to the
  * interrupted code. IRQs stay masked throughout: no nesting. Eight
  * words are pushed so sp keeps the 8-byte alignment the AAPCS needs.
+ * Weak: src/arch/umode_entry.S replaces it with a copy that can end a user task.
  */
+    .weak   robco_vec_irq
 robco_vec_irq:
     push    {r0-r3, r12, lr}
     mrs     r0, spsr
@@ -152,5 +161,6 @@ robco_probe_insn:
 
     .section .bss.robco_probe_faulted, "aw", %nobits
     .balign 4
+    .global robco_probe_faulted
 robco_probe_faulted:
     .space  4

@@ -65,6 +65,8 @@ Pip-OS is the first stage of its chain. It keeps its `robco_bootinfo_t` inside i
 
 The ROM and holotape stacks are 64 KiB each, at the top of their regions. The rest of each region is heap. See [PIPOS_ABI.md](./PIPOS_ABI.md).
 
+The slots and regions are whole megabytes, so each can be one or more 1 MiB MMU sections. RobCo-Core's [`umode.h`](../guide/api/umode.md) maps the regions a task names for USR mode while it runs and back to privileged-only afterwards. The default map from `mmu_init()` is privileged-only everywhere. `examples/umode` runs its test programs from the ROM slot at `0x00400000`, with the ROM heap and stack region at `0x01000000` as the writable region.
+
 ## Lore vs real
 
 The games show numbers that do not fit real hardware. The firmware always loads the kernel at `0x8000`, so a ROM cannot live at `0x10000`. We keep the in-game numbers on screen as presentation only. The boot screen shows `real >> 6`, the real address divided by 64. No code uses the lore numbers.
