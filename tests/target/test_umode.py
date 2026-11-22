@@ -25,7 +25,7 @@ FS_PERMISSION = 0x0D
 WNR = 1 << 11
 
 # Cases that run with the MMU off too, in order.
-AUDIT = ["init", "psr", "cpsid", "stubsvc", "killexit", "afterkill"]
+AUDIT = ["init", "psr", "cpsid", "stubsvc", "killexit", "afterkill", "killfirst"]
 NO_MMU = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "rdperiph",
           "spin", "svcspin", "thumb", "thumb2"] + AUDIT
 ALL = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "wrkern", "rdperiph",
@@ -103,6 +103,9 @@ def check_common(t, mmu):
     elif n == "afterkill":
         # The next task does not inherit that kill request.
         assert (t["reason"], t["code"]) == ("returned", "42"), t
+    elif n == "killfirst":
+        # The tick's kill request came first: the handler's later one is ignored.
+        assert (t["reason"], t["code"]) == ("killed", "2"), t
     else:
         return False
     return True

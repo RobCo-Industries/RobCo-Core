@@ -11,6 +11,7 @@
 #include <robco/boot.h>
 #include <robco/cache.h>
 #include <robco/exc.h>
+#include <robco/irq.h>
 #include <robco/klibc.h>
 #include <robco/mmu.h>
 #include <robco/umode.h>
@@ -179,17 +180,24 @@ void umode_set_svc_handler(umode_svc_fn fn, void *ctx)
 
 void umode_exit(exc_frame_t *frame, int code)
 {
+    uint32_t s = irq_save();
+
     if (U.active && !U.ended) {
         record(UMODE_EXITED, code, 0, frame);
         U.ended = 1;
     }
+    irq_restore(s);
 }
 
+/* IRQs masked: an IRQ request cannot land between the check and the store. */
 void umode_request_kill(int reason)
 {
+    uint32_t s = irq_save();
+
     if (U.active && robco_umode_kill == 0) {
         robco_umode_kill = reason != 0 ? reason : 1;
     }
+    irq_restore(s);
 }
 
 int umode_range_ok(uintptr_t ptr, size_t len, int write)

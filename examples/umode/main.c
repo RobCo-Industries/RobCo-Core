@@ -48,6 +48,7 @@
 #define SYS_BADPSR      7
 #define SYS_KILLEXIT    8
 #define SYS_KMMU        9
+#define SYS_KILLFIRST   10
 #define E_FAULT         14
 
 extern const char user_prog_start[], user_prog_end[];
@@ -92,6 +93,7 @@ static const struct {
     { "stubsvc",    19, ARG_NONE,     0, 0, 0 },
     { "killexit",   20, ARG_NONE,     0, 0, 0 },
     { "afterkill",  0,  ARG_NONE,     0, 0, 0 },
+    { "killfirst",  23, ARG_NONE,     0, 0, 0 },
     /* Reads the previous tasks' data region without declaring it. */
     { "peek",       6,  ARG_DATA,     1, 0, 0 },
 };
@@ -172,6 +174,15 @@ static void on_svc(exc_frame_t *f, void *ctx)
             __asm__ volatile("wfi");
         }
         umode_exit(f, 5);
+        break;
+    case SYS_KILLFIRST:
+        /* The tick requests reason 2 first: the handler's later request is ignored. */
+        kill_seen = 0;
+        kill_armed = 1;
+        while (!kill_seen) {
+            __asm__ volatile("wfi");
+        }
+        umode_request_kill(7);
         break;
 #ifdef UMODE_KMMU
     case SYS_KMMU:

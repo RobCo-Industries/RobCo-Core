@@ -17,6 +17,7 @@
 #define SYS_BADPSR  7
 #define SYS_KILLEXIT 8
 #define SYS_KMMU    9
+#define SYS_KILLFIRST 10
 
 #define REG_LOOPS   3000
 
@@ -189,6 +190,12 @@ _ustart:
     .hword  0xf7f0, 0xa000                  @ udf.w #0
     .hword  0x4770                          @ bx lr
     .arm
+
+/* 23: a kill from the tick, then a second one from the same call: the first wins. */
+    .org    0x5c0
+    mov     r7, #SYS_KILLFIRST
+    svc     #0
+    b       .
 
     .org    0x600
 
