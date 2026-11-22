@@ -596,7 +596,7 @@ What is not guaranteed:
 - That the new content survives a power cut before the call returns `FS_OK`. After an error the target may hold either version.
 - Anything when the medium corrupts sectors, tears a sector write, reorders writes or loses a write it acknowledged after `blk_sync()`. Many SD cards cache writes internally; see [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md#sd-card).
 - Two callers writing the same path. There is no locking.
-- A cut inside the final unlink of `#NAME` can free its clusters before the entry goes. Run the recovery before any other write after boot, or a new file may reuse those clusters and the recovery would free them again.
+- Free space after a cut. A cut inside an unlink can leave the removed file's clusters allocated with no entry. A PC `fsck` frees them; the library does not.
 
 **Tests.** `tests/host/test_fs_faults.c` replaces a file, and writes one for the first time, through a fault device. It fails the Nth write call, the Nth sync, or cuts the power after block N, for every N from the first to the last of the call, then remounts the RAM disk without flushing, recovers and checks the target: exactly the old or the new content, or absent for a first write, and no work file left. It also writes a 16 KiB file afterwards and reads the target again, which catches clusters freed twice. One run spreads the directory over two sectors to reach the renaming window above. The power cut test drops every block after N while the calls still succeed, so it proves the order of the writes: any prefix of them recovers. It does not model a torn sector, a card that reorders writes, or a card that loses data it acknowledged.
 
@@ -619,6 +619,18 @@ Sharp edges:
 | Unmount does not flush files. | Close files before `fs_unmount()`. |
 | `fs_statvfs()` in the read-only build. | It returns `FS_ERR_RO` and zeros: FatFs builds `f_getfree()` only with write support. |
 | Time stamps need a clock. | Without one, every file gets 2026-01-01 00:00. See [File time stamps](#file-time-stamps). |
+
+Power cuts and errors. Only `fs_write_file_atomic()` promises a whole old or whole new file. The other calls behave like this:
+
+| Call | After a power cut or a device error in the middle |
+|---|---|
+| `fs_open()` with `FS_TRUNC` | The old content is gone as soon as the call returns, before any new byte is written. Use `fs_write_file_atomic()` to replace a file. |
+| `fs_write()` that fails | The handle keeps returning the error. A close that then succeeds records the bytes earlier calls reported, plus at most the part of the failed call that was already buffered. Every byte recorded is the caller's. |
+| `fs_write()` before `fs_sync()` or `fs_close()` | Not on the card yet. A cut loses it: the file keeps its last synced size, and clusters it had taken may stay allocated with no owner. |
+| `fs_rename()` | Returns `FS_ERR_EXIST` without a change when `to` exists. FatFs writes the new entry before it removes the old one: a cut in between, when the two entries sit in different directory sectors, leaves both names on one cluster chain. Unlinking either name then frees the other's data. `fs_write_file_atomic()` recovery handles this for its own names; for others, run a PC `fsck`. |
+| `fs_unlink()` | Removes the entry, then frees the clusters. A cut in between leaves lost clusters, never an entry that points at free space. |
+| `fs_mkfs()` | Refuses a mounted device with `FS_ERR_MOUNTED`. A cut during the format leaves no usable volume. |
+| Second FAT copy | FatFs ignores a failed write of the second FAT copy, so the call can return `FS_OK`. The first copy is the one FatFs reads. |
 
 Pending hardware validation: the file system is tested on the host and with mtools images, not yet on a real SD card. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
 

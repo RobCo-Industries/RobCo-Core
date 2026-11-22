@@ -44,7 +44,10 @@ enum {
 #define FS_PATH_MAX  255u /* longest path, volume prefix included */
 #define FS_NAME_MAX  255u /* longest name in bytes of UTF-8 */
 
-/* fs_open() flags. FS_READ or FS_WRITE or both are required. */
+/*
+ * fs_open() flags. FS_READ or FS_WRITE or both are required. FS_TRUNC drops
+ * the old content at once: use fs_write_file_atomic() to replace a file.
+ */
 #define FS_READ   0x01u
 #define FS_WRITE  0x02u
 #define FS_CREATE 0x04u /* create if missing */
@@ -137,6 +140,10 @@ int fs_close(fs_file_t *f);
 
 int fs_stat(const char *path, fs_stat_t *out);
 int fs_unlink(const char *path);
+/*
+ * FS_ERR_EXIST when to exists. Not atomic: a power cut inside it can leave
+ * both names on one cluster chain.
+ */
 int fs_rename(const char *from, const char *to);
 int fs_mkdir(const char *path);
 

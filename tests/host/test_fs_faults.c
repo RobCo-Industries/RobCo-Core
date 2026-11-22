@@ -682,3 +682,49 @@ TEST(sync_fails_in_atomic_write)
     CHECK_MEM(buf, "old", 3);
     CHECK_EQ(fs_unmount("v"), FS_OK);
 }
+
+/*
+ * A write that fails, then a close once the device works again: the file
+ * keeps the bytes fs_write() reported, plus at most the part of the failed
+ * call that FatFs had already taken in. Every byte is the caller's.
+ */
+TEST(close_after_failed_write)
+{
+    static unsigned char data[6000], back[8000];
+    blk_fault_t fault;
+    fs_file_t f;
+    long k;
+    int rc, failed = 0, longer = 0;
+    size_t n, done;
+
+    fill(data, sizeof(data), 8);
+    for (k = 0; k < 40; k++) {
+        format(DISK_SIZE);
+        blk_fault_init(&fault, &ram);
+        CHECK_EQ(fs_mount("v", &fault.dev), FS_OK);
+        CHECK_EQ(fs_open(&f, "v:/LOG.BIN", FS_WRITE | FS_CREATE), FS_OK);
+        fault.fail_write_after = (long)fault.writes + k;
+        done = 0;
+        while (done < sizeof(data)) {
+            size_t want = sizeof(data) - done < 700 ? sizeof(data) - done : 700;
+
+            rc = fs_write(&f, data + done, want);
+            if (rc < 0) {
+                failed++;
+                break;
+            }
+            done += (size_t)rc;
+        }
+        fault.fail_write_after = -1;
+        fs_close(&f);
+        CHECK_EQ(fs_unmount("v"), FS_OK);
+        CHECK_EQ(fs_mount("v", &ram), FS_OK);
+        CHECK_EQ(fs_read_file("v:/LOG.BIN", back, sizeof(back), &n), FS_OK);
+        CHECK(n >= done && n <= done + 700);
+        CHECK_MEM(back, data, n);
+        longer += n > done;
+        CHECK_EQ(fs_unmount("v"), FS_OK);
+    }
+    CHECK(failed > 0);
+    CHECK(longer > 0);
+}
