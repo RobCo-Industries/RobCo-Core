@@ -43,6 +43,8 @@ on:
         type: string
         default: ""
 
+# The calling workflow must grant packages: read, and the robco-ci
+# image package must be readable by the calling repository.
 permissions:
   contents: read
   packages: read
@@ -50,6 +52,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     container:
       image: ghcr.io/robco-industries/robco-ci:${{ inputs.image-tag }}
       credentials:
@@ -75,6 +80,9 @@ jobs:
     if: inputs.test-targets != ''
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
