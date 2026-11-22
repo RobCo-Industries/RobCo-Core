@@ -4,7 +4,7 @@
 
     make venv
     make test-canary
-    make test-target          # spikes on all four boards through boot()
+    make test-target          # spikes and examples on all four boards through boot()
 
 Needs `qemu-system-arm` and `qemu-system-aarch64` on `PATH`. A machine
 missing from the installed QEMU is skipped. V2 is skipped without
