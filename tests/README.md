@@ -277,6 +277,13 @@ path QEMU prints. `--serial2 tcp:PORT` puts it on `127.0.0.1:PORT`, for
 `nc 127.0.0.1 PORT`. The runner prints the QEMU pid at start, and exits
 with QEMU's exit status. `--qemu-arg` adds a QEMU argument.
 
+`--window` opens the QEMU display window, which shows the framebuffer.
+The console stays on your terminal:
+
+```sh
+PYTHONPATH=external/robco-core/tests python3 -m harness.run build/app.img --board raspi3b --window
+```
+
 ## What QEMU cannot prove
 
 Caches, PWM sound, GPIO input, real SPI signalling and SD pin routing

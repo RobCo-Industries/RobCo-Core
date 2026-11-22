@@ -300,7 +300,7 @@ A run by hand starts the image with r0 to r3 at 0 and no ATAGS. Real firmware pa
 PYTHONPATH=robco-core/tests python3 -m harness.run build/hello-pi.img --board raspi3b
 ```
 
-Press Ctrl-A, then x, to quit. `--sd build/sd.img` inserts a card, `--mode svc` enters in SVC mode, and `--serial2 tcp:4555` puts the script channel on a TCP port. See [tests/README.md](../../tests/README.md#run-an-image-by-hand).
+Press Ctrl-A, then x, to quit. `--sd build/sd.img` inserts a card, `--mode svc` enters in SVC mode, and `--serial2 tcp:4555` puts the script channel on a TCP port. `--window` opens the QEMU window to show the framebuffer, and the console stays on your terminal. See [tests/README.md](../../tests/README.md#run-an-image-by-hand).
 
 ## Test it with the harness
 
