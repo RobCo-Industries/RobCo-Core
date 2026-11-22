@@ -151,19 +151,23 @@ CI runs in the `robco-ci` container, built from `ci/Dockerfile` in RobCo-Core. I
 
 The image tag is a content tag. It is the first 12 hex characters of the SHA-256 of `ci/Dockerfile`. `ci/IMAGE_TAG` stores it. CI fails if `ci/image-tag.sh` gives a different value. The image is `ghcr.io/robco-industries/robco-ci:<tag>`. A new Dockerfile gives a new tag, so a repo never runs on a container it did not pin.
 
-RobCo-Core's own `ci.yml` runs everything `make test` runs, in three jobs inside the container. `host` runs `make test-host` with sanitizers required. `canary` runs `make test-canary`. `test` runs `make test-spikes test-examples test-target`. The container runs as root, and socket paths stay under the system temporary directory.
+RobCo-Core's own `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It has four jobs:
 
-Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` from RobCo-Core with `submodules: recursive`. It reads the tag from `ci/IMAGE_TAG` in its RobCo-Core submodule. Jobs per repo, each able to fail:
+| Job | What it runs |
+|---|---|
+| `image` | Checks that `ci/IMAGE_TAG` equals `ci/image-tag.sh`, then builds and pushes the container if that tag does not exist yet |
+| `host` | `make test-host HOST_SANITIZE=require` |
+| `canary` | `make venv && make test-canary` |
+| `test` | `make venv && make test-tools test-docs test-spikes test-examples test-target` |
 
-- host tests
-- `-Werror` build
-- QEMU matrix: `raspi0`, `raspi2b`, `raspi3b` smoke
-- canary
-- image size budget
-- Markdown link check
-- SD image artifact
+`host`, `canary` and `test` run inside the container and need `image`. Together they run every target `make test` runs. The container runs as root, and socket paths stay under the system temporary directory.
 
-A nightly workflow in RobCo-Core checks out every sibling at its default branch and runs both chains end to end.
+Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` from RobCo-Core with the tag from `ci/IMAGE_TAG` in its RobCo-Core submodule. It checks out with `submodules: recursive` and runs two jobs in the container:
+
+| Job | What it runs |
+|---|---|
+| `build` | `make CI=1 <make-targets>`, default `all`. Uploads `artifact-path` as the `build` artifact when it is set. |
+| `test` | `make CI=1 <test-targets> BOARD=<board>` once per board in `boards`, default `raspi0` and `raspi2b`. Skipped when `test-targets` is empty. |
 
 ## Hardware checklists
 
