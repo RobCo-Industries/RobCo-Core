@@ -55,8 +55,8 @@
 #define FF_FS_TINY  0
 #define FF_FS_EXFAT 0
 
-/* Fixed timestamp until there is a clock. See fs_time_hook() in fs_glue.c. */
-#define FF_FS_NORTC   1
+/* Time stamps come from fs_time_hook() in fs_glue.c: the clock when set, else 2026-01-01. */
+#define FF_FS_NORTC   0
 #define FF_NORTC_MON  1
 #define FF_NORTC_MDAY 1
 #define FF_NORTC_YEAR 2026

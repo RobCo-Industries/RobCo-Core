@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include <robco/blk.h>
+#include <robco/datetime.h>
 
 /*
  * FAT12, FAT16 and FAT32 over a blk_dev_t. Paths are "vol:/DIR/NAME.EXT".
@@ -139,9 +140,18 @@ int fs_read_file(const char *path, void *buf, size_t max, size_t *out_len);
 int fs_write_file_atomic(const char *path, const void *buf, size_t len);
 
 /*
- * Timestamp source, FAT format: date << 16 | time. The weak default
- * returns 2026-01-01 00:00. Not called while ffconf.h sets FF_FS_NORTC 1.
+ * Timestamp source, FAT format: date << 16 | time. The weak default uses
+ * the clock from fs_set_clock(), or clock_get() from rtc.h when the image
+ * links it. When the clock is not set, it returns 2026-01-01 00:00.
  */
 uint32_t fs_time_hook(void);
+
+/* Returns 0 and the time, like clock_get(), or a negative code when not set. */
+typedef int (*fs_clock_fn)(datetime_t *out);
+/*
+ * Sets the clock fs_time_hook() reads. NULL goes back to the default:
+ * clock_get() when linked, else the fixed time.
+ */
+void fs_set_clock(fs_clock_fn get);
 
 #endif

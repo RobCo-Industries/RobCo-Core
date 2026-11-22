@@ -7,13 +7,44 @@
 
 #include "diskio.h"
 
+#include <robco/datetime.h>
+
 fs_vol_t fs_vols[FF_VOLUMES];
 
 /* 2026-01-01 00:00:00 in FAT format. */
 #define FS_FIXED_TIME ((uint32_t)((2026u - 1980u) << 25 | 1u << 21 | 1u << 16))
 
+/*
+ * clock_get() from rtc.h, when the image links the clock. A weak
+ * reference keeps the file system free of a hard dependency on the RTC
+ * driver: without it the pointer is NULL. Mach-O hosts have no weak
+ * undefined symbols, so there only fs_set_clock() applies.
+ */
+#ifdef __ELF__
+extern int clock_get(datetime_t *out) __attribute__((weak));
+#define DEFAULT_CLOCK clock_get
+#else
+#define DEFAULT_CLOCK NULL
+#endif
+
+static fs_clock_fn time_source;
+static int time_source_set;
+
+void fs_set_clock(fs_clock_fn get)
+{
+    time_source = get;
+    time_source_set = get != NULL;
+}
+
 __attribute__((weak)) uint32_t fs_time_hook(void)
 {
+    fs_clock_fn get = time_source_set ? time_source : DEFAULT_CLOCK;
+    datetime_t now;
+    uint16_t date, time;
+
+    if (get != NULL && get(&now) == 0 && dt_to_fat(&now, &date, &time) == 0) {
+        return (uint32_t)date << 16 | time;
+    }
     return FS_FIXED_TIME;
 }
 
