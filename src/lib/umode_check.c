@@ -9,13 +9,19 @@
 
 #include <robco/umode.h>
 
+/* Region is usable: non-empty and its last byte does not wrap. Others are ignored. */
+static int usable(const umode_region_t *r)
+{
+    return r->size != 0 && r->size - 1 <= UINTPTR_MAX - r->start;
+}
+
 /* Region holding `p` with the right permission, or 0. */
 static const umode_region_t *find(const umode_region_t *r, unsigned n, uintptr_t p, int write)
 {
     unsigned i;
 
     for (i = 0; i < n; i++) {
-        if (r[i].size == 0 || p < r[i].start || p - r[i].start >= r[i].size) {
+        if (!usable(&r[i]) || p < r[i].start || p - r[i].start >= r[i].size) {
             continue;
         }
         if (write && !(r[i].flags & UMODE_REGION_WRITE)) {
@@ -32,7 +38,7 @@ static int edge_ok(const umode_region_t *r, unsigned n, uintptr_t p, int write)
     unsigned i;
 
     for (i = 0; i < n; i++) {
-        if (r[i].size == 0 || p < r[i].start || p - r[i].start > r[i].size) {
+        if (!usable(&r[i]) || p < r[i].start || p - r[i].start > r[i].size) {
             continue;
         }
         if (write && !(r[i].flags & UMODE_REGION_WRITE)) {
@@ -62,7 +68,8 @@ int umode_regions_range_ok(const umode_region_t *regions, unsigned count,
         if (r == 0) {
             return 0;
         }
-        room = r->size - (size_t)(ptr - r->start);  /* bytes left in r, >= 1 */
+        /* Bytes left in r, >= 1. r does not wrap, so ptr + room <= UINTPTR_MAX + 1. */
+        room = r->size - (size_t)(ptr - r->start);
         if (len <= room) {
             return 1;
         }

@@ -143,7 +143,7 @@ long umode_regions_strnlen(const umode_region_t *regions, unsigned count,
                            uintptr_t ptr, size_t max);
 ```
 
-The pure forms on any region list, in `src/lib/umode_check.c`. `tests/host/test_umode_check.c` covers empty ranges, ranges that cross a region end, adjacent regions, wraparound at the top of the address space, zero-length buffers at a region boundary and read-only regions.
+The pure forms on any region list, in `src/lib/umode_check.c`. They ignore a region whose last byte would wrap past the top of the address space. A range may end exactly at the top. `tests/host/test_umode_check.c` covers empty ranges, ranges that cross a region end, adjacent regions, wraparound at the top of the address space, regions that wrap, zero-length buffers at a region boundary and read-only regions.
 
 ```c
 int umode_task_check(const umode_task_t *task, const umode_limits_t *lim);

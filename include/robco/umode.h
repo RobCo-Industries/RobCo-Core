@@ -168,7 +168,10 @@ typedef struct {
  */
 int umode_task_check(const umode_task_t *task, const umode_limits_t *lim);
 
-/* Pure forms, src/lib/umode_check.c, on any region list. */
+/*
+ * Pure forms, src/lib/umode_check.c, on any region list. A region whose
+ * last byte would wrap past the top of the address space is ignored.
+ */
 int umode_regions_range_ok(const umode_region_t *regions, unsigned count,
                            uintptr_t ptr, size_t len, int write);
 long umode_regions_strnlen(const umode_region_t *regions, unsigned count,

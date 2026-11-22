@@ -80,6 +80,30 @@ TEST(wraparound)
     CHECK(umode_regions_range_ok(top, 2, TOP, 0, 1));
 }
 
+TEST(wrapping_region_ignored)
+{
+    /* Last byte would be past the top: the region counts for nothing. */
+    static const umode_region_t wrap[] = {
+        { TOP - 0xff, 0x200, UMODE_REGION_WRITE },
+    };
+    static const umode_region_t edge[] = {
+        { TOP - 0xff, 0x100, UMODE_REGION_WRITE },  /* last byte is TOP */
+    };
+
+    CHECK(!umode_regions_range_ok(wrap, 1, TOP - 0x7f, 0x100, 1)); /* reported case */
+    CHECK(!umode_regions_range_ok(wrap, 1, TOP - 0xff, 1, 0));
+    CHECK(!umode_regions_range_ok(wrap, 1, TOP - 0xff, 0, 0));
+    CHECK(umode_regions_strnlen(wrap, 1, TOP - 0xff, 4) == -1);
+
+    CHECK(umode_regions_range_ok(edge, 1, TOP - 0xff, 0x100, 1)); /* ends exactly at the top */
+    CHECK(umode_regions_range_ok(edge, 1, TOP - 0xf, 0x10, 1));
+    CHECK(umode_regions_range_ok(edge, 1, TOP, 1, 1));
+    CHECK(umode_regions_range_ok(edge, 1, TOP, 0, 1));
+    CHECK(!umode_regions_range_ok(edge, 1, TOP - 0xf, 0x11, 1));  /* range wraps */
+    CHECK(!umode_regions_range_ok(edge, 1, TOP - 0xff, (size_t)-1, 1));
+    CHECK(!umode_regions_range_ok(edge, 1, TOP, (size_t)-1, 1));
+}
+
 TEST(strnlen)
 {
     static char buf[64];
