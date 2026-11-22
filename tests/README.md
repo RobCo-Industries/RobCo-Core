@@ -10,6 +10,39 @@ Needs `qemu-system-arm` and `qemu-system-aarch64` on `PATH`. A machine
 missing from the installed QEMU is skipped. V2 is skipped without
 `arm-none-eabi-gcc`.
 
+## Host tests
+
+    make test-host                  # build and run every tests/host/test_*.c
+    make test-host HOST_SANITIZE=0  # without ASan and UBSan
+    build/host/test_alloc realloc   # run only tests whose name contains "realloc"
+
+`make test` runs them first. Each `tests/host/test_<name>.c` becomes
+`build/host/test_<name>`, linked with every real `src/lib/*.c` and built
+with the host `cc`. ASan and UBSan are on when the compiler supports
+them. The build defines `ROBCO_HOST`, which drops the library's own
+`memcpy`, `memset`, `memmove` and `memcmp` so the host libc ones are used.
+
+To add a test, create `tests/host/test_<name>.c`:
+
+```c
+#include <robco/crc32.h>
+
+#include "rc_test.h"
+
+TEST(check_value)
+{
+    CHECK_EQ(crc32("123456789", 9), 0xCBF43926u);
+}
+```
+
+`rc_test.h` gives `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. A
+failed check prints file, line and values, and the test goes on.
+
+What fits: code in `src/lib/` that touches no hardware and makes no
+assumption about pointer size (the host is 64-bit, the target 32-bit).
+What does not: drivers, MMIO, assembly, exceptions, timing and anything
+in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
+
 ## Layout
 
 - `harness/qemu.py`: starts QEMU headless and talks QMP, HMP (through
@@ -23,6 +56,7 @@ missing from the installed QEMU is skipped. V2 is skipped without
   cores, writes ATAGS at 0x100, switches to HYP on raspi2b and enters
   the image with r0 = 0, r1 = machine id, r2 = 0x100. `a64_shim.py`
   holds the AArch64 words that drop raspi3b to AArch32 first.
+- `host/`: host unit tests and `rc_test.h`.
 - `target/`: tests that boot real images. `--board NAME` picks boards
   (repeatable, default raspi0 and raspi2b, `all` for all four).
 - `canary/`: checks the QEMU behaviours our code depends on. Run it

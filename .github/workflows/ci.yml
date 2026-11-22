@@ -95,6 +95,16 @@ jobs:
         if: steps.exists.outputs.exists == 'true' && github.ref == 'refs/heads/main'
         run: docker buildx imagetools create -t "${IMAGE_NAME}:latest" "${{ steps.tag.outputs.image }}"
 
+  # ci/Dockerfile has no host C compiler, so this job runs on the runner.
+  host:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host unit tests
+        run: make test-host
+
   canary:
     needs: image
     runs-on: ubuntu-latest
