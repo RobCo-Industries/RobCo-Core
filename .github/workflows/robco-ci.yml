@@ -1,0 +1,95 @@
+# Reusable CI workflow for the RobCo bare-metal repos.
+#
+# Inputs:
+#   image-tag     (required) robco-ci content tag to run in. Read it from
+#                 ci/IMAGE_TAG in the RobCo-Core submodule.
+#   make-targets  make targets for the build job. Default: "all".
+#   test-targets  make targets for the test job, run once per board.
+#                 Empty skips the test job. Default: "".
+#   boards        JSON array of QEMU boards passed as BOARD=<board>.
+#                 Default: '["raspi0","raspi2b"]'.
+#   artifact-path path uploaded as the "build" artifact after the build.
+#                 Empty skips the upload. Default: "".
+#
+# Both jobs run "make CI=1 ...". The robco-ci package must be readable
+# by the calling repository.
+#
+# Example:
+#   jobs:
+#     ci:
+#       uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@main
+#       with:
+#         image-tag: 498645df6928
+#         test-targets: test
+
+name: robco-ci
+
+on:
+  workflow_call:
+    inputs:
+      image-tag:
+        type: string
+        required: true
+      make-targets:
+        type: string
+        default: "all"
+      test-targets:
+        type: string
+        default: ""
+      boards:
+        type: string
+        default: '["raspi0","raspi2b"]'
+      artifact-path:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/robco-industries/robco-ci:${{ inputs.image-tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build
+        env:
+          MAKE_TARGETS: ${{ inputs.make-targets }}
+        run: make CI=1 $MAKE_TARGETS
+      - name: Upload artifact
+        if: inputs.artifact-path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: ${{ inputs.artifact-path }}
+          if-no-files-found: error
+
+  test:
+    if: inputs.test-targets != ''
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJSON(inputs.boards) }}
+    container:
+      image: ghcr.io/robco-industries/robco-ci:${{ inputs.image-tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Test on ${{ matrix.board }}
+        env:
+          TEST_TARGETS: ${{ inputs.test-targets }}
+          BOARD: ${{ matrix.board }}
+        run: make CI=1 $TEST_TARGETS BOARD="$BOARD"
