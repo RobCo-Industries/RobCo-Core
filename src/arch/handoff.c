@@ -4,6 +4,7 @@
 #include <robco/boot.h>
 #include <robco/bootinfo.h>
 #include <robco/mmio.h>
+#include <robco/mmu.h>
 #include <robco/timer.h>
 
 /* Legacy interrupt controller, as in src/drv/irq_bcm.c. */
@@ -16,6 +17,9 @@
 #define SCTLR_M (1u << 0)
 #define SCTLR_C (1u << 2)
 #define SCTLR_I (1u << 12)
+
+/* Weak: linked only when the image uses the cache or MMU module. */
+#pragma weak mmu_disable
 
 void robco_handoff(uint32_t entry, const robco_bootinfo_t *bi, uint32_t fdt_or_atags)
 {
@@ -50,14 +54,17 @@ void robco_handoff(uint32_t entry, const robco_bootinfo_t *bi, uint32_t fdt_or_a
     }
 
     /*
-     * The library never turns on the MMU or the D-cache. If the image did,
-     * turn both off. On ARM1176 also clean and invalidate the whole
-     * D-cache first. ARMv7 has no whole-cache operation, so this function
-     * does not clean there: the caller must. See the contract in boot.h.
+     * The MMU or D-cache can only be on if the image linked the MMU
+     * module, which provides mmu_disable(): it cleans the whole D-cache on
+     * every CPU, then turns the MMU and caches off. The fallback covers an
+     * image that turned them on by its own code. It cleans only on
+     * ARM1176, which has a single whole-cache operation.
      */
     __asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
     __asm__ volatile("mrc p15, 0, %0, c0, c0, 0" : "=r"(midr));
-    if (sctlr & (SCTLR_M | SCTLR_C)) {
+    if ((sctlr & (SCTLR_M | SCTLR_C)) && mmu_disable) {
+        mmu_disable();
+    } else if (sctlr & (SCTLR_M | SCTLR_C)) {
         if (((midr >> 4) & 0xfff) == 0xb76) {
             __asm__ volatile("mcr p15, 0, %0, c7, c14, 0" :: "r"(0) : "memory");
         }
