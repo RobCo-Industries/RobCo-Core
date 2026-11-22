@@ -54,11 +54,11 @@ void robco_handoff(uint32_t entry, const robco_bootinfo_t *bi, uint32_t fdt_or_a
     }
 
     /*
-     * The MMU or D-cache can only be on if the image linked the MMU
-     * module, which provides mmu_disable(): it cleans the whole D-cache on
-     * every CPU, then turns the MMU and caches off. The fallback covers an
-     * image that turned them on by its own code. It cleans only on
-     * ARM1176, which has a single whole-cache operation.
+     * An image that turned the MMU on through mmu.h links mmu_disable():
+     * it cleans the whole D-cache on every CPU, then turns the MMU and
+     * caches off. The fallback covers an image that turned them on by its
+     * own code. It cleans only on ARM1176, which has a single whole-cache
+     * operation.
      */
     __asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
     __asm__ volatile("mrc p15, 0, %0, c0, c0, 0" : "=r"(midr));
