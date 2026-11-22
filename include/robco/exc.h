@@ -20,8 +20,11 @@
 
 /*
  * Prints one "@RC ... ev=exception" line and halts. Used by the default
- * vector stubs. The weak IRQ, FIQ and SVC stubs (robco_vec_irq,
- * robco_vec_fiq, robco_vec_svc) can be replaced by a strong definition.
+ * vector stubs. The FIQ and SVC stubs (robco_vec_fiq, robco_vec_svc) are
+ * weak and can be replaced by a strong definition. The IRQ entry
+ * (robco_vec_irq) calls robco_irq_dispatch(), which src/drv/irq_bcm.c
+ * provides. Without that driver, a weak fallback in exceptions.c reports
+ * the IRQ as an exception.
  */
 void robco_exc_report(uint32_t type, uint32_t pc, uint32_t lr, uint32_t spsr)
     __attribute__((noreturn));

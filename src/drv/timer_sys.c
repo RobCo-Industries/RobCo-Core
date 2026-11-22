@@ -44,8 +44,11 @@ void timer_delay_us(uint32_t us)
     uint32_t base = st_base();
     uint32_t start = mmio_read(base + ST_CLO);
 
-    /* Unsigned difference handles CLO wrapping. */
-    while (mmio_read(base + ST_CLO) - start < us) {
+    /*
+     * Unsigned difference handles CLO wrapping. Wait one extra count:
+     * `start` may have been read just before CLO stepped.
+     */
+    while (mmio_read(base + ST_CLO) - start <= us) {
     }
 }
 
