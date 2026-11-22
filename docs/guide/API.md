@@ -7,7 +7,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | Topic file | Headers |
 |---|---|
 | [Memory, MMU and caches](./api/memory.md) | `alloc.h`, `mmu.h`, `cache.h` |
-| [Storage and files](./api/storage.md) | `blk.h`, `blk_ram.h`, `part.h`, `sd.h`, `fs.h` |
+| [Storage and files](./api/storage.md) | `blk.h`, `blk_ram.h`, `part.h`, `sd.h`, `fs.h`, `loader.h` |
 | [Input](./api/input.md) | `input.h`, `uart_mini.h` |
 | [Audio](./api/audio.md) | `audio.h` |
 | [Buses, clock and configuration](./api/buses.md) | `i2c.h`, `rtc.h`, `datetime.h`, `spi.h`, `ini.h` |
@@ -38,6 +38,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | `part.h` | [Partitions](./api/storage.md#partitions-parth) |
 | `sd.h` | [SD card](./api/storage.md#sd-card-sdh) |
 | `fs.h` | [FAT file system](./api/storage.md#fat-file-system-fsh) |
+| `loader.h` | [Stage loader](./api/storage.md#stage-loader-loaderh) |
 | `input.h` | [Input events](./api/input.md#input-events-inputh) |
 | `uart_mini.h` | [Mini UART](./api/input.md#mini-uart-uart_minih) |
 | `audio.h` | [Audio](./api/audio.md#audio-audioh) |
@@ -496,6 +497,12 @@ uint32_t tick_ms(void);
 ```
 
 `tick_count()` is the number of periods since `tick_init()`, counted even when the handler ran late. `tick_missed()` counts periods that passed without a callback run. `tick_ms()` converts the count to milliseconds with the programmed period, or returns `0` before `tick_init()`. It counts past a `tick_count()` wrap and wraps itself at 2^32 ms. `tick_count()` and `tick_missed()` are safe from any context. `tick_ms()` uses a 64-bit division: keep it out of IRQ context.
+
+```c
+uint32_t tick_hz(void);
+```
+
+The rate `tick_init()` started, in Hz, or `0` when the tick does not run. The real rate can be a little higher when the rate does not divide 1000000. Safe from any context.
 
 ```c
 int tick_register(void (*fn)(void));
@@ -998,7 +1005,13 @@ if (rc != RIMG_OK) {
 }
 ```
 
-Loading an image from the SD card is [specified](../spec/BOOT_PROTOCOL.md#finding-loading-and-entering-the-next-stage) but not implemented. The SD driver and the file system are in [Storage and files](./api/storage.md).
+```c
+int rimg_check_header(const void *head, size_t avail, const rimg_expect_t *expect);
+```
+
+Runs validation steps 1 to 5 on the first `0x60` bytes of an image before the rest is read. `head` holds at least `0x60` bytes. `avail` is the size of the whole file. It reads only `head`, and returns `RIMG_E_IO` for a `NULL` `head` or `avail` below `0x60`. `rimg_validate()` runs the same checks, then the CRC.
+
+To load an image from the SD card with these checks and the fallback rule, use the [stage loader](./api/storage.md#stage-loader-loaderh).
 
 ## Boot info block (`bootinfo.h`)
 

@@ -3,7 +3,7 @@
 ## Run
 
     make venv
-    make test-host            # C unit tests for src/lib and src/fs on the host
+    make test-host            # C unit tests for src/lib and src/fs, the loader among them
     make test-tools           # pytest for tools/, the Makefile and fs_tool
     make test-docs            # links, API coverage and words in the Markdown files
     make test-canary
@@ -74,8 +74,8 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
 - `target/`: tests that boot real images. `--board NAME` picks boards
   (repeatable, default raspi0 and raspi2b, `all` for all four). They
   boot the spikes and the examples `hello`, `tick`, `gpio`, `console`,
-  `heap`, `demo`, `sdraw`, `mmu`, `input`, `audio`, `rtc` and `spi`.
-  `test_sdraw.py` attaches an SD image. `test_input.py` drives the
+  `heap`, `demo`, `sdraw`, `storage`, `mmu`, `input`, `audio`, `rtc` and `spi`.
+  `test_sdraw.py` and `test_storage.py` attach an SD image. `test_input.py` drives the
   serial and script backends, the second over the mini UART.
   `test_rtc.py` attaches QEMU's `ds1338` model at I2C address `0x68`.
   `test_spi.py` attaches a `w25q32` SPI flash. `demo` and `chain1` also
@@ -84,12 +84,14 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   It also covers a bad CRC, a wrong magic, a wrong `load_addr`, a
   `mem_size` past the slot, no image, `chain2` alone, a corrupt boot
   info block, and a tick in `chain1` that must leave no stale timer
-  interrupt for `chain2`.
+  interrupt for `chain2`. The `CHAIN1_SD` variant loads `chain2` from an
+  SD image with the stage loader and falls back to the backup file.
 - `tools/`: pytest unit tests for the host tools: `tools/rimg.py` on
   images built in memory, one case per error code, the font and doc
   tools, the `SLOT_END` link check, the `BOARD` variable of
   `test-target`, and the argument handling, refusal cases and
-  `config.txt` of `fetch_firmware.sh` and `mkbootdir.sh`. The firmware
+  `config.txt` of `fetch_firmware.sh`, `mkbootdir.sh` and `mksdimage.sh`,
+  and the `sdimage` make target. The firmware
   download test runs only with `ROBCO_NET_TESTS=1`.
   `test_fs_interop.py` checks `fs_tool` against images made with mtools
   and, when installed, `fsck.vfat` or `fsck_msdos`.

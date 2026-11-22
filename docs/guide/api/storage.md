@@ -1,6 +1,6 @@
 # Storage and files
 
-These sections cover raw block devices, MBR partitions, the SD card driver and the FAT file system. Errors, init and context follow the [Conventions](../API.md#conventions).
+These sections cover raw block devices, MBR partitions, the SD card driver, the FAT file system and the stage loader. Errors, init and context follow the [Conventions](../API.md#conventions).
 
 | Header | Section |
 |---|---|
@@ -9,6 +9,7 @@ These sections cover raw block devices, MBR partitions, the SD card driver and t
 | `part.h` | [Partitions](#partitions-parth) |
 | `sd.h` | [SD card](#sd-card-sdh) |
 | `fs.h` | [FAT file system](#fat-file-system-fsh) |
+| `loader.h` | [Stage loader](#stage-loader-loaderh) |
 
 ## Block devices (`blk.h`)
 
@@ -284,7 +285,7 @@ if (rc == 0) {
 | Memory | No heap. A static table holds two volume slots, each with a 512-byte sector buffer. Long names share one static 512-byte buffer. Each `fs_file_t` holds its own 512-byte buffer. `fs_mkfs()` puts a 512-byte work buffer on the stack. |
 | Locking | None. Call from one context at a time. |
 | Open files | Do not open the same file twice for writing, and do not unlink or rename an open file. FatFs does not check. |
-| Time | Every timestamp is 2026-01-01 00:00. See `fs_time_hook()`. |
+| Time | New and modified files get the time of the library clock when it is set, else 2026-01-01 00:00. See [File time stamps](#file-time-stamps). |
 | Read-only build | `#define ROBCO_FS_READONLY 1` in `robco_config.h` drops the write, mkfs, rename and mkdir code. Functions that would write return `FS_ERR_RO`. |
 | Code size | Measured on an `sdraw`-style image that calls every function: about 16 KiB of code read-only and about 30 KiB read-write, both with `part.c`. Both add about 2.3 KiB of BSS. An image that calls no `fs_` function links none of it. |
 
@@ -358,7 +359,7 @@ int fs_unmount(const char *volume);
 
 A read-only device mounts, and every write then returns `FS_ERR_RO`.
 
-`fs_unmount()` forgets the volume and calls `blk_sync()` on its device. It does not flush open files: close them first. Handles still open on the volume return `FS_ERR_BADF` afterwards, even after a new mount. Returns `FS_ERR_NOVOL` for a name that is not mounted. If the volume was the default, the default moves to the other mounted volume, if any.
+`fs_unmount()` calls `blk_sync()` on the device first. If that fails, it returns the device error and the volume stays mounted, so you can call it again. Then it forgets the volume. It does not flush open files: close them first. Handles still open on the volume return `FS_ERR_BADF` afterwards, even after a new mount. Returns `FS_ERR_NOVOL` for a name that is not mounted. If the volume was the default, the default moves to the other mounted volume, if any.
 
 ```c
 int fs_statvfs(const char *volume, fs_statvfs_t *out);
@@ -449,7 +450,7 @@ A new file reaches the disk on `fs_sync()` or `fs_close()`.
 int fs_close(fs_file_t *f);
 ```
 
-Writes back what is buffered and frees the handle. A second close returns `FS_ERR_BADF`.
+Writes back what is buffered and frees the handle. If the write-back fails, it returns the error and the handle is closed anyway. A second close returns `FS_ERR_BADF`.
 
 ```c
 int fs_read(fs_file_t *f, void *buf, size_t len);
@@ -551,11 +552,15 @@ Replaces a file so that a power cut leaves either the old or the new content. It
 
 The guarantee also needs a device that does not reorder or lose a write it has acknowledged after `blk_sync()`.
 
+### File time stamps
+
 ```c
+typedef int (*fs_clock_fn)(datetime_t *out);
+void fs_set_clock(fs_clock_fn get);
 uint32_t fs_time_hook(void);
 ```
 
-Timestamp source in FAT format: `date << 16 | time`. The weak default in `src/fs/fs_glue.c` returns 2026-01-01 00:00. A clock driver can override it. FatFs does not call it today: `src/fs/ffconf.h` sets `FF_FS_NORTC` to `1`, so FatFs stamps every file with its fixed date `FF_NORTC_YEAR`-`FF_NORTC_MON`-`FF_NORTC_MDAY` (2026-01-01). Overriding the hook has no effect until `FF_FS_NORTC` is `0`.
+New and modified files get the time of the library clock. The weak `fs_time_hook()` in `src/fs/fs_glue.c` asks the function set with `fs_set_clock()`. Without one, it asks `clock_get()` from `rtc.h` when the image links the RTC driver. The file system holds only a weak reference to `clock_get()`, so an image without the driver links without it. When no clock answers, or it gives a date outside 2000 to 2099, files get 2026-01-01 00:00. `fs_set_clock(NULL)` goes back to the default. With an RTC module, `i2c_init()` and `rtc_init()` set the clock, and nothing else is needed. A program can also replace `fs_time_hook()`, which returns the time in FAT format, `date << 16 | time`. The read-only build stamps nothing.
 
 Sharp edges:
 
@@ -563,8 +568,108 @@ Sharp edges:
 |---|---|
 | No locking. | One caller at a time, from one context. |
 | Duplicate handles. | Two write handles on one file, or unlink and rename of an open file, corrupt the volume. FatFs does not check. |
-| Unmount does not flush. | Close files before `fs_unmount()`. |
+| Unmount does not flush files. | Close files before `fs_unmount()`. |
 | `fs_statvfs()` in the read-only build. | FatFs builds `f_getfree()` only with write support, so an image with `ROBCO_FS_READONLY` 1 that calls `fs_statvfs()` fails to link. |
-| Fixed timestamps. | See `fs_time_hook()`. |
+| Time stamps need a clock. | Without one, every file gets 2026-01-01 00:00. See [File time stamps](#file-time-stamps). |
 
 Pending hardware validation: the file system is tested on the host and with mtools images, not yet on a real SD card. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
+
+## Stage loader (`loader.h`)
+
+`loader.h` loads a `rimg` file from the FAT file system into a memory slot and validates it as [IMAGE_FORMAT.md](../../spec/IMAGE_FORMAT.md) says. A stage uses it to load the next one. It allocates nothing and prints nothing: the caller emits the `@RC` markers. Return codes are `rimg_err_t` values, and `rimg_strerror()` gives their `@RC` names.
+
+Init order: mount the card first with `sd_init()`, `part_scan()`, `part_open()`, then `fs_mount()`. A path without a volume uses the default volume.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `LOADER_CHUNK` | `8192u` | Bytes per read. Reads after the header stay aligned to this offset in the file. |
+| `LOADER_PATH_MAX` | `64u` | Size of `loader_result_t.path`, with the NUL |
+
+```c
+typedef struct {
+    uint32_t base; /* slot base address, the load_addr images must carry */
+    uint32_t size; /* slot size in bytes */
+    void *mem;     /* where the slot is in memory; NULL means (void *)base */
+} loader_slot_t;
+```
+
+`mem` lets host tests point the slot at a buffer. On the target, leave it `NULL`.
+
+```c
+typedef struct {
+    int err;
+    const rimg_header_t *hdr;
+    uint32_t entry, file_size, mem_size, fat_size, crc32;
+    char path[LOADER_PATH_MAX];
+    int fallback;
+    int primary_err;
+} loader_result_t;
+```
+
+`err` is the code of the file loaded last. `hdr` points at the header inside the slot after a successful load, and is `NULL` otherwise. `entry`, `file_size`, `mem_size` and `crc32` come from the header once it has been read. `fat_size` is the size the file system reports. `path` is the path of the file loaded last, cut to fit. `fallback` and `primary_err` are set by `loader_load_fallback()`.
+
+```c
+int loader_load(const char *path, const loader_slot_t *slot, const rimg_expect_t *expect,
+                loader_result_t *out);
+```
+
+Loads `path` into `slot`. `expect` gives the magic and the ABI major, as for `rimg_validate()`; `NULL` accepts any known magic with its default ABI major. Its slot and `file_size` fields are ignored: the loader uses `slot` and the FAT size. `out` may be `NULL`; when it is not, it is filled on failure too. The checks run in this order:
+
+1. The file opens: `RIMG_E_NOFILE` for a `NULL` path, a missing file, a missing directory, a directory, a bad name or a denied open. Any other failure, such as an unmounted volume, is `RIMG_E_IO`. A `NULL` slot, a slot of size 0 or a slot past 4 GiB also gives `RIMG_E_IO`.
+2. The first `0x60` bytes are read into a stack buffer: `RIMG_E_IO` for a read error or a file shorter than that.
+3. Validation steps 1 to 5 run on that header with the FAT size, through `rimg_check_header()`: `magic`, `version`, `size`, `bounds`, `abi`. The slot is not written before they pass.
+4. The header is copied to the slot base and the rest of the file is read after it in chunks: `RIMG_E_IO` for a read error or a file that ends early.
+5. `rimg_validate()` runs on the slot, so step 6 checks the CRC over the bytes loaded: `RIMG_E_CRC`.
+
+Step 3 makes `file_size` equal to the FAT size and keeps `load_addr + mem_size` within the slot, with `load_addr` equal to the slot base. The loader then writes exactly `file_size` bytes from the slot base. It writes no byte outside the slot, also for a file larger than the slot or larger than its header claims. After a CRC failure the slot holds the bad image; the slot belongs to the image, so this is allowed. The loader does not zero BSS.
+
+```c
+int loader_load_fallback(const char *primary, const char *backup, const loader_slot_t *slot,
+                         const rimg_expect_t *expect, loader_result_t *out);
+```
+
+The fallback rule from [BOOT_PROTOCOL.md](../../spec/BOOT_PROTOCOL.md): loads `primary`, and `backup` when the primary is missing or fails any step. `out->fallback` is 1 when the backup was tried. `out->primary_err` holds why the primary failed, or `RIMG_OK`. The return value and `out->err` belong to the file tried last. `backup` may be `NULL`. RETROS-BIOS loading MFBootAgent:
+
+```c
+const loader_slot_t slot = { 0x00200000, 0x00200000, NULL };
+const rimg_expect_t expect = { .magic = RIMG_MAGIC_BOOT, .abi_major = 2 };
+loader_result_t r;
+int rc = loader_load_fallback("/ROBCO/MFBOOT.SYS", "/ROBCO/MFBOOT.BAK", &slot, &expect, &r);
+
+if (r.fallback) {
+    k_printf("@RC stage=bios ev=error code=%s path=/ROBCO/MFBOOT.SYS\n", rimg_strerror(r.primary_err));
+    k_printf("@RC stage=bios ev=fallback path=/ROBCO/MFBOOT.BAK\n");
+}
+```
+
+`examples/chain1`, built with `-DCHAIN1_SD=1`, does the whole sequence: mount, load with fallback, boot info and handoff. It prints `ev=load` with the size and CRC once a load has passed every check.
+
+```c
+typedef struct {
+    int (*open)(void *ctx, const char *path, uint64_t *size);
+    int (*read)(void *ctx, void *buf, uint32_t len);
+    void (*close)(void *ctx);
+    void *ctx;
+} loader_io_t;
+
+int loader_load_io(const loader_io_t *io, const char *path, const loader_slot_t *slot,
+                   const rimg_expect_t *expect, loader_result_t *out);
+int loader_load_fallback_io(const loader_io_t *io, const char *primary, const char *backup,
+                            const loader_slot_t *slot, const rimg_expect_t *expect,
+                            loader_result_t *out);
+```
+
+The same loader over any file access. `open()` returns `RIMG_OK` and the size, `RIMG_E_NOFILE`, or another value that counts as `RIMG_E_IO`. `read()` returns the bytes read, which may be fewer than asked, `0` at the end, or a negative value. `close()` may be `NULL`. These live in `src/lib/loader_core.c` and touch no hardware; `loader_load()` plugs in `fs.h`.
+
+
+### SD card images
+
+```
+tools/mksdimage.sh <out.img> <size-mib> <dir>
+```
+
+Builds an SD card image file from a directory tree with mtools, without root: an MBR with one FAT partition at LBA 2048, FAT16 below 64 MiB and FAT32 from 64 MiB. The size is rounded up to a power of 2, at least 4 MiB, because QEMU needs that. It refuses a device or a directory as the output and a missing input directory. `tools/mkbootdir.sh` assembles the directory. In a project, `make sdimage SDIMAGE_DIR=<dir>` writes `build/sd.img`; `SDIMAGE_MIB` sets the size, 64 by default.
+
+### Storage example
+
+Mounts the first partition of the card as `sd`, then reads commands on the PL011, one per line, and answers each with one marker: `ls`, `cat`, `put`, `atomic`, `rm`, `mv`, `mkdir`, `df`, `ini`, `sync`, `umount` and `mount`. `put` and `atomic` write byte `i` of the file as `((seed + i) * 2654435761 mod 2^32) >> 24`. `tests/target/test_storage.py` drives it. See [examples/storage](../../../examples/storage/main.c).

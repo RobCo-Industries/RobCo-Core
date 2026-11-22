@@ -18,16 +18,16 @@ Two boot chains will use it:
 - Startup, board detection, the mailbox, exception reports and the stage handoff.
 - Drivers: PL011 UART and mini UART, system timer, interrupt controller, periodic tick, GPIO, reboot and halt, hardware RNG, framebuffer.
 - An identity-mapped MMU with data and instruction caches, and cache maintenance for buffers shared with the GPU.
-- Storage: a block device interface, an SD card driver on the EMMC controller, a RAM disk, MBR partitions and a FAT12/16/32 file system over FatFs.
+- Storage: a block device interface, an SD card driver on the EMMC controller, a RAM disk, MBR partitions, a FAT12/16/32 file system over FatFs and a stage loader that loads the next image from the card with a fallback file.
 - Input from GPIO buttons, a rotary dial and serial lines, as one event queue.
 - Square-wave audio on PWM, with tones, note sequences and RTTTL tunes, and a trace backend for tests.
 - An I2C master, a DS1307 real-time clock with a software clock, an SPI master, date and time functions and an INI parser.
 - A screen console with four colour schemes and two built-in 8x16 fonts, Fixedsys Excelsior by default and Spleen. See [FONTS.md](./docs/FONTS.md).
 - Hardware-independent code: klibc, `k_printf`, CRC-32, a heap, `rimg` image validation and the boot info block.
-- `tools/rimg.py` to seal and check images. Every build seals its image.
+- `tools/rimg.py` to seal and check images. Every build seals its image. `tools/mksdimage.sh` builds an SD card image, also through the optional `make sdimage` target of `mk/robco.mk`.
 - Examples in `examples/`, a QEMU test harness, host unit tests, target tests on four QEMU boards, a canary suite and a pinned CI container.
 
-The [specification index](./docs/spec/README.md) lists what is specified but not implemented yet. That includes stage loading from the card, the board name from the revision code and the Pip-OS ABI. What QEMU cannot prove, such as sound and cache behaviour, is listed in [HARDWARE_VALIDATION.md](./docs/HARDWARE_VALIDATION.md).
+The [specification index](./docs/spec/README.md) lists what is specified but not implemented yet. That includes the `BOOT.CFG` boot menu, the board name from the revision code and the Pip-OS ABI. What QEMU cannot prove, such as sound and cache behaviour, is listed in [HARDWARE_VALIDATION.md](./docs/HARDWARE_VALIDATION.md).
 
 ## Run the tests
 

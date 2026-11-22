@@ -72,7 +72,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Sealing every image in `mk/robco.mk` | Implemented |
 | Firmware download with pinned hashes, `tools/fetch_firmware.sh`, and boot directory, `tools/mkbootdir.sh` | Implemented |
 | Filling the META block in `tools/rimg.py` | Specified |
-| Loading images from the SD card | Specified |
+| Loading images from the SD card, `loader_load()` | Implemented, pending hardware validation |
 
 ### BOOT_PROTOCOL.md
 
@@ -83,7 +83,8 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Boot info block: `robco_bootinfo_t`, trust rule, `bootinfo_get()` | Implemented |
 | Register handoff, `robco_handoff()`, including turning the MMU and caches off | Implemented |
 | DTB and ATAGS copy, `bootinfo_copy_fw_blob()` | Implemented |
-| Stage loading from the SD card, `BOOT.CFG` | Specified |
+| Stage loading from the SD card with fallback, `loader_load_fallback()`, in `examples/chain1` | Implemented, pending hardware validation |
+| `BOOT.CFG` | Specified |
 | Other `@RC` events, failure handling, emergency shell | Specified |
 
 ### PIPOS_ABI.md
@@ -100,12 +101,12 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Firmware stub and `boot()` | Implemented |
 | `sdimage.py` | Implemented |
 | Serial tests in `tests/target/` | Implemented |
-| Host tests for klibc, CRC-32, the allocator, `rimg_validate()`, the boot info, the tick conversion, partitions, the file system, input, audio, date and time and INI | Implemented |
+| Host tests for klibc, CRC-32, the allocator, `rimg_validate()`, the stage loader, the boot info, the tick conversion, partitions, the file system, input, audio, date and time and INI | Implemented |
 | Tool tests, including the file system against mtools | Implemented |
 | Input tests over the console and script backends | Implemented |
 | Target tests with an SD image, the RTC model and the SPI flash | Implemented |
 | Unit tests for `tools/rimg.py` | Implemented |
-| Two-stage chain boot in QEMU | Implemented |
+| Two-stage chain boot in QEMU, also from an SD image with fallback | Implemented |
 | Console grid dump and a screendump golden | Implemented |
 | Fault tests: bad magic, bad CRC, out-of-slot images and a missing next stage in the chain, an undefined instruction in `hello`, MMU faults | Implemented |
 | Game logic and UI host tests, file fault tests | Specified |

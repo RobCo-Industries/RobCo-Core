@@ -115,13 +115,13 @@ void input_stats(uint32_t *pushed, uint32_t *dropped);
 int input_key_down(unsigned code);
 ```
 
-Non-zero while `code` is pressed, from any source. The state follows the KEY events pushed, even those the queue dropped.
+Non-zero while any source holds `code`. A release clears only the hold of its own source, so a key pressed on the console and on a button stays down until both release it. The state follows the KEY events pushed, even those the queue dropped. Sources above 3 are not tracked.
 
 ```c
 int input_set_repeat(uint32_t delay_ms, uint32_t rate_ms);
 ```
 
-Turns on auto-repeat. While a key is held, the first `INPUT_REPEAT` event comes `delay_ms` after the press, then one every `rate_ms`. It has the source of the press. Only the last key pressed repeats. `delay_ms` 0 turns it off, which is the default. It runs from a tick callback, registered on the first call with a non-zero delay. Returns `0`, `INPUT_ERR_ARG` for a non-zero delay with a zero rate, or `INPUT_ERR_SPACE` when no tick slot is free. Each call stops a repeat in progress. After a stall it goes on from the current time instead of sending a burst.
+Turns on auto-repeat. While a key is held, the first `INPUT_REPEAT` event comes `delay_ms` after the press, then one every `rate_ms`. It has the source of the press. Only the last key pressed repeats. It goes on while any source still holds that key. `delay_ms` 0 turns it off, which is the default. It runs from a tick callback, registered on the first call with a non-zero delay. Returns `0`, `INPUT_ERR_ARG` for a non-zero delay with a zero rate, or `INPUT_ERR_SPACE` when no tick slot is free. Each call stops a repeat in progress. After a stall it goes on from the current time instead of sending a burst.
 
 ```c
 int input_add_poller(void (*fn)(void));
@@ -270,6 +270,14 @@ int input_ansi_poll(input_ansi_t *p, uint32_t now_ms, input_event_t *out);
 
 The parser behind the console backend. `input_ansi_feed()` writes up to `INPUT_ANSI_OUT_MAX` (2) events and returns their count. Keys come out as presses only, with `source` and `t_ms` 0. Call `input_ansi_poll()` when no byte came. It turns a lone ESC into BACK once `esc_timeout_ms` passed since the ESC, and drops an unfinished sequence after the same time. It returns 0 or 1. Sequences may arrive split across calls.
 
+```c
+void input_hold_init(input_hold_t *h);
+int input_hold_update(input_hold_t *h, const input_event_t *ev);
+int input_hold_down(const input_hold_t *h, unsigned code);
+```
+
+The held-key state behind `input_key_down()` and auto-repeat. It keeps one bit per key code below 32 for each of the sources 0 to 3 (`INPUT_HOLD_SOURCES`). `input_hold_init()` clears the held keys and the repeat key. `input_hold_update()` applies a KEY event and ignores other events, codes above 31 and sources above 3. A press marks the key held by its source, makes it the repeat key and returns `1`, so the caller restarts the repeat delay. A release clears only that source's hold and returns `0`. If another source still holds the repeat key, the repeat goes on from that source. A release from a source that did not hold the key changes nothing. `input_hold_down()` returns non-zero while any source holds `code`. No locking: `src/drv/input.c` masks IRQs around it.
+
 ### Context rules
 
 | Function | Context |
@@ -287,7 +295,7 @@ The parser behind the console backend. `input_ansi_feed()` writes up to `INPUT_A
 | Drops keep the newest out. | A full queue refuses the new event. A dropped release still clears the key state, but the consumer never sees it. |
 | The guard is final. | A `disabled_stuck` backend never restarts. If one button is held at power-on and the others are wired, the guard passes. |
 | No resync on the dial. | A missed sample that looks legal shifts the detent phase by one transition until power-off. |
-| Repeat follows the last press. | Pressing a second key moves the repeat to it. Releasing the second key stops repeat even if the first is still held. |
+| Repeat follows the last press. | Pressing a second key moves the repeat to it. Releasing the second key stops repeat even if the first is still held. Releasing a key on one source keeps the repeat while another source holds it. |
 | Key state covers codes 0 to 31. | `input_key_down()` and repeat ignore KEY events with a higher code. |
 | The console backend takes every byte. | After `input_serial_start()`, `uart_getc()` and `uart_poll()` in other code compete for bytes. |
 | Serial input needs a busy loop. | In main mode the backends read only inside `input_poll()`. A main loop that stalls longer than the UART FIFO lasts loses bytes. |

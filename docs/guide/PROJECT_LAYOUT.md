@@ -9,11 +9,11 @@ This page maps the repository and shows where new code and tests go. To use the 
 | `include/robco/` | Public headers. One header per component. See [API.md](./API.md) and the topic files in [api/](./api/). |
 | `src/` | Library sources. Every `.c` and `.S` file one level below `src/` goes into `librobco.a`. |
 | `ld/image.ld.S` | Linker script, run through the C preprocessor with `LINK_ADDR` and the project's `robco_config.h` |
-| `mk/robco.mk` | Build fragment that projects include. Builds the library, links and seals the image. |
+| `mk/robco.mk` | Build fragment that projects include. Builds the library, links and seals the image. The optional `make sdimage SDIMAGE_DIR=<dir>` target writes `build/sd.img` with `tools/mksdimage.sh`. |
 | `mk/host.mk` | Host unit test build, included by the top-level `Makefile` |
 | `examples/` | Small images that use the library. Each one is also a target test. |
 | `tests/` | Host tests, QEMU harness, target tests, tool tests, canary suite. See [tests/README.md](../../tests/README.md). |
-| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory |
+| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory, `mksdimage.sh` builds an SD card image from a directory |
 | `docs/` | This guide, the [specifications](../spec/README.md), [FONTS.md](../FONTS.md) and [HARDWARE_VALIDATION.md](../HARDWARE_VALIDATION.md) |
 | `spikes/` | Three early proofs: UART hello, SD sector read, framebuffer and MMU. They have their own code in `spikes/common/` and do not use the library. |
 | `ci/` | The CI container. See [ci/README.md](../../ci/README.md). |
@@ -29,8 +29,8 @@ This page maps the repository and shows where new code and tests go. To use the 
 | `src/board/` | Board detection, `robco_start()`, the hardware side of the boot info | Yes |
 | `src/drv/` | Drivers: mailbox, PL011 and mini UART, system timer, interrupt controller, tick, GPIO, power, RNG, framebuffer, SD card, input backends, audio, I2C, RTC, SPI | Yes |
 | `src/gfx/` | Screen console, colour schemes, font table | Through `fb.h` |
-| `src/fs/` | The FAT file system layer over FatFs, its configuration `ffconf.h` and its glue to `blk.h` | No |
-| `src/lib/` | klibc, `k_printf`, CRC-32, heap, `rimg_validate()`, boot info, RAM disk, partitions, input queue and decoders, audio sequencer and notes, date and time, INI parser | No |
+| `src/fs/` | The FAT file system layer over FatFs, its configuration `ffconf.h`, its glue to `blk.h` and the file side of the stage loader | No |
+| `src/lib/` | klibc, `k_printf`, CRC-32, heap, `rimg_validate()`, boot info, the stage loader core, RAM disk, partitions, input queue and decoders, audio sequencer and notes, date and time, INI parser | No |
 
 `src/lib/` holds only code that runs unchanged on the host. It must not read registers, call drivers, use assembly or assume 32-bit pointers. `make test-host` builds every `src/lib/*.c` with the host compiler, ASan and UBSan and runs the tests in `tests/host/`. Code that needs hardware goes in one of the other directories.
 
@@ -42,9 +42,10 @@ This page maps the repository and shows where new code and tests go. To use the 
 
 | File | Role |
 |---|---|
-| `src/fs/ffconf.h` | FatFs configuration: long names, two volumes, no real-time clock. `ROBCO_FS_READONLY` set to 1 in `robco_config.h` selects the read-only build. |
+| `src/fs/ffconf.h` | FatFs configuration: long names, two volumes, time stamps from `fs_time_hook()`. `ROBCO_FS_READONLY` set to 1 in `robco_config.h` selects the read-only build. |
 | `src/fs/fs.c` | The `fs.h` API: volumes, paths, error mapping |
-| `src/fs/fs_glue.c` | The FatFs disk functions over `blk.h` |
+| `src/fs/fs_glue.c` | The FatFs disk functions over `blk.h` and the file time stamps |
+| `src/fs/loader.c` | `loader_load()` over `fs.h`. The pure part is `src/lib/loader_core.c`. |
 | `src/fs/fs_priv.h` | Internal declarations shared by the two files above |
 | `src/fs/fs_strchr.c` | `strchr()` for FatFs on the target |
 | `src/fs/libc/string.h` | `<string.h>` for FatFs on the target, which has no C library headers |
