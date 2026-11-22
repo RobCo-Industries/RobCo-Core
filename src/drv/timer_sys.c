@@ -88,6 +88,39 @@ void timer_compare_clear(unsigned ch)
     }
 }
 
+/*
+ * The comparator fires only when CLO equals the compare value. Write the
+ * value first, then clear the flag: a flag seen after the clear belongs to
+ * the new value. If CLO is already past the value and no flag is set, the
+ * match was missed and would wait a full 71 minute wrap.
+ */
+int timer_compare_arm(unsigned ch, uint32_t clo)
+{
+    if (ch >= 4) {
+        return 0;
+    }
+    timer_compare_set(ch, clo);
+    timer_compare_clear(ch);
+    if ((int32_t)(timer_now_lo() - clo) < 0) {
+        return 0;
+    }
+    return !timer_compare_pending(ch);
+}
+
+uint32_t timer_oneshot_arm(unsigned ch, uint32_t clo)
+{
+    uint32_t gap = TIMER_ARM_MIN_US;
+
+    /* Each retry doubles the distance, so a slow write cannot keep missing. */
+    while (timer_compare_arm(ch, clo)) {
+        clo = timer_now_lo() + gap;
+        if (gap < TIMER_ARM_MAX_US) {
+            gap *= 2;
+        }
+    }
+    return clo;
+}
+
 int timer_compare_pending(unsigned ch)
 {
     return ch < 4 && (mmio_read(st_base() + ST_CS) & (1u << ch)) != 0;

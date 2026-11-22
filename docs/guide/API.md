@@ -344,6 +344,13 @@ int timer_compare_pending(unsigned ch);
 
 Set compare channel `ch` to match when CLO equals `clo`, clear its match flag, or test the flag. Channels above 3 are ignored. The comparator fires only on equality, so a value already in the past matches only after CLO wraps. The functions do not check which channel you use.
 
+```c
+int timer_compare_arm(unsigned ch, uint32_t clo);
+uint32_t timer_oneshot_arm(unsigned ch, uint32_t clo);
+```
+
+Use these to arm a match. A write can land after CLO has passed `clo`, for example after a long masked section or a host stall under QEMU. The match is then missed. `timer_compare_arm()` writes `clo`, clears the flag and re-reads CLO. It returns `0` when the interrupt will come and `1` when the match was missed. `timer_oneshot_arm()` handles the miss itself: it arms a short distance ahead, `TIMER_ARM_MIN_US` at first and doubling up to `TIMER_ARM_MAX_US`, until the match holds. It returns the value armed, so the interrupt always comes, maybe late. The tick uses `timer_compare_arm()` and counts a missed period in `tick_count()` and `tick_missed()`.
+
 All timer reads are safe from any context. A one-shot on channel 3, from `examples/tick/main.c`:
 
 ```c
@@ -358,8 +365,7 @@ static void on_oneshot(unsigned irq, void *arg)
 
 irq_register(IRQ_TIMER3, on_oneshot, 0);
 oneshot_deadline = timer_now_lo() + ONESHOT_US;
-timer_compare_set(ONESHOT_CH, oneshot_deadline);
-timer_compare_clear(ONESHOT_CH);
+timer_oneshot_arm(ONESHOT_CH, oneshot_deadline);
 irq_enable(IRQ_TIMER3);
 irq_cpu_enable();
 ```

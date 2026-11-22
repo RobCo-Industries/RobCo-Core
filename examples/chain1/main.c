@@ -91,7 +91,7 @@ void robco_main(void)
     while (tick_count() < 20) {
     }
     irq_cpu_disable();
-    timer_compare_set(3, timer_now_lo() + 100);
+    timer_oneshot_arm(3, timer_now_lo() + 100);
     timer_delay_us(3000);
     k_printf("@RC stage=" STAGE " ev=tick ticks=%u cs1=%d cs3=%d\n", (unsigned)tick_count(),
              timer_compare_pending(1) != 0, timer_compare_pending(3) != 0);

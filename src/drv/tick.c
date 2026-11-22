@@ -10,7 +10,7 @@ static volatile uint32_t count;
 static volatile uint32_t wraps;      /* tick_count() wraps, for tick_ms() */
 static volatile uint32_t missed;
 static uint32_t period_us;
-static uint32_t next_match;     /* CLO value currently in C1 */
+static uint32_t next_match;     /* next period boundary not yet counted */
 static void (*volatile callbacks[TICK_MAX_CALLBACKS])(void);
 
 static void tick_run_callbacks(void)
@@ -48,6 +48,24 @@ static uint32_t tick_catch_up(void)
     return n;
 }
 
+/*
+ * Arms C1 for next_match. If the deadline passed before the write took
+ * effect, counts the elapsed periods as missed and tries again. Each retry
+ * arms a few more periods ahead, so the loop ends even if every write is
+ * slow. catch_up() counts the skipped boundaries once they pass.
+ */
+static void tick_arm(void)
+{
+    uint32_t ahead = 0;
+
+    while (timer_compare_arm(TICK_CHANNEL, next_match + ahead)) {
+        missed += tick_catch_up();
+        if (ahead < TIMER_ARM_MAX_US) {
+            ahead += ahead ? ahead : period_us;
+        }
+    }
+}
+
 static void tick_isr(unsigned irq, void *arg)
 {
     uint32_t n;
@@ -62,23 +80,13 @@ static void tick_isr(unsigned irq, void *arg)
      * or a long masked section made the handler fall behind, the skipped
      * periods are counted in one step and only tick_missed() grows. This
      * bounds the handler even when a callback takes longer than a period.
-     * The re-check after writing C1 covers a deadline that passed during
-     * the write: the comparator only fires on equality, so a past value
-     * would wait a full 71 minute wrap. A stale match flag just causes a
-     * call that counts nothing.
      */
     n = tick_catch_up();
     if (n) {
         missed += n - 1;
         tick_run_callbacks();
     }
-    for (;;) {
-        timer_compare_set(TICK_CHANNEL, next_match);
-        if ((int32_t)(timer_now_lo() - next_match) < 0) {
-            break;
-        }
-        missed += tick_catch_up();
-    }
+    tick_arm();
 }
 
 int tick_init(uint32_t hz)
@@ -104,8 +112,7 @@ int tick_init(uint32_t hz)
     wraps = 0;
     missed = 0;
     next_match = timer_now_lo() + period_us;
-    timer_compare_set(TICK_CHANNEL, next_match);
-    timer_compare_clear(TICK_CHANNEL);
+    tick_arm();
     irq_enable(IRQ_TIMER1);
     irq_restore(s);
     return 0;
