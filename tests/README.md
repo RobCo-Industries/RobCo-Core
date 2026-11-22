@@ -99,6 +99,11 @@ temporary directory outside the repository and builds it there.
 - `harness/boot.py`: boots a raw image at 0x8000 like the GPU firmware.
   Gives serial read and write, `@RC` marker parsing and screendumps.
 - `harness/sdimage.py`: builds MBR + FAT SD images with mtools.
+- `harness/plugin.py`: the pytest plugin with `--board` and the `board`,
+  `need_mtools` and `robco_build` fixtures. `conftest.py` enables it,
+  and so does a project. See [the harness in a project](#the-harness-in-a-project).
+- `harness/run.py`: boots an image on this terminal, see
+  [run an image by hand](#run-an-image-by-hand).
 - `fwstub/`: the firmware stub `boot()` loads at 0x0. It parks secondary
   cores, writes ATAGS at 0x100, switches to HYP on raspi2b and enters
   the image with r0 = 0, r1 = machine id, r2 = 0x100. `a64_shim.py`
@@ -218,6 +223,59 @@ def test_board_command(board, example_image):
         status, lines = vm.script("board")
         assert status == "ok" and lines[0].startswith("soc=")
 ```
+
+## The harness in a project
+
+A project with RobCo-Core in `external/robco-core` enables the plugin
+with three lines in its `tests/conftest.py`:
+
+```python
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../external/robco-core/tests"))
+pytest_plugins = ["harness.plugin"]
+```
+
+It then gets:
+
+| Name | Does |
+|---|---|
+| `--board NAME` | Runs board tests on `NAME`, repeatable, or `all`. Without it: `raspi0` and `raspi2b`, or the `robco_boards` ini value, such as `robco_boards = raspi0 raspi1ap raspi2b raspi3b` in `pytest.ini`. |
+| `board` | The board name. Skips when the installed QEMU lacks the machine. |
+| `need_mtools` | Skips the test without mtools |
+| `robco_build(directory, target="all", variant=None, flags=(), image=None)` | Runs `make -s -C directory CI=1 BUILD=build[/variant] flags target` once per session and argument set, and returns the image path. The name comes from `IMAGE` in the Makefile, or from `image`, relative to the build directory. |
+
+```python
+import os
+from harness.boot import boot
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def test_ready(board, robco_build):
+    with boot(robco_build(ROOT), board) as vm:
+        vm.wait_for("ev=ready", timeout=30, line=True)
+```
+
+[tests/fixtures/sample-project/tests](fixtures/sample-project/tests/conftest.py)
+is a complete example. `tools/test_harness_plugin.py` runs it from a copy
+outside the repository.
+
+## Run an image by hand
+
+`harness.run` boots an image with the same firmware stub and arguments
+as `boot()`, and connects the console to your terminal:
+
+```sh
+PYTHONPATH=external/robco-core/tests python3 -m harness.run build/app.img --board raspi2b
+PYTHONPATH=external/robco-core/tests python3 -m harness.run build/app.img --board raspi0 \
+    --sd build/sd.img --mode svc --serial2 tcp:4555
+```
+
+The terminal is in raw mode while QEMU runs and is restored on exit.
+Press Ctrl-A, then x, to quit. Ctrl-A, then c, opens the QEMU monitor.
+`--serial2 pty` puts the mini UART, the script channel, on a pty whose
+path QEMU prints. `--serial2 tcp:PORT` puts it on `127.0.0.1:PORT`, for
+`nc 127.0.0.1 PORT`. The runner prints the QEMU pid at start, and exits
+with QEMU's exit status. `--qemu-arg` adds a QEMU argument.
 
 ## What QEMU cannot prove
 
