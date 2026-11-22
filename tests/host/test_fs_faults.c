@@ -64,7 +64,7 @@ TEST(full_volume)
 
     /* Creating and growing fails cleanly; earlier files stay intact. */
     CHECK_EQ(fs_write_file_atomic("v:/SAVE.DAT", keep, sizeof(keep)), FS_ERR_NOSPC);
-    CHECK_EQ(fs_stat("v:/SAVE.TMP", &(fs_stat_t){ 0 }), FS_ERR_NOENT);
+    CHECK_EQ(fs_stat("v:/~SAVE.DAT", &(fs_stat_t){ 0 }), FS_ERR_NOENT);
     CHECK_EQ(fs_read_file("v:/SAVE.DAT", back, sizeof(back), &n), FS_OK);
     CHECK_EQ(n, 8);
     CHECK_MEM(back, "old save", 8);
@@ -120,10 +120,10 @@ TEST(atomic_write_success)
     CHECK_EQ(fs_read_file("v:/PIPBOY/SAVE1.SAV", buf, sizeof(buf), &n), FS_OK);
     CHECK_EQ(n, 7);
     CHECK_MEM(buf, "second!", 7);
-    CHECK_EQ(fs_stat("v:/PIPBOY/SAVE1.TMP", &(fs_stat_t){ 0 }), FS_ERR_NOENT);
+    CHECK_EQ(fs_stat("v:/PIPBOY/~SAVE1.SAV", &(fs_stat_t){ 0 }), FS_ERR_NOENT);
     /* A stale temp file from an earlier crash is replaced. */
     CHECK_EQ(fs_write_file_atomic("v:/PIPBOY/SAVE1.SAV", "x", 1), FS_OK);
-    CHECK_EQ(fs_rename("v:/PIPBOY/SAVE1.SAV", "v:/PIPBOY/SAVE1.TMP"), FS_OK);
+    CHECK_EQ(fs_rename("v:/PIPBOY/SAVE1.SAV", "v:/PIPBOY/~SAVE1.SAV"), FS_OK);
     CHECK_EQ(fs_write_file_atomic("v:/PIPBOY/SAVE1.SAV", "", 0), FS_OK);
     CHECK_EQ(fs_read_file("v:/PIPBOY/SAVE1.SAV", buf, sizeof(buf), &n), FS_OK);
     CHECK_EQ(n, 0);
@@ -174,7 +174,7 @@ TEST(atomic_write_survives_failures)
             CHECK_MEM(buf, new_data, sizeof(new_data));
         } else {
             CHECK_EQ(got, FS_ERR_NOENT);
-            CHECK_EQ(fs_read_file("v:/SAVES/GAME.TMP", buf, sizeof(buf), &n), FS_OK);
+            CHECK_EQ(fs_read_file("v:/SAVES/~GAME.SAV", buf, sizeof(buf), &n), FS_OK);
             CHECK_EQ(n, sizeof(new_data));
             CHECK_MEM(buf, new_data, sizeof(new_data));
             saw_window = 1;
@@ -185,6 +185,74 @@ TEST(atomic_write_survives_failures)
     CHECK(k > 3);
     CHECK(saw_old);
     CHECK(saw_window);
+}
+
+static int count_entries(const char *dir, int *leftovers)
+{
+    fs_dir_t d;
+    fs_stat_t st;
+    int n = 0, rc;
+
+    *leftovers = 0;
+    CHECK_EQ(fs_opendir(&d, dir), FS_OK);
+    while ((rc = fs_readdir(&d, &st)) == 1) {
+        n++;
+        *leftovers += st.leftover;
+    }
+    CHECK_EQ(rc, 0);
+    CHECK_EQ(fs_closedir(&d), FS_OK);
+    return n;
+}
+
+/* Work files use reserved names that no ordinary file shares. */
+TEST(atomic_work_names)
+{
+    char buf[64];
+    size_t n;
+    int left;
+    fs_file_t f;
+    fs_stat_t st;
+
+    format(DISK_SIZE);
+    CHECK_EQ(fs_mount("v", &ram), FS_OK);
+    /* An unrelated file with the old temp name survives. */
+    CHECK_EQ(fs_write_file_atomic("v:/SAVE1.TMP", "mine", 4), FS_OK);
+    CHECK_EQ(fs_write_file_atomic("v:/SAVE1.SAV", "save", 4), FS_OK);
+    CHECK_EQ(fs_write_file_atomic("v:/SAVE1.SAV", "save2", 5), FS_OK);
+    CHECK_EQ(fs_read_file("v:/SAVE1.TMP", buf, sizeof(buf), &n), FS_OK);
+    CHECK_EQ(n, 4);
+    CHECK_MEM(buf, "mine", 4);
+    /* Same base, other extension: separate work files. */
+    CHECK_EQ(fs_write_file_atomic("v:/A.SAV", "sav", 3), FS_OK);
+    CHECK_EQ(fs_write_file_atomic("v:/A.DAT", "dat", 3), FS_OK);
+    CHECK_EQ(fs_open(&f, "v:/~A.SAV", FS_WRITE | FS_CREATE), FS_OK);
+    CHECK_EQ(fs_write(&f, "partial", 7), 7);
+    CHECK_EQ(fs_close(&f), FS_OK);
+    CHECK_EQ(fs_write_file_atomic("v:/A.DAT", "dat2", 4), FS_OK);
+    CHECK_EQ(fs_read_file("v:/A.SAV", buf, sizeof(buf), &n), FS_OK);
+    CHECK_EQ(n, 3);
+    CHECK_MEM(buf, "sav", 3);
+    CHECK_EQ(fs_read_file("v:/A.DAT", buf, sizeof(buf), &n), FS_OK);
+    CHECK_EQ(n, 4);
+    CHECK_MEM(buf, "dat2", 4);
+    /* Listings flag work files; 8.3 targets keep 8.3 work names. */
+    CHECK_EQ(count_entries("v:/", &left), 5);
+    CHECK_EQ(left, 1);
+    CHECK_EQ(fs_stat("v:/~A.SAV", &st), FS_OK);
+    CHECK_EQ(st.leftover, 1);
+    CHECK_STR(st.name, "~A.SAV");
+    CHECK_STR(st.short_name, ""); /* a plain 8.3 entry, no long name */
+    CHECK_EQ(fs_stat("v:/A.SAV", &st), FS_OK);
+    CHECK_EQ(st.leftover, 0);
+    /* Reserved names are refused as targets. */
+    CHECK_EQ(fs_write_file_atomic("v:/~A.SAV", "x", 1), FS_ERR_NAME);
+    CHECK_EQ(fs_write_file_atomic("v:/#A.SAV", "x", 1), FS_ERR_NAME);
+    /* An 8-character base gets long work names and still works. */
+    CHECK_EQ(fs_write_file_atomic("v:/SAVEGAME.SAV", "g1", 2), FS_OK);
+    CHECK_EQ(fs_write_file_atomic("v:/SAVEGAME.SAV", "g2", 2), FS_OK);
+    CHECK_EQ(fs_read_file("v:/SAVEGAME.SAV", buf, sizeof(buf), &n), FS_OK);
+    CHECK_MEM(buf, "g2", 2);
+    CHECK_EQ(fs_unmount("v"), FS_OK);
 }
 
 TEST(readonly_device)

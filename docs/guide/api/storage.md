@@ -493,6 +493,7 @@ typedef struct {
     uint16_t date, time;
     char name[FS_NAME_MAX + 1];
     char short_name[13];
+    uint8_t leftover;
 } fs_stat_t;
 ```
 
@@ -503,6 +504,7 @@ typedef struct {
 | `date`, `time` | FAT format |
 | `name` | Long name, or the 8.3 name. `fs_stat()` gives the spelling in `path`. `fs_readdir()` gives the stored spelling. |
 | `short_name` | 8.3 name, empty if the volume has none |
+| `leftover` | `1` when the name starts with `~` or `#`: a work file of `fs_write_file_atomic()`, see [Whole files](#whole-files) |
 
 The root directory gives `is_dir` set and the name `/`.
 
@@ -553,13 +555,13 @@ Reads a file into `buf`. Stores the bytes read in `*out_len` when `out_len` is n
 int fs_write_file_atomic(const char *path, const void *buf, size_t len);
 ```
 
-Replaces a file so that a power cut leaves either the old or the new content. It writes `buf` to a temp file named after the target with the extension `.TMP`, syncs it, removes the target and renames the temp file over it. `SAVE1.SAV` uses `SAVE1.TMP`. Two targets that differ only in extension share one temp name. A target that ends in `.TMP`, in any case, returns `FS_ERR_NAME`. If writing the temp file fails, the call removes it and returns the error.
+Replaces a file so that a power cut leaves either the old or the new content. It writes `buf` to a work file named `~` plus the target name, syncs it, removes the target and renames the work file over it. `SAVE1.SAV` uses `~SAVE1.SAV`, so `A.SAV` and `A.DAT` never share a work file, and an ordinary `SAVE1.TMP` is never touched. Names that start with `~` or `#` are reserved for work files: a target with such a name returns `FS_ERR_NAME`, and `fs_readdir()` sets `leftover` for them. A target base name of up to 7 characters keeps 8.3 work names. If writing the work file fails, the call removes it and returns the error.
 
 | Case | What is on disk |
 |---|---|
 | The call fails, or the power goes, before the temp file is complete | The target keeps its old content. The next call replaces a stale temp file. |
-| The power goes between the removal and the rename | The target is missing. The `.TMP` file is complete and holds the new data. |
-| First write, target missing, `.TMP` present | The `.TMP` file may be partial. Use it only if the target existed before. |
+| The power goes between the removal and the rename | The target is missing. The `~` work file is complete and holds the new data. |
+| First write, target missing, `~` work file present | The work file may be partial. Use it only if the target existed before. |
 
 The guarantee also needs a device that does not reorder or lose a write it has acknowledged after `blk_sync()`.
 

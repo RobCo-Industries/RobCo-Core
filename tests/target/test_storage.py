@@ -191,7 +191,7 @@ def test_storage_write(board, image, need_mtools, tmp_path):
         assert cmd(vm, "atomic /OLD.SAV 3000 9")["rc"] == "ok", vm.serial
         assert cmd(vm, "atomic /NEW.SAV 100 10")["rc"] == "ok", vm.serial
         _, root = ls(vm, "/")
-        assert not [n for n in root if n.upper().endswith(".TMP")], root
+        assert not [n for n in root if n[:1] in "~#"], root
 
         assert cmd(vm, "mkdir /NEWDIR")["rc"] == "ok"
         assert cmd(vm, "mkdir /NEWDIR")["rc"] == "exist"
@@ -223,7 +223,7 @@ def test_storage_write(board, image, need_mtools, tmp_path):
     names = host_names(sd, "/")
     assert "Written_With_Long_Name.bin" in names
     assert "GONE.TXT" not in names and "W1.BIN" not in names
-    assert not [n for n in names if n.upper().endswith(".TMP")], names
+    assert not [n for n in names if n[:1] in "~#"], names
     assert "NEWDIR" in names
     fsck(sd, tmp_path)
 

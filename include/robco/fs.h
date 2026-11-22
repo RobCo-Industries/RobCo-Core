@@ -87,6 +87,7 @@ typedef struct {
     uint16_t date, time;         /* FAT format */
     char name[FS_NAME_MAX + 1];  /* long name, or the 8.3 name */
     char short_name[13];         /* 8.3 name, empty if the volume has none */
+    uint8_t leftover;            /* 1: a reserved work name of fs_write_file_atomic() */
 } fs_stat_t;
 
 typedef struct {
@@ -144,6 +145,11 @@ int fs_readdir(fs_dir_t *d, fs_stat_t *out);
 int fs_closedir(fs_dir_t *d);
 
 int fs_read_file(const char *path, void *buf, size_t max, size_t *out_len);
+/*
+ * Names starting with '~' or '#' are reserved for the work files of
+ * fs_write_file_atomic(): "~NAME" and "#NAME" next to the target NAME.
+ * A target with a reserved name returns FS_ERR_NAME.
+ */
 int fs_write_file_atomic(const char *path, const void *buf, size_t len);
 
 /*

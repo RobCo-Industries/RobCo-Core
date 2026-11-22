@@ -389,6 +389,22 @@ int fs_chdir(const char *path)
     return rc;
 }
 
+/*
+ * fs_write_file_atomic() keeps its work files next to the target, named
+ * with a reserved first character: "~NAME.EXT" holds the new content
+ * while it is written, "#NAME.EXT" holds the old content while the new
+ * one moves into place. Each keeps the whole target name, so targets that
+ * differ only in extension never share a work file. A target with a base
+ * name of up to 7 characters keeps 8.3 work names.
+ */
+#define ATOMIC_NEW '~'
+#define ATOMIC_OLD '#'
+
+static int reserved_name(const char *name)
+{
+    return name[0] == ATOMIC_NEW || name[0] == ATOMIC_OLD;
+}
+
 static void fill_stat(fs_stat_t *out, const FILINFO *fi)
 {
     k_memset(out, 0, sizeof(*out));
@@ -399,6 +415,7 @@ static void fill_stat(fs_stat_t *out, const FILINFO *fi)
     out->time = fi->ftime;
     k_strncpy(out->name, fi->fname[0] != '\0' ? fi->fname : fi->altname, sizeof(out->name) - 1);
     k_strncpy(out->short_name, fi->altname, sizeof(out->short_name) - 1);
+    out->leftover = reserved_name(out->name) ? 1 : 0;
 }
 
 int fs_stat(const char *path, fs_stat_t *out)
@@ -809,36 +826,40 @@ int fs_read_file(const char *path, void *buf, size_t max, size_t *out_len)
 }
 
 #if !FF_FS_READONLY
-/* "DIR/NAME.EXT" to "DIR/NAME.TMP". out holds FS_PATH_MAX + 1 bytes. */
-static int tmp_name(const char *path, char *out)
+/*
+ * Derives the work file paths of path into tmp and old, which hold
+ * FS_PATH_MAX + 1 bytes each. Refuses an empty name, "." and "..", and
+ * names that are themselves reserved.
+ */
+static int atomic_names(const char *path, char *tmp, char *old)
 {
-    size_t len, i, base, dot;
+    size_t len, i, base;
 
+    if (path == NULL) {
+        return FS_ERR_INVAL;
+    }
     len = k_strlen(path);
+    if (len > FS_PATH_MAX) {
+        return FS_ERR_NAMETOOLONG;
+    }
     base = 0;
     for (i = 0; i < len; i++) {
         if (path[i] == '/' || path[i] == '\\' || path[i] == ':') {
             base = i + 1;
         }
     }
-    if (base == len) {
+    if (base == len || reserved_name(path + base) || k_strcmp(path + base, ".") == 0 ||
+        k_strcmp(path + base, "..") == 0) {
         return FS_ERR_NAME;
     }
-    dot = len;
-    for (i = base; i < len; i++) {
-        if (path[i] == '.') {
-            dot = i;
-        }
-    }
-    if (dot + 4 > FS_PATH_MAX) {
+    if (len + 1 > FS_PATH_MAX || len - base + 1 > FS_NAME_MAX) {
         return FS_ERR_NAMETOOLONG;
     }
-    if (dot + 4 == len && (path[dot + 1] | 0x20) == 't' && (path[dot + 2] | 0x20) == 'm' &&
-        (path[dot + 3] | 0x20) == 'p') {
-        return FS_ERR_NAME;
-    }
-    k_memcpy(out, path, dot);
-    k_memcpy(out + dot, ".TMP", 5);
+    k_memcpy(tmp, path, base);
+    tmp[base] = ATOMIC_NEW;
+    k_memcpy(tmp + base + 1, path + base, len - base + 1);
+    k_memcpy(old, tmp, len + 2);
+    old[base] = ATOMIC_OLD;
     return FS_OK;
 }
 #endif
@@ -851,7 +872,7 @@ int fs_write_file_atomic(const char *path, const void *buf, size_t len)
     (void)len;
     return FS_ERR_RO;
 #else
-    char tmp[FS_PATH_MAX + 1];
+    char tmp[FS_PATH_MAX + 1], old[FS_PATH_MAX + 1];
     fs_file_t f;
     size_t done = 0;
     int rc;
@@ -859,10 +880,7 @@ int fs_write_file_atomic(const char *path, const void *buf, size_t len)
     if (path == NULL || (buf == NULL && len != 0)) {
         return FS_ERR_INVAL;
     }
-    if (k_strlen(path) > FS_PATH_MAX) {
-        return FS_ERR_NAMETOOLONG;
-    }
-    rc = tmp_name(path, tmp);
+    rc = atomic_names(path, tmp, old);
     if (rc != FS_OK) {
         return rc;
     }

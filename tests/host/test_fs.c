@@ -515,7 +515,10 @@ TEST(misuse)
     CHECK_EQ(fs_unmount("j"), FS_ERR_NOVOL);
 
     /* Atomic writes refuse names they cannot handle. */
-    CHECK_EQ(fs_write_file_atomic("/X.TMP", "x", 1), FS_ERR_NAME);
+    CHECK_EQ(fs_write_file_atomic("/~X.SAV", "x", 1), FS_ERR_NAME);
+    CHECK_EQ(fs_write_file_atomic("/DIR/#X.SAV", "x", 1), FS_ERR_NAME);
+    CHECK_EQ(fs_write_file_atomic("/DIR/..", "x", 1), FS_ERR_NAME);
+    CHECK_EQ(fs_write_file_atomic("a:", "x", 1), FS_ERR_NAME);
     CHECK_EQ(fs_write_file_atomic("/DIR/", "x", 1), FS_ERR_NAME);
     CHECK_EQ(fs_write_file_atomic(rc_launder(NULL), "x", 1), FS_ERR_INVAL);
     CHECK_EQ(fs_write_file_atomic("/NOEXT", "noext", 5), FS_OK);
