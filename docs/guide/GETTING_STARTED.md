@@ -397,4 +397,4 @@ Connect a 3.3 V USB serial adapter. Never use a 5 V adapter.
 | 8 | GPIO14, TXD | RX |
 | 10 | GPIO15, RXD | TX |
 
-Open the adapter at 115200 baud, 8N1, no flow control, then power the Pi. On a Pi 3 or Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` takes GPIO14 and GPIO15 back, but whether that is enough is not confirmed. The spec names `dtoverlay=disable-bt` as the fallback. That overlay needs a DTB and the `overlays/` directory, which this setup leaves out, so start with a Pi Zero or Pi 1.
+Open the adapter at 115200 baud, 8N1, no flow control, then power the Pi. On a Pi 3 or Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` muxes GPIO14 and GPIO15 to the PL011 itself, but whether that is enough is pending hardware validation, so start with a Pi Zero or Pi 1. The fallbacks are in [the UART policy](../spec/BOARD_SUPPORT.md#uart-policy).

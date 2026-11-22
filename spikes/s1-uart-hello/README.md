@@ -45,7 +45,7 @@ Use a 3.3 V USB-serial adapter. Do not use a 5 V one.
 
 Open the adapter at 115200 8N1, no flow control. For example `screen /dev/tty.usbserial-XXXX 115200`.
 
-On the Pi 3 and Zero 2 W, the PL011 is normally used by Bluetooth. The spike muxes GPIO14/15 to the PL011 itself. If you see nothing on these boards, add `dtoverlay=disable-bt` to `config.txt` and report it.
+On the Pi 3 and Zero 2 W, the PL011 is normally used by Bluetooth. The spike muxes GPIO14/15 to the PL011 itself and takes the UART clock from the mailbox. This is pending hardware validation. If you see nothing on these boards, report it. Do not add `dtoverlay=disable-bt` alone: without a `.dtb` and the `overlays/` folder on the card the firmware ignores it. The fallbacks are in [the UART policy](../../docs/spec/BOARD_SUPPORT.md#uart-policy).
 
 ## Expected output
 
@@ -71,4 +71,4 @@ For each board:
 2. Whether the first characters are garbled.
 3. Whether typing echoes back.
 4. Any `ev=exception` line.
-5. Whether you needed `dtoverlay=disable-bt`.
+5. On a Pi 3 or Zero 2 W, whether the PL011 printed anything.
