@@ -234,6 +234,14 @@ with the serial log first, then a guest state block. The block reads
 CPU0 and the hardware over QMP, so it shows where the guest was when
 the test gave up. `vm.state_dump()` returns the same text on demand.
 
+The dump has an 8 second budget. It reads the hardware first and looks
+up symbols last, with whatever time is left. If a step fails or runs
+out of time, the block keeps everything read so far and adds one
+`not collected:` line naming the step and the reason. A slow or missing
+symbol tool costs only the names: pc and lr stay as raw addresses and
+the `symbols:` line says why. `state dump failed` means nothing could
+be read at all.
+
 This one is `examples/audio` idle in its `wfi` loop on `raspi0`:
 
 ```

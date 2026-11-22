@@ -234,8 +234,9 @@ class Vm:
         Samples CPU0's pc, lr, sp and CPSR 5 times, 100 ms apart, then
         reads the interrupt controller and system timer registers over
         HMP. Resolves pc and lr to symbols when the image's ELF is known.
-        Never raises: a failure becomes one "state dump failed" line.
-        Runs within DUMP_BUDGET seconds. If a QMP read times out, later
+        Never raises. Each failed or late part becomes one "not collected"
+        line and the rest is kept; "state dump failed" means nothing could
+        be read. Runs within DUMP_BUDGET seconds, symbol lookup included. If a QMP read times out, later
         QMP replies on this Vm may be out of step.
         """
         q = self.qemu
@@ -258,7 +259,7 @@ class Vm:
             return q.hmp(cmd)
 
         try:
-            lines = dump.collect(hmp, machine, self.elf)
+            lines = dump.collect(hmp, machine, self.elf, deadline=deadline)
         except Exception as e:  # noqa: BLE001 - never mask the caller's error
             lines = [f"state dump failed: {type(e).__name__}: {e}"]
         finally:

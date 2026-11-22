@@ -2,6 +2,7 @@
 
 import os
 import threading
+import time
 
 import pytest
 
@@ -211,3 +212,85 @@ def test_no_dump_after_qemu_exit():
     vm = FakeVm(FakeQemu(rc=0))
     text = vm.state_dump()
     assert "not collected: QEMU has exited (status 0)" in text
+
+
+# Budgeted collection. Small real timeouts keep these fast.
+
+def slow_hmp(machine, delay, fail_on=None):
+    inner, calls = fake_hmp(machine), []
+
+    def hmp(cmd):
+        calls.append(cmd)
+        if len(calls) == fail_on:
+            raise OSError("monitor gone")
+        time.sleep(delay)
+        return inner(cmd)
+    return hmp
+
+
+def fake_tool(tmp_path, monkeypatch, seconds):
+    """A fake arm-none-eabi-addr2line that sleeps, and an ELF it can 'read'."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    tool = bindir / "arm-none-eabi-addr2line"
+    tool.write_text(f"#!/bin/sh\nexec /bin/sleep {seconds}\n")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    elf = tmp_path / "x.elf"
+    elf.write_bytes(b"\x7fELF")
+    return str(elf)
+
+
+def test_slow_monitor_and_slow_symbols_keep_the_hardware_state(tmp_path, monkeypatch):
+    elf = fake_tool(tmp_path, monkeypatch, 30)
+    budget = 1.0
+    start = time.monotonic()
+    lines = dump.collect(slow_hmp("raspi0", 0.08), "raspi0", elf, sleep=lambda s: None,
+                         deadline=start + budget)
+    took = time.monotonic() - start
+    text = "\n".join(lines)
+    assert text.count(" pc=0x00009740 lr=0x000085a8 ") == 5  # raw addresses, no <name>
+    assert "<" not in text.split("interrupt controller")[0].split("apart):")[1]
+    assert "system timer @ 0x20003000:" in text and "C1=" in text
+    assert "symbols: none, lookup failed: timed out" in text
+    assert took < budget + 0.5
+
+
+def test_monitor_failing_on_third_command_keeps_earlier_parts():
+    lines = dump.collect(slow_hmp("raspi0", 0, fail_on=3), "raspi0", sleep=lambda s: None)
+    text = "\n".join(lines)
+    assert "cpu0 samples (2, 100 ms apart):" in text
+    assert "not collected: cpu0 sample #3 of 5: OSError: monitor gone" in text
+    assert "interrupt controller @" in text and "system timer @" in text
+    assert "info registers (sample #1):" in text
+
+
+def test_over_budget_names_each_missing_part():
+    clock = iter([0.0, 0.0, 0.0] + [99.0] * 50).__next__
+    lines = dump.collect(fake_hmp("raspi2b"), "raspi2b", sleep=lambda s: None,
+                         deadline=1.0, clock=clock)
+    text = "\n".join(lines)
+    assert "cpu0 samples (1, 100 ms apart):" in text
+    assert "not collected: cpu0 sample #2 of 5: over the time budget" in text
+    for part in ("interrupt controller", "local controller", "system timer"):
+        assert f"not collected: {part}: over the time budget" in text
+    assert "symbols: none, over the time budget" in text
+
+
+def test_nothing_collected_raises():
+    def dead(cmd):
+        raise OSError("socket closed")
+    with pytest.raises(OSError):
+        dump.collect(dead, "raspi0", sleep=lambda s: None)
+
+
+def test_absent_symbol_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    elf = tmp_path / "x.elf"
+    elf.write_bytes(b"\x7fELF")
+    lines = dump.collect(fake_hmp("raspi0"), "raspi0", str(elf), sleep=lambda s: None,
+                         deadline=time.monotonic() + 5)
+    text = "\n".join(lines)
+    assert "symbols: none, arm-none-eabi-addr2line and arm-none-eabi-nm not found" in text
+    assert text.count(" pc=0x00009740 lr=0x000085a8 ") == 5
+    assert "system timer @" in text

@@ -177,7 +177,9 @@ def resolve(addrs, elf, timeout=5.0):
                     f"symbols: {os.path.basename(elf)} via arm-none-eabi-nm")
         return {}, "symbols: none, arm-none-eabi-addr2line and arm-none-eabi-nm not found"
     except Exception as e:  # noqa: BLE001 - symbols are optional
-        return {}, f"symbols: none, lookup failed: {e}"
+        reason = (f"timed out after {e.timeout:.1f}s" if isinstance(e, subprocess.TimeoutExpired)
+                  else str(e))
+        return {}, f"symbols: none, lookup failed: {reason}"
 
 
 def nm_lookup(nm_text, addrs):
@@ -199,53 +201,103 @@ def nm_lookup(nm_text, addrs):
     return names
 
 
-def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=time.sleep):
+class OverBudget(Exception):
+    """The dump's time budget ran out before a step."""
+
+
+def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=time.sleep,
+            deadline=None, clock=time.monotonic):
     """Build the snapshot text. `hmp(cmd)` runs one HMP command.
 
-    Raises on monitor errors; the caller turns that into one line.
+    `deadline` is a `clock()` time. Every step checks it first, and the
+    symbol lookup gets only what is left. Hardware state is read first,
+    symbols last. A failed or late step costs only its own part: the
+    block keeps everything read so far and adds one `not collected:`
+    line per missing part. Raises only when nothing could be read.
     """
+    missing, errors = [], []
+
+    def left():
+        return None if deadline is None else deadline - clock()
+
+    def step(name, fn):
+        rem = left()
+        if rem is not None and rem <= 0:
+            missing.append(f"not collected: {name}: over the time budget")
+            return None
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 - keep what was read
+            errors.append(e)
+            missing.append(f"not collected: {name}: {type(e).__name__}: {e}")
+            return None
+
     regs, first_text = [], None
     for i in range(samples):
         if i:
             sleep(interval)
-        text = hmp("info registers").replace("\r", "")
-        if first_text is None:
-            first_text = text
-        regs.append(parse_registers(text))
+        text = step(f"cpu0 sample #{i + 1} of {samples}",
+                    lambda: hmp("info registers").replace("\r", ""))
+        if text is None:
+            break
+        r = step(f"cpu0 sample #{i + 1} of {samples}", lambda: parse_registers(text))
+        if r is None:
+            break
+        first_text = first_text or text
+        regs.append(r)
 
-    names, sym_note = resolve([a for r in regs for a in (r["pc"], r["lr"])], elf)
+    hw = []
+    base = PERIPH_BASE.get(machine)
+    if base is None:
+        hw.append(f"peripherals: unknown board {machine!r}, skipped")
+    else:
+        ic = step("interrupt controller",
+                  lambda: parse_xp(hmp(f"xp /{len(IC_REGS)}wx {base + IC_OFFSET:#x}")))
+        if ic is not None:
+            hw.append(f"interrupt controller @ {base + IC_OFFSET:#010x}:")
+            hw.append("  " + " ".join(f"{n}={v:#010x}" for n, v in zip(IC_REGS, ic)))
+        local = LOCAL_BASE.get(machine)
+        if local is not None:
+            def read_local():
+                return [f"{n}={parse_xp(hmp(f'xp /1wx {local + off:#x}'))[0]:#010x}"
+                        for n, off in LOCAL_REGS]
+            vals = step("local controller", read_local)
+            if vals is not None:
+                hw.append(f"local controller @ {local:#010x}:")
+                hw.append("  " + " ".join(vals))
+        st = step("system timer", lambda: format_timer(parse_xp(hmp(f"xp /7wx {base + ST_OFFSET:#x}"))))
+        if st is not None:
+            hw.append(f"system timer @ {base + ST_OFFSET:#010x}:")
+            hw += ["  " + line for line in st]
+
+    if not regs and not hw:
+        raise errors[0] if errors else OverBudget("over the time budget before the first read")
+
+    # Symbols last, with only the remaining budget.
+    names, sym_note = {}, None
+    if regs:
+        rem = left()
+        if rem is not None and rem <= 0:
+            sym_note = "symbols: none, over the time budget before the lookup"
+        else:
+            names, sym_note = resolve([a for r in regs for a in (r["pc"], r["lr"])], elf,
+                                      timeout=5.0 if rem is None else min(5.0, rem))
 
     def sym(a):
         return f" <{names[a]}>" if names.get(a) else ""
 
-    out = [summary(regs),
-           f"cpu0 samples ({samples}, {int(interval * 1000)} ms apart):"]
-    for i, r in enumerate(regs, 1):
-        out.append(f"  #{i} pc={r['pc']:#010x}{sym(r['pc'])} lr={r['lr']:#010x}{sym(r['lr'])}"
-                   f" sp={r['sp']:#010x} cpsr={format_cpsr(r['cpsr'])}")
-    out.append(sym_note)
-
-    base = PERIPH_BASE.get(machine)
-    if base is None:
-        out.append(f"peripherals: unknown board {machine!r}, skipped")
-    else:
-        ic = parse_xp(hmp(f"xp /{len(IC_REGS)}wx {base + IC_OFFSET:#x}"))
-        out.append(f"interrupt controller @ {base + IC_OFFSET:#010x}:")
-        out.append("  " + " ".join(f"{n}={v:#010x}" for n, v in zip(IC_REGS, ic)))
-        local = LOCAL_BASE.get(machine)
-        if local is not None:
-            vals = []
-            for n, off in LOCAL_REGS:
-                w = parse_xp(hmp(f"xp /1wx {local + off:#x}"))
-                vals.append(f"{n}={w[0]:#010x}")
-            out.append(f"local controller @ {local:#010x}:")
-            out.append("  " + " ".join(vals))
-        st = parse_xp(hmp(f"xp /7wx {base + ST_OFFSET:#x}"))
-        out.append(f"system timer @ {base + ST_OFFSET:#010x}:")
-        out += ["  " + line for line in format_timer(st)]
-
-    out.append("info registers (sample #1):")
-    out += ["  " + line for line in core_registers(first_text)]
+    out = []
+    if regs:
+        out += [summary(regs), f"cpu0 samples ({len(regs)}, {int(interval * 1000)} ms apart):"]
+        for i, r in enumerate(regs, 1):
+            out.append(f"  #{i} pc={r['pc']:#010x}{sym(r['pc'])} lr={r['lr']:#010x}{sym(r['lr'])}"
+                       f" sp={r['sp']:#010x} cpsr={format_cpsr(r['cpsr'])}")
+        out.append(sym_note)
+    out += hw
+    out += missing
+    if first_text is not None:
+        out.append("info registers (sample #1):")
+        out += ["  " + line for line in core_registers(first_text)]
     return out
 
 
