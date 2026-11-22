@@ -31,8 +31,13 @@ NO_MMU = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "rdperi
 ALL = ["return", "exit", "regs", "badptr", "priv", "undef", "rdkern", "wrkern", "rdperiph",
        "wrro", "jump", "stack", "spin", "svcspin", "thumb"] + AUDIT + ["peek"]
 WATCHDOG = ("spin", "svcspin", "cpsid")
-# umode_run() errors.
-ERR = {"stub": -14, "align": -3, "overlap": -5, "kernel": -9, "periph": -11, "ram": -7}
+# umode_run() errors per configuration, in order. Alignment is checked only with the MMU on.
+ERRORS = {
+    "0": ([("stub", -14), ("overlap", -5), ("kernel", -9), ("periph", -11), ("ram", -7)],
+          "align"),
+    "1": ([("stub", -14), ("align", -3), ("overlap", -5), ("kernel", -9), ("periph", -11),
+           ("ram", -7)], "none"),
+}
 
 
 def events(vm, name):
@@ -168,8 +173,11 @@ def test_umode(board, umode_vm):
     errors = events(vm, "errors")
     assert [e["mmu"] for e in errors] == ["0", "1"], vm.serial
     for e in errors:
-        want = dict(ERR, align=ERR["align"] if e["mmu"] == "1" else 0)
-        assert {k: int(e[k]) for k in ERR} == want, vm.serial
+        cases, skipped = ERRORS[e["mmu"]]
+        # Every case in order. "ran" or "killed" in place of a code: a refused layout started.
+        got = [(k, v) for k, v in e.items() if k not in ("stage", "ev", "mmu", "skipped")]
+        assert got == [(k, str(v)) for k, v in cases], vm.serial
+        assert e["skipped"] == skipped, vm.serial
     # After the refusals, kernel memory is still out of the task's reach.
     after = events(vm, "refused_after")
     assert len(after) == 1, vm.serial

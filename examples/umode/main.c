@@ -24,7 +24,9 @@
 
 #define TICK_HZ         100
 #define WATCHDOG_TICKS  30          /* 0.3 s of task time */
+#define BACKSTOP_TICKS  1000        /* 10 s: every other task, in case it never ends */
 #define KILL_WATCHDOG   1
+#define KILL_BACKSTOP   3
 
 #define CODE_BASE       0x00400000u /* ROM slot: the programs, read-only to the task */
 #define DATA_BASE       0x01000000u /* ROM heap and stack, writable */
@@ -51,7 +53,8 @@ extern const char user_prog_start[], user_prog_end[];
 
 static volatile uint32_t canary = CANARY;
 static volatile uint32_t watch_start;
-static volatile int watch_on;
+static volatile uint32_t watch_limit;
+static volatile int watch_kill;
 static volatile int kill_armed, kill_seen;
 
 /* Needs: 0 runs with the MMU off and on, 1 only with the MMU on. */
@@ -103,8 +106,8 @@ static const umode_region_t regions2[] = {
 /* Tick callback, IRQ context: the watchdog. */
 static void on_tick(void)
 {
-    if (watch_on && umode_active() && tick_count() - watch_start >= WATCHDOG_TICKS) {
-        umode_request_kill(KILL_WATCHDOG);
+    if (umode_active() && tick_count() - watch_start >= watch_limit) {
+        umode_request_kill(watch_kill);
     }
     if (kill_armed && umode_active()) {
         kill_armed = 0;
@@ -224,21 +227,44 @@ static uint32_t arg_for(int arg)
     }
 }
 
+/*
+ * umode_run() with the watchdog armed. A case marked `watchdog` is meant
+ * to spin and gets the short limit; every other task gets the backstop.
+ */
+static int run_task(const umode_task_t *t, umode_exit_t *ex, int spins)
+{
+    int rc;
+
+    watch_limit = spins ? WATCHDOG_TICKS : BACKSTOP_TICKS;
+    watch_kill = spins ? KILL_WATCHDOG : KILL_BACKSTOP;
+    watch_start = tick_count();
+    rc = umode_run(t, ex);
+    watch_limit = BACKSTOP_TICKS;
+    watch_kill = KILL_BACKSTOP;
+    return rc;
+}
+
+/* Fresh copy of the programs at CODE_BASE: the regions are privileged RAM between tasks. */
+static void load_programs(void)
+{
+    uint32_t len = (uint32_t)(user_prog_end - user_prog_start);
+
+    k_memcpy((void *)(uintptr_t)CODE_BASE, user_prog_start, len);
+    cache_clean_range((const void *)(uintptr_t)CODE_BASE, len);
+}
+
 static unsigned run_pass(int mmu)
 {
     static umode_exit_t ex;
     umode_task_t t;
     unsigned i, n = 0;
-    uint32_t len = (uint32_t)(user_prog_end - user_prog_start);
     int rc;
 
     for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         if (cases[i].need_mmu && !mmu) {
             continue;
         }
-        /* Fresh copy each time: the regions are privileged RAM between tasks. */
-        k_memcpy((void *)(uintptr_t)CODE_BASE, user_prog_start, len);
-        cache_clean_range((const void *)(uintptr_t)CODE_BASE, len);
+        load_programs();
 
         k_memset(&t, 0, sizeof(t));
         t.entry = CODE_BASE + cases[i].slot * 0x40u;
@@ -254,10 +280,7 @@ static unsigned run_pass(int mmu)
             t.regions = regions2;
         }
 
-        watch_start = tick_count();
-        watch_on = cases[i].watchdog;
-        rc = umode_run(&t, &ex);
-        watch_on = 0;
+        rc = run_task(&t, &ex, cases[i].watchdog);
         if (rc != 0) {
             k_printf("@RC stage=umode ev=error name=%s rc=%d\n", cases[i].name, rc);
             continue;
@@ -272,25 +295,14 @@ static unsigned run_pass(int mmu)
     return n;
 }
 
-/* Runs one task with the given regions, entry at slot 0. Returns umode_run()'s result. */
-static int try_regions(const umode_region_t *r, unsigned n, uint32_t entry, uint32_t sp,
-                       uint32_t stub)
-{
-    static umode_exit_t ex;
-    umode_task_t t;
-
-    k_memset(&t, 0, sizeof(t));
-    t.entry = entry;
-    t.sp = sp;
-    t.stub = stub;
-    t.regions = r;
-    t.region_count = n;
-    return umode_run(&t, &ex);
-}
-
 /*
  * Error cases of umode_run() itself, then a task that reads the canary:
- * the refused layouts left nothing mapped for USR mode.
+ * the refused layouts left nothing mapped for USR mode. Every case enters
+ * at slot 0 of the loaded programs, which returns 42, so a case that is
+ * wrongly accepted runs a real program that ends. The watchdog backstop
+ * covers it too. A case that ran prints "ran" or "killed" instead of its
+ * error code. Cases refused only with the MMU on are skipped without it
+ * and listed in "skipped".
  */
 static void check_errors(void)
 {
@@ -304,27 +316,55 @@ static void check_errors(void)
     static const umode_region_t kernel[] = { { 0, REGION_SIZE, UMODE_REGION_WRITE } };
     static const umode_region_t outside[] = { { 0xe0000000u, REGION_SIZE, UMODE_REGION_WRITE } };
     umode_region_t periph[1] = { { board_get()->periph_base, REGION_SIZE, UMODE_REGION_WRITE } };
+    const struct {
+        const char *name;
+        const umode_region_t *regions;
+        unsigned count;
+        uint32_t stub;
+        int need_mmu;       /* refused only with the MMU on */
+    } bad[] = {
+        { "stub",    regions, 2, CODE_BASE, 0 },    /* read-only stub */
+        { "align",   odd,     1, STUB_ADDR, 1 },    /* alignment is checked with the MMU on */
+        { "overlap", overlap, 2, STUB_ADDR, 0 },
+        { "kernel",  kernel,  1, STUB_ADDR, 0 },
+        { "periph",  periph,  1, STUB_ADDR, 0 },
+        { "ram",     outside, 1, STUB_ADDR, 0 },
+    };
     umode_task_t t;
-    int bad_stub, bad_align, bad_overlap, bad_kernel, bad_periph, bad_ram;
+    unsigned i, skipped = 0;
+    int mmu = mmu_enabled(), rc;
 
-    bad_stub = try_regions(regions, 2, CODE_BASE, USER_SP, CODE_BASE);  /* read-only stub */
-    bad_align = try_regions(odd, 1, CODE_BASE + 0x1000, CODE_BASE + 0x3000, CODE_BASE + 0x2000);
-    bad_overlap = try_regions(overlap, 2, CODE_BASE, CODE_BASE + REGION_SIZE, CODE_BASE + 0x800);
-    bad_kernel = try_regions(kernel, 1, 0x80000, REGION_SIZE, 0x80000 + 0x800);
-    bad_periph = try_regions(periph, 1, periph[0].start, periph[0].start + REGION_SIZE,
-                             periph[0].start + 0x800);
-    bad_ram = try_regions(outside, 1, 0xe0000000u, 0xe0000000u + REGION_SIZE, 0xe0000800u);
-    k_printf("@RC stage=umode ev=errors stub=%d align=%d overlap=%d kernel=%d periph=%d ram=%d "
-             "mmu=%d\n", bad_stub, bad_align, bad_overlap, bad_kernel, bad_periph, bad_ram,
-             mmu_enabled());
+    k_printf("@RC stage=umode ev=errors mmu=%d", mmu);
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        if (bad[i].need_mmu && !mmu) {
+            continue;
+        }
+        load_programs();
+        k_memset(&t, 0, sizeof(t));
+        t.entry = CODE_BASE;
+        t.sp = USER_SP;
+        t.stub = bad[i].stub;
+        t.regions = bad[i].regions;
+        t.region_count = bad[i].count;
+        rc = run_task(&t, &ex, 0);
+        if (rc != 0) {
+            k_printf(" %s=%d", bad[i].name, rc);
+        } else {
+            k_printf(" %s=%s", bad[i].name, ex.reason == UMODE_KILLED ? "killed" : "ran");
+        }
+    }
+    k_printf(" skipped=");
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        if (bad[i].need_mmu && !mmu) {
+            k_printf("%s%s", skipped++ ? "," : "", bad[i].name);
+        }
+    }
+    k_printf("%s\n", skipped ? "" : "none");
 
-    if (!mmu_enabled()) {
+    if (!mmu) {
         return;
     }
-    k_memcpy((void *)(uintptr_t)CODE_BASE, user_prog_start,
-             (uint32_t)(user_prog_end - user_prog_start));
-    cache_clean_range((const void *)(uintptr_t)CODE_BASE,
-                      (uint32_t)(user_prog_end - user_prog_start));
+    load_programs();
     k_memset(&t, 0, sizeof(t));
     t.entry = CODE_BASE + 7 * 0x40u;    /* wrkern */
     t.sp = USER_SP;
@@ -332,7 +372,7 @@ static void check_errors(void)
     t.stub = STUB_ADDR;
     t.regions = regions;
     t.region_count = 2;
-    umode_run(&t, &ex);
+    run_task(&t, &ex, 0);
     k_printf("@RC stage=umode ev=refused_after reason=%s type=%s addr=0x%08x canary=%s\n",
              reason_name(ex.reason), type_name(&ex), (unsigned)ex.addr,
              canary == CANARY ? "ok" : "bad");
@@ -352,7 +392,8 @@ static void check_stale_kill(void)
     t.stub = STUB_ADDR;
     t.regions = regions;
     t.region_count = 2;
-    rc = umode_run(&t, &ex);
+    load_programs();
+    rc = run_task(&t, &ex, 0);
     k_printf("@RC stage=umode ev=stale rc=%d reason=%s code=%d\n", rc, reason_name(ex.reason),
              ex.code);
 }
@@ -365,6 +406,8 @@ void robco_main(void)
     uart_init(115200);
     k_printf("@RC stage=umode ev=boot canary_addr=0x%08x\n", (unsigned)(uintptr_t)&canary);
     irq_init();
+    watch_limit = BACKSTOP_TICKS;
+    watch_kill = KILL_BACKSTOP;
     tick_register(on_tick);
     tick_init(TICK_HZ);
     irq_cpu_enable();
@@ -395,7 +438,8 @@ void robco_main(void)
         t.regions = regions;
         t.region_count = 2;
         k_printf("@RC stage=umode ev=kfault\n");
-        umode_run(&t, &ex);     /* does not return: fatal */
+        load_programs();
+        run_task(&t, &ex, 0);   /* does not return: fatal */
     }
 #endif
 #ifdef UMODE_KMMU
@@ -410,7 +454,8 @@ void robco_main(void)
         t.regions = regions;
         t.region_count = 2;
         k_printf("@RC stage=umode ev=kmmu\n");
-        umode_run(&t, &ex);     /* does not return: fatal */
+        load_programs();
+        run_task(&t, &ex, 0);   /* does not return: fatal */
     }
 #endif
 #ifdef UMODE_KSVC
