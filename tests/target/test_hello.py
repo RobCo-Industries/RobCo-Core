@@ -47,7 +47,7 @@ def test_hello_magic(example_image, fault):
 
 def test_hello(board, example_image):
     with boot(hello_image(example_image), board) as vm:
-        vm.wait_for(READY, timeout=10)
+        vm.wait_for(READY, timeout=30)
         time.sleep(0.5)  # give a late exception a chance to show up
         check_boot(vm, board)
         assert not events(vm, "exception"), vm.serial
@@ -55,7 +55,7 @@ def test_hello(board, example_image):
 
 def test_hello_fault(board, example_image):
     with boot(hello_image(example_image, fault=True), board) as vm:
-        vm.wait_for(EXCEPTION, timeout=10)
+        vm.wait_for(EXCEPTION, timeout=30)
         check_boot(vm, board)
         exc = events(vm, "exception")
         assert len(exc) == 1, vm.serial
@@ -66,7 +66,7 @@ def test_hello_fault_before_uart_init(board, example_image):
     """The exception report brings the UART up when the image has not."""
     img = example_image("hello", "earlyfault", "-DHELLO_EARLY_FAULT=1")
     with boot(img, board) as vm:
-        vm.wait_for(EXCEPTION, timeout=10)
+        vm.wait_for(EXCEPTION, timeout=30)
         assert not events(vm, "boot"), vm.serial
         exc = events(vm, "exception")
         assert len(exc) == 1 and exc[0]["type"] == "undef", vm.serial

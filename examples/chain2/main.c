@@ -47,17 +47,20 @@ void robco_main(void)
         /* No timer match may be left over from the previous stage. */
         int cs1 = timer_compare_pending(1) != 0;
         int cs3 = timer_compare_pending(3) != 0;
-        uint64_t end;
+        uint64_t start;
+        uint32_t ticks;
 
         irq_init();
+        start = timer_now_us();
         tick_init(100);
         irq_enable(IRQ_TIMER3);
         irq_cpu_enable();
-        end = timer_now_us() + 200000;
-        while (!timer_expired(end)) {
+        while (!timer_expired(start + 200000)) {
         }
-        k_printf("@RC stage=" STAGE " ev=tick cs1=%d cs3=%d ticks=%u spurious=%u\n", cs1, cs3,
-                 (unsigned)tick_count(), (unsigned)irq_spurious_count());
+        ticks = tick_count();
+        k_printf("@RC stage=" STAGE " ev=tick cs1=%d cs3=%d ticks=%u elapsed_us=%u spurious=%u\n",
+                 cs1, cs3, (unsigned)ticks, (unsigned)(timer_now_us() - start),
+                 (unsigned)irq_spurious_count());
     }
 #endif
 

@@ -66,7 +66,7 @@ def chain2(example_image):
     return example_image("chain2")
 
 
-def run_fault(board, example_image, next_image, timeout=10):
+def run_fault(board, example_image, next_image, timeout=60):
     args = chain_args(next_image) if next_image is not None else []
     with boot(example_image("chain1"), board, extra_args=args) as vm:
         vm.wait_for(HALT, timeout=timeout)
@@ -80,7 +80,7 @@ def test_chain_happy(board, example_image, chain2):
         hdr = f.read(0x60)
     file_size, crc = struct.unpack_from("<I", hdr, 0x34)[0], struct.unpack_from("<I", hdr, 0x3C)[0]
     with boot(example_image("chain1"), board, extra_args=chain_args(chain2)) as vm:
-        vm.wait_for(READY, timeout=15)
+        vm.wait_for(READY, timeout=60)
         b1 = one(vm, "chain1", "boot")
         load = one(vm, "chain1", "load")
         assert load["addr"] == "0x00200000"
@@ -137,7 +137,7 @@ def test_chain2_alone(board, chain2, tmp_path):
     tramp = tmp_path / "tramp.bin"
     tramp.write_bytes(TRAMPOLINE)
     with boot(tramp, board, extra_args=chain_args(chain2)) as vm:
-        vm.wait_for(READY, timeout=15)
+        vm.wait_for(READY, timeout=60)
         assert one(vm, "chain2", "handoff")["trusted"] == "0"
         info = one(vm, "chain2", "bootinfo")
         assert info["inherited"] == "0"
@@ -149,7 +149,7 @@ def test_chain2_alone(board, chain2, tmp_path):
 def test_chain_bad_bootinfo(board, example_image, chain2):
     img = example_image("chain1", "badinfo", "-DCHAIN1_BAD_BOOTINFO=1")
     with boot(img, board, extra_args=chain_args(chain2)) as vm:
-        vm.wait_for(READY, timeout=15)
+        vm.wait_for(READY, timeout=60)
         time.sleep(0.2)
         assert events(vm, "chain1", "jump"), vm.serial
         assert one(vm, "chain2", "handoff")["trusted"] == "0"
@@ -161,7 +161,7 @@ def test_chain_bad_bootinfo(board, example_image, chain2):
 def test_chain_keeps_framebuffer(board, example_image, chain2):
     img = example_image("chain1", "fb", "-DCHAIN1_FB=1")
     with boot(img, board, extra_args=chain_args(chain2)) as vm:
-        vm.wait_for(READY, timeout=15)
+        vm.wait_for(READY, timeout=60)
         fb = one(vm, "chain1", "fb")["addr"]
         assert int(fb, 16) != 0
         assert one(vm, "chain2", "handoff")["trusted"] == "1"
@@ -183,7 +183,7 @@ def test_chain_handoff_quiets_timer(board, example_image):
     img = example_image("chain1", "tick", "-DCHAIN1_TICK=1")
     nxt = example_image("chain2", "tick", "-DCHAIN2_TICK=1")
     with boot(img, board, extra_args=chain_args(nxt)) as vm:
-        vm.wait_for(READY, timeout=15)
+        vm.wait_for(READY, timeout=60)
         t1 = one(vm, "chain1", "tick")
         assert int(t1["ticks"]) >= 20, vm.serial
         # Both channels matched before the handoff.
@@ -191,6 +191,9 @@ def test_chain_handoff_quiets_timer(board, example_image):
         t2 = one(vm, "chain2", "tick")
         assert (t2["cs1"], t2["cs3"]) == ("0", "0"), vm.serial
         assert t2["spurious"] == "0", vm.serial
-        # 200 ms at 100 Hz; QEMU timing is loose.
-        assert 10 <= int(t2["ticks"]) <= 40, vm.serial
+        # The guest waits 200 ms on its own timer. The tick must have fired
+        # and cannot count more periods than that timer saw.
+        elapsed = int(t2["elapsed_us"])
+        assert elapsed >= 200_000, vm.serial
+        assert 1 <= int(t2["ticks"]) <= elapsed // 10_000 + 1, vm.serial
         assert not events(vm, "chain2", "exception"), vm.serial

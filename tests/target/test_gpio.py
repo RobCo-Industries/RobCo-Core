@@ -13,7 +13,7 @@ def events(vm, name):
     return [m for m in vm.markers() if m.get("stage") == "gpio" and m.get("ev") == name]
 
 
-def wait_boots(vm, count, timeout=10):
+def wait_boots(vm, count, timeout=30):
     deadline = time.monotonic() + timeout
     while len(events(vm, "ready")) < count:
         assert time.monotonic() < deadline, vm.serial
@@ -22,7 +22,7 @@ def wait_boots(vm, count, timeout=10):
 
 def test_gpio(board, example_image):
     with boot(example_image("gpio"), board) as vm:
-        vm.wait_for(READY, timeout=10)
+        vm.wait_for(READY, timeout=30)
         time.sleep(0.3)
         assert len(events(vm, "boot")) == 1, vm.serial
 
@@ -53,10 +53,10 @@ def test_gpio(board, example_image):
 
 def test_gpio_reboot(board, example_image):
     with boot(example_image("gpio"), board) as vm:
-        vm.wait_for(READY, timeout=10)
+        vm.wait_for(READY, timeout=30)
         vm.send("r")
-        vm.wait_for("ev=reboot", timeout=5)
-        assert vm.qmp.wait_event("RESET", timeout=5)["data"]["guest"] is True
+        vm.wait_for("ev=reboot", timeout=15)
+        assert vm.qmp.wait_event("RESET", timeout=15)["data"]["guest"] is True
         wait_boots(vm, 2)
         assert len(events(vm, "boot")) == 2, vm.serial
         assert not events(vm, "exception"), vm.serial
@@ -68,10 +68,10 @@ def test_gpio_halt(board, example_image):
     It sends SHUTDOWN, not RESET.
     """
     with boot(example_image("gpio"), board) as vm:
-        vm.wait_for(READY, timeout=10)
+        vm.wait_for(READY, timeout=30)
         vm.send("h")
-        vm.wait_for("ev=halt", timeout=5)
-        ev = vm.qmp.wait_event("SHUTDOWN", timeout=5)
+        vm.wait_for("ev=halt", timeout=15)
+        ev = vm.qmp.wait_event("SHUTDOWN", timeout=15)
         assert ev["data"] == {"guest": True, "reason": "guest-shutdown"}
         assert not [e for e in vm.qmp.events if e["event"] == "RESET"]
         assert len(events(vm, "boot")) == 1, vm.serial

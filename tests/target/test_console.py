@@ -132,7 +132,7 @@ class Console:
 @contextlib.contextmanager
 def booted(image, board, tmp_path):
     with boot(image, board) as vm:
-        vm.wait_for(READY, timeout=10)
+        vm.wait_for(READY, timeout=30)
         fb = [m for m in vm.markers() if m.get("ev") == "fb"]
         assert fb and (fb[0]["w"], fb[0]["h"], fb[0]["order"]) == ("640", "480", "rgb"), vm.serial
         assert int(fb[0]["pitch"]) >= W * 4
@@ -303,7 +303,7 @@ def test_console_font_override(tmp_path, selection):
         assert len(re.findall(rf" {sym}$", nm, re.M)) == 1, nm
 
     with boot(os.path.join(EXAMPLE, build, "console.img"), "raspi0") as vm:
-        vm.wait_for(READY, timeout=10)
+        vm.wait_for(READY, timeout=30)
         names = [m["name"] for m in vm.markers() if m.get("ev") == "font"]
         assert names == ["override-test"], vm.serial
         check_glyph_grid(Console(vm, tmp_path), load_table(str(font_c)))

@@ -60,6 +60,7 @@ static void status(uint32_t start_ms)
 void robco_main(void)
 {
     uint32_t start_ms;
+    uint32_t tick_start_ms;
     uint64_t next_us;
     unsigned second;
     int rc;
@@ -100,6 +101,7 @@ void robco_main(void)
     }
     gpio_config_output(LED_PIN, 0);
 
+    tick_start_ms = timer_now_ms();
     rc = tick_init(TICK_HZ);
     if (rc != 0) {
         fail("tick_init", rc);
@@ -120,7 +122,8 @@ void robco_main(void)
         status(start_ms);
     }
 
-    k_printf("@RC stage=demo ev=done ticks=%u\n", (unsigned)tick_count());
+    k_printf("@RC stage=demo ev=done ticks=%u elapsed_ms=%u\n", (unsigned)tick_count(),
+             (unsigned)(timer_now_ms() - tick_start_ms));
     console_dump(uart_putc);
     for (;;) {
     }

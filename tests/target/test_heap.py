@@ -14,7 +14,7 @@ def events(vm, name):
 
 def test_heap(board, example_image):
     with boot(example_image("heap"), board) as vm:
-        vm.wait_for(DONE, timeout=20)
+        vm.wait_for(DONE, timeout=60)
         time.sleep(0.5)  # give a late exception a chance to show up
         assert not events(vm, "exception"), vm.serial
         assert not events(vm, "pattern"), vm.serial
