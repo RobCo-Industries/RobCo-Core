@@ -61,7 +61,9 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   holds the AArch64 words that drop raspi3b to AArch32 first.
 - `host/`: host unit tests and `rc_test.h`.
 - `target/`: tests that boot real images. `--board NAME` picks boards
-  (repeatable, default raspi0 and raspi2b, `all` for all four).
+  (repeatable, default raspi0 and raspi2b, `all` for all four). They
+  boot the spikes and the examples `hello`, `tick`, `gpio`, `console`
+  and `heap`.
 - `canary/`: checks the QEMU behaviours our code depends on. Run it
   after any QEMU upgrade. A failure means QEMU changed, not our code.
 

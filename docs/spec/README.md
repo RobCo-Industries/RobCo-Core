@@ -26,9 +26,19 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Mailbox board revision, ARM memory and UART clock | Implemented |
 | PL011 console, pin mux and divisor | Implemented |
 | `mmio_probe()` | Implemented |
+| System timer, `timer_*()` | Implemented |
+| Interrupt controller, `irq_*()` | Implemented |
+| Periodic tick on timer channel 1, `tick_*()` | Implemented |
+| GPIO functions, levels and pulls | Implemented |
+| Reboot and halt through the PM watchdog | Implemented |
+| Hardware RNG | Implemented |
+| Framebuffer through the mailbox, `fb_*()` | Implemented |
+| 8x16 font and screen console, `console_*()` | Implemented |
 | `unsupported board` panic on BCM2711 | Specified |
 | Board name from the revision code | Specified |
 | Mini UART maintenance port | Specified |
+| SD card storage on EMMC or SDHOST | Specified |
+| Input, PWM audio | Specified |
 
 ### MEMORY_MAP.md
 
@@ -36,6 +46,8 @@ Each table lists the parts of one document. "Implemented" means the code in this
 |---|---|
 | Per-image `.stack` section and `mem_size` | Implemented |
 | QEMU firmware stub range | Implemented |
+| `__heap_start` and the heap allocator, `k_malloc()` | Implemented |
+| MMU with an identity map | Specified |
 | Terminal and Pip-Boy chain slots | Specified |
 
 ### IMAGE_FORMAT.md
@@ -45,8 +57,9 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Branch stub and `rimg_header_t` emitted by `start.S` | Implemented |
 | Magic and subtype constants in `rimg.h` | Implemented |
 | META block | Specified |
-| CRC, validation, `rimg_err_t` | Specified |
-| `tools/rimg.py` | Specified |
+| CRC-32 function, `crc32()` | Implemented |
+| Image CRC check, validation, `rimg_err_t` | Specified |
+| `tools/rimg.py`, sealing images | Specified |
 
 ### BOOT_PROTOCOL.md
 
@@ -54,7 +67,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 |---|---|
 | `robco_main(void)`, `robco_boot_args()`, `board_get()` | Implemented |
 | `ev=exception` marker | Implemented |
-| `robco_bootinfo_t`, trust rule, `robco_bootinfo()` | Specified |
+| Boot info block: `robco_bootinfo_t`, trust rule, `robco_bootinfo()` | Specified |
 | Stage loading, DTB and ATAGS copy, `BOOT.CFG` | Specified |
 | Other `@RC` events, failure handling, emergency shell | Specified |
 
@@ -72,6 +85,8 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Firmware stub and `boot()` | Implemented |
 | `sdimage.py` | Implemented |
 | Serial tests in `tests/target/` | Implemented |
-| Host tests, screen goldens, input tests, fault tests | Specified |
+| Host tests for klibc, CRC-32 and the allocator | Implemented |
+| Console grid dump and a screendump golden | Implemented |
+| Other host tests, input tests, fault tests | Specified |
 | `expect.py`, `screen.py`, `inputs.py` | Specified |
 | Reusable workflow for sibling repos | Implemented |

@@ -147,11 +147,11 @@ Fault images start from a good image. `corrupt()` then patches raw bytes in plac
 
 ## CI
 
-CI runs in the `robco-ci` container, built from `ci/Dockerfile` in RobCo-Core. It holds Ubuntu 24.04, QEMU 10.1.2 built from source with `qemu-system-arm` and `qemu-system-aarch64`, `gcc-arm-none-eabi`, mtools and Python.
+CI runs in the `robco-ci` container, built from `ci/Dockerfile` in RobCo-Core. It holds Ubuntu 24.04, QEMU 10.1.2 built from source with `qemu-system-arm` and `qemu-system-aarch64`, `gcc-arm-none-eabi`, a host `gcc`, mtools and Python.
 
 The image tag is a content tag. It is the first 12 hex characters of the SHA-256 of `ci/Dockerfile`. `ci/IMAGE_TAG` stores it. CI fails if `ci/image-tag.sh` gives a different value. The image is `ghcr.io/robco-industries/robco-ci:<tag>`. A new Dockerfile gives a new tag, so a repo never runs on a container it did not pin.
 
-RobCo-Core's own `ci.yml` runs everything `make test` runs, in two jobs inside the container. `canary` runs `make test-canary`. `test` runs `make test-spikes test-examples test-target`. The container runs as root, and socket paths stay under the system temporary directory.
+RobCo-Core's own `ci.yml` runs everything `make test` runs, in three jobs inside the container. `host` runs `make test-host` with sanitizers required. `canary` runs `make test-canary`. `test` runs `make test-spikes test-examples test-target`. The container runs as root, and socket paths stay under the system temporary directory.
 
 Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` from RobCo-Core with `submodules: recursive`. It reads the tag from `ci/IMAGE_TAG` in its RobCo-Core submodule. Jobs per repo, each able to fail:
 
