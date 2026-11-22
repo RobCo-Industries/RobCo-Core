@@ -143,7 +143,7 @@ Every image starts in `src/arch/start.S`. The order is fixed.
 |---|---|---|
 | 1 | Save r0 to r3 in r4 to r7 and the entry mode, CPSR bits [4:0], in r8. | They carry the firmware arguments or the handoff. Later steps clobber r0 to r3. |
 | 2 | Read MIDR. If the part is not `0xB76`, read MPIDR and park every core whose bits [1:0] are not 0. | Multi-core parts may start secondaries at the entry point. See the ARM1176 trap below. |
-| 3 | If the entry mode is HYP, drop to SVC with `msr SPSR_hyp`, `msr ELR_hyp`, `eret`. Then force SVC with IRQ and FIQ masked, with `cpsid if`. | Pi 2 and Pi 3 firmware enters in HYP. HYP has its own banked registers and exception model. `cps` cannot leave HYP, so `eret` is the only way out. |
+| 3 | If the entry mode is HYP, clear HCR, HCPTR and HSTR, then drop to SVC with `msr SPSR_hyp`, `msr ELR_hyp`, `eret`. Then force SVC with IRQ and FIQ masked, with `cpsid if`. | Pi 2 and Pi 3 firmware enters in HYP. HYP has its own banked registers and exception model. `cps` cannot leave HYP, so `eret` is the only way out. The HYP trap registers reset to unknown values, and a set HCPTR.TCP10 would make step 7 fault. |
 | 4 | If the part is not `0xB76`, set SCTLR.CP15BEN, bit 5. | ARMv7 and later need it for the CP15 barrier forms that `mmio.h` uses. Its reset value is not guaranteed on ARMv8 AArch32. ARM1176 has no such bit. |
 | 5 | Set sp for IRQ, FIQ, ABT, UND and SVC from the image's own `.stack` section. End in SVC. | Exceptions need a valid stack before VBAR points at handlers. Each image owns its stacks, so no stage depends on another stage's memory. |
 | 6 | Clear SCTLR.V, then write VBAR. | Low vectors plus VBAR put the vector table inside the image. |

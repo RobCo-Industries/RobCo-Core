@@ -85,6 +85,15 @@ robco_entry:
     /* Only reached on ARMv7+; assemble these with the A7 feature set. */
     .cpu    cortex-a7
     .arch_extension virt
+    /*
+     * HYP trap registers reset to UNKNOWN values. Clear HCR, HCPTR and
+     * HSTR so SVC code does not trap to HYP. A set HCPTR.TCP10/TCP11
+     * would make the VFP enable below fault.
+     */
+    mov     r12, #0
+    mcr     p15, 4, r12, c1, c1, 0          @ HCR
+    mcr     p15, 4, r12, c1, c1, 2          @ HCPTR
+    mcr     p15, 4, r12, c1, c1, 3          @ HSTR
     msr     SPSR_hyp, r11
     adr     r11, 2f
     msr     ELR_hyp, r11
