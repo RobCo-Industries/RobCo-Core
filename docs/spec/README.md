@@ -34,7 +34,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Hardware RNG | Implemented |
 | Framebuffer through the mailbox, `fb_*()` | Implemented |
 | 8x16 font and screen console, `console_*()` | Implemented |
-| `unsupported board` panic on BCM2711 | Specified |
+| `unsupported board` report on BCM2711: `ev=error code=unsupported_board`, then halt, in `src/board/board.c` | Implemented |
 | Board name from the revision code | Specified |
 | Mini UART maintenance port | Specified |
 | SD card storage on EMMC or SDHOST | Specified |
@@ -91,10 +91,11 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Firmware stub and `boot()` | Implemented |
 | `sdimage.py` | Implemented |
 | Serial tests in `tests/target/` | Implemented |
-| Host tests for klibc, CRC-32, the allocator, `rimg_validate()` and the boot info | Implemented |
+| Host tests for klibc, CRC-32, the allocator, `rimg_validate()`, the boot info and the tick conversion | Implemented |
 | Unit tests for `tools/rimg.py` | Implemented |
 | Two-stage chain boot in QEMU | Implemented |
 | Console grid dump and a screendump golden | Implemented |
-| Other host tests, input tests, fault tests | Specified |
+| Fault tests: bad magic, bad CRC, out-of-slot images and a missing next stage in the chain, an undefined instruction in `hello` | Implemented |
+| Other host tests, input tests, other fault tests | Specified |
 | `expect.py`, `screen.py`, `inputs.py` | Specified |
 | Reusable workflow for sibling repos | Implemented |
