@@ -24,6 +24,8 @@ def test_demo(board, example_image):
         dump = vm.wait_for(SCREEN, timeout=10)
         assert len(events(vm, "boot")) == 1, vm.serial
         assert not events(vm, "error"), vm.serial
+        heap = events(vm, "heap")
+        assert heap and heap[0]["base"] == "0x01000000", vm.serial
         assert 250 <= int(done.group(1)) <= 600, vm.serial
 
         text = dump.group(1)

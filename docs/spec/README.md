@@ -47,6 +47,8 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Per-image `.stack` section and `mem_size` | Implemented |
 | QEMU firmware stub range | Implemented |
 | `__heap_start` and the heap allocator, `k_malloc()` | Implemented |
+| Slot end checked at link time with `ROBCO_SLOT_END` | Implemented |
+| Heap regions within the map, `robco_heap_slot()` and `robco_heap_high()` | Implemented |
 | MMU with an identity map | Specified |
 | Slot bounds checked by `rimg_validate()` and `tools/rimg.py` | Implemented |
 | Handoff range: boot info at `0x00100000`, DTB or ATAGS copy at `0x00101000` | Implemented |

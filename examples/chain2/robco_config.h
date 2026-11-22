@@ -11,4 +11,9 @@
 #define ROBCO_IMG_VERSION       1
 #define ROBCO_IMG_NAME          "chain2"
 
+/* MFBootAgent slot, 0x00200000 to 0x003FFFFF. The link fails if the image does not fit. */
+#ifndef ROBCO_SLOT_END
+#define ROBCO_SLOT_END          0x00400000
+#endif
+
 #endif

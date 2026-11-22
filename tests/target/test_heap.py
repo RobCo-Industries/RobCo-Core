@@ -27,7 +27,12 @@ def test_heap(board, example_image):
         assert len(heap) == 2, vm.serial
         before, after = heap
         assert before["check"] == "0" and after["check"] == "0", vm.serial
-        assert int(before["total"]) == 1024 * 1024
+        region = events(vm, "region")
+        assert len(region) == 1, vm.serial
+        base, size = int(region[0]["base"], 16), int(region[0]["size"])
+        # The heap ends where the slot ends, below the boot info handoff area.
+        assert base + size == 0x00100000, vm.serial
+        assert int(before["total"]) == size
         assert after["used"] == "0"
         assert after["largest"] == before["largest"]
         assert events(vm, "done"), vm.serial

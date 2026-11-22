@@ -32,4 +32,26 @@ void k_heap_stats(k_heap_stats_t *out);
 /* Walks the heap. Returns 0 if consistent, a negative code otherwise. */
 int k_heap_check(void);
 
+/*
+ * Heap regions that respect docs/spec/MEMORY_MAP.md. Hardware side,
+ * src/board/heap_region.c. Each stores the start in *base and returns the
+ * size in bytes, or returns 0 when there is no such region.
+ */
+
+/* Start of the region above the image slots, the OS heap in the memory map. */
+#define ROBCO_HEAP_HIGH_BASE    0x01000000u
+
+/*
+ * From __heap_start up to the end of the image's slot (ROBCO_SLOT_END).
+ * Returns 0 if the image does not set ROBCO_SLOT_END.
+ */
+size_t robco_heap_slot(void **base);
+
+/*
+ * From ROBCO_HEAP_HIGH_BASE up to the top of ARM RAM from the mailbox.
+ * Only for the image that owns that range in its chain, or one that runs
+ * alone. Returns 0 if the mailbox gave no memory size.
+ */
+size_t robco_heap_high(void **base);
+
 #endif

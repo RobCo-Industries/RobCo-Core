@@ -11,4 +11,9 @@
 #define ROBCO_IMG_VERSION       1
 #define ROBCO_IMG_NAME          "heap"
 
+/* First image slot, 0x00008000 to 0x000FFFFF. The link fails if the image does not fit. */
+#ifndef ROBCO_SLOT_END
+#define ROBCO_SLOT_END          0x00100000
+#endif
+
 #endif

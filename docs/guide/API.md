@@ -52,7 +52,7 @@ Each function signature below is copied from its header. `tools/check_docs.py` f
 | 3 | `uart_init(115200)` | Step 1. Also makes `k_printf()` print to the UART. |
 | 4 | `fb_init(640, 480, 32)` | Step 1. |
 | 5 | `console_init(scheme)`, then `console_attach_printf()` | Step 4. |
-| 6 | `k_heap_init(__heap_start, size)` | Nothing. |
+| 6 | `robco_heap_slot()` or `robco_heap_high()`, then `k_heap_init()` | Nothing. `robco_heap_high()` uses step 1. |
 | 7 | `rng_init()` | Step 1. |
 | 8 | `irq_init()` | Step 1. |
 | 9 | `irq_register()`, `tick_register()`, `tick_init(hz)` | Step 8. `tick_init()` returns `TICK_ERR_NO_IRQ` before it. |
@@ -828,15 +828,25 @@ Short name of the font the table was built from: `fixedsys-excelsior` or `spleen
 void k_heap_init(void *base, size_t size);
 ```
 
-Takes over `size` bytes at `base`, trimmed to 8-byte alignment. A second call starts a new empty heap. A NULL `base` or a region too small for one block leaves the heap empty, with no error. The linker script exports `__heap_start`, the first free byte after the image's stacks:
+Takes over `size` bytes at `base`, trimmed to 8-byte alignment. A second call starts a new empty heap. A NULL `base` or a region too small for one block leaves the heap empty, with no error. `k_heap_init()` does not check the region against the memory map. Get it from one of the two helpers below.
+
+Heap rule: a heap stays inside a range its image owns in [the memory map](../spec/MEMORY_MAP.md). For an image at `0x8000` the slot ends at `0x00100000`, where the boot info handoff area starts, so a heap there is less than 1 MiB.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ROBCO_HEAP_HIGH_BASE` | `0x01000000u` | Start of the OS heap range in the memory map |
 
 ```c
-extern char __heap_start[];
-
-k_heap_init(__heap_start, HEAP_SIZE);
+size_t robco_heap_slot(void **base);
+size_t robco_heap_high(void **base);
 ```
 
-Pick `HEAP_SIZE` so the heap stays inside your image's slot in [the memory map](../spec/MEMORY_MAP.md). Nothing checks it.
+Both live in `src/board/heap_region.c`. Each stores the start in `*base` and returns the size in bytes, or `0` when there is no such region. `robco_heap_slot()` gives everything from `__heap_start` up to the end of the image's slot, `ROBCO_SLOT_END`. It returns `0` when the image does not set `ROBCO_SLOT_END`. `robco_heap_high()` gives `ROBCO_HEAP_HIGH_BASE` up to the top of ARM RAM from the mailbox. Use it only in the image that owns that range in its chain, the OS in the terminal chain, or in an image that runs alone. From `examples/heap/main.c`:
+
+```c
+size = robco_heap_slot(&base);
+k_heap_init(base, size);
+```
 
 ```c
 void *k_malloc(size_t n);
@@ -1219,6 +1229,11 @@ k_printf("@RC stage=hello ev=probe pwm=%s gpio=%s\n",
 | `__image_end` | End of the loaded bytes |
 | `__bss_start`, `__bss_end` | BSS range, cleared by `start.S` |
 | `__heap_start` | First free byte after the stacks, 16-byte aligned |
+| `__slot_end` | `ROBCO_SLOT_END`, or `0` when it is not set |
+
+| Config macro | Default | Meaning |
+|---|---|---|
+| `ROBCO_SLOT_END` | Not set | First byte past the image's slot. When set, the link fails with `image and stacks do not fit below ROBCO_SLOT_END` if `__image_mem_end` is above it. `SLOT_END=<addr>` on the make command line sets it too and wins over a value in `robco_config.h` guarded by `#ifndef`. |
 
 | Config macro | Default | Stack |
 |---|---|---|

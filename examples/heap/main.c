@@ -5,11 +5,8 @@
 #include <robco/klibc.h>
 #include <robco/uart.h>
 
-#define HEAP_SIZE   (1024u * 1024u)
 #define SLOTS       32
 #define STEPS       400
-
-extern char __heap_start[];
 
 typedef struct {
     unsigned char *p;
@@ -108,11 +105,17 @@ static int self_test(void)
 
 void robco_main(void)
 {
+    void *base;
+    size_t size;
     int bad;
 
     uart_init(115200);
     k_printf("\n");
-    k_heap_init(__heap_start, HEAP_SIZE);
+    /* Everything between the stacks and the end of the slot. */
+    size = robco_heap_slot(&base);
+    k_printf("@RC stage=heap ev=region base=0x%08x size=%u\n", (unsigned)(uintptr_t)base,
+             (unsigned)size);
+    k_heap_init(base, size);
     print_heap();
     bad = self_test();
     if (bad != 0) {

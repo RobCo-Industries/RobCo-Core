@@ -8,7 +8,8 @@
 #   BUILD      ?= build            (optional)
 #   include $(ROBCO_CORE)/mk/robco.mk
 #
-# Optional: EXTRA_CFLAGS, CI=1 (adds -Werror), CROSS, PYTHON.
+# Optional: EXTRA_CFLAGS, CI=1 (adds -Werror), CROSS, PYTHON,
+# SLOT_END (end of the image's slot, overrides ROBCO_SLOT_END).
 
 ifeq ($(strip $(ROBCO_CORE)),)
 $(error ROBCO_CORE is not set)
@@ -51,6 +52,9 @@ ROBCO_LDFLAGS := $(ROBCO_ARCHFLAGS) -nostdlib -T $(BUILD)/image.ld \
 ROBCO_SRCS := $(sort $(patsubst $(ROBCO_CORE)/src/%,%,\
               $(wildcard $(ROBCO_CORE)/src/*/*.c $(ROBCO_CORE)/src/*/*.S)))
 ROBCO_OBJS := $(addprefix $(BUILD)/robco/,$(addsuffix .o,$(basename $(ROBCO_SRCS))))
+# SLOT_END reaches the linker script as ROBCO_SLOT_END. robco_config.h
+# guards its own value with #ifndef, so SLOT_END wins.
+ROBCO_SLOT_DEF := $(if $(strip $(SLOT_END)),-DROBCO_SLOT_END=$(SLOT_END))
 PROJ_OBJS  := $(addprefix $(BUILD)/obj/,$(addsuffix .o,$(basename $(SRCS))))
 
 .PHONY: all clean
@@ -70,7 +74,7 @@ $(BUILD)/librobco.a: $(ROBCO_OBJS)
 
 $(BUILD)/image.ld: $(ROBCO_CORE)/ld/image.ld.S $(CONFIG_H)
 	@mkdir -p $(dir $@)
-	$(CC) -E -P -undef -x c -DLINK_ADDR=$(LINK_ADDR) -include $(CONFIG_H) -o $@ $<
+	$(CC) -E -P -undef -x c -DLINK_ADDR=$(LINK_ADDR) -include $(CONFIG_H) $(ROBCO_SLOT_DEF) -o $@ $<
 
 $(BUILD)/robco/%.o: $(ROBCO_CORE)/src/%.c
 	@mkdir -p $(dir $@)

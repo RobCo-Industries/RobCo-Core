@@ -18,8 +18,6 @@
 #define LED_PIN     5
 #define SECONDS     3
 
-extern char __heap_start[];
-
 static void fail(const char *what, int rc)
 {
     k_printf("@RC stage=demo ev=error what=%s rc=%d\n", what, rc);
@@ -76,7 +74,22 @@ void robco_main(void)
     console_attach_printf(1);
 
     irq_init();
-    k_heap_init(__heap_start, HEAP_SIZE);
+    {
+        /*
+         * The demo runs alone, so it may use the OS heap range above
+         * 0x01000000. Its own slot ends at 0x00100000, where the boot info
+         * handoff area starts.
+         */
+        void *base;
+        size_t size = robco_heap_high(&base);
+
+        if (size < HEAP_SIZE) {
+            fail("heap_region", (int)size);
+        }
+        k_heap_init(base, HEAP_SIZE);
+        k_printf("@RC stage=demo ev=heap base=0x%08x size=%u\n",
+                 (unsigned)(uintptr_t)base, (unsigned)HEAP_SIZE);
+    }
     rc = rng_init();
     if (rc != 0) {
         fail("rng_init", rc);
