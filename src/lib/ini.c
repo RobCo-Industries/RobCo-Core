@@ -54,6 +54,45 @@ static int take_name(const char **p, const char *end, char *out, size_t max)
     return n == 0 ? INI_ERR_SYNTAX : 0;
 }
 
+/*
+ * Section name between '[' and ']': name characters, with spaces and tabs
+ * inside. Leading and trailing ones are dropped and do not count toward
+ * the limit. `p` points after '['. Returns 0 or an error.
+ */
+static int take_section(const char *p, const char *end, char *out)
+{
+    const char *start;
+    const char *stop;
+    size_t n = 0;
+
+    skip_space(&p, end);
+    start = p;
+    while (p < end && *p != ']') {
+        if (!is_name_char(*p) && !is_space(*p)) {
+            return INI_ERR_SYNTAX;
+        }
+        p++;
+    }
+    if (p == end) {
+        return INI_ERR_SYNTAX;
+    }
+    stop = p;
+    while (stop > start && is_space(stop[-1])) {
+        stop--;
+    }
+    if (stop == start) {
+        return INI_ERR_SYNTAX;
+    }
+    if ((size_t)(stop - start) > INI_MAX_SECTION) {
+        return INI_ERR_TOO_LONG;
+    }
+    while (start < stop) {
+        out[n++] = *start++;
+    }
+    out[n] = '\0';
+    return rest_is_blank(p + 1, end) ? 0 : INI_ERR_SYNTAX;
+}
+
 static int parse_quoted(const char *p, const char *end, char *out)
 {
     size_t n = 0;
@@ -130,17 +169,7 @@ static int parse_line(const char *p, const char *end, scratch_t *s)
         return 0;
     }
     if (*p == '[') {
-        p++;
-        skip_space(&p, end);
-        rc = take_name(&p, end, s->section, INI_MAX_SECTION);
-        if (rc < 0) {
-            return rc;
-        }
-        skip_space(&p, end);
-        if (p == end || *p != ']') {
-            return INI_ERR_SYNTAX;
-        }
-        return rest_is_blank(p + 1, end) ? 0 : INI_ERR_SYNTAX;
+        return take_section(p + 1, end, s->section);
     }
     rc = take_name(&p, end, s->key, INI_MAX_KEY);
     if (rc < 0) {

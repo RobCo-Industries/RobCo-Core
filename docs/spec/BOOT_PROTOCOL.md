@@ -54,7 +54,7 @@ Pip-OS enters ROMs and holotapes differently, in USR mode. See [PIPOS_ABI.md](./
 
 ### BOOT.CFG
 
-`/ROBCO/BOOT.CFG` is INI text. This format is a draft.
+`/ROBCO/BOOT.CFG` is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), which parses this example as it stands, section names with a space included. `tests/host/test_ini.c` reads the example from this file. This format is a draft.
 
 ```
 [boot]

@@ -239,9 +239,9 @@ def test_storage_ini(board, image, need_mtools, tmp_path):
         assert cmd(vm, "ini /PIPBOY/PIPOS.CFG rom path")["value"] == "/PIPBOY/ROM1.ROM"
         assert cmd(vm, "ini /PIPBOY/PIPOS.CFG rom nokey")["rc"] == "ini_notfound"
         assert cmd(vm, "ini /PIPBOY/NONE.CFG rom path")["rc"] == "noent"
-        # The draft BOOT.CFG in BOOT_PROTOCOL.md names sections "[entry UOS]".
-        # ini.h allows no space in a section name, so the strict parser rejects it.
-        assert cmd(vm, "ini /ROBCO/BOOT.CFG boot default")["rc"] == "ini_syntax"
+        # BOOT.CFG names sections "[entry UOS]", with a space.
+        assert cmd(vm, "ini /ROBCO/BOOT.CFG boot default")["value"] == "UOS"
+        assert cmd(vm, "ini /ROBCO/BOOT.CFG entry_UOS path")["rc"] == "ini_notfound"
         no_exception(vm)
 
 

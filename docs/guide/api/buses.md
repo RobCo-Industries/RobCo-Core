@@ -315,14 +315,14 @@ Syntax, one item per line:
 
 | Line | Meaning |
 |---|---|
-| `[name]` | Starts a section. Spaces and tabs inside the brackets around the name are allowed. A comment may follow. |
+| `[name]` | Starts a section. A comment may follow. |
 | `key = value` | A key in the current section. Keys before any section belong to the section `""`. |
 | `# text` or `; text` | Comment |
 | Empty, or spaces and tabs only | Ignored |
 
 | Rule | Detail |
 |---|---|
-| Names | Section names and keys use `A` to `Z`, `a` to `z`, `0` to `9`, `_`, `.` and `-`. They are case-sensitive. An empty name is a syntax error. |
+| Names | Section names and keys use `A` to `Z`, `a` to `z`, `0` to `9`, `_`, `.` and `-`. They are case-sensitive. An empty name is a syntax error. A section name may also hold spaces and tabs, as in `[entry UOS]`. Leading and trailing ones are dropped, inner ones are kept as they are and count toward `INI_MAX_SECTION`. The first `]` ends the name. |
 | Line ends | LF or CR LF. The last line may lack a line end. |
 | Spaces | Spaces and tabs around names and values are dropped. An empty value is allowed. |
 | Trailing comments | In an unquoted value, a `#` or `;` starts a comment when it is the first character of the value or follows a space or tab. So `a = b#c` gives `b#c`, `a = b #c` gives `b`, and `color = #f00` gives an empty value. Quote a value that must start with `#` or contain ` #`. |

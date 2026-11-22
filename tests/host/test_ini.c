@@ -125,7 +125,11 @@ TEST(syntax_errors)
     expect_error("a b = 1\n", INI_ERR_SYNTAX, 1);
     expect_error("\n\n[open\n", INI_ERR_SYNTAX, 3);
     expect_error("[]\n", INI_ERR_SYNTAX, 1);
-    expect_error("[a b]\n", INI_ERR_SYNTAX, 1);
+    expect_error("[a$b]\n", INI_ERR_SYNTAX, 1);
+    expect_error("[ \t ]\n", INI_ERR_SYNTAX, 1);
+    expect_error("[a]b]\n", INI_ERR_SYNTAX, 1);
+    expect_error("[a[b]\n", INI_ERR_SYNTAX, 1);
+    expect_error("[a b\n", INI_ERR_SYNTAX, 1);
     expect_error("[a] x\n", INI_ERR_SYNTAX, 1);
     expect_error("a = \"open\n", INI_ERR_SYNTAX, 1);
     expect_error("a = \"x\" y\n", INI_ERR_SYNTAX, 1);
@@ -415,4 +419,80 @@ TEST(strerror)
     CHECK_STR(ini_strerror(0), "ok");
     CHECK_STR(ini_strerror(INI_ERR_TOO_LONG), "line, name or value too long");
     CHECK_STR(ini_strerror(-100), "unknown error");
+}
+
+TEST(section_names_with_spaces)
+{
+    char buf[128];
+    seen_t s;
+
+    CHECK_EQ(parse("[entry UOS]\na = 1\n[ \tentry  two\t ] ; c\nb = 2\n[x\ty]\nc = 3\n", &s,
+                   NULL), 0);
+    CHECK_EQ(s.count, 3);
+    CHECK_STR(s.text[0], "entry UOS|a|1");
+    CHECK_STR(s.text[1], "entry  two|b|2");
+    CHECK_STR(s.text[2], "x\ty|c|3");
+
+    /* The limit counts inner spaces but not the ones trimmed. */
+    snprintf(buf, sizeof(buf), "[   %.*s %.*s   ]\nk = v\n", INI_MAX_SECTION / 2,
+             "ssssssssssssssssssssssssssssssss", INI_MAX_SECTION - INI_MAX_SECTION / 2 - 1,
+             "ssssssssssssssssssssssssssssssss");
+    CHECK_EQ(parse(buf, &s, NULL), 0);
+    CHECK_EQ(strlen(s.text[0]), INI_MAX_SECTION + 4);
+    snprintf(buf, sizeof(buf), "[%.*s %.*s]\n", INI_MAX_SECTION / 2,
+             "ssssssssssssssssssssssssssssssss", INI_MAX_SECTION - INI_MAX_SECTION / 2,
+             "ssssssssssssssssssssssssssssssss");
+    expect_error(buf, INI_ERR_TOO_LONG, 1);
+}
+
+/* The BOOT.CFG example from docs/spec/BOOT_PROTOCOL.md, read from the file. */
+TEST(boot_protocol_example)
+{
+    static char doc[65536];
+    char val[INI_MAX_VALUE + 1];
+    FILE *f = fopen("docs/spec/BOOT_PROTOCOL.md", "rb");
+    size_t n = 0;
+    const char *start;
+    const char *end;
+    int32_t timeout = 0;
+    seen_t s;
+
+    CHECK(f != NULL);
+    if (f == NULL) {
+        return;
+    }
+    n = fread(doc, 1, sizeof(doc) - 1, f);
+    fclose(f);
+    doc[n] = '\0';
+    start = strstr(doc, "### BOOT.CFG");
+    CHECK(start != NULL);
+    if (start == NULL) {
+        return;
+    }
+    start = strstr(start, "```\n");
+    CHECK(start != NULL);
+    if (start == NULL) {
+        return;
+    }
+    start += 4;
+    end = strstr(start, "```");
+    CHECK(end != NULL);
+    if (end == NULL) {
+        return;
+    }
+    memset(&s, 0, sizeof(s));
+    CHECK_EQ(ini_parse(start, (size_t)(end - start), record, &s, NULL), 0);
+    CHECK_EQ(s.count, 6);
+    CHECK_EQ(ini_get(start, (size_t)(end - start), "boot", "default", val, sizeof(val)), 0);
+    CHECK_STR(val, "UOS");
+    CHECK_EQ(ini_get_int(start, (size_t)(end - start), "boot", "timeout", 0, 60, &timeout), 0);
+    CHECK_EQ(timeout, 3);
+    CHECK_EQ(ini_get(start, (size_t)(end - start), "entry UOS", "path", val, sizeof(val)), 0);
+    CHECK_STR(val, "/ROBCO/UOS.SYS");
+    CHECK_EQ(ini_get(start, (size_t)(end - start), "entry UOS", "cmdline", val, sizeof(val)), 0);
+    CHECK_STR(val, "");
+    CHECK_EQ(ini_get(start, (size_t)(end - start), "entry MAINT", "path", val, sizeof(val)), 0);
+    CHECK_STR(val, "/ROBCO/MAINT.SYS");
+    CHECK_EQ(ini_get(start, (size_t)(end - start), "entry DIAG", "path", val, sizeof(val)), 0);
+    CHECK_STR(val, "/ROBCO/DIAG.SYS");
 }
