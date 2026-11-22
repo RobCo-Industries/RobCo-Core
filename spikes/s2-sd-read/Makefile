@@ -8,7 +8,7 @@ COMMON  := ../common
 BUILD   := build
 
 ARCHFLAGS := -mcpu=arm1176jzf-s -marm -mfloat-abi=soft -mgeneral-regs-only -mno-unaligned-access
-CFLAGS    := $(ARCHFLAGS) -std=gnu11 -ffreestanding -nostdlib -ffunction-sections -fdata-sections \
+CFLAGS    := $(ARCHFLAGS) -DSPIKE_STAGE=spike2 -std=gnu11 -ffreestanding -nostdlib -ffunction-sections -fdata-sections \
              -fno-tree-loop-distribute-patterns -O2 -Wall -Wextra -Werror -I$(COMMON)
 ASFLAGS   := $(ARCHFLAGS) -I$(COMMON)
 LDFLAGS   := $(ARCHFLAGS) -nostdlib -T $(COMMON)/link.ld -Wl,--gc-sections -Wl,--no-warn-rwx-segments -Wl,-Map,$(BUILD)/s2.map
@@ -30,7 +30,7 @@ $(BUILD)/s2.img: $(BUILD)/s2.elf
 $(BUILD)/s2.elf: $(OBJS) $(COMMON)/link.ld
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
 
-$(BUILD)/%.o: %.c $(wildcard $(COMMON)/*.h) | $(BUILD)
+$(BUILD)/%.o: %.c $(wildcard $(COMMON)/*.h) Makefile | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/%.o: %.S | $(BUILD)
