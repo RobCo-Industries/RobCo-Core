@@ -10,6 +10,9 @@
 #
 # Optional: EXTRA_CFLAGS, CI=1 (adds -Werror), CROSS, PYTHON,
 # SLOT_END (end of the image's slot, overrides ROBCO_SLOT_END).
+# `make sdimage` writes $(BUILD)/sd.img from the tree in SDIMAGE_DIR, for
+# example one tools/mkbootdir.sh assembled, with tools/mksdimage.sh.
+# SDIMAGE_MIB sets the size, 64 by default.
 
 ifeq ($(strip $(ROBCO_CORE)),)
 $(error ROBCO_CORE is not set)
@@ -110,5 +113,12 @@ $(BUILD)/obj/%.o: %.S
 
 clean:
 	rm -rf $(BUILD)
+
+SDIMAGE_MIB ?= 64
+.PHONY: sdimage
+sdimage:
+	$(if $(strip $(SDIMAGE_DIR)),,$(error SDIMAGE_DIR is not set))
+	@mkdir -p $(BUILD)
+	$(ROBCO_CORE)/tools/mksdimage.sh $(BUILD)/sd.img $(SDIMAGE_MIB) $(SDIMAGE_DIR)
 
 -include $(ROBCO_OBJS:.o=.d) $(PROJ_OBJS:.o=.d)
