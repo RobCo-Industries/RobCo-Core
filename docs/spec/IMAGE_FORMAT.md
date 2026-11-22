@@ -13,7 +13,7 @@ Every loadable file in the suite uses one format, `rimg`. Stages, ROMs and holot
 
 Code follows whatever is present. Stage images have no META block, so their code starts at `0x60`. ROMs and holotapes have one, so their code starts at `0x120`.
 
-`start.S` emits the stub and header for stages. It refuses to build with `flags` bit 0 set. `crt0.S` from the Pip-OS SDK emits the stub, header and META block for ROMs and holotapes.
+`start.S` emits the stub and header for stages. It refuses to build with `flags` bit 0 set. `crt0.S` from the Pip-OS SDK emits the stub, the header with `flags` bit 0 set, and a zeroed META block for ROMs and holotapes.
 
 The branch stub is a branch to the image's entry point, padded with zeros to `0x20`. The encoding is not fixed. Only word 0 runs.
 
@@ -222,7 +222,7 @@ The input is the raw binary from `objcopy`. The startup code already wrote the s
 
 1. Checks that word 0 is an ARM `b` instruction, then checks the magic, `hdr_version` and `hdr_size`. It fails on anything else.
 2. Sets `name` and `image_version` if given.
-3. With `--title` or `--icon`, writes the META block and sets `flags` bit 0. The input must already reserve the block at `0x60`, as `crt0.S` does. The icon must be a 32x32 PBM file.
+3. With `--title` or `--icon`, fills the META block. It fails if `flags` bit 0 is clear, because the image has no room for the block. The icon must be a 32x32 PBM file.
 4. Sets `file_size` to the file length.
 5. Checks `mem_size >= file_size` and the slot bounds.
 6. Computes and writes `crc32`.
