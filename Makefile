@@ -12,6 +12,9 @@ $(VENV)/.installed: tests/requirements.txt
 	$(VENV)/bin/pip install -q -r tests/requirements.txt
 	touch $@
 
+# test-target rebuilds the spike and example dirs; keep top-level targets serial.
+.NOTPARALLEL:
+
 test: test-canary test-spikes test-examples test-target
 
 test-canary: venv
