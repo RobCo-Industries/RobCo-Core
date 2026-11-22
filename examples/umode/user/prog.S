@@ -81,7 +81,7 @@ _ustart:
     str     r1, [r0]
     bx      lr
 
-/* 10: jump to the unmapped address in r0. */
+/* 10: jump to the address in r0 (unmapped, or the kernel image). */
     .org    0x280
     bx      r0
 

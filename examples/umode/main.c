@@ -82,6 +82,8 @@ static const struct {
     { "rdperiph",   8,  ARG_PERIPH,   0, 0, 0 },
     { "wrro",       9,  ARG_OWN_CODE, 1, 0, 0 },
     { "jump",       10, ARG_UNMAPPED, 1, 0, 0 },
+    /* Same program, aimed at the kernel image: mapped, privileged-only. */
+    { "jumpkern",   10, ARG_KERNEL,   1, 0, 0 },
     { "stack",      11, ARG_NONE,     1, 0, 0 },
     { "spin",       12, ARG_NONE,     0, 1, 0 },
     { "svcspin",    13, ARG_NONE,     0, 1, 0 },
