@@ -1,0 +1,2 @@
+# <build-dir> <extra cflags>
+build/slow -DTICK_SLOW=1

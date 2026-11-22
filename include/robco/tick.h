@@ -15,10 +15,17 @@ int tick_init(uint32_t hz);
 /* Ticks since tick_init(). */
 uint32_t tick_count(void);
 
+/*
+ * Ticks counted without a callback run. The handler runs the callbacks at
+ * most once per interrupt, so a slow callback or a long masked section
+ * makes this grow. tick_count() still counts every elapsed period.
+ */
+uint32_t tick_missed(void);
+
 /* Tick count converted to milliseconds. */
 uint32_t tick_ms(void);
 
-/* Adds a callback run in IRQ context on every tick. Returns 0 or -1 if full. */
+/* Adds a callback run in IRQ context once per tick interrupt. Returns 0 or -1 if full. */
 int tick_register(void (*fn)(void));
 
 #endif

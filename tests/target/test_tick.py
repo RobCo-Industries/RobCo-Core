@@ -6,6 +6,7 @@ from harness.boot import boot
 
 DONE = re.compile(r"@RC stage=tick ev=done .*\n")
 ONESHOT = re.compile(r"@RC stage=tick ev=oneshot .*\n")
+SLOW = re.compile(r"@RC stage=tick ev=slow .*\n")
 TWO_ALIVE = re.compile(r"ev=alive .*\n(?:.*\n)*?.*ev=alive .*\n")
 
 
@@ -41,4 +42,24 @@ def test_tick(board, example_image):
         assert len(alive) >= 2, vm.serial
         assert all(a < b for a, b in zip(alive, alive[1:])), vm.serial
 
+        assert not events(vm, "exception"), vm.serial
+
+
+def test_tick_slow_callback(board, example_image):
+    """A callback slower than the period must not starve the main loop."""
+    with boot(example_image("tick", "slow", "-DTICK_SLOW=1"), board) as vm:
+        vm.wait_for(SLOW, timeout=15)
+        slow = events(vm, "slow")[0]
+        ticks, calls, missed = (int(slow[k]) for k in ("ticks", "calls", "missed"))
+        assert ticks >= 100, vm.serial
+        assert missed > 0, vm.serial
+        # Callbacks run once per interrupt; the rest is counted as missed.
+        assert abs(calls + missed - ticks) <= 2, vm.serial
+        assert int(slow["loops"]) > 0, vm.serial
+        # tick_ms() follows real time, ticks at 100 Hz are 10 ms each.
+        assert int(slow["ms"]) == ticks * 10, vm.serial
+        assert abs(int(slow["ms"]) * 1000 - int(slow["elapsed_us"])) <= 100_000, vm.serial
+
+        vm.send("echo-slow-7\r")
+        vm.wait_for("echo-slow-7\n", timeout=5)
         assert not events(vm, "exception"), vm.serial

@@ -22,6 +22,52 @@ static volatile uint32_t oneshot_deadline;
 static volatile uint32_t oneshot_late;
 static volatile int oneshot_fired;
 
+#ifdef TICK_SLOW
+/*
+ * Slow variant: the callback takes longer than one tick period. The tick
+ * handler must still return, so the main loop keeps running.
+ */
+#define SLOW_CB_US      15000
+#define SLOW_TICKS      100
+
+static volatile uint32_t slow_calls;
+
+/* IRQ context: busy for longer than a whole period. */
+static void on_slow_tick(void)
+{
+    slow_calls++;
+    timer_delay_us(SLOW_CB_US);
+}
+
+static void slow_main(void)
+{
+    uint32_t loops = 0;
+    uint32_t start_us;
+    int done = 0;
+    int c;
+
+    tick_register(on_slow_tick);
+    start_us = (uint32_t)timer_now_us();
+    tick_init(TICK_HZ);
+    irq_cpu_enable();
+    for (;;) {
+        loops++;
+        if (!done && tick_count() >= SLOW_TICKS) {
+            done = 1;
+            k_printf("@RC stage=tick ev=slow ticks=%u calls=%u missed=%u ms=%u "
+                     "elapsed_us=%u loops=%u\n",
+                     (unsigned)tick_count(), (unsigned)slow_calls,
+                     (unsigned)tick_missed(), (unsigned)tick_ms(),
+                     (unsigned)((uint32_t)timer_now_us() - start_us), (unsigned)loops);
+        }
+        c = uart_poll();
+        if (c >= 0) {
+            uart_putc(c == '\r' ? '\n' : (char)c);
+        }
+    }
+}
+#endif
+
 static const char *mode_name(uint32_t mode)
 {
     switch (mode) {
@@ -85,6 +131,9 @@ void robco_main(void)
              mode_name(robco_boot_args()->entry_mode));
 
     irq_init();
+#ifdef TICK_SLOW
+    slow_main();
+#endif
     tick_register(on_tick);
     irq_register(IRQ_TIMER3, on_oneshot, 0);
 
