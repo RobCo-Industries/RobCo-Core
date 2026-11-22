@@ -23,6 +23,19 @@ static const char *mode_name(uint32_t mode)
     }
 }
 
+/* The boot path as a marker value: "none" when empty, cut at the array end. */
+static const char *path_or_none(const char *p, size_t size)
+{
+    static char buf[sizeof(((robco_bootinfo_t *)0)->boot_path) + 1];
+
+    if (p[0] == '\0') {
+        return "none";
+    }
+    memcpy(buf, p, size < sizeof(buf) - 1 ? size : sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
+}
+
 static uint32_t rd32(uint32_t addr)
 {
     return *(volatile const uint32_t *)addr;
@@ -40,7 +53,14 @@ void robco_main(void)
              (unsigned)b->midr, b->soc_name, (unsigned)b->periph_base,
              (unsigned)b->board_rev, (unsigned)b->mem_size,
              mode_name(robco_boot_args()->entry_mode));
-    k_printf("@RC stage=" STAGE " ev=handoff trusted=%d\n", inherited);
+    {
+        uint32_t sctlr;
+
+        /* The previous stage must leave the MMU and caches off: SCTLR bits 0, 2 and 12. */
+        __asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
+        k_printf("@RC stage=" STAGE " ev=handoff trusted=%d sctlr=0x%08x\n", inherited,
+                 (unsigned)sctlr);
+    }
 
 #if defined(CHAIN2_TICK) && CHAIN2_TICK
     {
@@ -72,10 +92,12 @@ void robco_main(void)
     bi = bootinfo_get();
 
     k_printf("@RC stage=" STAGE " ev=bootinfo inherited=%d prev_stage=%u soc=%s mem=0x%08x "
-             "fw_r1=0x%08x fdt=0x%08x fdt_size=%u flags=0x%08x\n",
+             "fw_r1=0x%08x fdt=0x%08x fdt_size=%u flags=0x%08x caps=0x%08x dev=%u "
+             "part_lba=%u path=%s\n",
              inherited, (unsigned)bi->stage, b->soc_name, (unsigned)bi->mem_size,
              (unsigned)bi->fw_r1, (unsigned)bi->fdt_addr, (unsigned)bi->fdt_size,
-             (unsigned)bi->boot_flags);
+             (unsigned)bi->boot_flags, (unsigned)bi->caps, (unsigned)bi->boot_dev,
+             (unsigned)bi->boot_part_lba, path_or_none(bi->boot_path, sizeof(bi->boot_path)));
 
     if (bi->fdt_addr == 0 || bi->fdt_size < 8 || rd32(bi->fdt_addr + 4) != ROBCO_ATAG_CORE) {
         k_printf("@RC stage=" STAGE " ev=error code=atags\n");

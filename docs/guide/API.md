@@ -1,8 +1,16 @@
 # API reference
 
-This page lists every public function, type and constant in `include/robco/`. Sections follow the order you meet them when you write an image: boot and board first, then output, time and interrupts, pins, screen, memory, images and boot info, and faults.
+This page and the topic files under [api/](./api/) list every public function, type and constant in `include/robco/`. This page holds the conventions, boot, board, the core drivers, the screen, images, boot info and faults. The topic files hold memory, storage, input, audio and the buses.
 
-Each function signature below is copied from its header. `tools/check_docs.py` fails the build when a header declares a function this page does not list, or when this page lists one that no header declares.
+Each function signature is copied from its header. `tools/check_docs.py` fails the build when a header declares a function that neither this page nor a topic file lists, or when one of them lists a function that no header declares.
+
+| Topic file | Headers |
+|---|---|
+| [Memory, MMU and caches](./api/memory.md) | `alloc.h`, `mmu.h`, `cache.h` |
+| [Storage and files](./api/storage.md) | `blk.h`, `blk_ram.h`, `part.h`, `sd.h`, `fs.h`, `loader.h` |
+| [Input](./api/input.md) | `input.h`, `uart_mini.h` |
+| [Audio](./api/audio.md) | `audio.h` |
+| [Buses, clock and configuration](./api/buses.md) | `i2c.h`, `rtc.h`, `datetime.h`, `spi.h`, `ini.h` |
 
 ## Contents
 
@@ -22,7 +30,23 @@ Each function signature below is copied from its header. `tools/check_docs.py` f
 | `fb.h` | [Framebuffer](#framebuffer-fbh) |
 | `console.h` | [Screen console](#screen-console-consoleh) |
 | `font.h` | [Console font](#console-font-fonth) |
-| `alloc.h` | [Heap](#heap-alloch) |
+| `alloc.h` | [Heap](./api/memory.md#heap-alloch) |
+| `mmu.h` | [MMU](./api/memory.md#mmu-mmuh) |
+| `cache.h` | [Caches](./api/memory.md#caches-cacheh) |
+| `blk.h` | [Block devices](./api/storage.md#block-devices-blkh) |
+| `blk_ram.h` | [RAM disk](./api/storage.md#ram-disk-blk_ramh) |
+| `part.h` | [Partitions](./api/storage.md#partitions-parth) |
+| `sd.h` | [SD card](./api/storage.md#sd-card-sdh) |
+| `fs.h` | [FAT file system](./api/storage.md#fat-file-system-fsh) |
+| `loader.h` | [Stage loader](./api/storage.md#stage-loader-loaderh) |
+| `input.h` | [Input events](./api/input.md#input-events-inputh) |
+| `uart_mini.h` | [Mini UART](./api/input.md#mini-uart-uart_minih) |
+| `audio.h` | [Audio](./api/audio.md#audio-audioh) |
+| `i2c.h` | [I2C master](./api/buses.md#i2c-master-i2ch) |
+| `rtc.h` | [Real-time clock](./api/buses.md#real-time-clock-and-software-clock-rtch) |
+| `datetime.h` | [Date and time](./api/buses.md#date-and-time-datetimeh) |
+| `spi.h` | [SPI master](./api/buses.md#spi-master-spih) |
+| `ini.h` | [Configuration files](./api/buses.md#configuration-files-inih) |
 | `crc32.h` | [CRC-32](#crc-32-crc32h) |
 | `rimg.h` | [Image header](#image-header-rimgh) |
 | `bootinfo.h` | [Boot info block](#boot-info-block-bootinfoh) |
@@ -37,7 +61,7 @@ Each function signature below is copied from its header. `tools/check_docs.py` f
 | Init | A driver with an `_init` function does nothing useful before that call. Most calls before init return silently or return an error. |
 | Context | "Main context" means SVC mode with IRQs either masked or enabled. "IRQ context" means inside an interrupt handler or a tick callback. IRQs are masked there. |
 | Cores | Only core 0 runs. `start.S` parks the other cores. |
-| Caches | The library never turns on the MMU or the data cache. |
+| Caches | The library turns on the MMU and caches only when the image calls `mmu_enable()`. Every component works with them on or off. |
 | Locking | The library has no locks. Functions that touch shared state from both contexts say so. |
 | Addresses | All addresses are ARM physical addresses. |
 
@@ -50,15 +74,19 @@ Each function signature below is copied from its header. `tools/check_docs.py` f
 | 1 | Automatic: `board_get()` | Nothing. Uses the mailbox. |
 | 2 | Automatic: `bootinfo_receive()` | Skipped when `ROBCO_FIRST_STAGE` is 1. |
 | 3 | `uart_init(115200)` | Step 1. Also makes `k_printf()` print to the UART. |
-| 4 | `fb_init(640, 480, 32)` | Step 1. |
-| 5 | `console_init(scheme)`, then `console_attach_printf()` | Step 4. |
-| 6 | `robco_heap_slot()` or `robco_heap_high()`, then `k_heap_init()` | Nothing. `robco_heap_high()` uses step 1. |
-| 7 | `rng_init()` | Step 1. |
-| 8 | `irq_init()` | Step 1. |
-| 9 | `irq_register()`, `tick_register()`, `tick_init(hz)` | Step 8. `tick_init()` returns `TICK_ERR_NO_IRQ` before it. |
-| 10 | `irq_cpu_enable()` | Step 9. |
+| 4 | `mmu_init()`, then `mmu_enable()` | Step 1. Optional. `fb_init()` may come before or after. |
+| 5 | `fb_init(640, 480, 32)` | Step 1. |
+| 6 | `console_init(scheme)`, then `console_attach_printf()` | Step 5. |
+| 7 | `robco_heap_slot()` or `robco_heap_high()`, then `k_heap_init()` | Nothing. `robco_heap_high()` uses step 1. |
+| 8 | `rng_init()` | Step 1. |
+| 9 | `sd_init()`, `i2c_init(100000)`, `spi_init()`, `uart_mini_init(115200)` | Step 1. Each only if you use it. |
+| 10 | `rtc_init()` | `i2c_init()`. Seeds the software clock. |
+| 11 | `irq_init()` | Step 1. |
+| 12 | `irq_register()`, `tick_register()`, `tick_init(hz)` | Step 11. `tick_init()` returns `TICK_ERR_NO_IRQ` before it. |
+| 13 | `irq_cpu_enable()` | Step 12. |
+| 14 | `input_init()`, the input backends, `audio_init()` | Step 13. They register tick callbacks, and `audio_init()` checks that the tick runs. |
 
-The timer, GPIO, power and mailbox functions need no init call. `examples/demo/main.c` follows this order.
+The timer, GPIO, power and mailbox functions need no init call, nor do `datetime.h`, `ini.h`, `part.h` and `blk_ram.h`. `examples/demo/main.c` follows this order.
 
 ## Boot and entry (`boot.h`)
 
@@ -103,7 +131,7 @@ void robco_handoff(uint32_t entry, const struct robco_bootinfo *bi, uint32_t fdt
     __attribute__((noreturn));
 ```
 
-Jumps to the next stage at `entry`. It masks IRQ and FIQ on the CPU, masks every source and FIQ at the interrupt controller, parks system timer channels 1 and 3 a counter wrap ahead and clears their match flags, turns the MMU and data cache off if they are on, invalidates the I-cache and branch predictor, and branches in SVC mode with:
+Jumps to the next stage at `entry`. It masks IRQ and FIQ on the CPU, masks every source and FIQ at the interrupt controller, parks system timer channels 1 and 3 a counter wrap ahead and clears their match flags, calls `mmu_disable()` if the MMU or data cache is on and the image links it, which cleans and invalidates the whole data cache on every CPU and turns the MMU and both caches off, invalidates the I-cache and branch predictor, and branches in SVC mode with:
 
 | Register | Value |
 |---|---|
@@ -120,7 +148,7 @@ What the caller must do before the call:
 | Build the block with `bootinfo_build()` at `ROBCO_BOOTINFO_ADDR`. | The next stage trusts the block only if r3 equals `0x00100000`. |
 | Pass `ROBCO_HANDOFF_FDT_ADDR` or `0` as `fdt_or_atags`. | Use the return value of `bootinfo_copy_fw_blob()` to choose. |
 | Call `uart_flush()`. | Output still in the FIFO is lost otherwise. |
-| Keep the MMU and data cache off, or clean every dirty line. | The function cleans the data cache only on ARM1176. On ARMv7 and later dirty lines are lost. |
+| If your own code turned the data cache on without `mmu.h` or `cache.h`, clean it first. | Without `mmu_disable()` linked, the function cleans the data cache only on ARM1176. On ARMv7 and later dirty lines are lost. |
 
 It does not stop the framebuffer. The steps are listed in [the boot protocol](../spec/BOOT_PROTOCOL.md#finding-loading-and-entering-the-next-stage). Example from `examples/chain1/main.c`:
 
@@ -188,12 +216,19 @@ k_printf("@RC stage=hello ev=boot soc=%s base=0x%08x\n", b->soc_name, (unsigned)
 | `MBOX_TAG_ARM_MEMORY` | `0x00010005` | Get ARM memory base and size |
 | `MBOX_TAG_CLOCK_RATE` | `0x00030002` | Get clock rate |
 | `MBOX_CLOCK_UART` | `2` | Clock id of the UART reference clock |
+| `MBOX_ERR` | `-1` | Unknown board, misaligned buffer, timeout or error answer |
+| `MBOX_ERR_SIZE` | `-2` | D-cache on and the message neither fits the bounce buffer nor fills whole 64-byte lines |
+| `ROBCO_MBOX_BOUNCE_SIZE` | `256` | Bytes in the bounce buffer. Set it in `robco_config.h` to a multiple of 64, or the build stops. |
 
 ```c
 int mbox_call(uint32_t *buf);
 ```
 
-Sends a property buffer and waits for the answer. `buf` must be 16-byte aligned, and `buf[0]` holds its size in bytes. Returns `0` when the firmware sets the response bit in `buf[1]`, `-1` on a misaligned buffer, an unknown board, a timeout or an error answer. It busy-waits up to about a million status reads in each direction. It assumes the data cache is off. It is not reentrant: do not call it from IRQ context while main context may be in a call.
+Sends a property buffer and waits for the answer. `buf` must be 16-byte aligned, and `buf[0]` holds its size in bytes. Returns `0` when the firmware sets the response bit in `buf[1]`, else `MBOX_ERR` or `MBOX_ERR_SIZE`. It busy-waits up to about a million status reads in each direction.
+
+With the data cache on, cache maintenance never touches data next to the message, so the caller's alignment does not matter for correctness. A message that starts on a 64-byte boundary and fills whole 64-byte lines is used in place. Any other message is copied through a driver-owned bounce buffer of `ROBCO_MBOX_BOUNCE_SIZE` bytes, and a larger one fails with `MBOX_ERR_SIZE`. The largest library message, from `fb_init()`, is 136 bytes. With the data cache off, `buf` is used in place with no copy. See [mailbox and framebuffer coherence](./api/memory.md#mailbox-and-framebuffer-coherence).
+
+It is not reentrant: do not call it, or the helpers below, from IRQ context.
 
 ```c
 int mbox_get_board_rev(uint32_t *rev);
@@ -202,6 +237,13 @@ int mbox_get_clock_rate(uint32_t clock_id, uint32_t *hz);
 ```
 
 Each sends one tag and returns `0` on success, `-1` on failure. The output stays untouched on failure. `mbox_get_clock_rate()` also fails when the firmware reports a rate of 0.
+
+```c
+int mbox_plan(uintptr_t buf, uint32_t len, uint32_t line,
+              uintptr_t bounce, uint32_t bounce_size, mbox_plan_t *plan);
+```
+
+The pure rule `mbox_call()` applies with the data cache on. It returns `MBOX_PLAN_DIRECT` when `buf` and `len` are multiples of `line`, `MBOX_PLAN_BOUNCE` when `len` fits the line-aligned bounce buffer, and `MBOX_PLAN_REJECT` otherwise or for a `len` of `0`. `plan->start` and `plan->len` give the range to clean before the call and to invalidate after it: the caller's buffer, or the bounce buffer rounded up to whole lines. `tests/host/test_mbox_plan.c` covers it.
 
 ## PL011 UART (`uart.h`)
 
@@ -229,7 +271,7 @@ int uart_getc(void);            /* blocking */
 int uart_poll(void);            /* -1 when nothing is pending */
 ```
 
-Read one byte. `uart_getc()` waits forever. `uart_poll()` returns at once with the byte, or `-1` when the receive FIFO is empty or the UART is not initialised. There is no receive interrupt: poll from your main loop.
+Read one byte. `uart_getc()` waits for a byte, or returns `-1` at once before `uart_init()`. `uart_poll()` returns at once with the byte, or `-1` when the receive FIFO is empty or the UART is not initialised. There is no receive interrupt: poll from your main loop.
 
 ```c
 void uart_flush(void);          /* waits until the transmitter is idle */
@@ -471,6 +513,12 @@ uint32_t tick_ms(void);
 `tick_count()` is the number of periods since `tick_init()`, counted even when the handler ran late. `tick_missed()` counts periods that passed without a callback run. `tick_ms()` converts the count to milliseconds with the programmed period, or returns `0` before `tick_init()`. It counts past a `tick_count()` wrap and wraps itself at 2^32 ms. `tick_count()` and `tick_missed()` are safe from any context. `tick_ms()` uses a 64-bit division: keep it out of IRQ context.
 
 ```c
+uint32_t tick_hz(void);
+```
+
+The rate `tick_init()` started, in Hz, or `0` when the tick does not run. The real rate can be a little higher when the rate does not divide 1000000. Safe from any context.
+
+```c
 int tick_register(void (*fn)(void));
 ```
 
@@ -481,6 +529,8 @@ Sharp edges:
 | Edge | Detail |
 |---|---|
 | Callbacks run in IRQ context. | IRQs are masked. Do not block, do not call the heap, keep them short. |
+| Four slots for the whole image. | The input GPIO backend, input auto-repeat, the input console backend in tick mode and audio each take one. Plan the slots before you add your own callbacks. |
+| Printing from a callback. | Do not. The UART and `k_printf()` have no lock. The audio trace backend queues its records in the tick and prints them from `audio_poll()` in main context. |
 | At most one run per interrupt. | If callbacks or a masked section make the handler late, it counts the skipped periods in `tick_count()` and `tick_missed()` and runs the callbacks once. |
 | Period resolution. | The period is `1000000 / hz` microseconds, rounded down. 7000 Hz gives 142 microseconds, about 7042 Hz. `tick_ms()` uses the real period, so it stays exact. |
 
@@ -826,73 +876,6 @@ const char *font8x16_name(void);
 
 Short name of the font the table was built from: `fixedsys-excelsior` or `spleen` for the built-in tables.
 
-## Heap (`alloc.h`)
-
-`alloc.h` is a first-fit allocator over one memory region you give it. Blocks are 8-byte aligned. Headers carry a checksum, so a stray or double free is counted instead of corrupting the heap. The code lives in `src/lib/` and runs on the host in the unit tests.
-
-```c
-void k_heap_init(void *base, size_t size);
-```
-
-Takes over `size` bytes at `base`, trimmed to 8-byte alignment. A second call starts a new empty heap. A NULL `base` or a region too small for one block leaves the heap empty, with no error. `k_heap_init()` does not check the region against the memory map. Get it from one of the two helpers below.
-
-Heap rule: a heap stays inside a range its image owns in [the memory map](../spec/MEMORY_MAP.md). For an image at `0x8000` the slot ends at `0x00100000`, where the boot info handoff area starts, so a heap there is less than 1 MiB.
-
-| Constant | Value | Meaning |
-|---|---|---|
-| `ROBCO_HEAP_HIGH_BASE` | `0x01000000u` | Start of the OS heap range in the memory map |
-
-```c
-size_t robco_heap_slot(void **base);
-size_t robco_heap_high(void **base);
-```
-
-Both live in `src/board/heap_region.c`. Each stores the start in `*base` and returns the size in bytes, or `0` when there is no such region. `robco_heap_slot()` gives everything from `__heap_start` up to the end of the image's slot, `ROBCO_SLOT_END`. It returns `0` when the image does not set `ROBCO_SLOT_END`. `robco_heap_high()` gives `ROBCO_HEAP_HIGH_BASE` up to the top of ARM RAM from the mailbox. Use it only in the image that owns that range in its chain, the OS in the terminal chain, or in an image that runs alone. From `examples/heap/main.c`:
-
-```c
-size = robco_heap_slot(&base);
-k_heap_init(base, size);
-```
-
-```c
-void *k_malloc(size_t n);
-void *k_calloc(size_t n, size_t size);
-void *k_realloc(void *p, size_t n);
-void k_free(void *p);
-```
-
-Standard contracts. `k_malloc(0)` returns NULL. `k_free(NULL)` does nothing. `k_realloc(NULL, n)` is `k_malloc(n)`, and `k_realloc(p, 0)` frees `p` and returns NULL. `k_calloc()` returns NULL when `n * size` overflows. `k_free()` and `k_realloc()` ignore a pointer the heap did not hand out or one already freed, and count it in `bad_frees`. All allocators return NULL when no block is large enough or before `k_heap_init()`. Before `k_heap_init()`, `k_free()` counts every pointer as a bad free.
-
-```c
-typedef struct {
-    size_t total, used, free, largest_free, allocs;
-    size_t bad_frees;
-} k_heap_stats_t;
-
-void k_heap_stats(k_heap_stats_t *out);
-```
-
-`total` is the whole region, headers included. `used`, `free` and `largest_free` count payload bytes only. `allocs` is the number of live blocks.
-
-```c
-int k_heap_check(void);
-```
-
-Walks every block and the free list. Returns `0` if consistent, a negative code otherwise.
-
-The heap has no lock. If any IRQ handler or tick callback can touch it, mask IRQs around every call, as `examples/demo/main.c` does:
-
-```c
-static void *heap_alloc(size_t n)
-{
-    uint32_t s = irq_save();
-    void *p = k_malloc(n);
-
-    irq_restore(s);
-    return p;
-}
-```
-
 ## CRC-32 (`crc32.h`)
 
 `crc32.h` computes CRC-32/ISO-HDLC, the zlib `crc32()`: reflected, polynomial `0xEDB88320`, init and final XOR `0xFFFFFFFF`. The image header and the boot info use it.
@@ -1036,7 +1019,13 @@ if (rc != RIMG_OK) {
 }
 ```
 
-Loading an image from the SD card is [specified](../spec/BOOT_PROTOCOL.md#finding-loading-and-entering-the-next-stage) but not implemented. The library has no SD driver and no FAT code yet.
+```c
+int rimg_check_header(const void *head, size_t avail, const rimg_expect_t *expect);
+```
+
+Runs validation steps 1 to 5 on the first `0x60` bytes of an image before the rest is read. `head` holds at least `0x60` bytes. `avail` is the size of the whole file. It reads only `head`, and returns `RIMG_E_IO` for a `NULL` `head` or `avail` below `0x60`. `rimg_validate()` runs the same checks, then the CRC.
+
+To load an image from the SD card with these checks and the fallback rule, use the [stage loader](./api/storage.md#stage-loader-loaderh).
 
 ## Boot info block (`bootinfo.h`)
 
@@ -1059,14 +1048,14 @@ Loading an image from the SD card is [specified](../spec/BOOT_PROTOCOL.md#findin
 | `uart_type` | `ROBCO_UART_NONE` 0, `ROBCO_UART_PL011` 1, `ROBCO_UART_MINI` 2 |
 | `boot_dev` | `ROBCO_BOOT_DEV_UNKNOWN` 0, `ROBCO_BOOT_DEV_EMMC` 1, `ROBCO_BOOT_DEV_SDHOST` 2 |
 | Firmware blob tags | `ROBCO_FDT_MAGIC` `0xD00DFEEDu`, `ROBCO_ATAG_CORE` `0x54410001u`, `ROBCO_ATAG_NONE` `0x00000000u` |
-| `bootinfo_merge()` groups | `BOOTINFO_OWN_FW_REGS` bit 0, `BOOTINFO_OWN_FW_BLOB` bit 1, `BOOTINFO_OWN_UART` bit 2, `BOOTINFO_OWN_FB` bit 3, `BOOTINFO_OWN_CON` bit 4, `BOOTINFO_OWN_BOOT_DEV` bit 5 |
+| `bootinfo_merge()` groups | `BOOTINFO_OWN_FW_REGS` bit 0, `BOOTINFO_OWN_FW_BLOB` bit 1, `BOOTINFO_OWN_UART` bit 2, `BOOTINFO_OWN_FB` bit 3, `BOOTINFO_OWN_CON` bit 4, `BOOTINFO_OWN_BOOT_DEV` bit 5, `BOOTINFO_OWN_MINIUART` bit 6, `BOOTINFO_OWN_SD` bit 7 |
 | Validation results | `BOOTINFO_OK` 0, `BOOTINFO_E_MAGIC` -1, `BOOTINFO_E_VERSION` -2, `BOOTINFO_E_SIZE` -3, `BOOTINFO_E_CRC` -4 |
 
 | Config macro | Default | Meaning |
 |---|---|---|
 | `ROBCO_FIRST_STAGE` | `0` | Set to 1 in a first stage. It then always cold-boots and ignores r3. |
 
-The library sets `ROBCO_CAP_FB`, `ROBCO_CAP_PL011` and `ROBCO_CAP_LOCAL_INTC` only. The SD, mini UART, `boot_dev` and `boot_path` fields are for drivers that do not exist yet.
+`bootinfo_build()` sets every `caps` bit from the drivers this stage has running: `ROBCO_CAP_FB` after `fb_init()`, `ROBCO_CAP_PL011` after `uart_init()`, `ROBCO_CAP_MINIUART` after a successful `uart_mini_init()`, `ROBCO_CAP_SD` while `sd_blkdev()` returns a device, and `ROBCO_CAP_LOCAL_INTC` from the SoC. It holds only weak references to these drivers, so an image without them does not link them. It does not set `boot_dev` or `boot_path`: a loader that picks a boot device fills them.
 
 `robco_bootinfo_t` is a packed struct of 320 bytes. The field list with offsets is in [BOOT_PROTOCOL.md](../spec/BOOT_PROTOCOL.md#boot-info) and in the header.
 
@@ -1112,11 +1101,13 @@ Carry-over rule: a field that describes state this stage set up itself comes fro
 | `stage`, board fields, `ROBCO_CAP_LOCAL_INTC` | None | Always |
 | `fw_r0` to `fw_r2` | `BOOTINFO_OWN_FW_REGS` | The stage is cold |
 | `fdt_addr`, `fdt_size` | `BOOTINFO_OWN_FW_BLOB` | It called `bootinfo_copy_fw_blob()` |
-| `uart_*`, `ROBCO_CAP_PL011`, `ROBCO_CAP_MINIUART` | `BOOTINFO_OWN_UART` | It configured the UART |
+| `uart_*`, `ROBCO_CAP_PL011` | `BOOTINFO_OWN_UART` | It configured the PL011 |
+| `ROBCO_CAP_MINIUART` | `BOOTINFO_OWN_MINIUART` | It initialised the mini UART |
+| `ROBCO_CAP_SD` | `BOOTINFO_OWN_SD` | It initialised the SD card |
 | `fb_*`, `ROBCO_CAP_FB` | `BOOTINFO_OWN_FB` | It called `fb_init()` |
 | `con_*` | `BOOTINFO_OWN_CON` | Its console is active |
 | `boot_dev`, `boot_part_lba`, `boot_flags`, `boot_path`, `cmdline` | `BOOTINFO_OWN_BOOT_DEV` | The stage is cold |
-| Other `caps` bits | None | Never, they are carried over |
+| Other `caps` bits | None | Never. They are reserved and 0. |
 
 A new framebuffer without a new console clears `con_cols`, `con_rows`, `con_cx` and `con_cy`, since the old console drew on the old framebuffer. `con_scheme` stays. A loader that picks a boot device writes the `boot_*` fields after `bootinfo_build()` and calls `bootinfo_seal()`.
 
@@ -1163,17 +1154,17 @@ void robco_exc_report(uint32_t type, uint32_t pc, uint32_t lr, uint32_t spsr)
     __attribute__((noreturn));
 ```
 
-Prints `@RC stage=<name> ev=exception type=<type> pc=0x... lr=0x... spsr=0x... dfsr=0x... dfar=0x...` through `k_printf()` and halts. `lr` is the banked LR of the interrupted mode. If the UART is not initialised yet, it calls `uart_init(115200)` first, so a fault before `uart_init()` still prints. On an unknown board that does nothing and the report is silent.
+Prints `@RC stage=<name> ev=exception type=<type> pc=0x... lr=0x... spsr=0x... dfsr=0x... dfar=0x... ifsr=0x...` through `k_printf()` and halts. `ifsr` is the prefetch abort status. `lr` is the banked LR of the interrupted mode. If the UART is not initialised yet, it calls `uart_init(115200)` first, so a fault before `uart_init()` still prints. On an unknown board that does nothing and the report is silent.
 
 To handle SVC or FIQ yourself, define a strong `robco_vec_svc` or `robco_vec_fiq` in assembly. The library versions are weak. The undefined instruction, prefetch abort and data abort stubs are not replaceable.
 
 The `hello` fault variant (`examples/hello/VARIANTS`) runs an undefined instruction. On `raspi0` it prints:
 
 ```
-@RC stage=hello ev=exception type=undef pc=0x00008394 lr=0x00008394 spsr=0x600001d3 dfsr=0x00000008 dfar=0x2020c000
+@RC stage=hello ev=exception type=undef pc=0x00008394 lr=0x00008394 spsr=0x600001d3 dfsr=0x00000008 dfar=0x2020c000 ifsr=0x00000000
 ```
 
-`dfsr` and `dfar` keep the values of the last data abort, here the PWM probe. They describe the current exception only for `data_abort`.
+`dfsr` and `dfar` keep the values of the last data abort, here the PWM probe. They describe the current exception only for `data_abort`. `ifsr` describes it only for `prefetch_abort`.
 
 ## Registers and probing (`mmio.h`)
 
@@ -1204,7 +1195,7 @@ Busy-waits about `count` loop iterations. The time depends on the CPU clock. Use
 int mmio_probe(uint32_t addr, uint32_t *value);
 ```
 
-Reads a 32-bit register that may not exist. Returns `0` and stores the value, or non-zero if the read took a data abort. Use it for blocks that QEMU does not model, such as PWM on `raspi0`. It masks IRQs on the CPU for the whole probe and restores the mask after.
+Reads a 32-bit register that may not exist. Returns `0` and stores the value, or non-zero if the read took a data abort. Use it for blocks that QEMU does not model, such as PWM on `raspi0`. It masks IRQs on the CPU for the whole probe and restores the mask after. With the MMU on, a probe of an unmapped address reports an abort.
 
 Sharp edges of `mmio_probe()`:
 
@@ -1250,3 +1241,30 @@ k_printf("@RC stage=hello ev=probe pwm=%s gpio=%s\n",
 | `ROBCO_STACK_UND_SIZE` | `0x1000` | Undefined instruction handler |
 
 Nothing detects a stack overflow.
+
+## Configuration macros
+
+Each image sets these in its `robco_config.h`. A macro you do not set takes its default.
+
+| Macro | Default | Section |
+|---|---|---|
+| `ROBCO_STAGE_NAME` | `"robco"` | [Exceptions](#exceptions-exch) |
+| `ROBCO_FIRST_STAGE` | `0` | [Boot info block](#boot-info-block-bootinfoh) |
+| `ROBCO_IMG_MAGIC`, `ROBCO_IMG_SUBTYPE`, `ROBCO_IMG_ABI_VERSION`, `ROBCO_IMG_VERSION`, `ROBCO_IMG_NAME`, `ROBCO_IMG_FLAGS` | See the table | [Image header](#image-header-rimgh) |
+| `ROBCO_SLOT_END` | Not set | [Linker symbols](#linker-symbols) |
+| `ROBCO_STACK_SVC_SIZE` | `0x4000` | [Linker symbols](#linker-symbols) |
+| `ROBCO_STACK_IRQ_SIZE`, `ROBCO_STACK_FIQ_SIZE`, `ROBCO_STACK_ABT_SIZE`, `ROBCO_STACK_UND_SIZE` | `0x1000` | [Linker symbols](#linker-symbols) |
+| `ROBCO_CONSOLE_MAX_COLS` | `100` | [Screen console](#screen-console-consoleh) |
+| `ROBCO_CONSOLE_MAX_ROWS` | `40` | [Screen console](#screen-console-consoleh) |
+| `ROBCO_FONT` | `ROBCO_FONT_FIXEDSYS` | [Console font](#console-font-fonth) |
+| `ROBCO_FS_READONLY` | `0` | [FAT file system](./api/storage.md#fat-file-system-fsh) |
+| `ROBCO_AUDIO_BACKEND` | `AUDIO_BACKEND_AUTO` | [Audio](./api/audio.md#audio-audioh) |
+| `ROBCO_AUDIO_PIN0`, `ROBCO_AUDIO_FN0` | Per board | [Audio](./api/audio.md#audio-audioh) |
+| `ROBCO_AUDIO_PIN1`, `ROBCO_AUDIO_FN1` | Not set, mono | [Audio](./api/audio.md#audio-audioh) |
+| `ROBCO_AUDIO_CLOCK_SRC` | `AUDIO_CLK_SRC_OSC` | [Audio](./api/audio.md#audio-audioh) |
+| `ROBCO_AUDIO_VOLUME` | `100` | [Audio](./api/audio.md#audio-audioh) |
+| `ROBCO_AUDIO_BEEP_HZ`, `ROBCO_AUDIO_BEEP_MS` | `1000`, `80` | [Audio](./api/audio.md#audio-audioh) |
+| `ROBCO_AUDIO_TUNE_MAX` | `64` | [Audio](./api/audio.md#audio-audioh) |
+| `ROBCO_AUDIO_TRACE_QUEUE` | `64` | [Audio](./api/audio.md#audio-audioh) |
+
+The MMU, cache, input, I2C, RTC, SPI, date and INI code read no macro.

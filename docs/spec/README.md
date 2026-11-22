@@ -36,9 +36,14 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | 8x16 font and screen console, `console_*()` | Implemented |
 | `unsupported board` report on BCM2711: `ev=error code=unsupported_board`, then halt, in `src/board/board.c` | Implemented |
 | Board name from the revision code | Specified |
-| Mini UART maintenance port | Specified |
-| SD card storage on EMMC or SDHOST | Specified |
-| Input, PWM audio | Specified |
+| Mini UART driver, `uart_mini_*()`, used by the input script backend in QEMU | Implemented |
+| Mini UART maintenance port on hardware | Specified |
+| SD card on EMMC, `sd_*()`, with the pin routing for WiFi boards | Implemented, pending hardware validation |
+| SD card on SDHOST | Specified |
+| Default pins for I2C, SPI and audio | Implemented |
+| Input from GPIO buttons, a dial and serial lines, `input_*()` | Implemented, pending hardware validation |
+| PWM audio with a trace backend, `audio_*()` | Implemented, pending hardware validation |
+| I2C, SPI, DS1307, DS1338 and DS3231 RTC | Implemented, pending hardware validation |
 
 ### MEMORY_MAP.md
 
@@ -49,7 +54,8 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | `__heap_start` and the heap allocator, `k_malloc()` | Implemented |
 | Slot end checked at link time with `ROBCO_SLOT_END` | Implemented |
 | Heap regions within the map, `robco_heap_slot()` and `robco_heap_high()` | Implemented |
-| MMU with an identity map | Specified |
+| MMU with an identity map and memory types per region, `mmu_*()` | Implemented, pending hardware validation |
+| Cache maintenance for buffers shared with the GPU, `cache_*()` | Implemented, pending hardware validation |
 | Slot bounds checked by `rimg_validate()` and `tools/rimg.py` | Implemented |
 | Handoff range: boot info at `0x00100000`, DTB or ATAGS copy at `0x00101000` | Implemented |
 
@@ -66,7 +72,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Sealing every image in `mk/robco.mk` | Implemented |
 | Firmware download with pinned hashes, `tools/fetch_firmware.sh`, and boot directory, `tools/mkbootdir.sh` | Implemented |
 | Filling the META block in `tools/rimg.py` | Specified |
-| Loading images from the SD card | Specified |
+| Loading images from the SD card, `loader_load()` | Implemented, pending hardware validation |
 
 ### BOOT_PROTOCOL.md
 
@@ -75,10 +81,13 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | `robco_main(void)`, `robco_boot_args()`, `board_get()` | Implemented |
 | `ev=exception` marker | Implemented |
 | Boot info block: `robco_bootinfo_t`, trust rule, `bootinfo_get()` | Implemented |
-| Register handoff, `robco_handoff()` | Implemented |
+| Register handoff, `robco_handoff()`, including turning the MMU and caches off | Implemented |
 | DTB and ATAGS copy, `bootinfo_copy_fw_blob()` | Implemented |
-| Stage loading from the SD card, `BOOT.CFG` | Specified |
-| Other `@RC` events, failure handling, emergency shell | Specified |
+| Stage loading from the SD card with fallback, `loader_load_fallback()`, in `examples/chain1` | Implemented, pending hardware validation |
+| `BOOT.CFG` | Specified |
+| `mount`, `load`, `fallback`, `error`, `shell`, `halt` and `jump` markers and the RETROS-BIOS failure rows, in `examples/chain1` | Implemented |
+| Emergency shell, a job of each stage | Specified |
+| Other `@RC` events | Specified |
 
 ### PIPOS_ABI.md
 
@@ -94,11 +103,14 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Firmware stub and `boot()` | Implemented |
 | `sdimage.py` | Implemented |
 | Serial tests in `tests/target/` | Implemented |
-| Host tests for klibc, CRC-32, the allocator, `rimg_validate()`, the boot info and the tick conversion | Implemented |
+| Host tests for klibc, CRC-32, the allocator, `rimg_validate()`, the stage loader, the boot info, the tick conversion, partitions, the file system, input, audio, date and time and INI | Implemented |
+| Tool tests, including the file system against mtools | Implemented |
+| Input tests over the console and script backends | Implemented |
+| Target tests with an SD image, the RTC model and the SPI flash | Implemented |
 | Unit tests for `tools/rimg.py` | Implemented |
-| Two-stage chain boot in QEMU | Implemented |
+| Two-stage chain boot in QEMU, also from an SD image with fallback | Implemented |
 | Console grid dump and a screendump golden | Implemented |
-| Fault tests: bad magic, bad CRC, out-of-slot images and a missing next stage in the chain, an undefined instruction in `hello` | Implemented |
-| Other host tests, input tests, other fault tests | Specified |
+| Fault tests: bad magic, bad CRC, out-of-slot images and a missing next stage in the chain, an undefined instruction in `hello`, MMU faults | Implemented |
+| Game logic and UI host tests, file fault tests | Specified |
 | `expect.py`, `screen.py`, `inputs.py` | Specified |
 | Reusable workflow for sibling repos | Implemented |

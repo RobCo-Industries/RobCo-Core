@@ -5,7 +5,7 @@
 | File | Content |
 |---|---|
 | [guide/GETTING_STARTED.md](./guide/GETTING_STARTED.md) | Tools, a first project on the library, QEMU, a first test, an SD card |
-| [guide/API.md](./guide/API.md) | Every public function, type and constant, with init order and context rules |
+| [guide/API.md](./guide/API.md) | Every public function, type and constant, with init order and context rules. Topic files in [guide/api/](./guide/api/). |
 | [guide/PROJECT_LAYOUT.md](./guide/PROJECT_LAYOUT.md) | Repository map, where new code and tests go, what CI runs |
 
 ## Specifications
@@ -25,6 +25,7 @@
 | File | Content |
 |---|---|
 | [FONTS.md](./FONTS.md) | Console fonts and how to build a font table |
+| [HARDWARE_VALIDATION.md](./HARDWARE_VALIDATION.md) | What QEMU cannot prove, per component, and how to check it on a real board |
 | [../tests/README.md](../tests/README.md) | Running and writing host, target and canary tests |
 | [../ci/README.md](../ci/README.md) | The CI container and its tag |
 | [../spikes/s1-uart-hello/README.md](../spikes/s1-uart-hello/README.md) | Spike 1: UART hello on every board |

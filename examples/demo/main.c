@@ -8,10 +8,13 @@
 #include <robco/gpio.h>
 #include <robco/irq.h>
 #include <robco/klibc.h>
+#include <robco/mmu.h>
 #include <robco/rng.h>
 #include <robco/tick.h>
 #include <robco/timer.h>
 #include <robco/uart.h>
+
+#include "menu.h"
 
 #define TICK_HZ     100
 #define HEAP_SIZE   (1024u * 1024u)
@@ -67,6 +70,20 @@ void robco_main(void)
 
     uart_init(115200);
     k_printf("\n@RC stage=demo ev=boot soc=%s\n", board_get()->soc_name);
+
+#if defined(DEMO_MENU) && DEMO_MENU
+    demo_menu();
+#endif
+
+#if defined(DEMO_MMU) && DEMO_MMU
+    /* MMU and caches on before every other component, the framebuffer included. */
+    rc = mmu_init();
+    if (rc != 0) {
+        fail("mmu_init", rc);
+    }
+    mmu_enable();
+    k_printf("@RC stage=demo ev=mmu on=%d\n", mmu_enabled());
+#endif
 
     rc = fb_init(640, 480, 32);
     if (rc != 0) {

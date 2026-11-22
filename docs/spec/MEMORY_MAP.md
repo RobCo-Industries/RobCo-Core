@@ -6,9 +6,22 @@
 - No image relocates itself. An image runs at the address it was linked for.
 - Every image carries its own stacks in its own `.stack` section. No image uses a stack set up by the previous stage.
 - `mem_size` in the image header covers code, data, BSS and stacks. The whole range must fit in the image's slot. An image that sets `ROBCO_SLOT_END` to the end of its slot fails to link when it does not fit.
-- A heap stays inside a range its image owns. An image at `0x8000` puts its heap between `__heap_start` and the end of its slot, `robco_heap_slot()`. An image that owns the range from `0x01000000`, or runs alone, may use it with `robco_heap_high()`. See [the heap section of API.md](../guide/API.md#heap-alloch).
-- All addresses are ARM physical addresses. The MMU, when on, uses an identity map.
+- A heap stays inside a range its image owns. An image at `0x8000` puts its heap between `__heap_start` and the end of its slot, `robco_heap_slot()`. An image that owns the range from `0x01000000`, or runs alone, may use it with `robco_heap_high()`. See [the heap section](../guide/api/memory.md#heap-alloch).
+- All addresses are ARM physical addresses. The MMU, when on, uses an identity map of 1 MiB sections. See the table below.
+- A buffer the GPU or a DMA engine reads or writes is cleaned before and invalidated after, with `cache.h`, and is aligned and padded to 64 bytes, `CACHE_LINE_MAX`.
 - RAM above the last listed range, up to `mem_base + mem_size` from the mailbox, belongs to the last owner in the table. RAM above that belongs to the GPU, including the framebuffer.
+
+Memory attributes when an image turns the MMU on with `mmu_init()` and `mmu_enable()`:
+
+| Range | Memory type | Execute |
+|---|---|---|
+| `mem_base` to `mem_base + mem_size`, ARM RAM from the mailbox | Normal, write-back write-allocate | Yes |
+| Peripheral base to base + `0x00FFFFFF` | Shareable device | Never |
+| `0x40000000`-`0x400FFFFF` on BCM2836 and BCM2837, the local peripherals | Shareable device | Never |
+| The framebuffer, once `fb_init()` succeeded | Normal, non-cacheable | Never |
+| Every other address | Unmapped. Any access faults. | No |
+
+Address `0` is RAM, so a NULL read does not fault. The framebuffer type is pending hardware validation. See [the MMU section](../guide/api/memory.md#mmu-mmuh).
 
 The lowest board in the set has 256 MiB of RAM, and `gpu_mem=64` leaves 192 MiB for the ARM. Both maps fit in 32 MiB, so every board can run them.
 

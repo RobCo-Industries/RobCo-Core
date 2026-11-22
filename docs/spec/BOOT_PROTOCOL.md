@@ -21,10 +21,10 @@ The chains are separate. MFBootAgent never loads Pip-OS. Every stage also boots 
 Each loader:
 
 1. Mounts the FAT partition on the SD card through FatFs.
-2. Opens the file and validates it as described in [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). Emits `ev=load` before the read and `ev=error` on failure.
+2. Opens the file, reads it into the slot and validates it as described in [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). A failed attempt emits `ev=error` with the code and the path. A switch to the backup file emits `ev=fallback`. Once an image has loaded and passed every check, the stage emits `ev=load` with its path, size and CRC.
 3. Updates the boot info, as described below.
 4. Prepares the CPU for the jump.
-5. Jumps to `load_addr` with the registers in the next table. Emits `ev=jump` just before.
+5. Jumps to `load_addr` with the registers in the next table. Emits `ev=jump` right before.
 
 CPU state at the jump between terminal stages:
 
@@ -32,9 +32,9 @@ CPU state at the jump between terminal stages:
 |---|---|
 | Mode | SVC |
 | IRQ, FIQ | Masked in CPSR. Every source and FIQ routing disabled at the controller. |
-| MMU | Off |
-| D-cache | Cleaned to memory, then off |
-| I-cache | Invalidated |
+| MMU | Off, even if the previous stage had it on |
+| D-cache | Cleaned and invalidated, then off |
+| I-cache | Invalidated. Off when the previous stage used `mmu.h`. |
 | Timers | System timer channels 1 and 3 parked a full counter wrap ahead, their match flags cleared |
 | UART | PL011 left on, FIFO drained |
 | Framebuffer | Left on. Its address is in the boot info. |
@@ -44,17 +44,17 @@ CPU state at the jump between terminal stages:
 1. Masks IRQ and FIQ on the CPU.
 2. Disables FIQ routing and every IRQ source at the interrupt controller: pending 1, pending 2 and basic.
 3. Sets system timer compare channels 1 and 3, the channels the ARM side owns, to one tick before the current counter value, so they cannot match for about 71 minutes. Then it clears their match flags. The next stage takes no stale timer interrupt when it unmasks a timer source.
-4. Turns the MMU and D-cache off if they are on. Only on ARM1176 does it clean the D-cache first.
+4. If the MMU or D-cache is on and the image links `mmu_disable()`, which any image that uses `mmu.h` or `cache.h` does, it calls it. `mmu_disable()` cleans and invalidates the whole D-cache on every supported CPU, then turns the MMU, D-cache and I-cache off. Otherwise it turns the MMU and D-cache off, and cleans the D-cache first only on ARM1176.
 5. Invalidates the I-cache and the branch predictor.
 6. Jumps to `entry` in SVC mode with IRQ and FIQ masked and the registers below.
 
-The caller must call `robco_handoff()` with the MMU and D-cache off, or with the D-cache already cleaned to memory. On ARMv7 and later the function does not clean the D-cache, so an image that turned it on must clean it, by set and way or by address range over everything it wrote, before the call. The library never turns the MMU or D-cache on, so an image that uses only the library meets this contract. The caller drains the UART with `uart_flush()`.
+The caller may call `robco_handoff()` with the MMU and caches on or off when it turned them on with `mmu.h`. The next stage then starts with them off and every dirty line in memory. An image that turned the caches on by its own code, without linking `mmu.h` or `cache.h`, must clean them first on ARMv7 and later. The caller drains the UART with `uart_flush()`. The cache behaviour of the handoff is pending hardware validation.
 
 Pip-OS enters ROMs and holotapes differently, in USR mode. See [PIPOS_ABI.md](./PIPOS_ABI.md).
 
 ### BOOT.CFG
 
-`/ROBCO/BOOT.CFG` is INI text. This format is a draft.
+`/ROBCO/BOOT.CFG` is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), which parses this example as it stands, section names with a space included. `tests/host/test_ini.c` reads the example from this file. This format is a draft.
 
 ```
 [boot]
@@ -225,7 +225,7 @@ _Static_assert(sizeof(robco_bootinfo_t) == 320, "robco_bootinfo_t must be 320 by
 | 0 | Framebuffer valid |
 | 1 | PL011 initialised |
 | 2 | Mini UART initialised |
-| 3 | SD card initialised and FAT mounted |
+| 3 | SD card initialised |
 | 4 | Local interrupt controller at `0x40000000` present |
 | 5 to 31 | Reserved, 0 |
 
@@ -263,11 +263,13 @@ A stage passes on the state it did not set up itself. Hardware such as a framebu
 | `stage`, `board_rev`, `soc`, `periph_base`, `midr`, `mem_base`, `mem_size`, caps bit 4 | Always |
 | `fw_r0`, `fw_r1`, `fw_r2` | Cold boot only |
 | `fdt_addr`, `fdt_size` | The stage copied the firmware blob |
-| `uart_type`, `uart_clock`, `uart_baud`, caps bits 1 and 2 | The stage configured the UART |
+| `uart_type`, `uart_clock`, `uart_baud`, caps bit 1 | The stage configured the PL011 |
+| caps bit 2 | The stage initialised the mini UART |
+| caps bit 3 | The stage initialised the SD card |
 | `fb_*`, caps bit 0 | The stage called `fb_init()` |
 | `con_cols`, `con_rows`, `con_cx`, `con_cy`, `con_scheme` | The stage's console is active |
 | `boot_dev`, `boot_part_lba`, `boot_flags`, `boot_path`, `cmdline` | Cold boot only |
-| Other caps bits | Never |
+| Other caps bits | Never. They are reserved and 0. |
 
 A stage that sets up a new framebuffer without a console clears `con_cols`, `con_rows`, `con_cx` and `con_cy`, since the old console drew on the old framebuffer. It keeps `con_scheme`. A loader that picks a boot device writes the `boot_*` fields after `bootinfo_build()` and calls `bootinfo_seal()`. `bootinfo_merge()` in `src/lib/bootinfo.c` holds the rule.
 
@@ -307,9 +309,13 @@ value  = 1*( VCHAR except SP )
 Example:
 
 ```
-@RC stage=bios ev=load path=/ROBCO/MFBOOT.SYS size=81920
-@RC stage=bios ev=jump addr=0x00200000 next=bootagent
+@RC stage=bios ev=error code=crc path=/ROBCO/MFBOOT.SYS
+@RC stage=bios ev=fallback path=/ROBCO/MFBOOT.BAK from=/ROBCO/MFBOOT.SYS to=/ROBCO/MFBOOT.BAK reason=crc
+@RC stage=bios ev=load path=/ROBCO/MFBOOT.BAK size=81920 crc=0x1c291ca3 addr=0x00200000 name=mfboot
+@RC stage=bios ev=jump entry=0x00200000
 ```
+
+A marker may carry more keys than the table below lists, and a stage may print events the table does not list. Readers ignore keys and events they do not know.
 
 ### Events
 
@@ -317,12 +323,14 @@ Example:
 |---|---|---|
 | `boot` | `midr soc base board_rev mem entry_mode` | First marker of every image. `entry_mode` is the CPU mode at entry, such as `svc` or `hyp`. |
 | `handoff` | `trusted=0\|1` | Result of the trust rule. Not printed by first stages. |
-| `load` | `path size` | Loader opened an image |
-| `fallback` | `path` | Loader moves to a fallback file |
-| `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |
-| `jump` | `addr next` | Last line before entering the next stage |
+| `mount` | `lba blocks` | The stage mounted the FAT partition that holds the next image |
+| `load` | `path size crc addr name` | An image loaded and passed every validation step. `size` is `file_size`, `crc` the header CRC, `addr` the load address, `name` the header name. Without `path`, the image was already in its slot and the stage only validated it. |
+| `fallback` | `path from to reason` | The loader moves to the backup file `path`, the same as `to`. `from` is the primary file and `reason` the code it failed with. |
+| `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md), or `io` when the card or the mount failed. `path` names the file the attempt was for. Other failures use their own `code`, such as `mmu`, with no `path`. On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |
+| `jump` | `entry` | Last line before entering the next stage at `entry` |
 | `ready` | | Stage reached its main screen or prompt |
-| `shell` | `reason` | Stage entered its emergency shell |
+| `shell` | `reason` | Stage entered its emergency shell. `reason` is the `code` of the error that caused it. |
+| `halt` | | The stage stops on purpose |
 | `exception` | `type pc lr spsr dfsr dfar` | CPU exception. `type` is `undef`, `svc`, `prefetch_abort`, `data_abort`, `irq`, `fiq` or `reset`. The stage halts after it. |
 | `panic` | `msg` | Fatal software error. `msg` uses `_` for spaces. |
 | `holo_launch` | `path` | Pip-OS starts a holotape |
@@ -355,3 +363,5 @@ All stages emit `exception` and `panic` when those happen. Deitrix runs in USR m
 | Any | CPU exception in a stage | `ev=exception`, then halt |
 
 The emergency shell runs on the PL011 and on the screen console. It accepts at least `help`, `info` and `reboot`. `info` prints the boot info fields. `reboot` uses the watchdog.
+
+Each real stage provides its own emergency shell. RobCo-Core has none: `loader_load_fallback()` returns the result and prints nothing, and the stage decides what to print and where to go. `examples/chain1`, built with `CHAIN1_SD`, follows the RETROS-BIOS rows above for its markers. Where RETROS-BIOS would enter its shell, it prints `ev=shell` with the reason, then `ev=halt`, and halts.

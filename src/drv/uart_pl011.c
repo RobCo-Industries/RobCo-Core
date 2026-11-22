@@ -105,6 +105,9 @@ int uart_getc(void)
 {
     int c;
 
+    if (uart_base == 0) {
+        return -1;
+    }
     while ((c = uart_poll()) < 0) {
     }
     return c;

@@ -84,7 +84,7 @@ uint32_t bootinfo_fw_blob_size(const void *blob, uint32_t max)
     }
 }
 
-#define CAPS_UART   (ROBCO_CAP_PL011 | ROBCO_CAP_MINIUART)
+#define CAPS_UART   ROBCO_CAP_PL011
 #define CAPS_BOARD  ROBCO_CAP_LOCAL_INTC
 
 void bootinfo_merge(robco_bootinfo_t *out, const robco_bootinfo_t *prev,
@@ -121,6 +121,12 @@ void bootinfo_merge(robco_bootinfo_t *out, const robco_bootinfo_t *prev,
         m.uart_clock = own->uart_clock;
         m.uart_baud = own->uart_baud;
         m.caps = (m.caps & ~CAPS_UART) | (own->caps & CAPS_UART);
+    }
+    if (own_groups & BOOTINFO_OWN_MINIUART) {
+        m.caps = (m.caps & ~ROBCO_CAP_MINIUART) | (own->caps & ROBCO_CAP_MINIUART);
+    }
+    if (own_groups & BOOTINFO_OWN_SD) {
+        m.caps = (m.caps & ~ROBCO_CAP_SD) | (own->caps & ROBCO_CAP_SD);
     }
     if (own_groups & BOOTINFO_OWN_FB) {
         m.fb_addr = own->fb_addr;

@@ -1,16 +1,17 @@
 # Testing
 
-Every repo in the suite tests with the same harness from RobCo-Core. QEMU 10.1.2 runs the target tests. Real boards run a short checklist for what QEMU cannot model.
+Every repo in the suite tests with the same harness from RobCo-Core. QEMU 10.1.2 runs the target tests. Real boards run a short checklist for what QEMU cannot model. [HARDWARE_VALIDATION.md](../HARDWARE_VALIDATION.md) holds that checklist for every component.
 
 ## Layers
 
 | Layer | What runs | Where |
 |---|---|---|
-| 1. Host tests | C unit tests built for the host from the real sources: klibc, CRC, `rimg`, boot info, INI, allocator, console grid, FatFs over a file, game logic, UI layout, audio sequencer | `tests/host/` |
-| 2. Serial tests | Boot an image in QEMU and assert on `@RC` markers and text | `tests/target/` |
-| 3. Screen tests | Console cell grid dumped over the maintenance port, plus QMP `screendump` compared with golden images | `tests/target/`, `tests/golden/` |
-| 4. Input tests | Scripted key input over the serial input backend | `tests/target/` |
-| 5. Fault tests | Bad magic, bad CRC, truncated file, missing file, oversized file, crashing holotape | `tests/target/` |
+| 1. Host tests | C unit tests built for the host from the real sources: klibc, CRC, `rimg`, boot info, tick maths, allocator, partitions, FatFs over a file, input queue and decoders, audio notes and sequencer, date and time, INI. 18 files, about 180 tests. Later: game logic, UI layout. | `tests/host/` |
+| 2. Tool tests | pytest for the host tools, the Makefile, the docs checker, and the file system against mtools | `tests/tools/` |
+| 3. Serial tests | Boot an image in QEMU and assert on `@RC` markers and text. 14 files, each run on every board. | `tests/target/` |
+| 4. Screen tests | Console cell grid dumped over the UART, plus QMP `screendump` compared with golden images | `tests/target/`, `tests/golden/` |
+| 5. Input tests | Key input over the console backend on the PL011 and the script backend on the mini UART | `tests/target/test_input.py` |
+| 6. Fault tests | Bad magic, bad CRC, out-of-slot images, a missing next stage, an undefined instruction, MMU faults. Later: truncated file, oversized file, crashing holotape. | `tests/target/` |
 
 The harness is Python with pytest and Pillow in a venv. `tests/harness/` holds the shared code:
 
@@ -19,9 +20,9 @@ The harness is Python with pytest and Pillow in a venv. `tests/harness/` holds t
 | `qemu.py` | Starts QEMU headless, talks QMP, HMP and qtest, captures serial, kills QEMU on exit | Exists |
 | `boot.py` | `boot()`: boots a raw image the way the firmware does. Serial read and write, `@RC` marker parsing, screendumps. | Exists |
 | `sdimage.py` | Builds SD images and fault images from Python | Exists |
-| `expect.py` | Waits for `@RC` markers and text on a serial log | To be added |
+| `expect.py` | Waits for `@RC` markers and text on a serial log | To be added. `boot.py` covers it today. |
 | `screen.py` | PPM to PNG, golden compare | To be added |
-| `inputs.py` | Sends scripted keys over the serial backend | To be added |
+| `inputs.py` | Sends scripted keys over the serial backend | To be added. `test_input.py` sends the lines itself. |
 
 `tests/conftest.py` adds the `--board` option and the shared fixtures. `tests/fwstub/` holds the firmware stub.
 
@@ -66,11 +67,16 @@ qemu-system-arm -M raspi2b -display none -monitor none -no-user-config \
 
 The `-device loader` option with `force-raw=on` puts the image at `0x8000` byte for byte (V3).
 
-Chain tests add an SD card and assert on markers from every stage:
+Some tests attach more devices:
 
-```
--drive if=sd,format=raw,file=sd.img
-```
+| Test | Device | Arguments |
+|---|---|---|
+| `test_sdraw.py` | SD card image on the EMMC controller | `-drive if=sd,format=raw,file=sd.img` |
+| `test_input.py` | Mini UART as a second serial port | `boot(..., serial2=True)` |
+| `test_rtc.py` | DS1338 RTC model, DS1307 registers, on I2C bus 1 | `-device ds1338,bus=i2c-bus.1,address=0x68` |
+| `test_spi.py` | W25Q32 SPI flash on the SPI0 bus | `-device w25q32,bus=spi` |
+
+`test_rtc.py` and `test_spi.py` also boot once without the device, to check the absent case.
 
 ### raspi3b
 
@@ -105,10 +111,12 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 
 | Gap | Fact | Coverage |
 |---|---|---|
-| GPIO input | GPLEV0/1 read 0, input cannot be injected (V12) | Input logic runs through the serial input backend in layer 4. Pin reading runs on the hardware checklist. |
-| PWM audio | Not modelled. Reading PWM data-aborts on `raspi0` (V7). | Host tests for the sequencer. Drivers use `mmio_probe` and skip audio when it fails. Sound runs on the hardware checklist. |
+| GPIO input | GPLEV0/1 read 0, input cannot be injected (V12) | The input logic runs on the host and through the serial and script backends in layer 5. The GPIO backend's stuck-line guard turns it off in QEMU. Buttons and dials run on the hardware checklist. |
+| PWM audio | Not modelled. Reading PWM data-aborts on `raspi0` and `raspi1ap` (V7). On `raspi2b` and `raspi3b` writes are dropped. | Host tests for the notes and the sequencer. The audio driver probes PWM and falls back to the trace backend, which the target test checks. Sound runs on the hardware checklist. |
+| Real SPI signalling | QEMU ignores the rate, the mode and chip select. | `test_spi.py` checks the data path with the flash model. Rates, modes and chip select levels run on the hardware checklist. |
 | SPI TFT | No model | The display interface is the same for HDMI and TFT, so HDMI goldens cover drawing. The TFT runs on the hardware checklist. |
-| Cache and timing | QEMU does not model caches | Hardware checklist |
+| I2C timing | Every transfer finishes at once. No clock stretching. | The bus rate, timeouts and clock stretching run on the hardware checklist. |
+| Cache and timing | QEMU does not model caches, memory types or the SMP bit | `test_mmu.py` checks the map, the faults and that every component still works. Speed and coherence run on the hardware checklist. |
 | VC bus alias, SD routing on WiFi boards | QEMU does not match real firmware here | Pending hardware validation |
 
 ## Canary suite

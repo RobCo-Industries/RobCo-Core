@@ -154,6 +154,7 @@ Every macro the library reads, with its default when you leave it out:
 | `ROBCO_STACK_ABT_SIZE` | `0x1000` | `ld/image.ld.S` | Abort stack |
 | `ROBCO_STACK_UND_SIZE` | `0x1000` | `ld/image.ld.S` | Undefined instruction stack |
 | `ROBCO_SLOT_END` | Not set | `ld/image.ld.S` | End of the image's slot, such as `0x00100000` for an image at `0x8000`. The link fails if the image does not fit. |
+| `ROBCO_MBOX_BOUNCE_SIZE` | `256` | `mbox.h` | Bounce buffer of `mbox_call()` with the data cache on. A multiple of 64. |
 | `ROBCO_CONSOLE_MAX_COLS` | `100` | `console.h` | Screen console columns |
 | `ROBCO_CONSOLE_MAX_ROWS` | `40` | `console.h` | Screen console rows |
 | `ROBCO_FONT` | `ROBCO_FONT_FIXEDSYS` | `font.h` | Built-in console font: Fixedsys Excelsior, or `ROBCO_FONT_SPLEEN` for Spleen. See [FONTS.md](../FONTS.md). |
@@ -406,3 +407,17 @@ Connect a 3.3 V USB serial adapter. Never use a 5 V adapter.
 | 10 | GPIO15, RXD | TX |
 
 Open the adapter at 115200 baud, 8N1, no flow control, then power the Pi. On a Pi 3 or Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` muxes GPIO14 and GPIO15 to the PL011 itself, but whether that is enough is pending hardware validation, so start with a Pi Zero or Pi 1. The fallbacks are in [the UART policy](../spec/BOARD_SUPPORT.md#uart-policy).
+
+## Where to go next
+
+Each capability below has an example under `examples/` and a section in the API reference. Each example is also a target test, so you can boot it with the harness as you did with `hello-pi`.
+
+Read a file from the SD card. Call `sd_init()`, find the FAT partition with `part_scan()` and `part_open()`, mount it with `fs_mount()`, then read with `fs_read_file()` or `fs_open()` and `fs_read()`. See [examples/storage](../../examples/storage/main.c), which lists, reads and writes files, and [the storage reference](./api/storage.md#fat-file-system-fsh). `tools/mksdimage.sh` builds a card image to test with.
+
+Turn on the caches. Call `mmu_init()` and then `mmu_enable()` early in `robco_main()`. Software drawing runs faster with the data cache on, and every library component keeps working. See [examples/mmu](../../examples/mmu/main.c) and [the MMU reference](./api/memory.md#mmu-mmuh).
+
+Read buttons. Start the tick, call `input_init()`, register pins with `input_gpio_add_button()`, start the backend with `input_gpio_start()`, then read events with `input_wait()`. In QEMU, drive the same events over the serial line. See [examples/input](../../examples/input/main.c) and [the input reference](./api/input.md#input-events-inputh).
+
+Play a tone. Start the tick, call `audio_init()`, then `audio_beep()`, `audio_tone()` or `audio_play_rtttl()`. In QEMU the trace backend prints each tone as an `@RC` line. See [examples/audio](../../examples/audio/main.c) and [the audio reference](./api/audio.md#audio-audioh).
+
+Read the clock. Call `i2c_init(100000)` and `rtc_init()`, then `clock_get()`. Without an RTC module, set the software clock with `clock_set()`. See [examples/rtc](../../examples/rtc/main.c) and [the clock reference](./api/buses.md#real-time-clock-and-software-clock-rtch).

@@ -38,9 +38,13 @@ Peripheral offsets used by RobCo-Core, relative to the base:
 | `0x0000B880` | Mailbox |
 | `0x00100000` | Power management and watchdog |
 | `0x00200000` | GPIO |
+| `0x00101000` | Clock manager, PWM clock |
 | `0x00201000` | PL011 UART |
+| `0x00204000` | SPI0 |
+| `0x0020C000` | PWM |
 | `0x00215000` | AUX, mini UART |
 | `0x00300000` | EMMC |
+| `0x00804000` | BSC1, I2C |
 
 ## Board revision
 
@@ -90,7 +94,45 @@ On Pi 3 and Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` does not 
 - Use the mini UART as the console on that board. Its divisor depends on the core clock, which the firmware can change, so this needs a fixed core clock in `config.txt`.
 - Put the board's `.dtb` and the `disable-bt` overlay on the card and add `dtoverlay=disable-bt`. The firmware then passes a DTB in r2 instead of ATAGS. The library accepts both: `bootinfo_copy_fw_blob()` copies either one. This breaks the "no .dtb" rule, so the result goes into this file first.
 
-The mini UART is the second channel. Stages use it as the maintenance and test port. Its baud divisor comes from the core clock, clock id 4, which the firmware can change. That is why it is not the console. On hardware the mini UART pins on the 40-pin header are GPIO14/15, which the PL011 already uses. So on hardware the mini UART is not routed to any pin, and the maintenance port exists only in QEMU. In QEMU the second `-serial` option is the mini UART.
+The mini UART is the second channel. Stages use it as the maintenance and test port. Its baud divisor comes from the core clock, clock id 4, which the firmware can change. That is why it is not the console. On hardware the mini UART pins on the 40-pin header are GPIO14/15, which the PL011 already uses. So on hardware the mini UART is not routed to any pin, and the maintenance port exists only in QEMU. The input script backend uses it there. In QEMU the second `-serial` option is the mini UART.
+
+## Pins
+
+The library muxes these pins itself when you call the driver. It never touches a pin you do not use.
+
+| Pins | Function | Set by |
+|---|---|---|
+| GPIO 14, 15 | PL011 TXD, RXD at ALT0 | `uart_init()` |
+| GPIO 2, 3 | I2C SDA, SCL at ALT0. The board has fixed 1.8 kOhm pull-ups. | `i2c_init()` |
+| GPIO 7, 8, 9, 10, 11 | SPI0 CE1, CE0, MISO, MOSI, SCLK at ALT0 | `spi_init()` |
+| GPIO 34 to 39, 48 to 53 | SD card routing, see below | `sd_init()` |
+| Audio pins, per board below | PWM | `audio_init()` with the PWM backend |
+
+| Board | Audio channel 1 | Audio channel 2 |
+|---|---|---|
+| Pi Zero, Zero W, Zero 2 W | GPIO 18 at ALT5 | None, mono |
+| Pi 1, Pi 2 | GPIO 40 at ALT0 | GPIO 45 at ALT0 |
+| Pi 3 | GPIO 40 at ALT0 | GPIO 41 at ALT0 |
+
+The Zero is told apart from the board revision: a new-style code with type `0x09`, `0x0c` or `0x12`. `ROBCO_AUDIO_PIN0` and `audio_set_pins()` override the table.
+
+`uart_mini_init()` muxes no pin. The mini UART can only use GPIO 14 and 15 at ALT5 on the header, which the PL011 already holds.
+
+`examples/input/robco_config.h` uses this mapping. It is an example, not a library default. Each button ties its pin to ground and uses the internal pull-up.
+
+| Input | Pin | Input | Pin |
+|---|---|---|---|
+| UP | GPIO 5 | BACK | GPIO 27 |
+| DOWN | GPIO 6 | Dial A | GPIO 23 |
+| LEFT | GPIO 17 | Dial B | GPIO 24 |
+| RIGHT | GPIO 22 | Dial push | GPIO 16 |
+| SELECT | GPIO 26 | | |
+
+It avoids the pins above, GPIO 0 and 1 (ID EEPROM), GPIO 12 and 13 and GPIO 18 to 21.
+
+### SD card pin routing
+
+On boards with WiFi (Pi 3, Zero W, Zero 2 W) the firmware routes the card to the SDHOST controller on GPIO 48 to 53 and the EMMC controller to the WiFi chip on GPIO 34 to 39. `sd_init()` drives the card through EMMC. It sets GPIO 34 to 39 to input when any of them is at ALT3, and GPIO 48 to 53 to ALT3 when any of them is not. WiFi stops working after this. The routing is pending hardware validation on the Pi 3 and the Zero 2 W.
 
 ## config.txt
 

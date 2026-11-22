@@ -71,20 +71,14 @@ static const slot_t *find_slot(int kind, uint32_t subtype)
     return NULL;
 }
 
-int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
-                  const rimg_header_t **out)
+/* Steps 1 to 5 on the header at bytes[0x20..0x60). Sets *hdr on success. */
+static int check_header(const uint8_t *bytes, size_t avail, const rimg_expect_t *expect,
+                        const rimg_header_t **hdr)
 {
-    static const uint8_t zero[4];
-    const uint8_t *bytes = image;
-    const rimg_header_t *h;
+    const rimg_header_t *h = (const rimg_header_t *)(bytes + RIMG_HDR_OFFSET);
     const slot_t *slot;
-    uint32_t base, size, min_size, want_abi, crc;
+    uint32_t base, size, min_size, want_abi;
     int kind;
-
-    if (image == NULL || avail < RIMG_HDR_END) {
-        return RIMG_E_IO;
-    }
-    h = (const rimg_header_t *)(bytes + RIMG_HDR_OFFSET);
 
     /* 1. Magic. */
     kind = magic_kind(h->magic);
@@ -129,6 +123,36 @@ int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
     }
     if ((h->abi_version >> 16) != want_abi) {
         return RIMG_E_ABI;
+    }
+    *hdr = h;
+    return RIMG_OK;
+}
+
+int rimg_check_header(const void *head, size_t avail, const rimg_expect_t *expect)
+{
+    const rimg_header_t *h;
+
+    if (head == NULL || avail < RIMG_HDR_END) {
+        return RIMG_E_IO;
+    }
+    return check_header(head, avail, expect, &h);
+}
+
+int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
+                  const rimg_header_t **out)
+{
+    static const uint8_t zero[4];
+    const uint8_t *bytes = image;
+    const rimg_header_t *h;
+    uint32_t crc;
+    int rc;
+
+    if (image == NULL || avail < RIMG_HDR_END) {
+        return RIMG_E_IO;
+    }
+    rc = check_header(bytes, avail, expect, &h);
+    if (rc != RIMG_OK) {
+        return rc;
     }
 
     /* 6. CRC over [0, file_size) with the crc32 field read as zero. */

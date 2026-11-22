@@ -27,6 +27,12 @@
  */
 int tick_init(uint32_t hz);
 
+/*
+ * The rate tick_init() started, in Hz, or 0 when the tick does not run.
+ * The real rate can be a little higher: see tick_init().
+ */
+uint32_t tick_hz(void);
+
 /* Ticks since tick_init(). */
 uint32_t tick_count(void);
 

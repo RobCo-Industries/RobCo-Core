@@ -1,0 +1,3 @@
+# <build-dir> <extra cflags>
+build/fault_ro -DMMU_FAULT_RO=1
+build/fault_unmapped -DMMU_FAULT_UNMAPPED=1

@@ -25,13 +25,12 @@ struct robco_bootinfo;
  * the MMU and D-cache off. Registers: r0 = 0, r1 = the machine id saved at
  * entry, r2 = fdt_or_atags, r3 = bi. Flush the UART first.
  *
- * Cache contract: the caller must enter with the MMU and D-cache off, or
- * with every dirty line already cleaned to memory. The function turns the
- * MMU and D-cache off if they are on, but it cleans the D-cache only on
- * ARM1176. On ARMv7 and later it does not clean, so dirty lines, the boot
- * info block and the loaded image included, would be lost. The library
- * never turns the caches on, so images that use only the library meet
- * this contract.
+ * Cache contract: the next stage starts with the MMU, D-cache and I-cache
+ * off and every dirty line written to memory, whatever the caller had on.
+ * If the MMU or D-cache is on, the function calls mmu_disable(), which
+ * cleans and invalidates the whole D-cache on every supported CPU. An
+ * image that turned the caches on without mmu.h must clean them itself
+ * on ARMv7 and later: the fallback cleans only on ARM1176.
  */
 void robco_handoff(uint32_t entry, const struct robco_bootinfo *bi, uint32_t fdt_or_atags)
     __attribute__((noreturn));

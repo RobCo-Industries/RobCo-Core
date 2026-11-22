@@ -1,0 +1,2 @@
+# <build-dir> <extra cflags>
+build/pwm -DROBCO_AUDIO_BACKEND=1

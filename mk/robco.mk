@@ -10,6 +10,9 @@
 #
 # Optional: EXTRA_CFLAGS, CI=1 (adds -Werror), CROSS, PYTHON,
 # SLOT_END (end of the image's slot, overrides ROBCO_SLOT_END).
+# `make sdimage` writes $(BUILD)/sd.img from the tree in SDIMAGE_DIR, for
+# example one tools/mkbootdir.sh assembled, with tools/mksdimage.sh.
+# SDIMAGE_MIB sets the size, 64 by default.
 
 ifeq ($(strip $(ROBCO_CORE)),)
 $(error ROBCO_CORE is not set)
@@ -52,6 +55,13 @@ ROBCO_LDFLAGS := $(ROBCO_ARCHFLAGS) -nostdlib -T $(BUILD)/image.ld \
 ROBCO_SRCS := $(sort $(patsubst $(ROBCO_CORE)/src/%,%,\
               $(wildcard $(ROBCO_CORE)/src/*/*.c $(ROBCO_CORE)/src/*/*.S)))
 ROBCO_OBJS := $(addprefix $(BUILD)/robco/,$(addsuffix .o,$(basename $(ROBCO_SRCS))))
+# The file system layer: src/fs/ and the unmodified FatFs sources in
+# third_party/fatfs/, configured by src/fs/ffconf.h. Only these files get
+# the FatFs include paths and the <string.h> in src/fs/libc/.
+# ROBCO_FATFS_CFLAGS relaxes warnings for FatFs only.
+ROBCO_FS_CFLAGS := -I$(ROBCO_CORE)/src/fs -I$(ROBCO_CORE)/third_party/fatfs -I$(ROBCO_CORE)/src/fs/libc
+ROBCO_FATFS_CFLAGS :=
+ROBCO_OBJS += $(BUILD)/robco/fatfs/ff.o $(BUILD)/robco/fatfs/ffunicode.o
 # SLOT_END reaches the linker script as ROBCO_SLOT_END. robco_config.h
 # guards its own value with #ifndef, so SLOT_END wins.
 ROBCO_SLOT_DEF := $(if $(strip $(SLOT_END)),-DROBCO_SLOT_END=$(SLOT_END))
@@ -76,6 +86,15 @@ $(BUILD)/image.ld: $(ROBCO_CORE)/ld/image.ld.S $(CONFIG_H)
 	@mkdir -p $(dir $@)
 	$(CC) -E -P -undef -x c -DLINK_ADDR=$(LINK_ADDR) -include $(CONFIG_H) $(ROBCO_SLOT_DEF) -o $@ $<
 
+# Listed before the generic rule so GNU make 3.81 picks it too.
+$(BUILD)/robco/fs/%.o: $(ROBCO_CORE)/src/fs/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ROBCO_CFLAGS) $(ROBCO_FS_CFLAGS) -c -o $@ $<
+
+$(BUILD)/robco/fatfs/%.o: $(ROBCO_CORE)/third_party/fatfs/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ROBCO_CFLAGS) $(ROBCO_FS_CFLAGS) $(ROBCO_FATFS_CFLAGS) -c -o $@ $<
+
 $(BUILD)/robco/%.o: $(ROBCO_CORE)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(ROBCO_CFLAGS) -c -o $@ $<
@@ -94,5 +113,12 @@ $(BUILD)/obj/%.o: %.S
 
 clean:
 	rm -rf $(BUILD)
+
+SDIMAGE_MIB ?= 64
+.PHONY: sdimage
+sdimage:
+	$(if $(strip $(SDIMAGE_DIR)),,$(error SDIMAGE_DIR is not set))
+	@mkdir -p $(BUILD)
+	$(ROBCO_CORE)/tools/mksdimage.sh $(BUILD)/sd.img $(SDIMAGE_MIB) $(SDIMAGE_DIR)
 
 -include $(ROBCO_OBJS:.o=.d) $(PROJ_OBJS:.o=.d)
