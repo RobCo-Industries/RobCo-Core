@@ -234,8 +234,10 @@ class Vm:
         Stops the VM (QMP stop), reads the interrupt controller and system
         timer registers and one CPU0 sample, resumes it (cont), then
         samples CPU0's pc, lr, sp and CPSR 5 times, 100 ms apart, while it
-        runs. The VM is resumed even when a step fails. A VM that was
-        already stopped stays stopped, and the block says so. Resolves pc and lr
+        runs. The VM is resumed even when a step fails. It asks QEMU first
+        (query-status): a VM that was already stopped stays stopped, and
+        if QEMU does not answer, the dump sends no stop and no cont and
+        labels the run state unknown. The block says which. Resolves pc and lr
         to symbols when the image's ELF is known.
         Never raises. Each failed or late part becomes one "not collected"
         line and the rest is kept; "state dump failed" means nothing could
@@ -263,11 +265,19 @@ class Vm:
             return q.hmp(cmd, timeout=min(left, self.DUMP_READ_TIMEOUT))
 
         # Stop the VM so the device reads see the state that stalled it,
-        # unless it is already stopped (then leave it as it is).
+        # unless it is already stopped (then leave it as it is). Ask QEMU:
+        # the cached flag misses a STOP event that is not read yet. When
+        # QEMU does not answer, the state is unknown: no stop, no cont.
         pause = resume = None
-        running = getattr(q, "vm_running", None)
-        state = "unknown" if running is None else ("running" if running else "stopped")
-        if running and hasattr(q, "command"):
+        state = "unknown"
+        if hasattr(q, "command"):
+            try:
+                status = q.command("query-status", timeout=read_timeout())
+                q.vm_running = bool(status["running"])
+                state = "running" if q.vm_running else "stopped"
+            except Exception:  # noqa: BLE001 - the labels say "unknown"
+                pass
+        if state == "running":
             def pause():
                 q.command("stop", timeout=read_timeout())
 

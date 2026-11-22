@@ -234,12 +234,15 @@ with the serial log first, then a guest state block. The block reads
 CPU0 and the hardware over QMP, so it shows where the guest was when
 the test gave up. `vm.state_dump()` returns the same text on demand.
 
-The dump first stops the VM with QMP `stop`. It reads the interrupt
+The dump first asks QEMU for the run state with QMP `query-status`.
+If the VM runs, the dump stops it with QMP `stop`. It reads the interrupt
 controllers, the system timer and one CPU0 sample on the stopped VM,
 then resumes it with `cont`. It then takes five CPU0 samples while the
 VM runs, to see whether the guest still executes. The VM is resumed
 even when a read fails. A VM that was already stopped stays stopped
-and is read as it is. The block says how the device registers were
+and is read as it is. If `query-status` fails, the dump sends no
+`stop` and no `cont`, reads the VM as it is and labels the run state
+unknown. The block says how the device registers were
 read and whether the keep-alive was on.
 
 The dump has an 8 second budget. It reads the hardware first and looks
@@ -290,9 +293,10 @@ What each part holds:
   samples, and whether CPSR.I masked IRQs. Fixed registers mean "no"
   only when the VM ran. When it was stopped, or `cont` failed, or its
   state is unknown, the summary says "cannot be judged" and why.
-- `keep-alive`: `on` while the ping thread runs. `on (paused: VM stopped)` means pings resume when the VM runs again. `off (stopped: <reason>)` means the thread ended by itself, for example when QEMU exited or the QMP connection failed. See [QEMU keep-alive](#qemu-keep-alive).
+- `keep-alive`: `on` while the ping thread runs. `off (stopped: <reason>)` means the thread ended by itself, for example when QEMU exited or the QMP connection failed. See [QEMU keep-alive](#qemu-keep-alive).
 - `device registers`: read with the VM stopped by the dump, already
-  stopped, or running when the stop failed.
+  stopped, running when the stop failed, or with the run state unknown
+  when `query-status` failed.
 - `cpu0 at stop`: pc, lr, sp and CPSR of the stopped VM.
 - Five samples of pc, lr, sp and CPSR, 100 ms apart. Their heading
   says the run state: while running, of the stopped VM, after a failed
@@ -337,8 +341,15 @@ While a VM from `boot()` runs, the harness sends QMP `query-status`
 every 20 ms from a background thread. It covers every wait: `wait_for`,
 `script`, `wait_event` and plain sleeps in a test. One lock holds each
 QMP command and its reply, so the thread and the test never read each
-other's replies. Pings pause while the VM is stopped and end when the
-VM closes.
+other's replies. A thread that holds the lock and waits on the socket
+sends the due pings itself and drops their replies by id. So a long
+`wait_event` or a slow command does not delay them. Pings go on while
+the VM is stopped, since `query-status` changes nothing. They end when
+the VM closes.
+
+The gap between two pings stays near 20 ms. It grows only when 8 pings
+sent during one wait are still unanswered, which means QEMU's main loop
+is busy with the monitor, so the stall below cannot occur.
 
 Why it exists. On the GitHub Linux runner, with QEMU 10.1 on `raspi0`
 and `raspi1ap` (ARM1176, one core), a Pip-OS boot sometimes stalled

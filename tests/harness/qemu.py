@@ -8,6 +8,7 @@ Usage:
 
 import json
 import os
+import select
 import shutil
 import signal
 import socket
@@ -16,11 +17,14 @@ import tempfile
 import threading
 import time
 
-# Keep-alive: a harmless QMP command at a fixed interval while the VM runs.
+# Keep-alive: a harmless QMP command at a fixed interval.
 # See tests/README.md, "QEMU keep-alive".
 KEEPALIVE_ENV = "ROBCO_QEMU_KEEPALIVE"
 KEEPALIVE_INTERVAL = 0.02
 KEEPALIVE_TIMEOUT = 1.0
+# Pings a reader sends without waiting for their replies. Past this many
+# unanswered ones, QEMU is busy with the monitor and more add nothing.
+KEEPALIVE_MAX_UNANSWERED = 8
 
 
 def keepalive_default():
@@ -68,10 +72,17 @@ class Qemu:
         self._qmp_seq = 0
         # One lock serialises every QMP exchange: a command and its reply,
         # or one read in wait_event(). The keep-alive thread takes it too.
+        # Whoever holds it and waits on the socket sends the due pings.
         self._qmp_lock = threading.RLock()
-        self.vm_running = False  # set by stop/cont and the STOP/RESUME events
+        # Last known run state: stop/cont, STOP/RESUME events, query-status.
+        # A cache only: an unread event can make it stale.
+        self.vm_running = False
         self.keepalive_pings = 0  # pings sent since the last start_keepalive()
         self._ka_thread = None
+        self._ka_interval = KEEPALIVE_INTERVAL
+        self._ka_next = 0.0  # monotonic time the next ping is due
+        self._ka_seq = 0
+        self._ka_unanswered = 0  # pings sent by a reader, reply not read yet
         self._ka_stop = threading.Event()  # one per thread, replaced on start
         self._ka_reason = None  # why the last thread ended by itself, or None
         self._qt = self._qt_file = None
@@ -225,18 +236,25 @@ class Qemu:
     # -- keep-alive ------------------------------------------------------
 
     def start_keepalive(self, interval=KEEPALIVE_INTERVAL):
-        """Send query-status every `interval` seconds while the VM runs.
+        """Send query-status every `interval` seconds.
 
-        Runs on a daemon thread until stop_keepalive() or close(). Pings
-        pause while the VM is stopped and end when QEMU exits or the QMP
-        connection fails. Replies are matched by id like any command.
-        Does nothing while a keep-alive is already on. Resets the ping count.
+        Runs until stop_keepalive() or close(), and ends when QEMU exits
+        or the QMP connection fails. Pings go on while the VM is stopped:
+        query-status changes nothing. While another thread holds the QMP
+        lock and waits on the socket, that thread sends the due pings and
+        drops their replies by id, so a long command or wait_event() does
+        not delay them. Does nothing while a keep-alive is already on.
+        Resets the ping count.
         """
         if self.keepalive_on or self._qmp is None:
             return
         self.stop_keepalive()  # reap a thread that ended by itself
         stop = self._ka_stop = threading.Event()
-        self.keepalive_pings = 0
+        with self._qmp_lock:
+            self.keepalive_pings = 0
+            self._ka_unanswered = 0
+            self._ka_interval = interval
+            self._ka_next = time.monotonic() + interval
         self._ka_reason = None
         self._ka_thread = threading.Thread(target=self._keepalive_loop, args=(interval, stop),
                                            name="qmp-keepalive", daemon=True)
@@ -258,29 +276,33 @@ class Qemu:
     def keepalive_status(self):
         """The keep-alive state for the dump, from what the thread does now.
 
-        `on`, `on (paused: VM stopped)` when pings wait for the VM to run
-        again, `off`, or `off (stopped: <reason>)` when the thread ended
+        `on`, `off`, or `off (stopped: <reason>)` when the thread ended
         by itself.
         """
         if self.keepalive_on:
-            return "on" if self.vm_running else "on (paused: VM stopped)"
+            return "on"
         reason = self._ka_reason
         return f"off (stopped: {reason})" if reason else "off"
 
     def _keepalive_loop(self, interval, stop):
         try:
-            while not stop.wait(interval):
+            while not stop.wait(max(0.0, self._ka_next - time.monotonic())):
                 if self.proc is not None and self.proc.poll() is not None:
                     self._ka_reason = f"QEMU exited ({self.proc.returncode})"
                     return
                 try:
-                    with self._qmp_lock:  # the flag is checked and used in one hold
+                    with self._qmp_lock:
                         if stop.is_set():
                             return
-                        if not self.vm_running:
-                            continue
-                        self.command("query-status", timeout=KEEPALIVE_TIMEOUT)
+                        if time.monotonic() < self._ka_next:
+                            continue  # a reader sent it while we waited for the lock
+                        self._ka_next = time.monotonic() + interval
                         self.keepalive_pings += 1
+                        # Reads until its own reply, so it also drains the
+                        # replies to pings a reader sent.
+                        self.command("query-status", timeout=KEEPALIVE_TIMEOUT)
+                        # QEMU answers in order: earlier pings got theirs.
+                        self._ka_unanswered = 0
                 except socket.timeout:
                     continue  # the late reply is dropped by its id
         except Exception as e:  # noqa: BLE001 - the reason goes to the dump
@@ -290,19 +312,51 @@ class Qemu:
 
     # -- QMP / HMP -------------------------------------------------------
 
+    def _ping_due_in(self):
+        """Seconds until a reader should send a ping, or None for no ping."""
+        if not self.keepalive_on or self._ka_unanswered >= KEEPALIVE_MAX_UNANSWERED:
+            return None
+        return self._ka_next - time.monotonic()
+
+    def _send_ping(self):
+        """Send a keep-alive ping without waiting. Its reply is dropped by id."""
+        self._ka_seq += 1
+        self._ka_next = time.monotonic() + self._ka_interval
+        self._ka_unanswered += 1
+        self.keepalive_pings += 1
+        self._qmp.sendall(json.dumps({"execute": "query-status",
+                                      "id": f"ka-{self._ka_seq}"}).encode() + b"\n")
+
     def _qmp_read(self):
         """Read one QMP message. Raises socket.timeout and keeps partial input.
 
-        Reads the socket directly and buffers bytes past the line, so a
-        timeout loses nothing and the connection stays usable.
+        The socket timeout bounds the whole read. Reads the socket directly
+        and buffers bytes past the line, so a timeout loses nothing and the
+        connection stays usable. Sends keep-alive pings when they are due
+        while it waits, so a long wait does not delay them.
         """
+        timeout = self._qmp.gettimeout()
+        deadline = None if timeout is None else time.monotonic() + timeout
         while b"\n" not in self._qmp_buf:
+            due = self._ping_due_in()
+            if due is not None and due <= 0:
+                self._send_ping()
+                continue
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and left <= 0:
+                raise socket.timeout("timed out")
+            waits = [w for w in (left, due) if w is not None]
+            ready, _, _ = select.select([self._qmp], [], [], min(waits) if waits else None)
+            if not ready:
+                continue
             chunk = self._qmp.recv(65536)
             if not chunk:
                 raise QemuError("QMP connection closed: " + self.stderr())
             self._qmp_buf += chunk
         line, _, self._qmp_buf = self._qmp_buf.partition(b"\n")
         msg = json.loads(line)
+        if str(msg.get("id", "")).startswith("ka-") and self._ka_unanswered:
+            self._ka_unanswered -= 1
         if msg.get("event") == "STOP":
             self.vm_running = False
         elif msg.get("event") == "RESUME":
@@ -369,7 +423,8 @@ class Qemu:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise QemuError(f"no {name} event within {timeout}s")
-                # Short reads, so the keep-alive thread gets the lock between them.
+                # Short reads let other callers in. Pings do not need it:
+                # _qmp_read() sends them while it waits.
                 self._qmp.settimeout(min(left, 0.05))
                 try:
                     resp = self._qmp_read()
