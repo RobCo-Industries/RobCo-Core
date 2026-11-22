@@ -16,7 +16,8 @@ static inline uint32_t mmio_read(uint32_t addr)
 /*
  * Reads a 32-bit register that may not exist.
  * Returns 0 and stores the value on success, non-zero if the read
- * took a data abort. Synchronous aborts only.
+ * took a data abort. Synchronous aborts only. With the MMU on, an
+ * unmapped address gives a translation fault, which also reports here.
  * Not reentrant: one flag records the fault. IRQs are masked during the
  * probe, so a probe in an IRQ handler cannot run inside one in the main
  * flow. Do not probe from an abort handler.
