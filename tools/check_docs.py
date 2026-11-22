@@ -7,7 +7,8 @@ Fails (exit 1) when:
   - a relative link or image in a tracked .md file does not resolve,
     including #anchor targets, using GitHub's heading anchors;
   - a function declared in include/robco/*.h is missing from
-    docs/guide/API.md, or API.md declares a function no header has;
+    docs/guide/API.md and docs/guide/api/*.md, or one of them declares
+    a function no header has (docs/guide/pending/ does not count);
   - a fenced block after <!-- check: runs --> in
     docs/guide/GETTING_STARTED.md fails when run from the root;
   - a tracked .md file contains an em dash, an emoji or a banned word.
@@ -24,6 +25,8 @@ import unicodedata
 from urllib.parse import unquote
 
 API_MD = "docs/guide/API.md"
+# Topic files of the API reference. docs/guide/pending/ does not count.
+API_DIR = "docs/guide/api"
 GUIDE_MD = "docs/guide/GETTING_STARTED.md"
 HEADER_DIR = "include/robco"
 
@@ -225,18 +228,30 @@ def api_functions(text):
     return declared_functions("\n".join(code), inline_bodies=True)
 
 
+def api_files(root):
+    """API.md, then the topic files in docs/guide/api/, relative to root."""
+    files = [API_MD]
+    d = os.path.join(root, API_DIR)
+    if os.path.isdir(d):
+        files += [f"{API_DIR}/{n}" for n in sorted(os.listdir(d)) if n.endswith(".md")]
+    return files
+
+
 def check_api(root):
-    api_path = os.path.join(root, API_MD)
-    if not os.path.exists(api_path):
+    if not os.path.exists(os.path.join(root, API_MD)):
         return [f"{API_MD}: missing"]
-    with open(api_path, encoding="utf-8") as f:
-        documented = api_functions(f.read())
+    documented = set()
+    errors = []
     declared = header_functions(root)
-    errors = [f"{API_MD}: {n}() is declared in {HEADER_DIR} but not documented"
-              for n in sorted(declared - documented - IGNORE_FUNCTIONS)]
-    errors += [f"{API_MD}: {n}() is documented but no header declares it"
-               for n in sorted(documented - declared)]
-    return errors
+    for rel in api_files(root):
+        with open(os.path.join(root, rel), encoding="utf-8") as f:
+            names = api_functions(f.read())
+        documented |= names
+        errors += [f"{rel}: {n}() is documented but no header declares it"
+                   for n in sorted(names - declared)]
+    missing = [f"{API_MD}: {n}() is declared in {HEADER_DIR} but not documented"
+               for n in sorted(declared - documented - IGNORE_FUNCTIONS)]
+    return missing + errors
 
 
 def marked_commands(text):

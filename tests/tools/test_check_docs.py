@@ -152,3 +152,18 @@ def test_main_reports_failures(tmp_path, capsys):
     root = make_tree(tmp_path, files={"README.md": "[x](gone.md)\n"})
     assert check_docs.main(["--root", root, "--no-commands"]) == 1
     assert "gone.md" in capsys.readouterr().err
+
+
+def test_api_topic_files_count(tmp_path):
+    api = API.replace("int demo_init(unsigned flags);\n", "")
+    topic = "# Topic\n\n```c\nint demo_init(unsigned flags);\nint demo_gone(void);\n```\n"
+    pending = "# Pending\n\n```c\nvoid demo_long(unsigned a, unsigned b);\n```\n"
+    root = make_tree(tmp_path, api=api.replace("void demo_long(unsigned a,\n"
+                                               "               unsigned b) __attribute__((noreturn));\n", ""),
+                     files={"docs/guide/api/topic.md": topic,
+                            "docs/guide/pending/later.md": pending})
+    errors = check_docs.check_api(root)
+    assert errors == [
+        f"{check_docs.API_MD}: demo_long() is declared in include/robco but not documented",
+        "docs/guide/api/topic.md: demo_gone() is documented but no header declares it",
+    ]
