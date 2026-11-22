@@ -2,7 +2,8 @@
 
 The harness places chain2 at 0x00200000 with a QEMU loader device. Fault
 cases patch a temp copy of chain2 and reseal it where the case needs a
-valid CRC.
+valid CRC. The sd variant of chain1 loads chain2 from an SD card image
+instead, with the MFBootAgent file names and fallback from BOOT_PROTOCOL.md.
 """
 
 import re
@@ -13,6 +14,7 @@ import zlib
 import pytest
 
 from harness.boot import boot
+from harness.sdimage import PART_LBA, make_sd_image
 
 NEXT_ADDR = 0x00200000
 CRC_OFFSET = 0x3C
@@ -209,6 +211,8 @@ def test_chain_handoff_quiets_timer(board, example_image):
         vm.wait_for(READY, timeout=60)
         t1 = one(vm, "chain1", "tick")
         assert int(t1["ticks"]) >= 20, vm.serial
+        # tick_hz(): 0 before tick_init(), then the rate it started.
+        assert (t1["hz0"], t1["hz"]) == ("0", "1000"), vm.serial
         # Both channels matched before the handoff.
         assert (t1["cs1"], t1["cs3"]) == ("1", "1"), vm.serial
         t2 = one(vm, "chain2", "tick")
@@ -220,3 +224,137 @@ def test_chain_handoff_quiets_timer(board, example_image):
         assert elapsed >= 200_000, vm.serial
         assert 1 <= int(t2["ticks"]) <= elapsed // 10_000 + 1, vm.serial
         assert not events(vm, "chain2", "exception"), vm.serial
+
+
+# Loading from the SD card: chain1 built with CHAIN1_SD=1.
+PRIMARY = "/ROBCO/MFBOOT.SYS"
+BACKUP = "/ROBCO/MFBOOT.BAK"
+BOOT_FALLBACK = 1 << 0
+CAP_SD = 1 << 3
+BOOT_DEV_EMMC = 1
+SHELL = re.compile(r"@RC stage=chain1 ev=shell .*\n")
+
+
+def sd_chain1(example_image):
+    return example_image("chain1", "sd", "-DCHAIN1_SD=1")
+
+
+def card(tmp_path, files):
+    sd = tmp_path / "sd.img"
+    make_sd_image(sd, 16, {k.lstrip("/"): v for k, v in files.items()})
+    return sd
+
+
+def header(path):
+    data = open(path, "rb").read()
+    return len(data), struct.unpack_from("<I", data, 0x3C)[0]
+
+
+def sd_boot_ok(board, example_image, sd, loaded, src):
+    """Boots to chain2 from `sd` and checks markers for `loaded` (from file `src`)."""
+    size, crc = header(src)
+    with boot(sd_chain1(example_image), board, sd=sd) as vm:
+        vm.wait_for(READY, timeout=60)
+        load = one(vm, "chain1", "load")
+        assert load["path"] == loaded, vm.serial
+        assert load["size"] == str(size)
+        assert load["crc"] == f"{crc:#010x}"
+        assert load["addr"] == "0x00200000"
+        assert one(vm, "chain1", "jump")["entry"] == "0x00200000"
+        assert one(vm, "chain2", "handoff")["trusted"] == "1"
+        info = one(vm, "chain2", "bootinfo")
+        assert info["inherited"] == "1"
+        assert info["prev_stage"] == str(STAGE_BIOS)
+        assert info["path"] == loaded
+        assert info["dev"] == str(BOOT_DEV_EMMC)
+        assert info["part_lba"] == str(PART_LBA)
+        assert int(info["caps"], 16) & CAP_SD, vm.serial
+        assert not events(vm, "chain2", "error"), vm.serial
+        return vm, int(info["flags"], 16)
+
+
+def sd_fail(board, example_image, sd):
+    """Boots chain1 from `sd`, expects the shell and a halt with no jump. Returns the markers."""
+    with boot(sd_chain1(example_image), board, sd=sd) as vm:
+        vm.wait_for(HALT, timeout=60)
+        assert not events(vm, "chain1", "jump"), vm.serial
+        assert not events(vm, "chain2", "boot"), vm.serial
+        assert len(events(vm, "chain1", "shell")) == 1, vm.serial
+        return vm.markers()
+
+
+def chain1_events(markers, name):
+    return [m for m in markers if m.get("stage") == "chain1" and m.get("ev") == name]
+
+
+def test_chain_sd_primary(board, example_image, chain2, need_mtools, tmp_path):
+    sd = card(tmp_path, {PRIMARY: chain2})
+    vm, flags = sd_boot_ok(board, example_image, sd, PRIMARY, chain2)
+    assert not flags & BOOT_FALLBACK
+    assert flags & BOOT_COLD
+
+
+def test_chain_sd_backup_when_primary_missing(board, example_image, chain2, need_mtools,
+                                              tmp_path):
+    sd = card(tmp_path, {BACKUP: chain2})
+    with boot(sd_chain1(example_image), board, sd=sd) as vm:
+        vm.wait_for(READY, timeout=60)
+        fb = one(vm, "chain1", "fallback")
+        assert (fb["from"], fb["to"], fb["reason"]) == (PRIMARY, BACKUP, "nofile")
+        err = one(vm, "chain1", "error")
+        assert (err["code"], err["path"]) == ("nofile", PRIMARY)
+        assert one(vm, "chain1", "load")["path"] == BACKUP
+        info = one(vm, "chain2", "bootinfo")
+        assert info["path"] == BACKUP
+        assert int(info["flags"], 16) & BOOT_FALLBACK
+    # Order: error, fallback, load, jump.
+    names = [m["ev"] for m in vm.markers() if m.get("stage") == "chain1"]
+    assert names.index("error") < names.index("fallback") < names.index("load") < names.index("jump")
+
+
+def test_chain_sd_backup_when_primary_corrupt(board, example_image, chain2, need_mtools,
+                                              tmp_path):
+    data = bytearray(open(chain2, "rb").read())
+    data[0x80] ^= 0x01
+    bad = tmp_path / "bad.img"
+    bad.write_bytes(data)
+    sd = card(tmp_path, {PRIMARY: bad, BACKUP: chain2})
+    with boot(sd_chain1(example_image), board, sd=sd) as vm:
+        vm.wait_for(READY, timeout=60)
+        fb = one(vm, "chain1", "fallback")
+        assert fb["reason"] == "crc", vm.serial
+        assert one(vm, "chain1", "load")["path"] == BACKUP
+        assert one(vm, "chain2", "bootinfo")["path"] == BACKUP
+
+
+def test_chain_sd_both_missing(board, example_image, need_mtools, tmp_path):
+    sd = card(tmp_path, {"ROBCO/": b""})
+    markers = sd_fail(board, example_image, sd)
+    errors = chain1_events(markers, "error")
+    assert [(e["code"], e["path"]) for e in errors] == [("nofile", PRIMARY), ("nofile", BACKUP)]
+    assert chain1_events(markers, "fallback")[0]["reason"] == "nofile"
+    assert chain1_events(markers, "shell")[0]["reason"] == "nofile"
+    assert not chain1_events(markers, "load")
+
+
+def test_chain_sd_wrong_slot(board, example_image, chain2, need_mtools, tmp_path):
+    """chain2 resealed for the OS slot: rejected at the bounds step, before any jump."""
+    with open(chain2, "rb") as f:
+        data = bytearray(f.read())
+    struct.pack_into("<I", data, 0x30, 0x00400000)
+    struct.pack_into("<I", data, 0x48, 0)  # RIMG_BOOT_UOS
+    wrong = tmp_path / "wrong.img"
+    wrong.write_bytes(reseal(data))
+    sd = card(tmp_path, {PRIMARY: wrong, BACKUP: wrong})
+    markers = sd_fail(board, example_image, sd)
+    assert [e["code"] for e in chain1_events(markers, "error")] == ["bounds", "bounds"]
+    assert chain1_events(markers, "fallback")[0]["reason"] == "bounds"
+
+
+def test_chain_sd_no_card(board, example_image):
+    with boot(sd_chain1(example_image), board) as vm:
+        vm.wait_for(HALT, timeout=60)
+        err = one(vm, "chain1", "error")
+        assert (err["code"], err["what"]) == ("io", "sd"), vm.serial
+        assert one(vm, "chain1", "shell")["reason"] == "io"
+        assert not events(vm, "chain1", "jump"), vm.serial
