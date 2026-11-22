@@ -158,3 +158,30 @@ def test_git_cross_check_warns(tmp_path):
     r = run(proj, "good.yml", env)
     assert r.returncode == 0, r.stderr
     assert f"the project records {'3' * 40}" in r.stderr
+
+
+@pytest.mark.parametrize("fixture", ["flow.yml", "flow-quoted.yml"])
+def test_good_single_line_flow_mapping(tmp_path, no_git, fixture):
+    r = run(make_project(tmp_path), fixture, no_git)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == f"check-pins: ok ({COMMIT}, {TAG})"
+
+
+def test_stale_tag_in_flow_mapping(tmp_path, no_git):
+    r = run(make_project(tmp_path), "flow-stale-tag.yml", no_git)
+    assert r.returncode == 1
+    assert f"job ci uses image-tag 000000000000, external/robco-core/ci/IMAGE_TAG is {TAG}" in r.stderr
+
+
+@pytest.mark.parametrize("fixture, line, why", [
+    ("flow-multiline.yml", 8, "a flow mapping that spans several lines"),
+    ("anchor.yml", 6, "an anchor or alias"),
+])
+def test_unsupported_yaml_is_named(tmp_path, no_git, fixture, line, why):
+    """YAML the scan cannot read fails with its line, never ok or missing."""
+    r = run(make_project(tmp_path), fixture, no_git)
+    assert r.returncode == 1
+    assert (f"check-pins: .github/workflows/ci.yml:{line}: cannot read {why}; "
+            "this script supports block mappings and single-line flow mappings only") in r.stderr
+    assert "sets no image-tag" not in r.stderr and "ok" not in r.stdout
+    assert "has no job" not in r.stderr

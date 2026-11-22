@@ -1,0 +1,9 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  ci:
+    uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@1111111111111111111111111111111111111111
+    with: {test-targets: test,
+           image-tag: abc123def456}

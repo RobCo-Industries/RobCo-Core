@@ -23,7 +23,9 @@
 #
 # It checks every job that calls this workflow: each one needs the commit
 # in its uses: line and the tag in its own with: image-tag. It needs
-# python3 and no YAML library.
+# python3 and no YAML library. It reads block mappings and a with: flow
+# mapping on one line. On other YAML there, such as anchors or a flow
+# mapping over several lines, it stops and names the line.
 #
 # Permissions: the caller must grant contents: read and packages: read,
 # at the workflow or job level.

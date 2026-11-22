@@ -414,7 +414,7 @@ Both values are copies, so they drift when you move the submodule. `tools/check_
 robco-core/tools/check_pins.sh .github/workflows/ci.yml
 ```
 
-It prints `check-pins: ok (<commit>, <tag>)`, or names each value that differs and exits 1. It reads the commit from the submodule's git files, so it also works in the CI container, where git refuses a checkout owned by another user. It checks each job that calls `robco-ci.yml`, and each one needs its own `image-tag` in its `with:` block. It needs `python3`, which the CI image has. Add it to `make test` so CI runs it too.
+It prints `check-pins: ok (<commit>, <tag>)`, or names each value that differs and exits 1. It reads the commit from the submodule's git files, so it also works in the CI container, where git refuses a checkout owned by another user. It checks each job that calls `robco-ci.yml`, and each one needs its own `image-tag` in its `with:` block. It is not a full YAML parser: it reads block mappings and a `with:` flow mapping on one line, such as `with: {image-tag: <tag>}`. On anchors, aliases, `<<:` merges, block scalars, tab indents, a flow mapping over several lines or a `with:` given through an expression, it stops and names the line. It needs `python3`, which the CI image has. Add it to `make test` so CI runs it too.
 
 The inputs are documented at the top of [robco-ci.yml](../../.github/workflows/robco-ci.yml).
 

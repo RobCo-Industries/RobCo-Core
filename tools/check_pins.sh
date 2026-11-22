@@ -13,7 +13,13 @@
 # the commit the project records, and warns if not.
 # It reads the workflow per job: each job that calls robco-ci.yml must
 # carry both pins, in its own uses: and its own with: image-tag. The
-# scan needs python3, standard library only.
+# scan needs python3, standard library only. It is not a YAML parser:
+# it reads block mappings and with: as a flow mapping on one line, such
+# as with: {image-tag: abc, x: "y"}, with quoted or bare values. Under
+# jobs:, it stops with an error naming the line on what it cannot read:
+# tabs in the indentation, anchors and aliases, <<: merge keys, block
+# scalars in uses: or image-tag, a flow mapping over several lines, or
+# with: given through an expression.
 # Exits 0 when both pins match, 1 when one differs, 2 on bad usage.
 set -euo pipefail
 
@@ -90,71 +96,165 @@ fi
 # It prints one line per job that calls robco-ci.yml:
 # "<job> <commit> <image-tag or ->".
 command -v python3 >/dev/null 2>&1 || die "python3 is required to read $workflow"
+set +e
 calls=$(python3 - "$workflow" <<'PY'
 import re
 import sys
 
 USES = re.compile(r"[^/\s]+/RobCo-Core/\.github/workflows/robco-ci\.yml@(\S*)$")
+KEY = re.compile(r"([A-Za-z0-9_.<-]+|\"[^\"]*\"|'[^']*')\s*:(\s|$)(.*)$")
+
+
+class Unsupported(Exception):
+    pass
+
+
+def strip_comment(text):
+    """The text before a " #" comment that is outside quotes."""
+    quote = None
+    for i, c in enumerate(text):
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (i == 0 or text[i - 1] in " \t"):
+            return text[:i].strip()
+    return text.strip()
 
 
 def value(text):
     """A scalar without its quotes or its trailing comment."""
-    text = text.strip()
+    text = strip_comment(text)
     if text[:1] in ("'", '"'):
-        end = text.find(text[0], 1)
-        return text[1:end] if end > 0 else text[1:]
-    return re.split(r"\s#", text, maxsplit=1)[0].strip()
+        if len(text) < 2 or text[-1] != text[0]:
+            raise Unsupported("an unclosed quoted value")
+        return text[1:-1]
+    if text[:1] in ("&", "*"):
+        raise Unsupported("an anchor or alias")
+    if text[:1] in ("|", ">"):
+        raise Unsupported("a block scalar")
+    if text[:1] in ("{", "["):
+        raise Unsupported("a nested flow collection")
+    return text
+
+
+def flow_mapping(text):
+    """{key: value, ...} on one line, scalar values only."""
+    text = strip_comment(text)
+    if not text.endswith("}"):
+        raise Unsupported("a flow mapping that spans several lines")
+    parts, quote, cur = [], None, ""
+    for c in text[1:-1]:
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c in "{}[]":
+            raise Unsupported("a nested flow collection")
+        elif c == ",":
+            parts.append(cur)
+            cur = ""
+            continue
+        cur += c
+    if quote:
+        raise Unsupported("an unclosed quoted value")
+    parts.append(cur)
+    out = {}
+    for part in parts:
+        if not part.strip():
+            continue
+        m = KEY.match(part.strip())
+        if not m:
+            raise Unsupported("a flow mapping entry that is not key: value")
+        out[m.group(1).strip("\"'")] = value(m.group(3))
+    return out
 
 
 def entries(lines):
-    """(indent, key, rest) for each line, blank and comment lines skipped."""
-    for raw in lines:
+    """(line number, indent, key, rest) for each line, blank and comment lines skipped."""
+    for n, raw in enumerate(lines, 1):
         line = raw.rstrip("\r\n").rstrip()
         stripped = line.lstrip(" ")
         if not stripped or stripped.startswith("#"):
             continue
-        m = re.match(r"([A-Za-z0-9_.-]+|\"[^\"]*\"|'[^']*'):(\s|$)(.*)$", stripped)
+        if stripped[0] == "\t":
+            yield n, None, "\t", ""
+            continue
+        m = KEY.match(stripped)
         if m:
-            yield len(line) - len(stripped), m.group(1).strip("\"'"), m.group(3)
+            yield n, len(line) - len(stripped), m.group(1).strip("\"'"), m.group(3)
         else:
-            yield len(line) - len(stripped), None, ""
+            yield n, len(line) - len(stripped), None, stripped
+
+
+def scan(items):
+    in_jobs = False
+    job_indent = None
+    job = None
+    with_indent = None
+    calls = {}
+    for n, indent, key, rest in items:
+        if not in_jobs:
+            in_jobs = indent == 0 and key == "jobs"
+            continue
+        if indent == 0:
+            break
+        try:
+            if key == "\t":
+                raise Unsupported("a tab in the indentation")
+            if key == "<<":
+                raise Unsupported("a <<: merge key")
+            r = strip_comment(rest)
+            if r[:1] in ("&", "*") or key is None and re.match(r"-?\s*[&*]", r):
+                raise Unsupported("an anchor or alias")
+            if job_indent is None:
+                job_indent = indent
+            if indent <= job_indent:
+                if r:
+                    raise Unsupported("a job that is not a block mapping")
+                job, with_indent = key, None
+                continue
+            if with_indent is not None and indent > with_indent:
+                if key == "image-tag":
+                    calls.setdefault(job, [None, None])[1] = value(rest)
+                continue
+            with_indent = None
+            if key == "uses":
+                m = USES.match(value(rest))
+                if m:
+                    calls.setdefault(job, [None, None])[0] = m.group(1)
+            elif key == "with":
+                if not r:
+                    with_indent = indent
+                elif r.startswith("{"):
+                    tag = flow_mapping(rest).get("image-tag")
+                    if tag is not None:
+                        calls.setdefault(job, [None, None])[1] = tag
+                elif r.startswith("${{"):
+                    raise Unsupported("a with: given through an expression")
+                else:
+                    value(rest)
+                    raise Unsupported("a with: that is not a mapping")
+        except Unsupported as e:
+            sys.exit(f"check-pins: {sys.argv[1]}:{n}: cannot read {e}; "
+                     "this script supports block mappings and single-line "
+                     "flow mappings only")
+    return calls
 
 
 with open(sys.argv[1], encoding="utf-8") as f:
-    items = list(entries(f))
-
-in_jobs = False
-job_indent = None
-job = None
-with_indent = None
-calls = {}
-for indent, key, rest in items:
-    if not in_jobs:
-        in_jobs = indent == 0 and key == "jobs"
-        continue
-    if indent == 0:
-        break
-    if job_indent is None:
-        job_indent = indent
-    if indent <= job_indent:
-        job, with_indent = key, None
-        continue
-    if with_indent is not None and indent > with_indent:
-        if key == "image-tag":
-            calls.setdefault(job, [None, None])[1] = value(rest)
-        continue
-    with_indent = None
-    if key == "uses":
-        m = USES.match(value(rest))
-        if m:
-            calls.setdefault(job, [None, None])[0] = m.group(1)
-    elif key == "with" and not value(rest):
-        with_indent = indent
+    calls = scan(entries(f))
 for name, (uses, tag) in calls.items():
     if uses is not None:
         print(name, uses or "-", tag or "-")
 PY
-) || die "cannot read $workflow"
+)
+rc=$?
+set -e
+# The scan prints its own message when it cannot read the workflow.
+[ "$rc" -eq 0 ] || exit 1
 
 status=0
 [ -n "$calls" ] || { echo "check-pins: $workflow has no job that calls RobCo-Core/.github/workflows/robco-ci.yml" >&2; status=1; }
