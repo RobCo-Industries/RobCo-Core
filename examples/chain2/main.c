@@ -1,0 +1,61 @@
+#include <stdint.h>
+
+#include <robco/board.h>
+#include <robco/boot.h>
+#include <robco/bootinfo.h>
+#include <robco/klibc.h>
+#include <robco/uart.h>
+
+#define STAGE "chain2"
+
+static robco_bootinfo_t local;
+
+static const char *mode_name(uint32_t mode)
+{
+    switch (mode) {
+    case 0x13: return "svc";
+    case 0x1a: return "hyp";
+    default:   return "other";
+    }
+}
+
+static uint32_t rd32(uint32_t addr)
+{
+    return *(volatile const uint32_t *)addr;
+}
+
+void robco_main(void)
+{
+    const robco_board_t *b = board_get();
+    const robco_bootinfo_t *bi;
+    int inherited = bootinfo_inherited();
+
+    uart_init(115200);
+    k_printf("\n@RC stage=" STAGE " ev=boot midr=0x%08x soc=%s base=0x%08x board_rev=0x%08x "
+             "mem=0x%08x entry_mode=%s\n",
+             (unsigned)b->midr, b->soc_name, (unsigned)b->periph_base,
+             (unsigned)b->board_rev, (unsigned)b->mem_size,
+             mode_name(robco_boot_args()->entry_mode));
+    k_printf("@RC stage=" STAGE " ev=handoff trusted=%d\n", inherited);
+
+    if (!inherited) {
+        /* Cold boot: copy the firmware blob and build a fresh block, as a first stage does. */
+        bootinfo_copy_fw_blob(ROBCO_HANDOFF_FDT_ADDR, ROBCO_HANDOFF_FDT_MAX);
+        bootinfo_build(&local, ROBCO_STAGE_BOOTAGENT);
+    }
+    bi = bootinfo_get();
+
+    k_printf("@RC stage=" STAGE " ev=bootinfo inherited=%d prev_stage=%u soc=%s mem=0x%08x "
+             "fw_r1=0x%08x fdt=0x%08x fdt_size=%u flags=0x%08x\n",
+             inherited, (unsigned)bi->stage, b->soc_name, (unsigned)bi->mem_size,
+             (unsigned)bi->fw_r1, (unsigned)bi->fdt_addr, (unsigned)bi->fdt_size,
+             (unsigned)bi->boot_flags);
+
+    if (bi->fdt_addr == 0 || bi->fdt_size < 8 || rd32(bi->fdt_addr + 4) != ROBCO_ATAG_CORE) {
+        k_printf("@RC stage=" STAGE " ev=error code=atags\n");
+        uart_flush();
+        robco_halt();
+    }
+    k_printf("@RC stage=" STAGE " ev=ready\n");
+    uart_flush();
+}
