@@ -14,7 +14,7 @@ Two boot chains will use it:
 - A screen console in `src/gfx/` with an 8x16 font built from Spleen.
 - Hardware-independent code in `src/lib/`: klibc, `k_printf`, CRC-32 and a heap allocator.
 - Host unit tests in `tests/host/` for `src/lib/`, run with ASan and UBSan.
-- Example images in `examples/`: `hello`, `tick`, `gpio`, `console`, `heap`.
+- Example images in `examples/`: `hello`, `tick`, `gpio`, `console`, `heap` and `demo`. `demo` runs every component together.
 - A QEMU test harness in `tests/harness/`, with a firmware stub in `tests/fwstub/`.
 - A canary suite in `tests/canary/` that checks the QEMU behaviour the tests rely on.
 - Target tests in `tests/target/` that boot the spikes and the examples on every board.
