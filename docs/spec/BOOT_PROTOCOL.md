@@ -359,7 +359,8 @@ All stages emit `exception` and `panic` when those happen. Deitrix runs in USR m
 | UOS | Boot info not trusted | Cold-boots and runs |
 | Pip-OS | `ROM1.ROM` fails any step | `ev=error`, then the emergency shell |
 | Pip-OS | A holotape fails any step | `ev=error`. The `launch` syscall returns an error to Deitrix. |
-| Pip-OS | A holotape crashes | `ev=holo_kill`. Control returns to Deitrix in sandbox v2. In v1 the system halts with `ev=exception`. |
+| Pip-OS | The ROM crashes | `ev=rom_kill`. Pip-OS shows the fault on screen and stops running the ROM. |
+| Pip-OS | A holotape crashes | `ev=holo_kill`. Control returns to Deitrix. |
 | Any | CPU exception in a stage | `ev=exception`, then halt |
 
 The emergency shell runs on the PL011 and on the screen console. It accepts at least `help`, `info` and `reboot`. `info` prints the boot info fields. `reboot` uses the watchdog.
