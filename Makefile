@@ -3,7 +3,7 @@ VENV := .venv
 SPIKES := s1-uart-hello s2-sd-read s3-fb-mmu
 MACHINES := raspi0 raspi1ap raspi2b raspi3b
 
-.PHONY: venv test test-canary test-spikes
+.PHONY: venv test test-canary test-spikes test-examples test-target
 
 venv: $(VENV)/.installed
 
@@ -12,7 +12,7 @@ $(VENV)/.installed: tests/requirements.txt
 	$(VENV)/bin/pip install -q -r tests/requirements.txt
 	touch $@
 
-test: test-canary test-spikes test-examples
+test: test-canary test-spikes test-examples test-target
 
 test-canary: venv
 	$(VENV)/bin/pytest tests/canary -v
@@ -33,22 +33,14 @@ test-spikes: venv
 	done; \
 	echo "test-spikes: all passed"
 
-# Builds examples/hello warning-free, then boots it normally and with
-# --fault on every machine. Stops at the first failure.
-.PHONY: test-examples
+# Builds the examples warning-free. test-target boots them.
 test-examples:
 	@set -eu; \
 	fail() { echo "FAIL: $$1" >&2; exit 1; }; \
 	$(MAKE) -C examples/hello CI=1 || fail "hello build"; \
 	$(MAKE) -C examples/hello CI=1 BUILD=build/fault EXTRA_CFLAGS=-DHELLO_FAULT=1 || fail "hello fault build"; \
-	for m in $(MACHINES); do \
-	  examples/hello/run-qemu.sh $$m || fail "hello on $$m"; \
-	  examples/hello/run-qemu.sh $$m --fault || fail "hello --fault on $$m"; \
-	done; \
 	echo "test-examples: all passed"
 
-# Target tests: boot spikes through tests/harness/boot.py on every board.
-.PHONY: test-target
-test: test-target
+# Target tests: boot spikes and examples through tests/harness/boot.py on every board.
 test-target: venv
 	$(VENV)/bin/pytest tests/target -v --board all
