@@ -71,8 +71,9 @@ in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
   `heap` and `demo`. `test_chain.py` boots `chain1`, which validates
   `chain2` (placed at 0x00200000 by a loader device) and hands off to it.
   It also covers a bad CRC, a wrong magic, a wrong `load_addr`, a
-  `mem_size` past the slot, no image, `chain2` alone and a corrupt boot
-  info block.
+  `mem_size` past the slot, no image, `chain2` alone, a corrupt boot
+  info block, and a tick in `chain1` that must leave no stale timer
+  interrupt for `chain2`.
 - `tools/`: pytest unit tests for `tools/rimg.py` on images built in
   memory, one case per error code.
 - `canary/`: checks the QEMU behaviours our code depends on. Run it

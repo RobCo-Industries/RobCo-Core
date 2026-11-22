@@ -3,7 +3,10 @@
 #include <robco/board.h>
 #include <robco/boot.h>
 #include <robco/bootinfo.h>
+#include <robco/irq.h>
 #include <robco/klibc.h>
+#include <robco/tick.h>
+#include <robco/timer.h>
 #include <robco/uart.h>
 
 #define STAGE "chain2"
@@ -38,6 +41,25 @@ void robco_main(void)
              (unsigned)b->board_rev, (unsigned)b->mem_size,
              mode_name(robco_boot_args()->entry_mode));
     k_printf("@RC stage=" STAGE " ev=handoff trusted=%d\n", inherited);
+
+#if defined(CHAIN2_TICK) && CHAIN2_TICK
+    {
+        /* No timer match may be left over from the previous stage. */
+        int cs1 = timer_compare_pending(1) != 0;
+        int cs3 = timer_compare_pending(3) != 0;
+        uint64_t end;
+
+        irq_init();
+        tick_init(100);
+        irq_enable(IRQ_TIMER3);
+        irq_cpu_enable();
+        end = timer_now_us() + 200000;
+        while (!timer_expired(end)) {
+        }
+        k_printf("@RC stage=" STAGE " ev=tick cs1=%d cs3=%d ticks=%u spurious=%u\n", cs1, cs3,
+                 (unsigned)tick_count(), (unsigned)irq_spurious_count());
+    }
+#endif
 
     if (!inherited) {
         /* Cold boot: copy the firmware blob and build a fresh block, as a first stage does. */

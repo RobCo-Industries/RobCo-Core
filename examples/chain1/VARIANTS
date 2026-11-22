@@ -1,3 +1,4 @@
 # <build-dir> <extra cflags>
 build/badinfo -DCHAIN1_BAD_BOOTINFO=1
 build/fb -DCHAIN1_FB=1
+build/tick -DCHAIN1_TICK=1

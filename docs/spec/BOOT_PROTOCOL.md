@@ -31,15 +31,22 @@ CPU state at the jump between terminal stages:
 | Item | State |
 |---|---|
 | Mode | SVC |
-| IRQ, FIQ | Masked in CPSR. All interrupt sources disabled at the controller. |
+| IRQ, FIQ | Masked in CPSR. Every source and FIQ routing disabled at the controller. |
 | MMU | Off |
 | D-cache | Cleaned to memory, then off |
 | I-cache | Invalidated |
-| Timers | System timer compare interrupts disabled |
+| Timers | System timer channels 1 and 3 parked a full counter wrap ahead, their match flags cleared |
 | UART | PL011 left on, FIFO drained |
 | Framebuffer | Left on. Its address is in the boot info. |
 
-`robco_handoff(entry, bi, fdt_or_atags)` in `src/arch/handoff.c` does steps 4 and 5. It masks IRQ and FIQ, masks every source at the interrupt controller if the image links the driver, invalidates the I-cache and branch predictor, and jumps in SVC mode. If the MMU or D-cache is on, it turns them off. Only on ARM1176 does it clean the D-cache first.
+`robco_handoff(entry, bi, fdt_or_atags)` in `src/arch/handoff.c` does steps 4 and 5, in this order:
+
+1. Masks IRQ and FIQ on the CPU.
+2. Disables FIQ routing and every IRQ source at the interrupt controller: pending 1, pending 2 and basic.
+3. Sets system timer compare channels 1 and 3, the channels the ARM side owns, to one tick before the current counter value, so they cannot match for about 71 minutes. Then it clears their match flags. The next stage takes no stale timer interrupt when it unmasks a timer source.
+4. Turns the MMU and D-cache off if they are on. Only on ARM1176 does it clean the D-cache first.
+5. Invalidates the I-cache and the branch predictor.
+6. Jumps to `entry` in SVC mode with IRQ and FIQ masked and the registers below.
 
 The caller must call `robco_handoff()` with the MMU and D-cache off, or with the D-cache already cleaned to memory. On ARMv7 and later the function does not clean the D-cache, so an image that turned it on must clean it, by set and way or by address range over everything it wrote, before the call. The library never turns the MMU or D-cache on, so an image that uses only the library meets this contract. The caller drains the UART with `uart_flush()`.
 

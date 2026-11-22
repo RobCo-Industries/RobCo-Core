@@ -176,3 +176,21 @@ def test_chain_keeps_framebuffer(board, example_image, chain2):
         assert rb["cy"] == "1"
         assert rb["scheme"] == "1"
         assert rb["fdt"] == "0x00101000"
+
+
+def test_chain_handoff_quiets_timer(board, example_image):
+    """A tick in stage one leaves no stale timer interrupt for stage two."""
+    img = example_image("chain1", "tick", "-DCHAIN1_TICK=1")
+    nxt = example_image("chain2", "tick", "-DCHAIN2_TICK=1")
+    with boot(img, board, extra_args=chain_args(nxt)) as vm:
+        vm.wait_for(READY, timeout=15)
+        t1 = one(vm, "chain1", "tick")
+        assert int(t1["ticks"]) >= 20, vm.serial
+        # Both channels matched before the handoff.
+        assert (t1["cs1"], t1["cs3"]) == ("1", "1"), vm.serial
+        t2 = one(vm, "chain2", "tick")
+        assert (t2["cs1"], t2["cs3"]) == ("0", "0"), vm.serial
+        assert t2["spurious"] == "0", vm.serial
+        # 200 ms at 100 Hz; QEMU timing is loose.
+        assert 10 <= int(t2["ticks"]) <= 40, vm.serial
+        assert not events(vm, "chain2", "exception"), vm.serial

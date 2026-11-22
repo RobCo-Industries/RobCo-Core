@@ -103,7 +103,7 @@ void robco_handoff(uint32_t entry, const struct robco_bootinfo *bi, uint32_t fdt
     __attribute__((noreturn));
 ```
 
-Jumps to the next stage at `entry`. It masks IRQ and FIQ on the CPU, masks every source at the interrupt controller, turns the MMU and data cache off if they are on, invalidates the I-cache and branch predictor, and branches in SVC mode with:
+Jumps to the next stage at `entry`. It masks IRQ and FIQ on the CPU, masks every source and FIQ at the interrupt controller, parks system timer channels 1 and 3 a counter wrap ahead and clears their match flags, turns the MMU and data cache off if they are on, invalidates the I-cache and branch predictor, and branches in SVC mode with:
 
 | Register | Value |
 |---|---|
@@ -122,7 +122,7 @@ What the caller must do before the call:
 | Call `uart_flush()`. | Output still in the FIFO is lost otherwise. |
 | Keep the MMU and data cache off, or clean every dirty line. | The function cleans the data cache only on ARM1176. On ARMv7 and later dirty lines are lost. |
 
-It does not clear the system timer match flags or stop the framebuffer. The interrupt sources are masked at the controller, so a pending match does not reach the next stage until it enables that source. Example from `examples/chain1/main.c`:
+It does not stop the framebuffer. The steps are listed in [the boot protocol](../spec/BOOT_PROTOCOL.md#finding-loading-and-entering-the-next-stage). Example from `examples/chain1/main.c`:
 
 ```c
 fdt_size = bootinfo_copy_fw_blob(ROBCO_HANDOFF_FDT_ADDR, ROBCO_HANDOFF_FDT_MAX);

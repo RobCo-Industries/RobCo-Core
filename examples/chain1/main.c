@@ -5,8 +5,11 @@
 #include <robco/bootinfo.h>
 #include <robco/console.h>
 #include <robco/fb.h>
+#include <robco/irq.h>
 #include <robco/klibc.h>
 #include <robco/rimg.h>
+#include <robco/tick.h>
+#include <robco/timer.h>
 #include <robco/uart.h>
 
 #define STAGE "chain1"
@@ -76,6 +79,23 @@ void robco_main(void)
     name[sizeof(h->name)] = '\0';
     k_printf("@RC stage=" STAGE " ev=load addr=0x%08x size=%u name=%s crc=0x%08x\n",
              (unsigned)h->load_addr, (unsigned)h->file_size, name, (unsigned)h->crc32);
+
+#if defined(CHAIN1_TICK) && CHAIN1_TICK
+    /*
+     * Runs a fast tick, then leaves both ARM timer channels matched with
+     * IRQs masked. The handoff must not pass these to the next stage.
+     */
+    irq_init();
+    tick_init(1000);
+    irq_cpu_enable();
+    while (tick_count() < 20) {
+    }
+    irq_cpu_disable();
+    timer_compare_set(3, timer_now_lo() + 100);
+    timer_delay_us(3000);
+    k_printf("@RC stage=" STAGE " ev=tick ticks=%u cs1=%d cs3=%d\n", (unsigned)tick_count(),
+             timer_compare_pending(1) != 0, timer_compare_pending(3) != 0);
+#endif
 
     fdt_size = bootinfo_copy_fw_blob(ROBCO_HANDOFF_FDT_ADDR, ROBCO_HANDOFF_FDT_MAX);
     bootinfo_build(bi, ROBCO_STAGE_BIOS);

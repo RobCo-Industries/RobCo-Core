@@ -20,7 +20,8 @@ struct robco_bootinfo;
 
 /*
  * Enters the next stage at `entry` in SVC mode with IRQ and FIQ masked,
- * interrupt sources masked at the controller, the I-cache invalidated and
+ * interrupt sources masked at the controller, system timer channels 1
+ * and 3 parked with their match flags cleared, the I-cache invalidated and
  * the MMU and D-cache off. Registers: r0 = 0, r1 = the machine id saved at
  * entry, r2 = fdt_or_atags, r3 = bi. Flush the UART first.
  *

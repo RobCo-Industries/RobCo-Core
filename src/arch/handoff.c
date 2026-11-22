@@ -4,6 +4,7 @@
 #include <robco/boot.h>
 #include <robco/bootinfo.h>
 #include <robco/mmio.h>
+#include <robco/timer.h>
 
 /* Legacy interrupt controller, as in src/drv/irq_bcm.c. */
 #define IC_OFFSET           0xb200
@@ -33,6 +34,18 @@ void robco_handoff(uint32_t entry, const robco_bootinfo_t *bi, uint32_t fdt_or_a
         mmio_write(ic + IC_DISABLE1, 0xffffffff);
         mmio_write(ic + IC_DISABLE2, 0xffffffff);
         mmio_write(ic + IC_DISABLE_BASIC, 0xff);
+        mmio_dmb();
+
+        /*
+         * Park the ARM-side compare channels, 1 (tick) and 3, a full
+         * counter wrap away and clear their match flags. Otherwise the
+         * next stage takes a stale timer interrupt as soon as it unmasks
+         * the source.
+         */
+        timer_compare_set(1, timer_now_lo() - 1);
+        timer_compare_set(3, timer_now_lo() - 1);
+        timer_compare_clear(1);
+        timer_compare_clear(3);
         mmio_dmb();
     }
 
