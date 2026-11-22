@@ -91,6 +91,9 @@ static int fault_sync(blk_dev_t *dev)
     blk_fault_t *f = dev->priv;
 
     f->syncs++;
+    if (f->fail_sync_after >= 0 && f->syncs > (unsigned long)f->fail_sync_after) {
+        return f->err;
+    }
     return blk_sync(f->inner);
 }
 
@@ -101,6 +104,7 @@ void blk_fault_init(blk_fault_t *f, blk_dev_t *inner)
     f->err = BLK_ERR_IO;
     f->fail_read_after = -1;
     f->fail_write_after = -1;
+    f->fail_sync_after = -1;
     f->dev = *inner;
     f->dev.name = "fault";
     f->dev.read = fault_read;

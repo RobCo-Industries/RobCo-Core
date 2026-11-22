@@ -324,3 +324,60 @@ TEST(device_error_codes)
         CHECK_EQ(fs_unmount("v"), FS_OK);
     }
 }
+
+/* A failed flush at unmount is reported and the volume stays mounted. */
+TEST(sync_fails_at_unmount)
+{
+    blk_fault_t fault;
+    fs_stat_t st;
+
+    format(DISK_SIZE);
+    blk_fault_init(&fault, &ram);
+    CHECK_EQ(fs_mount("v", &fault.dev), FS_OK);
+    CHECK_EQ(fs_write_file_atomic("v:/A.TXT", "abc", 3), FS_OK);
+    fault.fail_sync_after = (long)fault.syncs;
+    fault.err = BLK_ERR_TIMEOUT;
+    CHECK_EQ(fs_unmount("v"), FS_ERR_TIMEOUT);
+    CHECK_EQ(fs_stat("v:/A.TXT", &st), FS_OK);
+    CHECK_EQ(fs_mount("v", &ram), FS_ERR_BUSY);
+    fault.fail_sync_after = -1;
+    CHECK_EQ(fs_unmount("v"), FS_OK);
+    CHECK_EQ(fs_unmount("v"), FS_ERR_NOVOL);
+}
+
+TEST(sync_fails_at_close)
+{
+    blk_fault_t fault;
+    fs_file_t f;
+
+    format(DISK_SIZE);
+    blk_fault_init(&fault, &ram);
+    CHECK_EQ(fs_mount("v", &fault.dev), FS_OK);
+    CHECK_EQ(fs_open(&f, "v:/B.TXT", FS_WRITE | FS_CREATE), FS_OK);
+    CHECK_EQ(fs_write(&f, "hello", 5), 5);
+    fault.fail_sync_after = (long)fault.syncs;
+    CHECK_EQ(fs_close(&f), FS_ERR_IO);
+    CHECK_EQ(fs_close(&f), FS_ERR_BADF);
+    fault.fail_sync_after = -1;
+    CHECK_EQ(fs_unmount("v"), FS_OK);
+}
+
+TEST(sync_fails_in_atomic_write)
+{
+    blk_fault_t fault;
+    char buf[8];
+    size_t n;
+
+    format(DISK_SIZE);
+    blk_fault_init(&fault, &ram);
+    CHECK_EQ(fs_mount("v", &fault.dev), FS_OK);
+    CHECK_EQ(fs_write_file_atomic("v:/C.TXT", "old", 3), FS_OK);
+    fault.fail_sync_after = (long)fault.syncs;
+    CHECK_EQ(fs_write_file_atomic("v:/C.TXT", "newer", 5), FS_ERR_IO);
+    fault.fail_sync_after = -1;
+    /* The old content is still there. */
+    CHECK_EQ(fs_read_file("v:/C.TXT", buf, sizeof(buf), &n), FS_OK);
+    CHECK_EQ(n, 3);
+    CHECK_MEM(buf, "old", 3);
+    CHECK_EQ(fs_unmount("v"), FS_OK);
+}

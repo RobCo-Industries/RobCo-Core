@@ -248,7 +248,7 @@ int fs_mount(const char *volume, blk_dev_t *dev)
 int fs_unmount(const char *volume)
 {
     char drv[3];
-    int i, vol;
+    int i, vol, rc;
 
     if (!valid_vol_name(volume)) {
         return FS_ERR_INVAL;
@@ -257,9 +257,13 @@ int fs_unmount(const char *volume)
     if (vol < 0) {
         return FS_ERR_NOVOL;
     }
+    /* Flush first: on failure the volume stays mounted for a retry. */
+    rc = blk_sync(fs_vols[vol].dev);
+    if (rc != 0) {
+        return from_blk(rc);
+    }
     drive_prefix(drv, vol);
     f_mount(NULL, drv, 0);
-    blk_sync(fs_vols[vol].dev);
     fs_vols[vol].dev = NULL;
     fs_vols[vol].name[0] = '\0';
     if (default_vol == vol) {

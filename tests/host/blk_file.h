@@ -16,13 +16,14 @@ void blk_file_close(blk_dev_t *dev);
 /*
  * Fault injection around another device. With fail_write_after = N, the
  * first N write calls go through and every later one returns err without
- * touching the inner device. Reads work the same way. -1 turns faults off.
+ * touching the inner device. Reads and syncs work the same way. -1 turns
+ * faults off.
  */
 typedef struct {
     blk_dev_t dev;      /* the wrapped device to hand out */
     blk_dev_t *inner;
     unsigned reads, writes, syncs;
-    long fail_read_after, fail_write_after;
+    long fail_read_after, fail_write_after, fail_sync_after;
     int err;
 } blk_fault_t;
 

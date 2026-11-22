@@ -106,6 +106,11 @@ typedef struct {
 const char *fs_strerror(int err);
 
 int fs_mount(const char *volume, blk_dev_t *dev);
+/*
+ * Flushes the device, then detaches the volume. If the device's sync
+ * fails, returns its error and the volume stays mounted, so the caller
+ * can call it again.
+ */
 int fs_unmount(const char *volume);
 int fs_mkfs(blk_dev_t *dev, const fs_mkfs_opts_t *opts);
 int fs_statvfs(const char *volume, fs_statvfs_t *out);
@@ -118,6 +123,7 @@ int fs_seek(fs_file_t *f, int64_t offset, int whence);
 int64_t fs_tell(fs_file_t *f);
 int64_t fs_size(fs_file_t *f);
 int fs_sync(fs_file_t *f);
+/* Flushes and closes. The handle is closed even when the flush fails. */
 int fs_close(fs_file_t *f);
 
 int fs_stat(const char *path, fs_stat_t *out);
