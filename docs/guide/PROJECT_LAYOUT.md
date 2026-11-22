@@ -129,6 +129,7 @@ Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and bui
 | `test_fs_interop.py` | `build/host/fs_tool` against mtools images. It builds the tool itself and skips without mtools. |
 | `test_sample_project.py` | `tests/fixtures/sample-project` built from a copy outside the repository: the image and its host tests through `mk/host.mk` |
 | `test_harness_plugin.py` | `harness.plugin` through pytest on a copy of the sample project outside the repository, and `harness.run` driven through a pipe |
+| `test_check_pins.py` | `tools/check_pins.sh` on the workflows in `tests/fixtures/check-pins`, with hand-made submodule git files and a `git` that exits 128 |
 
 ## Add a target test
 

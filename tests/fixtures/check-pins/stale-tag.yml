@@ -1,0 +1,14 @@
+name: ci
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  ci:
+    uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@1111111111111111111111111111111111111111  # pinned
+    with:
+      image-tag: "000000000000"
+      test-targets: test

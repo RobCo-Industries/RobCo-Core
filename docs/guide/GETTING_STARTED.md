@@ -346,7 +346,7 @@ What the test uses:
 
 ## Run it in CI
 
-The library ships a reusable GitHub workflow that runs `make CI=1` and then `make CI=1 test BOARD=<board>` per board, inside the pinned CI container. Read the container tag from `robco-core/ci/IMAGE_TAG` and add `.github/workflows/ci.yml`:
+The library ships a reusable GitHub workflow that runs `make CI=1` and then `make CI=1 test BOARD=<board>` per board, inside the pinned CI container. Add `.github/workflows/ci.yml`:
 
 ```yaml
 name: ci
@@ -356,11 +356,21 @@ permissions:
   packages: read
 jobs:
   ci:
-    uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@main
+    uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@<submodule commit>
     with:
       image-tag: <contents of robco-core/ci/IMAGE_TAG>
       test-targets: test
 ```
+
+Pin both values to the submodule. `<submodule commit>` is the full hash `git -C robco-core rev-parse HEAD` prints, never `main`, so CI runs the same library as your build. The tag comes from `robco-core/ci/IMAGE_TAG` at that commit. The `permissions` block is required: the workflow reads the CI image from the GitHub package registry.
+
+Both values are copies, so they drift when you move the submodule. `tools/check_pins.sh` compares them. Run it from the project root:
+
+```sh
+robco-core/tools/check_pins.sh .github/workflows/ci.yml
+```
+
+It prints `check-pins: ok (<commit>, <tag>)`, or names each value that differs and exits 1. It reads the commit from the submodule's git files, so it also works in the CI container, where git refuses a checkout owned by another user. Add it to `make test` so CI runs it too.
 
 The inputs are documented at the top of [robco-ci.yml](../../.github/workflows/robco-ci.yml).
 

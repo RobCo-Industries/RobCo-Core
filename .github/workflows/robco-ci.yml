@@ -14,13 +14,27 @@
 # Both jobs run "make CI=1 ...". The robco-ci package must be readable
 # by the calling repository.
 #
-# Example:
+# Pinning: call this workflow at the full commit hash your RobCo-Core
+# submodule points at, never @main, and pass the tag from ci/IMAGE_TAG
+# at that commit. Both are literals, so they drift when the submodule
+# moves. tools/check_pins.sh compares them, without needing git:
+#
+#   external/robco-core/tools/check_pins.sh .github/workflows/ci.yml
+#
+# Permissions: the caller must grant contents: read and packages: read,
+# at the workflow or job level.
+#
+# Example, with the submodule in external/robco-core:
+#   permissions:
+#     contents: read
+#     packages: read
 #   jobs:
 #     ci:
-#       uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@main
+#       uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@<submodule commit, 40 hex digits>
 #       with:
-#         image-tag: 498645df6928
-#         test-targets: test
+#         image-tag: <contents of external/robco-core/ci/IMAGE_TAG>
+#         make-targets: all test-host
+#         test-targets: test-target
 
 name: robco-ci
 
