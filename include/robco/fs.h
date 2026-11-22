@@ -146,11 +146,28 @@ int fs_closedir(fs_dir_t *d);
 
 int fs_read_file(const char *path, void *buf, size_t max, size_t *out_len);
 /*
- * Names starting with '~' or '#' are reserved for the work files of
- * fs_write_file_atomic(): "~NAME" and "#NAME" next to the target NAME.
- * A target with a reserved name returns FS_ERR_NAME.
+ * Replaces path with buf. After a power cut or an error, fs_atomic_recover()
+ * leaves path holding either the complete previous content or the complete
+ * new content: never a mix, and never nothing if path existed before. A
+ * first write that did not finish leaves path absent. Read such files with
+ * fs_read_file_atomic(), or call fs_atomic_recover() first, before trusting
+ * them. Not guaranteed: that the new content survives a power cut before
+ * the call returns FS_OK; anything when the medium corrupts sectors or
+ * ignores syncs; two callers writing one path. fs_write_file_atomic() runs
+ * the recovery itself first.
+ *
+ * Names starting with '~' or '#' are reserved for the work files: "~NAME"
+ * holds new content, "#NAME" old content, next to the target NAME. A target
+ * with a reserved name returns FS_ERR_NAME.
  */
 int fs_write_file_atomic(const char *path, const void *buf, size_t len);
+/* Finishes or undoes an interrupted fs_write_file_atomic() of path. */
+int fs_atomic_recover(const char *path);
+/*
+ * fs_atomic_recover(), then fs_read_file(). On a read-only volume it
+ * changes nothing and reads whichever file holds the content.
+ */
+int fs_read_file_atomic(const char *path, void *buf, size_t max, size_t *out_len);
 
 /*
  * Timestamp source, FAT format: date << 16 | time. The weak default uses

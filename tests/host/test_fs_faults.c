@@ -131,60 +131,293 @@ TEST(atomic_write_success)
 }
 
 /*
- * Fails every device write after the first k, for growing k, during an
- * atomic replace. After each failure a fresh mount must find the old
- * content, the new content, or (only between unlink and rename) the new
- * content in the temp file.
+ * Crash tests for fs_write_file_atomic(). Each run formats the disk,
+ * optionally writes the old content, then replaces it through a fault
+ * device with one fault at index k: a failed write call, a failed sync,
+ * or a power cut after block k (later blocks are dropped and the calls
+ * still succeed). k grows until the call runs with no fault hit. After
+ * each run the test "reboots": it forgets the FatFs state without a
+ * flush, mounts the RAM disk again, recovers, and checks the target.
  */
-TEST(atomic_write_survives_failures)
+enum { FAULT_WRITE, FAULT_SYNC, FAULT_DROP };
+
+#define CRASH_DIR    "v:/S"
+#define CRASH_TARGET "v:/S/GAME.SAV"
+#define CRASH_MAX    4000
+
+typedef struct {
+    int mode;
+    int had_old;  /* replace an existing file, or a first write */
+    int crowded;  /* entries spread over two directory sectors */
+    long points;  /* fault points run */
+    int saw_old, saw_new, saw_absent, saw_leftover;
+} crash_t;
+
+static unsigned char crash_old[3000], crash_new[5000], crash_buf[8000];
+
+static int count_entries(const char *dir, int *leftovers);
+
+static void crash_setup(const crash_t *c)
 {
-    static unsigned char old_data[3000], new_data[5000], buf[8000];
+    char name[24];
+    fs_file_t f;
+    int i;
+
+    format(DISK_SIZE);
+    CHECK_EQ(fs_mount("v", &ram), FS_OK);
+    CHECK_EQ(fs_mkdir(CRASH_DIR), FS_OK);
+    if (c->crowded) {
+        /*
+         * 20 files, then the target in the second 16-entry sector, then
+         * two free slots in the first: new entries from the renames land
+         * in another sector than the entry they replace.
+         */
+        for (i = 0; i < 20; i++) {
+            snprintf(name, sizeof(name), CRASH_DIR "/F%02d", i);
+            CHECK_EQ(fs_open(&f, name, FS_WRITE | FS_CREATE), FS_OK);
+            CHECK_EQ(fs_close(&f), FS_OK);
+        }
+    }
+    if (c->had_old) {
+        CHECK_EQ(fs_write_file_atomic(CRASH_TARGET, crash_old, sizeof(crash_old)), FS_OK);
+    }
+    if (c->crowded) {
+        CHECK_EQ(fs_unlink(CRASH_DIR "/F00"), FS_OK);
+        CHECK_EQ(fs_unlink(CRASH_DIR "/F01"), FS_OK);
+    }
+    CHECK_EQ(fs_unmount("v"), FS_OK);
+}
+
+/* After recovery: exactly old, exactly new, or absent for a first write. */
+static void crash_check(crash_t *c, int finished, long k)
+{
+    static unsigned char fill_data[16384];
+    unsigned char *want = NULL;
+    size_t n = 0, want_len = 0;
+    fs_file_t f;
+    int got, left;
+
+    CHECK_EQ(fs_mount("v", &ram), FS_OK);
+    count_entries(CRASH_DIR, &left);
+    c->saw_leftover |= left > 0;
+    if (k % 2 == 0) {
+        got = fs_read_file_atomic(CRASH_TARGET, crash_buf, sizeof(crash_buf), &n);
+    } else {
+        CHECK_EQ(fs_atomic_recover(CRASH_TARGET), FS_OK);
+        got = fs_read_file(CRASH_TARGET, crash_buf, sizeof(crash_buf), &n);
+    }
+    if (got == FS_ERR_NOENT) {
+        CHECK(!c->had_old);
+        CHECK(!finished);
+        c->saw_absent = 1;
+    } else {
+        CHECK_EQ(got, FS_OK);
+        if (n == sizeof(crash_new) && memcmp(crash_buf, crash_new, n) == 0) {
+            want = crash_new;
+            c->saw_new = 1;
+        } else {
+            CHECK(c->had_old && !finished);
+            CHECK_EQ(n, sizeof(crash_old));
+            CHECK_MEM(crash_buf, crash_old, sizeof(crash_old));
+            want = crash_old;
+            c->saw_old = 1;
+        }
+        want_len = n;
+    }
+    /* Recovery leaves no work file behind. */
+    count_entries(CRASH_DIR, &left);
+    CHECK_EQ(left, 0);
+    /* New allocations must not reuse the target's clusters. */
+    fill(fill_data, sizeof(fill_data), 7);
+    CHECK_EQ(fs_open(&f, CRASH_DIR "/FILL.BIN", FS_WRITE | FS_CREATE | FS_TRUNC), FS_OK);
+    CHECK_EQ(fs_write(&f, fill_data, sizeof(fill_data)), (int)sizeof(fill_data));
+    CHECK_EQ(fs_close(&f), FS_OK);
+    if (want != NULL) {
+        CHECK_EQ(fs_read_file(CRASH_TARGET, crash_buf, sizeof(crash_buf), &n), FS_OK);
+        CHECK_EQ(n, want_len);
+        CHECK_MEM(crash_buf, want, want_len);
+    }
+    /* The next save works. */
+    CHECK_EQ(fs_write_file_atomic(CRASH_TARGET, crash_old, 10), FS_OK);
+    CHECK_EQ(fs_unmount("v"), FS_OK);
+}
+
+static void crash_run(crash_t *c)
+{
     blk_fault_t fault;
     long k;
-    int rc = -1, saw_old = 0, saw_window = 0;
-    size_t n;
+    int rc, finished = 0;
 
-    fill(old_data, sizeof(old_data), 3);
-    fill(new_data, sizeof(new_data), 4);
-    for (k = 0; k < MAX_STEPS && rc != FS_OK; k++) {
+    fill(crash_old, sizeof(crash_old), 3);
+    fill(crash_new, sizeof(crash_new), 4);
+    for (k = 0; k < CRASH_MAX && !finished; k++) {
+        crash_setup(c);
+        blk_fault_init(&fault, &ram);
+        if (c->mode == FAULT_WRITE) {
+            fault.fail_write_after = k;
+        } else if (c->mode == FAULT_SYNC) {
+            fault.fail_sync_after = k;
+        } else {
+            fault.drop_write_after = k;
+        }
+        CHECK_EQ(fs_mount("v", &fault.dev), FS_OK);
+        rc = fs_write_file_atomic(CRASH_TARGET, crash_new, sizeof(crash_new));
+        if (c->mode == FAULT_WRITE) {
+            finished = fault.writes <= (unsigned long)k;
+        } else if (c->mode == FAULT_SYNC) {
+            finished = fault.syncs <= (unsigned long)k;
+        } else {
+            finished = fault.dropped == 0;
+        }
+        /*
+         * A failed write may still return FS_OK: FatFs ignores errors on
+         * the second FAT copy. Only the outcome after recovery counts.
+         */
+        if (finished) {
+            CHECK_EQ(rc, FS_OK);
+        }
+        /* Reboot: drop the FatFs state without writing it back. */
+        fault.fail_sync_after = -1;
+        CHECK_EQ(fs_unmount("v"), FS_OK);
+        crash_check(c, finished, k);
+    }
+    CHECK(finished);
+    c->points = k - 1; /* the last run hit no fault */
+}
+
+static void crash_report(const char *what, const crash_t *c)
+{
+    printf("     %s: %ld fault points\n", what, c->points);
+}
+
+TEST(atomic_replace_crash_every_write)
+{
+    crash_t c = { FAULT_WRITE, 1, 0, 0, 0, 0, 0, 0 };
+
+    crash_run(&c);
+    crash_report("replace, failed write", &c);
+    CHECK(c.points > 5);
+    CHECK(c.saw_old && c.saw_new && c.saw_leftover);
+}
+
+TEST(atomic_replace_crash_every_sync)
+{
+    crash_t c = { FAULT_SYNC, 1, 0, 0, 0, 0, 0, 0 };
+
+    crash_run(&c);
+    crash_report("replace, failed sync", &c);
+    CHECK(c.points >= 4);
+    CHECK(c.saw_old && c.saw_new);
+}
+
+TEST(atomic_replace_power_cut)
+{
+    crash_t c = { FAULT_DROP, 1, 0, 0, 0, 0, 0, 0 };
+
+    crash_run(&c);
+    crash_report("replace, power cut", &c);
+    CHECK(c.saw_old && c.saw_new && c.saw_leftover);
+}
+
+/* Renames that move an entry to another sector pass through an alias. */
+TEST(atomic_replace_crowded_directory)
+{
+    crash_t w = { FAULT_WRITE, 1, 1, 0, 0, 0, 0, 0 };
+    crash_t d = { FAULT_DROP, 1, 1, 0, 0, 0, 0, 0 };
+
+    crash_run(&w);
+    crash_report("crowded, failed write", &w);
+    crash_run(&d);
+    crash_report("crowded, power cut", &d);
+    CHECK(w.saw_old && w.saw_new && d.saw_old && d.saw_new);
+}
+
+TEST(atomic_first_write_crash)
+{
+    crash_t w = { FAULT_WRITE, 0, 0, 0, 0, 0, 0, 0 };
+    crash_t s = { FAULT_SYNC, 0, 0, 0, 0, 0, 0, 0 };
+    crash_t d = { FAULT_DROP, 0, 0, 0, 0, 0, 0, 0 };
+
+    crash_run(&w);
+    crash_report("first write, failed write", &w);
+    crash_run(&s);
+    crash_report("first write, failed sync", &s);
+    crash_run(&d);
+    crash_report("first write, power cut", &d);
+    CHECK(w.saw_absent && w.saw_new && d.saw_absent && d.saw_new);
+}
+
+static void put_file(const char *path, const char *text)
+{
+    fs_file_t f;
+
+    CHECK_EQ(fs_open(&f, path, FS_WRITE | FS_CREATE | FS_TRUNC), FS_OK);
+    CHECK_EQ(fs_write(&f, text, strlen(text)), (int)strlen(text));
+    CHECK_EQ(fs_close(&f), FS_OK);
+}
+
+/* Each leftover state, built by hand. */
+TEST(atomic_recovery_table)
+{
+    static const struct {
+        const char *t, *n, *o; /* content of target, ~ and #, NULL if absent */
+        const char *want;      /* target after recovery, NULL if absent */
+    } cases[] = {
+        { "T", NULL, NULL, "T" },
+        { "T", NULL, "O", "T" },  /* replaced, old copy not yet removed */
+        { "T", "N", NULL, "T" },  /* new copy not complete: dropped */
+        { "T", "N", "O", "T" },
+        { NULL, "N", "O", "N" },  /* roll forward */
+        { NULL, NULL, "O", "O" }, /* roll back */
+        { NULL, "N", NULL, NULL },/* first write cut short: dropped */
+        { NULL, NULL, NULL, NULL },
+    };
+    char buf[8];
+    size_t i, n;
+    int left;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         format(DISK_SIZE);
         CHECK_EQ(fs_mount("v", &ram), FS_OK);
-        CHECK_EQ(fs_mkdir("v:/SAVES"), FS_OK);
-        CHECK_EQ(fs_write_file_atomic("v:/SAVES/GAME.SAV", old_data, sizeof(old_data)), FS_OK);
+        if (cases[i].t) put_file("v:/F.SAV", cases[i].t);
+        if (cases[i].n) put_file("v:/~F.SAV", cases[i].n);
+        if (cases[i].o) put_file("v:/#F.SAV", cases[i].o);
+        put_file("v:/OTHER.SAV", "x");
         CHECK_EQ(fs_unmount("v"), FS_OK);
 
-        blk_fault_init(&fault, &ram);
-        fault.fail_write_after = k;
-        CHECK_EQ(fs_mount("v", &fault.dev), FS_OK);
-        rc = fs_write_file_atomic("v:/SAVES/GAME.SAV", new_data, sizeof(new_data));
-        CHECK(rc == FS_OK || rc == FS_ERR_IO);
+        /* A read-only volume reads the right copy and changes nothing. */
+        ram.flags |= BLK_FLAG_READONLY;
+        CHECK_EQ(fs_mount("v", &ram), FS_OK);
+        n = 99;
+        if (cases[i].want != NULL) {
+            CHECK_EQ(fs_read_file_atomic("v:/F.SAV", buf, sizeof(buf), &n), FS_OK);
+            CHECK_EQ(n, 1);
+            CHECK_EQ(buf[0], cases[i].want[0]);
+        } else {
+            CHECK_EQ(fs_read_file_atomic("v:/F.SAV", buf, sizeof(buf), &n), FS_ERR_NOENT);
+            CHECK_EQ(n, 0);
+        }
+        CHECK_EQ(fs_atomic_recover("v:/F.SAV"),
+                 cases[i].n || cases[i].o ? FS_ERR_RO : FS_OK);
         CHECK_EQ(fs_unmount("v"), FS_OK);
+        ram.flags &= ~BLK_FLAG_READONLY;
 
         CHECK_EQ(fs_mount("v", &ram), FS_OK);
-        int got = fs_read_file("v:/SAVES/GAME.SAV", buf, sizeof(buf), &n);
-        if (rc == FS_OK) {
-            CHECK_EQ(got, FS_OK);
-            CHECK_EQ(n, sizeof(new_data));
-            CHECK_MEM(buf, new_data, sizeof(new_data));
-        } else if (got == FS_OK && n == sizeof(old_data)) {
-            CHECK_MEM(buf, old_data, sizeof(old_data));
-            saw_old = 1;
-        } else if (got == FS_OK) {
-            CHECK_EQ(n, sizeof(new_data));
-            CHECK_MEM(buf, new_data, sizeof(new_data));
+        CHECK_EQ(fs_atomic_recover("v:/F.SAV"), FS_OK);
+        if (cases[i].want != NULL) {
+            CHECK_EQ(fs_read_file("v:/F.SAV", buf, sizeof(buf), &n), FS_OK);
+            CHECK_EQ(buf[0], cases[i].want[0]);
         } else {
-            CHECK_EQ(got, FS_ERR_NOENT);
-            CHECK_EQ(fs_read_file("v:/SAVES/~GAME.SAV", buf, sizeof(buf), &n), FS_OK);
-            CHECK_EQ(n, sizeof(new_data));
-            CHECK_MEM(buf, new_data, sizeof(new_data));
-            saw_window = 1;
+            CHECK_EQ(fs_stat("v:/F.SAV", &(fs_stat_t){ 0 }), FS_ERR_NOENT);
         }
+        CHECK_EQ(count_entries("v:/", &left), cases[i].want ? 2 : 1);
+        CHECK_EQ(left, 0);
+        CHECK_EQ(fs_atomic_recover("v:/F.SAV"), FS_OK);
         CHECK_EQ(fs_unmount("v"), FS_OK);
     }
-    CHECK_EQ(rc, FS_OK);
-    CHECK(k > 3);
-    CHECK(saw_old);
-    CHECK(saw_window);
+    CHECK_EQ(fs_atomic_recover("v:/~F.SAV"), FS_ERR_NAME);
+    CHECK_EQ(fs_read_file_atomic(rc_launder(NULL), buf, sizeof(buf), &n), FS_ERR_INVAL);
+    CHECK_EQ(fs_read_file_atomic("v:/F.SAV", rc_launder(NULL), 1, &n), FS_ERR_INVAL);
 }
 
 static int count_entries(const char *dir, int *leftovers)

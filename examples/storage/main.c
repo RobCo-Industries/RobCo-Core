@@ -16,10 +16,12 @@
  * SD card, partition table and FAT file system on the target. After the
  * mount it reads one command per line and answers each with one marker:
  *
- *   ls <dir>                    one ev=entry per entry, then ev=ls
+ *   ls <dir>                    one ev=entry per entry, then ev=ls;
+ *                               left=1 marks an atomic-write work file
  *   cat <path>                  size and CRC-32 of the file
  *   put <path> <size> <seed>    write the pattern below
  *   atomic <path> <size> <seed> the same through fs_write_file_atomic()
+ *   recover <path>              fs_atomic_recover() after a power cut
  *   rm <path>, mv <a> <b>, mkdir <path>
  *   df, sync, umount, mount
  *   ini <path> <section> <key>  read the file and look the key up
@@ -197,9 +199,10 @@ static void cmd_ls(const char *dir)
     int rc = fs_opendir(&d, dir);
 
     while (rc == FS_OK && (rc = fs_readdir(&d, &st)) == 1) {
-        k_printf("@RC stage=" STAGE " ev=entry name=%s size=%u dir=%u date=0x%04x time=0x%04x\n",
+        k_printf("@RC stage=" STAGE
+                 " ev=entry name=%s size=%u dir=%u date=0x%04x time=0x%04x left=%u\n",
                  st.name, (unsigned)st.size, (unsigned)st.is_dir, (unsigned)st.date,
-                 (unsigned)st.time);
+                 (unsigned)st.time, (unsigned)st.leftover);
         count++;
         rc = FS_OK;
     }
@@ -294,6 +297,8 @@ static void command(char *line)
         cmd_put(argv[1], num(argv[2]), num(argv[3]));
     } else if (argc == 4 && k_strcmp(argv[0], "atomic") == 0) {
         cmd_atomic(argv[1], num(argv[2]), num(argv[3]));
+    } else if (argc == 2 && k_strcmp(argv[0], "recover") == 0) {
+        k_printf("@RC stage=" STAGE " ev=recover rc=%s\n", fs_rc_name(fs_atomic_recover(argv[1])));
     } else if (argc == 2 && k_strcmp(argv[0], "rm") == 0) {
         k_printf("@RC stage=" STAGE " ev=rm rc=%s\n", fs_rc_name(fs_unlink(argv[1])));
     } else if (argc == 3 && k_strcmp(argv[0], "mv") == 0) {

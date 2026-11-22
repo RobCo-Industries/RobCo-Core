@@ -83,6 +83,21 @@ static int fault_write(blk_dev_t *dev, uint64_t lba, uint32_t count, const void 
     if (f->fail_write_after >= 0 && f->writes > (unsigned long)f->fail_write_after) {
         return f->err;
     }
+    if (f->drop_write_after >= 0) {
+        /* Power loss: blocks past the budget never land, the call succeeds. */
+        uint64_t left = (uint64_t)f->drop_write_after > f->blocks_written
+                            ? (uint64_t)f->drop_write_after - f->blocks_written : 0;
+        uint32_t pass = left < count ? (uint32_t)left : count;
+        int rc = 0;
+
+        if (pass > 0) {
+            rc = blk_write(f->inner, lba, pass, buf);
+        }
+        f->blocks_written += pass;
+        f->dropped += count - pass;
+        return rc;
+    }
+    f->blocks_written += count;
     return blk_write(f->inner, lba, count, buf);
 }
 
@@ -105,6 +120,7 @@ void blk_fault_init(blk_fault_t *f, blk_dev_t *inner)
     f->fail_read_after = -1;
     f->fail_write_after = -1;
     f->fail_sync_after = -1;
+    f->drop_write_after = -1;
     f->dev = *inner;
     f->dev.name = "fault";
     f->dev.read = fault_read;

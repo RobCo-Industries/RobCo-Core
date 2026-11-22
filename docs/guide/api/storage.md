@@ -504,7 +504,7 @@ typedef struct {
 | `date`, `time` | FAT format |
 | `name` | Long name, or the 8.3 name. `fs_stat()` gives the spelling in `path`. `fs_readdir()` gives the stored spelling. |
 | `short_name` | 8.3 name, empty if the volume has none |
-| `leftover` | `1` when the name starts with `~` or `#`: a work file of `fs_write_file_atomic()`, see [Whole files](#whole-files) |
+| `leftover` | `1` when the name starts with `~` or `#`: a work file of `fs_write_file_atomic()`, see [Whole files](#whole-files). Listings show it so a program can skip it. |
 
 The root directory gives `is_dir` set and the name `/`.
 
@@ -553,17 +553,52 @@ Reads a file into `buf`. Stores the bytes read in `*out_len` when `out_len` is n
 
 ```c
 int fs_write_file_atomic(const char *path, const void *buf, size_t len);
+int fs_atomic_recover(const char *path);
+int fs_read_file_atomic(const char *path, void *buf, size_t max, size_t *out_len);
 ```
 
-Replaces a file so that a power cut leaves either the old or the new content. It writes `buf` to a work file named `~` plus the target name, syncs it, removes the target and renames the work file over it. `SAVE1.SAV` uses `~SAVE1.SAV`, so `A.SAV` and `A.DAT` never share a work file, and an ordinary `SAVE1.TMP` is never touched. Names that start with `~` or `#` are reserved for work files: a target with such a name returns `FS_ERR_NAME`, and `fs_readdir()` sets `leftover` for them. A target base name of up to 7 characters keeps 8.3 work names. If writing the work file fails, the call removes it and returns the error.
+`fs_write_file_atomic()` replaces a file so that a power cut or an error cannot leave it half written. Use it for save files and settings. Read such a file with `fs_read_file_atomic()`, or call `fs_atomic_recover()` on it first: a plain read after a power cut can miss the content, which may sit in a work file.
 
-| Case | What is on disk |
-|---|---|
-| The call fails, or the power goes, before the temp file is complete | The target keeps its old content. The next call replaces a stale temp file. |
-| The power goes between the removal and the rename | The target is missing. The `~` work file is complete and holds the new data. |
-| First write, target missing, `~` work file present | The work file may be partial. Use it only if the target existed before. |
+**Work files.** The call keeps two work files next to the target. `~NAME` holds the new content while it is written. `#NAME` holds the old content while the new one moves into place. `SAVE1.SAV` uses `~SAVE1.SAV` and `#SAVE1.SAV`, so `A.SAV` and `A.DAT` never share a work file, and an ordinary `SAVE1.TMP` is never touched. Names that start with `~` or `#` are reserved: the three calls return `FS_ERR_NAME` for such a target, and `fs_readdir()` and `fs_stat()` set `leftover` for them. A target base name of up to 7 characters keeps 8.3 work names. A longer one gets long work names, which this build supports.
 
-The guarantee also needs a device that does not reorder or lose a write it has acknowledged after `blk_sync()`.
+**Steps.** Every rename and unlink ends with a device sync.
+
+1. Run the recovery below, so only the target is left.
+2. Write `~NAME`, then sync the file and the device. If this fails, the call removes `~NAME` and returns the error. Nothing else has changed.
+3. If the target exists, rename it to `#NAME`.
+4. Rename `~NAME` to the target.
+5. Unlink `#NAME`.
+
+FAT cannot rename onto an existing name, which is why the old file moves aside first.
+
+**Recovery.** `fs_atomic_recover()` reads which of the three names exist and does this:
+
+| Target | `~NAME` | `#NAME` | What it means | Action |
+|---|---|---|---|---|
+| present | any | any | The target is complete: the old content if the cut came before step 4, the new one after | Remove `~NAME` and `#NAME` |
+| missing | present | present | `#NAME` exists only after `~NAME` was synced: the new content is complete | Rename `~NAME` to the target, remove `#NAME` |
+| missing | missing | present | Cut between steps 3 and 4 of a call that could not finish | Rename `#NAME` back to the target |
+| missing | present | missing | A first write cut before its rename. The file may be cut short, and nothing on disk shows whether it is complete | Remove it. The target stays absent. |
+| missing | missing | missing | Nothing to do | None |
+
+FatFs renames by adding the new entry before it removes the old one. A cut in between, when the entries sit in different directory sectors, leaves two names on one cluster chain. Before it removes a work file that shares the target's chain, recovery points the work file's entry at no cluster, so the target's data stay allocated.
+
+`fs_write_file_atomic()` runs the recovery itself. `fs_read_file_atomic()` runs it, then calls `fs_read_file()`. On a read-only volume it changes nothing and reads whichever name holds the content, by the same table. `fs_atomic_recover()` returns `FS_OK` when the target is clean, `FS_ERR_RO` when work files are left on a read-only volume, or the error of the step that failed. A failed recovery stops `fs_write_file_atomic()` before it writes anything.
+
+What is guaranteed, after recovery:
+
+- The target holds either the complete previous content or the complete new content. Never a mix, and never nothing if the target existed before.
+- A first write that did not finish leaves the target absent, never partial.
+- No work file is left.
+
+What is not guaranteed:
+
+- That the new content survives a power cut before the call returns `FS_OK`. After an error the target may hold either version.
+- Anything when the medium corrupts sectors, tears a sector write, reorders writes or loses a write it acknowledged after `blk_sync()`. Many SD cards cache writes internally; see [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md#sd-card).
+- Two callers writing the same path. There is no locking.
+- A cut inside the final unlink of `#NAME` can free its clusters before the entry goes. Run the recovery before any other write after boot, or a new file may reuse those clusters and the recovery would free them again.
+
+**Tests.** `tests/host/test_fs_faults.c` replaces a file, and writes one for the first time, through a fault device. It fails the Nth write call, the Nth sync, or cuts the power after block N, for every N from the first to the last of the call, then remounts the RAM disk without flushing, recovers and checks the target: exactly the old or the new content, or absent for a first write, and no work file left. It also writes a 16 KiB file afterwards and reads the target again, which catches clusters freed twice. One run spreads the directory over two sectors to reach the renaming window above. The power cut test drops every block after N while the calls still succeed, so it proves the order of the writes: any prefix of them recovers. It does not model a torn sector, a card that reorders writes, or a card that loses data it acknowledged.
 
 ### File time stamps
 
@@ -685,4 +720,4 @@ Builds an SD card image file from a directory tree with mtools, without root: an
 
 ### Storage example
 
-Mounts the first partition of the card as `sd`, then reads commands on the PL011, one per line, and answers each with one marker: `ls`, `cat`, `put`, `atomic`, `rm`, `mv`, `mkdir`, `df`, `ini`, `sync`, `umount` and `mount`. `put` and `atomic` write byte `i` of the file as `((seed + i) * 2654435761 mod 2^32) >> 24`. `tests/target/test_storage.py` drives it. See [examples/storage](../../../examples/storage/main.c).
+Mounts the first partition of the card as `sd`, then reads commands on the PL011, one per line, and answers each with one marker: `ls`, `cat`, `put`, `atomic`, `recover`, `rm`, `mv`, `mkdir`, `df`, `ini`, `sync`, `umount` and `mount`. `put` and `atomic` write byte `i` of the file as `((seed + i) * 2654435761 mod 2^32) >> 24`. `tests/target/test_storage.py` drives it. See [examples/storage](../../../examples/storage/main.c).

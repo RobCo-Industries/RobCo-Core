@@ -187,11 +187,25 @@ def test_storage_write(board, image, need_mtools, tmp_path):
         # Files only: the root already exists, KEEP has room for more entries.
         assert int(df0["free"]) - int(df1["free"]) == used, vm.serial
 
-        # Atomic replace: new content, no temp file left.
+        # Leftover work files from an interrupted save: a partial new copy
+        # next to OLD.SAV, and an old copy moved aside for NEW.SAV.
+        assert cmd(vm, "put /~OLD.SAV 50 7")["rc"] == "ok", vm.serial
+        assert cmd(vm, "put /#NEW.SAV 20 8")["rc"] == "ok", vm.serial
+        _, root = ls(vm, "/")
+        assert root["~OLD.SAV"]["left"] == "1" and root["#NEW.SAV"]["left"] == "1"
+        assert root["OLD.SAV"]["left"] == "0"
+        assert cmd(vm, "atomic /~OLD.SAV 10 1")["rc"] == "name", vm.serial
+        # Atomic replace: recovery runs first, new content, no work file left.
         assert cmd(vm, "atomic /OLD.SAV 3000 9")["rc"] == "ok", vm.serial
         assert cmd(vm, "atomic /NEW.SAV 100 10")["rc"] == "ok", vm.serial
+        assert cmd(vm, "cat /OLD.SAV")["crc"] == crc(pattern(3000, 9))
+        assert cmd(vm, "cat /NEW.SAV")["crc"] == crc(pattern(100, 10))
+        # A first save cut short leaves only a work file: recovery drops it.
+        assert cmd(vm, "put /~FIRST.SAV 30 5")["rc"] == "ok", vm.serial
+        assert cmd(vm, "recover /FIRST.SAV")["rc"] == "ok", vm.serial
+        assert cmd(vm, "cat /FIRST.SAV")["rc"] == "noent"
         _, root = ls(vm, "/")
-        assert not [n for n in root if n[:1] in "~#"], root
+        assert not [n for n in root if n[:1] in "~#" or root[n]["left"] != "0"], root
 
         assert cmd(vm, "mkdir /NEWDIR")["rc"] == "ok"
         assert cmd(vm, "mkdir /NEWDIR")["rc"] == "exist"

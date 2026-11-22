@@ -825,7 +825,6 @@ int fs_read_file(const char *path, void *buf, size_t max, size_t *out_len)
     return (uint64_t)size > max ? FS_ERR_TOOBIG : FS_OK;
 }
 
-#if !FF_FS_READONLY
 /*
  * Derives the work file paths of path into tmp and old, which hold
  * FS_PATH_MAX + 1 bytes each. Refuses an empty name, "." and "..", and
@@ -862,7 +861,198 @@ static int atomic_names(const char *path, char *tmp, char *old)
     old[base] = ATOMIC_OLD;
     return FS_OK;
 }
+
+/* 1 if path is a file, 0 if missing, or a negative code. */
+static int present(const char *path)
+{
+    fs_stat_t st;
+    int rc = fs_stat(path, &st);
+
+    if (rc == FS_ERR_NOENT) {
+        return 0;
+    }
+    if (rc != FS_OK) {
+        return rc;
+    }
+    return st.is_dir ? FS_ERR_ISDIR : 1;
+}
+
+#if !FF_FS_READONLY
+/* FIL.flag bit that makes f_sync() rewrite the entry. ff.c keeps it private. */
+#define FATFS_FA_MODIFIED 0x40u
+
+/*
+ * f_rename() adds the new entry before it removes the old one. A power
+ * cut in between, when the two entries sit in different sectors, leaves
+ * both names on one cluster chain. Unlinking either would free the data
+ * the other still uses, so drop_work() first detaches such an alias: it
+ * points the entry at no cluster, then unlinks it.
+ */
+static int same_chain(const char *a, const char *b, int *same)
+{
+    fs_file_t fa, fb;
+    int rc;
+
+    *same = 0;
+    rc = fs_open(&fa, a, FS_READ);
+    if (rc != FS_OK) {
+        return rc;
+    }
+    rc = fs_open(&fb, b, FS_READ);
+    if (rc == FS_OK) {
+        DWORD ca = file_of(&fa)->fil.obj.sclust, cb = file_of(&fb)->fil.obj.sclust;
+
+        *same = ca != 0 && ca == cb;
+        fs_close(&fb);
+    }
+    fs_close(&fa);
+    return rc;
+}
+
+static int detach(const char *path)
+{
+    fs_file_t f;
+    file_priv_t *fp;
+    int rc = fs_open(&f, path, FS_READ | FS_WRITE);
+
+    if (rc != FS_OK) {
+        return rc;
+    }
+    fp = file_of(&f);
+    fp->fil.obj.sclust = 0;
+    fp->fil.obj.objsize = 0;
+    fp->fil.flag |= FATFS_FA_MODIFIED;
+    return fs_close(&f);
+}
+
+/* Unlinks the work file victim. keep, if not NULL, is the target to protect. */
+static int drop_work(const char *victim, const char *keep)
+{
+    int rc, same = 0;
+
+    if (keep != NULL) {
+        rc = same_chain(victim, keep, &same);
+        if (rc != FS_OK) {
+            return rc;
+        }
+    }
+    if (same) {
+        rc = detach(victim);
+        if (rc != FS_OK) {
+            return rc;
+        }
+    }
+    return fs_unlink(victim);
+}
 #endif
+
+/*
+ * Brings path back to one complete file after an interrupted
+ * fs_write_file_atomic(). T is the target, N "~" the new content, O "#"
+ * the old content. The write creates and syncs N, renames T to O,
+ * renames N to T, then unlinks O; every rename and unlink ends with a
+ * device sync. So:
+ *
+ *   T present           T is complete: the old content if the crash came
+ *                       before N took its place, else the new. Remove N
+ *                       and O, detaching any alias of T.
+ *   no T, N and O       O exists only after N was synced: roll forward,
+ *                       rename N to T, remove O.
+ *   no T, only O        Roll back: rename O to T.
+ *   no T, only N        A first write that did not reach its rename. N
+ *                       may be cut short: a crash during the write leaves
+ *                       a partial N, and nothing on disk tells the two
+ *                       apart. Remove it; the target stays absent.
+ *
+ * With src set, it changes nothing and stores in src the path that holds
+ * the content, or NULL when there is none. The read-only path uses that.
+ */
+static int recover(const char *path, const char *tmp, const char *old, const char **src)
+{
+    int t, n, o;
+
+    t = present(path);
+    if (t < 0) {
+        return t;
+    }
+    n = present(tmp);
+    if (n < 0) {
+        return n;
+    }
+    o = present(old);
+    if (o < 0) {
+        return o;
+    }
+    if (src != NULL) {
+        *src = t ? path : n && o ? tmp : o ? old : NULL;
+        return FS_OK;
+    }
+    if (!t && !n && !o) {
+        return FS_OK;
+    }
+#if FF_FS_READONLY
+    return FS_ERR_RO;
+#else
+    int rc = FS_OK;
+
+    if (t) {
+        if (o) {
+            rc = drop_work(old, path);
+        }
+        if (rc == FS_OK && n) {
+            rc = drop_work(tmp, path);
+        }
+    } else if (n && o) {
+        rc = fs_rename(tmp, path);
+        if (rc == FS_OK) {
+            rc = drop_work(old, path);
+        }
+    } else if (o) {
+        rc = fs_rename(old, path);
+    } else {
+        rc = drop_work(tmp, NULL);
+    }
+    return rc;
+#endif
+}
+
+int fs_atomic_recover(const char *path)
+{
+    char tmp[FS_PATH_MAX + 1], old[FS_PATH_MAX + 1];
+    int rc = atomic_names(path, tmp, old);
+
+    return rc != FS_OK ? rc : recover(path, tmp, old, NULL);
+}
+
+int fs_read_file_atomic(const char *path, void *buf, size_t max, size_t *out_len)
+{
+    char tmp[FS_PATH_MAX + 1], old[FS_PATH_MAX + 1];
+    const char *src = path;
+    int rc;
+
+    if (out_len != NULL) {
+        *out_len = 0;
+    }
+    if (buf == NULL && max != 0) {
+        return FS_ERR_INVAL;
+    }
+    rc = atomic_names(path, tmp, old);
+    if (rc != FS_OK) {
+        return rc;
+    }
+    rc = recover(path, tmp, old, NULL);
+    if (rc == FS_ERR_RO) {
+        /* A read-only volume: read where the content is, change nothing. */
+        rc = recover(path, tmp, old, &src);
+        if (rc == FS_OK && src == NULL) {
+            rc = FS_ERR_NOENT;
+        }
+    }
+    if (rc != FS_OK) {
+        return rc;
+    }
+    return fs_read_file(src, buf, max, out_len);
+}
 
 int fs_write_file_atomic(const char *path, const void *buf, size_t len)
 {
@@ -875,7 +1065,7 @@ int fs_write_file_atomic(const char *path, const void *buf, size_t len)
     char tmp[FS_PATH_MAX + 1], old[FS_PATH_MAX + 1];
     fs_file_t f;
     size_t done = 0;
-    int rc;
+    int rc, had;
 
     if (path == NULL || (buf == NULL && len != 0)) {
         return FS_ERR_INVAL;
@@ -884,7 +1074,17 @@ int fs_write_file_atomic(const char *path, const void *buf, size_t len)
     if (rc != FS_OK) {
         return rc;
     }
-    rc = fs_open(&f, tmp, FS_WRITE | FS_CREATE | FS_TRUNC);
+    /* Start from a clean state: only the target, if any. */
+    rc = recover(path, tmp, old, NULL);
+    if (rc != FS_OK) {
+        return rc;
+    }
+    had = present(path);
+    if (had < 0) {
+        return had;
+    }
+    /* 1. The new content, synced to the device before anything else moves. */
+    rc = fs_open(&f, tmp, FS_WRITE | FS_CREATE | FS_EXCL);
     if (rc != FS_OK) {
         return rc;
     }
@@ -908,12 +1108,22 @@ int fs_write_file_atomic(const char *path, const void *buf, size_t len)
     if (rc != FS_OK) {
         return rc;
     }
-    /* FAT cannot rename over a file: remove the old one first. */
-    rc = fs_unlink(path);
-    if (rc != FS_OK && rc != FS_ERR_NOENT) {
+    /*
+     * 2. Old content aside, 3. new content in place, 4. old copy gone.
+     * FAT cannot rename onto an existing name. Each step syncs the device.
+     * On an error the next recovery finishes or undoes the work.
+     */
+    if (had) {
+        rc = fs_rename(path, old);
+        if (rc != FS_OK) {
+            return rc;
+        }
+    }
+    rc = fs_rename(tmp, path);
+    if (rc != FS_OK || !had) {
         return rc;
     }
-    return fs_rename(tmp, path);
+    return fs_unlink(old);
 #endif
 }
 
