@@ -8,7 +8,7 @@
 #   BUILD      ?= build            (optional)
 #   include $(ROBCO_CORE)/mk/robco.mk
 #
-# Optional: EXTRA_CFLAGS, CI=1 (adds -Werror), CROSS.
+# Optional: EXTRA_CFLAGS, CI=1 (adds -Werror), CROSS, PYTHON.
 
 ifeq ($(strip $(ROBCO_CORE)),)
 $(error ROBCO_CORE is not set)
@@ -29,6 +29,7 @@ CC      := $(CROSS)gcc
 AR      := $(CROSS)ar
 LD      := $(CROSS)ld
 OBJCOPY := $(CROSS)objcopy
+PYTHON  ?= python3
 
 ROBCO_ARCHFLAGS := -mcpu=arm1176jzf-s -marm -mfloat-abi=soft -mgeneral-regs-only -mno-unaligned-access
 ROBCO_CFLAGS := $(ROBCO_ARCHFLAGS) -std=gnu11 -ffreestanding -nostdlib \
@@ -55,8 +56,10 @@ PROJ_OBJS  := $(addprefix $(BUILD)/obj/,$(addsuffix .o,$(basename $(SRCS))))
 .PHONY: all clean
 all: $(BUILD)/$(IMAGE).img
 
-$(BUILD)/$(IMAGE).img: $(BUILD)/$(IMAGE).elf
-	$(OBJCOPY) -O binary $< $@
+$(BUILD)/$(IMAGE).img: $(BUILD)/$(IMAGE).elf $(ROBCO_CORE)/tools/rimg.py
+	$(OBJCOPY) -O binary $< $@.tmp
+	$(PYTHON) $(ROBCO_CORE)/tools/rimg.py seal $@.tmp
+	mv $@.tmp $@
 
 $(BUILD)/$(IMAGE).elf: $(PROJ_OBJS) $(BUILD)/librobco.a $(BUILD)/image.ld
 	$(CC) $(ROBCO_LDFLAGS) -o $@ $(PROJ_OBJS) $(BUILD)/librobco.a -lgcc
