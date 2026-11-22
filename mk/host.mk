@@ -1,5 +1,9 @@
 # Host unit tests. Included by the top-level Makefile.
 #
+# Rule: src/lib/ holds hardware-independent code that builds and runs on
+# the host. Code that touches registers or drivers goes in src/drv/,
+# src/arch/, src/board/ or src/gfx/.
+#
 # Builds build/host/test_<name> from tests/host/test_<name>.c and every
 # src/lib/*.c with the host compiler, then runs each binary.
 #

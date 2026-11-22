@@ -18,7 +18,9 @@ missing from the installed QEMU is skipped. V2 is skipped without
 
 `make test` runs them first. Each `tests/host/test_<name>.c` becomes
 `build/host/test_<name>`, linked with every real `src/lib/*.c` and built
-with the host `cc`. ASan and UBSan are on when the compiler supports
+with the host `cc`. Code in `src/lib/` must not touch registers or
+drivers; that code belongs in `src/drv/`, `src/arch/`, `src/board/` or
+`src/gfx/`. ASan and UBSan are on when the compiler supports
 them. The build defines `ROBCO_HOST`, which drops the library's own
 `memcpy`, `memset`, `memmove` and `memcmp` so the host libc ones are used.
 
