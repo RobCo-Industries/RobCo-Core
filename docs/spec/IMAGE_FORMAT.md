@@ -215,17 +215,20 @@ The boot partition is FAT32. Names are 8.3 and upper case.
 ### seal
 
 ```
-rimg.py seal IN.bin -o OUT.img [--name NAME] [--image-version X.Y.Z] [--title TEXT] [--icon ICON.pbm]
+rimg.py seal FILE [-o OUT] [--name NAME] [--image-version X.Y.Z]
 ```
 
-The input is the raw binary from `objcopy`. The startup code already wrote the stub, magic, `hdr_version`, `hdr_size`, `load_addr`, `mem_size`, `abi_version` and `subtype`. `seal` then:
+The input is the raw binary from `objcopy`. The startup code already wrote the stub, magic, `hdr_version`, `hdr_size`, `load_addr`, `file_size`, `mem_size`, `abi_version` and `subtype`. `seal` writes the result in place, or to `OUT` with `-o`. It:
 
 1. Checks that word 0 is an ARM `b` instruction, then checks the magic, `hdr_version` and `hdr_size`. It fails on anything else.
-2. Sets `name` and `image_version` if given.
-3. With `--title` or `--icon`, fills the META block. It fails if `flags` bit 0 is clear, because the image has no room for the block. The icon must be a 32x32 PBM file.
-4. Sets `file_size` to the file length.
-5. Checks `mem_size >= file_size` and the slot bounds.
-6. Computes and writes `crc32`.
+2. Sets `file_size` to the file length if the header holds 0. It fails if the header holds another non-zero value.
+3. Sets `name` and `image_version` if given.
+4. Computes and writes `crc32`.
+5. Runs validation steps 1 to 6 on the result, with the default slot for the subtype. It fails and writes nothing if one fails.
+
+`seal` exits 0 on success and 1 on a bad image. Filling the META block is not implemented yet.
+
+`mk/robco.mk` seals every image it builds.
 
 ### info
 
@@ -233,14 +236,21 @@ The input is the raw binary from `objcopy`. The startup code already wrote the s
 rimg.py info FILE
 ```
 
-Prints every header field, one per line as `field=value`. Numbers are in hex with `0x`. Prints the META title if present. Exits 0 if the header parses. It does not check the CRC.
+Prints every header field, one per line as `field=value`. Numbers are in hex with `0x`. `magic` and `name` print as text without the NUL padding. Prints the META title if present. The last line is `crc_ok=1` or `crc_ok=0`. Exits 0 if the header parses.
 
 ### verify
 
 ```
-rimg.py verify FILE [--fat-size N]
+rimg.py verify FILE [--fat-size N] [--slot-base A --slot-size N] [--magic BOOT|ROM1|ROBCO78] [--abi-major N]
 ```
 
-Runs validation steps 1 to 6. Step 3 compares with `--fat-size`, or with the file's own size if absent. Prints `ok` or the `@RC` error name. Exits 0 on success, 1 on a validation failure, 2 on bad usage or an unreadable file.
+Runs validation steps 1 to 6.
+
+- Step 1 accepts any of the three magics, or only `--magic`.
+- Step 3 compares with `--fat-size`, or with the file's own size if absent.
+- Step 4 uses the slot from the subtype table, or `--slot-base` and `--slot-size`.
+- Step 5 uses the ABI major from the magic table, or `--abi-major`.
+
+Prints `ok` or the `@RC` error name. The exit code is the error code from the table above, so 0 on success. A file shorter than `0x60` bytes gives `io`. Bad usage exits 64.
 
 `tools/rimg.py` replaces `mkbootimg.py` and `sign_payload.py` from MFBootAgent. Images carry no signature.

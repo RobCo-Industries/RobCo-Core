@@ -3,7 +3,7 @@ VENV := .venv
 SPIKES := s1-uart-hello s2-sd-read s3-fb-mmu
 MACHINES := raspi0 raspi1ap raspi2b raspi3b
 
-.PHONY: venv test test-host test-canary test-spikes test-examples test-target
+.PHONY: venv test test-host test-tools test-canary test-spikes test-examples test-target
 
 venv: $(VENV)/.installed
 
@@ -15,7 +15,11 @@ $(VENV)/.installed: tests/requirements.txt
 # test-target rebuilds the spike and example dirs; keep top-level targets serial.
 .NOTPARALLEL:
 
-test: test-host test-canary test-spikes test-examples test-target
+test: test-host test-tools test-canary test-spikes test-examples test-target
+
+# Unit tests for the Python tools in tools/.
+test-tools: venv
+	$(VENV)/bin/pytest tests/tools -v
 
 test-canary: venv
 	$(VENV)/bin/pytest tests/canary -v
