@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 
+from . import dump
 from .qemu import Qemu, QemuError, loader_words
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -106,8 +107,13 @@ def parse_markers(text):
 class Vm:
     """A running guest. Created by boot(); do not build it directly."""
 
-    def __init__(self, qemu, serial_socks):
+    # Time budget for the whole snapshot, and per QMP read.
+    DUMP_BUDGET = 8.0
+    DUMP_READ_TIMEOUT = 2.0
+
+    def __init__(self, qemu, serial_socks, elf=None):
         self.qemu = qemu
+        self.elf = elf
         self._socks = serial_socks
         self._bufs = [bytearray() for _ in serial_socks]
         self._cond = threading.Condition()
@@ -180,7 +186,8 @@ class Vm:
                     raise QemuError(f"QEMU exited waiting for {pattern!r}.\n"
                                     f"stderr: {self.qemu.stderr()}\nserial:\n{text}")
                 self._cond.wait(min(left, 0.2))
-        raise QemuError(f"timeout ({timeout}s) waiting for {pattern!r}. serial:\n{text}")
+        raise QemuError(self._with_state(
+            f"timeout ({timeout}s) waiting for {pattern!r}. serial:\n{text}"))
 
     def send(self, text, port=0):
         """Write text to the guest's serial input."""
@@ -212,12 +219,62 @@ class Vm:
                         return ScriptReply(line, data)
                 left = deadline - time.monotonic()
                 if left <= 0:
-                    raise QemuError(f"timeout ({timeout}s) waiting for the reply to "
-                                    f"{command!r}. script channel:\n{lines}")
+                    msg = (f"timeout ({timeout}s) waiting for the reply to "
+                           f"{command!r}. script channel:\n{lines}")
+                    break
                 if self.qemu.proc.poll() is not None:
                     raise QemuError(f"QEMU exited waiting for the reply to {command!r}.\n"
                                     f"stderr: {self.qemu.stderr()}\nscript channel:\n{lines}")
                 self._cond.wait(min(left, 0.2))
+        raise QemuError(self._with_state(msg))
+
+    def state_dump(self, title="guest state"):
+        """A text snapshot of the guest: CPU samples, IRQ controllers, system timer.
+
+        Samples CPU0's pc, lr, sp and CPSR 5 times, 100 ms apart, then
+        reads the interrupt controller and system timer registers over
+        HMP. Resolves pc and lr to symbols when the image's ELF is known.
+        Never raises: a failure becomes one "state dump failed" line.
+        Runs within DUMP_BUDGET seconds. If a QMP read times out, later
+        QMP replies on this Vm may be out of step.
+        """
+        q = self.qemu
+        machine = getattr(q, "machine", "?")
+        rc = q.proc.poll() if q.proc is not None else None
+        if q.proc is None or rc is not None:
+            return dump.block([f"not collected: QEMU has exited (status {rc})"],
+                              machine, title)
+        deadline = time.monotonic() + self.DUMP_BUDGET
+        sock = getattr(q, "_qmp", None)
+
+        def hmp(cmd):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise QemuError(f"over the {self.DUMP_BUDGET}s budget before {cmd!r}")
+            if q.proc.poll() is not None:
+                raise QemuError(f"QEMU exited during the dump ({q.proc.returncode})")
+            if sock is not None:
+                sock.settimeout(min(left, self.DUMP_READ_TIMEOUT))
+            return q.hmp(cmd)
+
+        try:
+            lines = dump.collect(hmp, machine, self.elf)
+        except Exception as e:  # noqa: BLE001 - never mask the caller's error
+            lines = [f"state dump failed: {type(e).__name__}: {e}"]
+        finally:
+            if sock is not None:
+                try:
+                    sock.settimeout(q.timeout)
+                except OSError:
+                    pass
+        return dump.block(lines, machine, title)
+
+    def _with_state(self, message):
+        """`message` followed by the guest state block. Never raises."""
+        try:
+            return message + "\n" + self.state_dump("guest state at timeout")
+        except Exception as e:  # noqa: BLE001
+            return message + f"\nstate dump failed: {type(e).__name__}: {e}"
 
     def markers(self, port=0):
         """All complete `@RC` marker lines seen so far, as dicts."""
@@ -279,8 +336,12 @@ def boot_args(image, board, mode="auto", sd=None):
 
 @contextlib.contextmanager
 def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
-         timeout=10.0):
-    """Boot `image` on `board` and yield a Vm. QEMU is always killed on exit."""
+         timeout=10.0, elf=None):
+    """Boot `image` on `board` and yield a Vm. QEMU is always killed on exit.
+
+    elf is the image's ELF, used to name functions in the state dump.
+    By default it is the .elf next to the .img, if one exists.
+    """
     if board not in BOARDS:
         raise ValueError(f"unknown board {board!r}, expected one of {sorted(BOARDS)}")
     args = boot_args(image, board, mode, sd)
@@ -297,7 +358,7 @@ def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
     try:
         q.start()
         socks = [_connect_unix(p, q, timeout) for p in paths]
-        vm = Vm(q, socks)
+        vm = Vm(q, socks, elf if elf is not None else dump.find_elf(image))
         q.execute("cont")
         yield vm
     finally:
