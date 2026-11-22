@@ -89,6 +89,48 @@ typedef struct __attribute__((packed)) rimg_meta {
 
 _Static_assert(sizeof(rimg_header_t) == RIMG_HDR_SIZE, "rimg_header_t must be 64 bytes");
 _Static_assert(sizeof(rimg_meta_t) == RIMG_META_SIZE, "rimg_meta_t must be 192 bytes");
+
+#include <stddef.h>
+
+typedef enum rimg_err {
+    RIMG_OK        = 0,
+    RIMG_E_NOFILE  = 1,
+    RIMG_E_IO      = 2,
+    RIMG_E_MAGIC   = 3,
+    RIMG_E_VERSION = 4,
+    RIMG_E_SIZE    = 5,
+    RIMG_E_BOUNDS  = 6,
+    RIMG_E_ABI     = 7,
+    RIMG_E_CRC     = 8,
+} rimg_err_t;
+
+/*
+ * What the loader accepts.
+ *   magic      8 bytes, such as RIMG_MAGIC_BOOT. NULL accepts the three known magics.
+ *   slot_base  Slot the image must fit. slot_size 0 uses the slot of the subtype.
+ *   abi_major  ABI major. 0 uses the major of the magic: 2 for BOOT, 1 otherwise.
+ *   file_size  Size from the FAT directory entry. 0 skips that comparison.
+ */
+typedef struct rimg_expect {
+    const char *magic;
+    uint32_t slot_base;
+    uint32_t slot_size;
+    uint32_t abi_major;
+    uint32_t file_size;
+} rimg_expect_t;
+
+/*
+ * Runs validation steps 1 to 6 from IMAGE_FORMAT.md on an image in memory.
+ * `avail` is the number of readable bytes at `image`. The image's file_size
+ * must not exceed it. Fewer than 0x60 bytes gives RIMG_E_IO.
+ * Returns RIMG_OK and sets *out (if not NULL) to the header, or the code of
+ * the first failed step. Touches no hardware.
+ */
+int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
+                  const rimg_header_t **out);
+
+/* The @RC name of a rimg_err_t code, such as "crc". "unknown" for others. */
+const char *rimg_strerror(int code);
 #endif
 
 #endif
