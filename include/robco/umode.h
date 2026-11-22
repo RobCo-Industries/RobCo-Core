@@ -9,8 +9,9 @@
 /*
  * User-mode tasks: run one untrusted program in USR mode, serve its
  * `svc #0` calls, end it on return, exit, fault or kill request, and
- * return to the caller in SVC mode. One task at a time, core 0 only,
- * ARM state only. See docs/guide/api/umode.md.
+ * return to the caller in SVC mode. Core 0 only, ARM state only. A
+ * system-call handler may run one inner task (depth 2 at most). See
+ * docs/guide/api/umode.md.
  *
  * With the MMU on, umode_run() maps the task's regions for USR mode and
  * everything else stays privileged-only, so the task can touch nothing
@@ -20,6 +21,8 @@
  */
 
 #define UMODE_MAX_REGIONS   8
+/* Running tasks at most: an outer task and one inner task started by its handler. */
+#define UMODE_MAX_DEPTH     2
 
 /* umode_region_t.flags */
 #define UMODE_REGION_WRITE  1u  /* writable by the task; otherwise read-only */
@@ -31,7 +34,7 @@
 #define UMODE_KILLED        4   /* umode_request_kill(); code = its reason */
 
 /* umode_run() and umode_task_check() errors. Nothing is mapped or run. */
-#define UMODE_ERR_BUSY      (-1)    /* a task already runs */
+#define UMODE_ERR_BUSY      (-1)    /* depth 2 reached, or not called from main context or a handler */
 #define UMODE_ERR_ARG       (-2)    /* NULL, region count, unknown flag bits */
 #define UMODE_ERR_ALIGN     (-3)    /* MMU on and a region is not whole sections */
 #define UMODE_ERR_RANGE     (-4)    /* a region of size 0 or past the top of memory */
@@ -46,6 +49,7 @@
 #define UMODE_ERR_SP        (-13)   /* sp not 8-aligned, or [sp - 8, sp) not writable */
 #define UMODE_ERR_STUB      (-14)   /* stub not word-aligned, not writable, or on the entry */
 #define UMODE_ERR_USERMAP   (-15)   /* MMU on and a section outside the regions is user-accessible */
+#define UMODE_ERR_SHARED    (-16)   /* nested: a writable inner region shares memory with the outer task */
 
 /* r0 set by the library when no handler is installed (as -38). */
 #define UMODE_ENOSYS        38
@@ -107,18 +111,32 @@ typedef void (*umode_svc_fn)(exc_frame_t *frame, void *ctx);
  * is already user-accessible (an earlier mmu_map() with a MMU_USER_*
  * flag). The caller cleans loaded code to memory (cache_clean_range());
  * umode_run() invalidates the I-cache. Handlers must not change the MMU
- * state or the task's mappings. Main context only. Returns UMODE_ERR_*
- * with nothing mapped and nothing run.
+ * state or the task's mappings. Main context, or a system-call handler
+ * of a running task to start an inner task. Returns UMODE_ERR_* with
+ * nothing mapped and nothing run.
+ *
+ * Nested: the inner task may not write any section (MMU on) or byte
+ * (MMU off) the outer task lists: UMODE_ERR_SHARED. While the inner task
+ * runs, the outer task's regions are privileged-only except where the
+ * inner task lists them read-only. When the inner
+ * task ends, the outer task's mappings come back as they were and this
+ * returns to the handler.
  */
 int umode_run(const umode_task_t *task, umode_exit_t *out);
 
 /* Non-zero while a task runs (including inside its system calls). */
 int umode_active(void);
 
+/* Running tasks: 0 none, 1 the outer task, 2 an inner task. */
+int umode_depth(void);
+
 /* Installs the system-call handler. 0 makes every call return -UMODE_ENOSYS. */
 void umode_set_svc_handler(umode_svc_fn fn, void *ctx);
 
 /*
+ * umode_exit(), umode_range_ok() and umode_strnlen_ok() act on the
+ * innermost running task: the caller of the current system call.
+ *
  * From the handler only: ends the task with UMODE_EXITED and `code`
  * when the handler returns, instead of resuming it.
  */
@@ -128,7 +146,8 @@ void umode_exit(exc_frame_t *frame, int code);
  * Ends the running task with UMODE_KILLED and code `reason` (0 counts
  * as 1): at once if an IRQ interrupted USR mode, otherwise when the
  * current system call returns. Callable from IRQ context. Ignored when
- * no task runs. The first request wins.
+ * no task runs. The first request wins. It targets the innermost task:
+ * a request while an inner task runs never ends the outer task.
  */
 void umode_request_kill(int reason);
 
@@ -181,11 +200,37 @@ long umode_regions_strnlen(const umode_region_t *regions, unsigned count,
                            uintptr_t ptr, size_t max);
 
 /*
+ * The nested rule: UMODE_ERR_SHARED if a writable inner region shares a
+ * section (section != 0, MMU on) or a byte (section == 0, MMU off) with
+ * any outer region, else 0. Read-only inner regions may share. So the
+ * inner task writes only memory the outer task never lists, and the
+ * outer task never runs or reads bytes the inner task wrote.
+ */
+int umode_nest_check(const umode_region_t *outer, unsigned outer_count,
+                     const umode_region_t *inner, unsigned inner_count, size_t section);
+
+/*
  * Index (0..4095) of the first 1 MiB section of a 32-bit address space
  * that touches no region and for which `user` (given the section's base
  * address, mmu_section_user() on target) returns non-zero, or -1.
  */
 long umode_stray_section(const umode_region_t *regions, unsigned count,
                          int (*user)(uint32_t addr));
+
+/*
+ * The mmu_map() attribute of a region: MMU_ATTR_RAM if !user, else
+ * MMU_ATTR_RAM | MMU_USER_RW (writable) or MMU_ATTR_RO_CODE | MMU_USER_RO.
+ */
+unsigned umode_region_attr(const umode_region_t *r, int user);
+
+/*
+ * Calls map(start, size, umode_region_attr(region, user)) for each
+ * region in order. umode_run() passes mmu_map(). A later call wins on a
+ * section, so mapping the inner task after setting the outer one aside
+ * gives a shared section the inner task's permission (read-only, as
+ * umode_nest_check() refuses write sharing).
+ */
+void umode_map_regions(const umode_region_t *regions, unsigned count, int user,
+                       int (*map)(uint32_t start, uint32_t size, unsigned attr));
 
 #endif

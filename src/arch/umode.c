@@ -31,33 +31,44 @@
 /* Assembly side, src/arch/umode_entry.S. */
 int robco_umode_enter(const uint32_t ctx[7]);
 void robco_umode_leave(void);
-/* SVC sp of umode_run() after it saved the caller's registers. */
+/* SVC sp of the innermost umode_run() after it saved the caller's registers. */
 uint32_t robco_umode_kstack;
-/* Non-zero kill reason, only while a task runs. Read by robco_vec_irq. */
+/* Kill reason of the innermost task, non-zero only while it runs. Read by robco_vec_irq. */
 volatile int robco_umode_kill;
 
 extern char __image_start[], __image_mem_end[], robco_vectors[];
 /* Address of the level-1 table, src/arch/mmu.c. */
 uintptr_t robco_mmu_table(void);
 
-static struct {
-    volatile int active;
+/* One record per running task: T[0] the outer task, T[1] the inner one. */
+typedef struct {
     volatile int ended;
-    volatile int in_call;   /* a system-call handler runs */
+    volatile int in_call;   /* a system-call handler of this task runs */
     uint32_t call;          /* its number, frame r7 */
     int mmu;                /* MMU state at entry; handlers must not change it */
     umode_exit_t *out;
     umode_region_t regions[UMODE_MAX_REGIONS];
     unsigned count;
     uint32_t stub;
-    umode_svc_fn fn;
-    void *ctx;
-    exc_hook_t prev_hook;
-} U;
+    uint32_t kstack;        /* robco_umode_kstack of the task around this one */
+    int kill;               /* robco_umode_kill of the outer task, saved while this one runs */
+} task_t;
+
+static task_t T[UMODE_MAX_DEPTH];
+static volatile int depth;      /* running tasks, 0..UMODE_MAX_DEPTH */
+static umode_svc_fn svc_fn;
+static void *svc_ctx;
+static exc_hook_t prev_hook;    /* installed by the outermost umode_run() */
+
+/* Innermost running task. Only while depth > 0. */
+static task_t *cur(void)
+{
+    return &T[depth - 1];
+}
 
 static void record(unsigned reason, int code, unsigned type, const exc_frame_t *f)
 {
-    umode_exit_t *o = U.out;
+    umode_exit_t *o = cur()->out;
 
     o->reason = reason;
     o->code = code;
@@ -87,17 +98,32 @@ static void to_kernel(exc_frame_t *f)
     f->cpsr = MODE_SVC | PSR_I | PSR_F;
 }
 
-/* Fault hook, ABT or UND mode, IRQs masked. Only USR faults of the task. */
+/* Innermost task inside a system call, or 0. */
+static task_t *calling(void)
+{
+    int d;
+
+    for (d = depth; d > 0; d--) {
+        if (T[d - 1].in_call) {
+            return &T[d - 1];
+        }
+    }
+    return 0;
+}
+
+/* Fault hook, ABT or UND mode, IRQs masked. Only USR faults of the innermost task. */
 static int umode_hook(unsigned type, exc_frame_t *f)
 {
+    task_t *c;
     int rc;
 
-    if (!U.active || (f->cpsr & MODE_MASK) != MODE_USR) {
-        rc = U.prev_hook != 0 ? U.prev_hook(type, f) : EXC_NOT_HANDLED;
-        if (rc != EXC_RESUME && U.active && U.in_call) {
+    if (depth == 0 || (f->cpsr & MODE_MASK) != MODE_USR) {
+        rc = prev_hook != 0 ? prev_hook(type, f) : EXC_NOT_HANDLED;
+        c = depth != 0 ? calling() : 0;
+        if (rc != EXC_RESUME && c != 0) {
             /* A handler faulted: name the call before the fatal line. */
             k_printf("\n@RC stage=%s ev=umode_call nr=%u\n", ROBCO_STAGE_NAME,
-                     (unsigned)U.call);
+                     (unsigned)c->call);
         }
         return rc;
     }
@@ -106,32 +132,42 @@ static int umode_hook(unsigned type, exc_frame_t *f)
     return EXC_RESUME;
 }
 
-/* From robco_vec_svc, SVC mode, IRQs enabled, frame of the task. */
+/* From robco_vec_svc, SVC mode, IRQs enabled, frame of the innermost task. */
 void robco_umode_svc_call(exc_frame_t *f)
 {
-    if (!U.active) {
+    task_t *t;
+
+    if (depth == 0) {
         f->r[0] = (uint32_t)-UMODE_ENOSYS;  /* USR code not started by umode_run() */
         return;
     }
+    t = cur();
     if (f->cpsr & PSR_T) {
         /* Thumb state is not supported: end the task as a fault. */
         record(UMODE_FAULT, 0, ROBCO_EXC_SVC, f);
-        U.ended = 1;
+        t->ended = 1;
         return;
     }
-    if (f->pc == U.stub + 4) {
+    if (f->pc == t->stub + 4) {
         record(UMODE_RETURNED, (int)f->r[0], 0, f);
-        U.ended = 1;
+        t->ended = 1;
         return;
     }
-    U.call = f->r[7];
-    U.in_call = 1;
-    if (U.fn != 0) {
-        U.fn(f, U.ctx);
+    t->call = f->r[7];
+    t->in_call = 1;
+    if (svc_fn != 0) {
+        svc_fn(f, svc_ctx);     /* may run a nested task, then T[1] is free again */
     } else {
         f->r[0] = (uint32_t)-UMODE_ENOSYS;
     }
-    U.in_call = 0;
+    t->in_call = 0;
+}
+
+static void mmu_changed(unsigned call)
+{
+    /* The task's protection is gone or half-built: a kernel bug. Fatal. */
+    k_printf("\n@RC stage=%s ev=umode_mmu_changed nr=%u\n", ROBCO_STAGE_NAME, call);
+    robco_halt();
 }
 
 /*
@@ -140,16 +176,16 @@ void robco_umode_svc_call(exc_frame_t *f)
  */
 int robco_umode_svc_return(exc_frame_t *f)
 {
-    if (!U.active) {
+    task_t *t;
+
+    if (depth == 0) {
         return 0;
     }
-    if (mmu_enabled() != U.mmu) {
-        /* The task's protection is gone or half-built: a kernel bug. Fatal. */
-        k_printf("\n@RC stage=%s ev=umode_mmu_changed nr=%u\n", ROBCO_STAGE_NAME,
-                 (unsigned)U.call);
-        robco_halt();
+    t = cur();
+    if (mmu_enabled() != t->mmu) {
+        mmu_changed((unsigned)t->call);
     }
-    if (U.ended) {
+    if (t->ended) {
         return 1;
     }
     if (robco_umode_kill != 0) {
@@ -169,22 +205,27 @@ void robco_umode_irq_kill(exc_frame_t *f)
 
 int umode_active(void)
 {
-    return U.active;
+    return depth != 0;
+}
+
+int umode_depth(void)
+{
+    return depth;
 }
 
 void umode_set_svc_handler(umode_svc_fn fn, void *ctx)
 {
-    U.fn = fn;
-    U.ctx = ctx;
+    svc_fn = fn;
+    svc_ctx = ctx;
 }
 
 void umode_exit(exc_frame_t *frame, int code)
 {
     uint32_t s = irq_save();
 
-    if (U.active && !U.ended) {
+    if (depth != 0 && !cur()->ended) {
         record(UMODE_EXITED, code, 0, frame);
-        U.ended = 1;
+        cur()->ended = 1;
     }
     irq_restore(s);
 }
@@ -194,7 +235,7 @@ void umode_request_kill(int reason)
 {
     uint32_t s = irq_save();
 
-    if (U.active && robco_umode_kill == 0) {
+    if (depth != 0 && robco_umode_kill == 0) {
         robco_umode_kill = reason != 0 ? reason : 1;
     }
     irq_restore(s);
@@ -202,12 +243,12 @@ void umode_request_kill(int reason)
 
 int umode_range_ok(uintptr_t ptr, size_t len, int write)
 {
-    return U.active && umode_regions_range_ok(U.regions, U.count, ptr, len, write);
+    return depth != 0 && umode_regions_range_ok(cur()->regions, cur()->count, ptr, len, write);
 }
 
 long umode_strnlen_ok(uintptr_t ptr, size_t max)
 {
-    return U.active ? umode_regions_strnlen(U.regions, U.count, ptr, max) : -1;
+    return depth != 0 ? umode_regions_strnlen(cur()->regions, cur()->count, ptr, max) : -1;
 }
 
 #define LOCAL_PERIPH    0x40000000u /* BCM2836/7 core-local peripherals */
@@ -242,21 +283,30 @@ static int check_task(const umode_task_t *t, int mmu)
     return umode_task_check(t, &lim);
 }
 
-static void map_regions(int user)
+static int map_one(uint32_t start, uint32_t size, unsigned attr)
 {
-    unsigned i;
-    unsigned attr;
+    return mmu_map(start, size, attr);
+}
 
-    for (i = 0; i < U.count; i++) {
-        if (!user) {
-            attr = MMU_ATTR_RAM;
-        } else if (U.regions[i].flags & UMODE_REGION_WRITE) {
-            attr = MMU_ATTR_RAM | MMU_USER_RW;
-        } else {
-            attr = MMU_ATTR_RO_CODE | MMU_USER_RO;
-        }
-        mmu_map(U.regions[i].start, U.regions[i].size, attr);
+static void map_regions(const task_t *t, int user)
+{
+    /* TLB and branch predictor invalidated by mmu_map(). */
+    umode_map_regions(t->regions, t->count, user, map_one);
+}
+
+static int nest_allowed(void)
+{
+    uint32_t cpsr;
+
+    if (depth == 0) {
+        return 1;
     }
+    if (depth >= UMODE_MAX_DEPTH) {
+        return 0;
+    }
+    /* Only from a system-call handler of the running task: not from an IRQ or the hook. */
+    __asm__ volatile("mrs %0, cpsr" : "=r"(cpsr));
+    return (cpsr & MODE_MASK) == MODE_SVC && cur()->in_call;
 }
 
 int umode_run(const umode_task_t *task, umode_exit_t *out)
@@ -265,49 +315,81 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
     uint32_t ctx[7];
     uint32_t cpsr;
     unsigned i;
-    int mmu, rc;
+    int mmu, rc, d = depth;
+    task_t *t, *outer = d != 0 ? &T[d - 1] : 0;
 
-    if (U.active) {
+    if (!nest_allowed()) {
         return UMODE_ERR_BUSY;
     }
     if (task == 0 || out == 0) {
         return UMODE_ERR_ARG;
     }
     mmu = mmu_enabled();
+    if (outer != 0 && mmu != outer->mmu) {
+        mmu_changed((unsigned)outer->call);
+    }
     rc = check_task(task, mmu);
     if (rc != 0) {
         return rc;
     }
+    /* Nested: the inner task never writes what the outer task lists. Nothing changed yet. */
+    if (outer != 0) {
+        rc = umode_nest_check(outer->regions, outer->count, task->regions, task->region_count,
+                              mmu ? MMU_SECTION_SIZE : 0);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    /* Nested: the outer task's sections become privileged-only before the scan. */
+    if (mmu && outer != 0) {
+        map_regions(outer, 0);
+    }
     /* A user mapping left by the caller outside the regions would leak memory to the task. */
     if (mmu && umode_stray_section(task->regions, task->region_count, mmu_section_user) >= 0) {
+        if (outer != 0) {
+            map_regions(outer, 1);  /* back as they were */
+        }
         return UMODE_ERR_USERMAP;
     }
+    t = &T[d];
     for (i = 0; i < task->region_count; i++) {
-        U.regions[i] = task->regions[i];
+        t->regions[i] = task->regions[i];
     }
-    U.count = task->region_count;
-    U.mmu = mmu;
-    U.in_call = 0;
-    U.stub = task->stub;
-    U.out = out;
-    U.ended = 0;
-    robco_umode_kill = 0;
+    t->count = task->region_count;
+    t->mmu = mmu;
+    t->in_call = 0;
+    t->call = 0;
+    t->stub = task->stub;
+    t->out = out;
+    t->ended = 0;
     for (i = 0; i < sizeof(zero) / 4; i++) {
         ((uint32_t *)&zero)[i] = 0;
     }
-    record(UMODE_KILLED, 0, 0, &zero);  /* overwritten by the real end */
+    {
+        /* record() writes the innermost task's record: T[d] is not running yet. */
+        umode_exit_t *o = out;
+
+        o->reason = UMODE_KILLED;   /* overwritten by the real end */
+        o->code = 0;
+        o->type = 0;
+        o->frame = zero;
+        o->pc = 0;
+        o->addr = 0;
+        o->status = 0;
+    }
 
     /*
      * Map first: the caller may have left a region unmapped or read-only.
      * The stub is in a writable region, so the kernel can write it then.
+     * A section both tasks list is read-only to the inner task.
      */
     if (mmu) {
-        map_regions(1);     /* TLB and branch predictor invalidated by mmu_map() */
+        map_regions(t, 1);
     }
     /* Return stub: lr of the task. Clean it to memory for the I-side. */
-    ((volatile uint32_t *)(uintptr_t)U.stub)[0] = INSN_SVC0;
-    ((volatile uint32_t *)(uintptr_t)U.stub)[1] = INSN_BSELF;
-    cache_clean_range((const void *)(uintptr_t)U.stub, UMODE_STUB_SIZE);
+    ((volatile uint32_t *)(uintptr_t)t->stub)[0] = INSN_SVC0;
+    ((volatile uint32_t *)(uintptr_t)t->stub)[1] = INSN_BSELF;
+    cache_clean_range((const void *)(uintptr_t)t->stub, UMODE_STUB_SIZE);
     cache_invalidate_icache();
 
     ctx[0] = task->entry;
@@ -316,20 +398,41 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
     ctx[3] = task->r[1];
     ctx[4] = task->r[2];
     ctx[5] = task->r[3];
-    ctx[6] = U.stub;
+    ctx[6] = t->stub;
 
     __asm__ volatile("mrs %0, cpsr\n cpsid if" : "=r"(cpsr) :: "memory");
-    U.prev_hook = exc_set_hook(umode_hook);
-    U.active = 1;
-    robco_umode_enter(ctx);     /* returns once the task has ended, IRQs masked */
-    U.active = 0;
+    if (d == 0) {
+        prev_hook = exc_set_hook(umode_hook);
+    }
+    /* The outer task's pending kill waits for its own system call to return. */
+    t->kill = robco_umode_kill;
+    t->kstack = robco_umode_kstack;
     robco_umode_kill = 0;
-    exc_set_hook(U.prev_hook);
-    __asm__ volatile("msr cpsr_c, %0" :: "r"(cpsr) : "memory");
+    depth = d + 1;
+    robco_umode_enter(ctx);     /* returns once the task has ended, IRQs masked */
+    depth = d;
+    robco_umode_kill = t->kill;
+    robco_umode_kstack = t->kstack;
+    if (d == 0) {
+        robco_umode_kill = 0;
+        exc_set_hook(prev_hook);
+    }
 
     /* Every way out comes here: no USR mapping outlives the task. */
     if (mmu) {
-        map_regions(0);
+        map_regions(t, 0);
+        if (outer != 0) {
+            map_regions(outer, 1);  /* the outer task's view, exactly as before */
+        }
     }
+    if (outer != 0) {
+        /*
+         * The inner task wrote only its own regions, which the outer task
+         * does not list, so no outer code is dirty in the D-cache. Drop the
+         * inner task's lines from the I-cache anyway.
+         */
+        cache_invalidate_icache();
+    }
+    __asm__ volatile("msr cpsr_c, %0" :: "r"(cpsr) : "memory");
     return 0;
 }

@@ -18,6 +18,19 @@
 #define SYS_KILLEXIT 8
 #define SYS_KMMU    9
 #define SYS_KILLFIRST 10
+#define SYS_RUN     11
+#define SYS_DEPTH   12
+#define SYS_RANGE   13
+#define SYS_ARMKILL 14
+
+/* Memory of the nested cases, see examples/umode/main.c. */
+#define O_DATA      0x01000000      /* outer task: stub, stack, scratch */
+#define O_PRIV      0x01200000      /* outer task only */
+#define SHARED      0x01300000      /* outer read-write, inner read-only */
+#define I_DATA      0x01400000      /* inner task: stub and stack */
+#define O_SAVE      (O_DATA + 0x20) /* outer: real lr, then sp */
+#define O_CANARY    0xc0ffee01
+#define S_WORD      0x5a5a0001
 
 #define REG_LOOPS   3000
 
@@ -31,11 +44,11 @@ _ustart:
     mov     r0, #42
     bx      lr
 
-/* 1: a nested umode_run() must fail with -1; then exit with code 7 (99 if it did not). */
+/* 1: a nested umode_run() of an empty task must fail with -2; then exit with code 7 (99 if not). */
     .org    0x040
     mov     r7, #SYS_NEST
     svc     #0
-    mvn     r1, #0
+    mvn     r1, #1
     cmp     r0, r1
     moveq   r0, #7
     movne   r0, #99
@@ -197,7 +210,227 @@ _ustart:
     svc     #0
     b       .
 
+/*
+ * 24-27: outer tasks of the nested cases. Each starts the inner task
+ * whose selector is in r0 through SYS_RUN (r0 = its result, r1 = its
+ * end reason, or r0 = the umode_run() error and r1 = 0).
+ */
+
+/* 24: run inner r0, check that the call kept this task intact, return the result + 1. */
     .org    0x600
+    b       nest_outer
+
+/* 25: run inner r0, then ask for a kill of this task and spin. */
+    .org    0x640
+    b       nest_kill
+
+/* 26: run inner r0, then check pointers from this task. Returns inner mask | own mask << 8. */
+    .org    0x680
+    b       nest_range
+
+/* 27: run inners r0, r1 and r2 in a row, return the last result + 1. */
+    .org    0x6c0
+    b       nest_seq
+
+/* 28-38: inner tasks. A faulting instruction is the first of its slot. */
+
+/* 28: return 41. */
+    .org    0x700
+    mov     r0, #41
+    bx      lr
+
+/* 29: exit with 9. */
+    .org    0x740
+    mov     r0, #9
+    mov     r7, #SYS_EXIT
+    svc     #0
+    b       .
+
+/* 30: undefined instruction. */
+    .org    0x780
+    .word   0xe7f000f0
+    bx      lr
+
+/* 31: read the word at r0. */
+    .org    0x7c0
+    ldr     r0, [r0]
+    bx      lr
+
+/* 32: write r1 to r0. */
+    .org    0x800
+    str     r1, [r0]
+    bx      lr
+
+/* 33: jump to r0. */
+    .org    0x840
+    bx      r0
+
+/* 34: spin until the watchdog kills it. */
+    .org    0x880
+    b       .
+
+/* 35: start another task (must fail with -1), then return the depth, or 99. */
+    .org    0x8c0
+    mov     r0, #0
+    mov     r7, #SYS_RUN
+    svc     #0
+    mvn     r1, #0
+    cmp     r0, r1
+    movne   r0, #99
+    bxne    lr
+    mov     r7, #SYS_DEPTH
+    svc     #0
+    bx      lr
+
+/* 36: return the depth the handler sees. */
+    .org    0x900
+    mov     r7, #SYS_DEPTH
+    svc     #0
+    bx      lr
+
+/* 37: pointer checks from the inner task: returns 0x1f when all hold. */
+    .org    0x940
+    b       inner_range
+
+/* 38: ask for a kill of this task with reason 5, then spin. */
+    .org    0x980
+    mov     r0, #5
+    mov     r7, #SYS_ARMKILL
+    svc     #0
+    b       .
+
+    .org    0xa00
+
+/* Fails the outer task with SYS_EXIT and `code` when reg != val. */
+    .macro  ochk reg, val, code
+    ldr     r0, =\val
+    cmp     \reg, r0
+    movne   r0, #\code
+    bne     nest_fail
+    .endm
+
+/* Writes a word to addr, reads it back; exit `code` if it differs. */
+    .macro  orw addr, code
+    ldr     r1, =\addr
+    ldr     r0, =0x600d0000 + \code
+    str     r0, [r1]
+    ldr     r2, [r1]
+    cmp     r2, r0
+    movne   r0, #\code
+    bne     nest_fail
+    .endm
+
+/* r0 = SYS_RANGE(addr, len, write); sets `bit` in r4 if (r0 != 0) == want. */
+    .macro  rng addr, len, write, want, bit
+    ldr     r0, =\addr
+    mov     r1, #\len
+    mov     r2, #\write
+    mov     r7, #SYS_RANGE
+    svc     #0
+    cmp     r0, #0
+    .if \want
+    orrne   r4, r4, #\bit
+    .else
+    orreq   r4, r4, #\bit
+    .endif
+    .endm
+
+nest_outer:
+    ldr     r2, =O_SAVE
+    str     lr, [r2]
+    str     sp, [r2, #4]
+    ldr     r2, =O_PRIV
+    ldr     r1, =O_CANARY
+    str     r1, [r2]                        @ the inner task must not reach it
+    ldr     r2, =SHARED
+    ldr     r1, =S_WORD
+    str     r1, [r2]                        @ the inner task may read it
+    ldr     r4, =0x44440004                 @ callee-saved values the call must keep
+    ldr     r5, =0x55550005
+    ldr     r6, =0x66660006
+    ldr     r8, =0x88880008
+    ldr     r9, =0x99990009
+    ldr     r10, =0xaaaa000a
+    ldr     r11, =0xbbbb000b
+    ldr     lr, =0xeeee000e
+    mov     r7, #SYS_RUN
+    svc     #0
+    mov     r12, r0
+    ochk    r4, 0x44440004, 204
+    ochk    r5, 0x55550005, 205
+    ochk    r6, 0x66660006, 206
+    ochk    r8, 0x88880008, 208
+    ochk    r9, 0x99990009, 209
+    ochk    r10, 0xaaaa000a, 210
+    ochk    r11, 0xbbbb000b, 211
+    ochk    lr, 0xeeee000e, 214
+    ldr     r0, =O_SAVE
+    ldr     r0, [r0, #4]
+    cmp     sp, r0
+    movne   r0, #213
+    bne     nest_fail
+    ldr     r1, =O_PRIV
+    ldr     r1, [r1]
+    ochk    r1, O_CANARY, 220
+    orw     O_DATA + 0x30, 221              @ every own region is readable and writable again
+    orw     O_PRIV + 4, 222
+    orw     SHARED + 4, 223
+    ldr     r1, =0x00400000
+    ldr     r1, [r1]                        @ own code still readable
+    ldr     r0, =O_SAVE
+    ldr     lr, [r0]
+    add     r0, r12, #1
+    bx      lr
+
+nest_fail:
+    mov     r7, #SYS_EXIT
+    svc     #0
+    b       .
+
+nest_kill:
+    mov     r7, #SYS_RUN
+    svc     #0                              @ the inner task is killed with 5
+    mov     r0, #6
+    mov     r7, #SYS_ARMKILL
+    svc     #0
+    b       .                               @ killed with 6
+
+nest_range:
+    mov     r11, lr
+    mov     r7, #SYS_RUN
+    svc     #0
+    mov     r5, r0                          @ the inner task's mask
+    mov     r4, #0
+    rng     O_PRIV, 4, 1, 1, 1              @ own memory again
+    rng     O_DATA, 4, 1, 1, 2
+    rng     I_DATA, 4, 0, 0, 4              @ the inner task's memory: not ours
+    rng     SHARED, 4, 1, 1, 8
+    orr     r0, r5, r4, lsl #8
+    bx      r11
+
+nest_seq:
+    mov     r11, lr
+    mov     r5, r1
+    mov     r6, r2
+    mov     r7, #SYS_RUN
+    svc     #0
+    mov     r0, r5
+    svc     #0
+    mov     r0, r6
+    svc     #0
+    add     r0, r0, #1
+    bx      r11
+
+inner_range:
+    mov     r4, #0
+    rng     I_DATA, 16, 1, 1, 1             @ own memory
+    rng     O_PRIV, 4, 0, 0, 2              @ outer-only memory
+    rng     O_DATA, 4, 0, 0, 4
+    rng     SHARED, 4, 0, 1, 8              @ shared read-only
+    rng     SHARED, 4, 1, 0, 16
+    mov     r0, r4
+    bx      lr
+    .ltorg
 
 /*
  * regs: r0 = a scratch word in the data region. Before each call, load

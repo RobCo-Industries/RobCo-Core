@@ -8,6 +8,12 @@
  * value while the task is in USR mode, so a system call builds its frame
  * just below. robco_umode_leave reloads that sp, pops and returns, from
  * any of the three ways out (system call, fault, IRQ kill).
+ *
+ * Nested task: a handler calls umode_run() again on the SVC stack, below
+ * the outer task's frame. robco_umode_kstack then holds the inner value,
+ * and umode_run() puts the outer value back after the inner task ends.
+ * The outer task's USR sp, lr and cpsr stay in its frame, which the
+ * system-call exit restores, so the inner task cannot change them.
  */
 
 #include <robco/exc.h>

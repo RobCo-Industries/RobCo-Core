@@ -1,3 +1,6 @@
+#include <string.h>
+
+#include <robco/mmu.h>
 #include <robco/umode.h>
 
 #include "rc_test.h"
@@ -474,4 +477,132 @@ TEST(stray_section)
     CHECK_EQ(umode_stray_section(r, 2, fake_user), 4095);
     sect_user[4095] = 0;
     CHECK_EQ(umode_stray_section(r, 2, fake_user), -1);
+}
+
+/* A fake section table: mmu_map() as umode_run() uses it. */
+static unsigned table[64];
+
+static int fake_map(uint32_t start, uint32_t size, unsigned attr)
+{
+    uint32_t a;
+
+    for (a = start; a - start < size; a += MB) {
+        table[a / MB] = attr;
+    }
+    return 0;
+}
+
+TEST(region_attr)
+{
+    umode_region_t ro = { 4 * MB, MB, 0 }, rw = { 5 * MB, MB, UMODE_REGION_WRITE };
+
+    CHECK_EQ(umode_region_attr(&ro, 1), MMU_ATTR_RO_CODE | MMU_USER_RO);
+    CHECK_EQ(umode_region_attr(&rw, 1), MMU_ATTR_RAM | MMU_USER_RW);
+    CHECK_EQ(umode_region_attr(&ro, 0), MMU_ATTR_RAM);
+    CHECK_EQ(umode_region_attr(&rw, 0), MMU_ATTR_RAM);
+}
+
+/*
+ * The nested sequence of umode_run(): outer user, outer set aside, inner
+ * user; then inner privileged, outer user. Every section checked at each step.
+ */
+TEST(nested_mapping)
+{
+    /* Outer: code 4 read-only, data 16-17 writable, private 20 writable. */
+    static const umode_region_t outer[] = {
+        { 4 * MB, MB, 0 },
+        { 16 * MB, 2 * MB, UMODE_REGION_WRITE },
+        { 20 * MB, MB, UMODE_REGION_WRITE },
+    };
+    /* Inner: outer code read-only, outer data section 17 read-only, own 30 writable. */
+    static const umode_region_t inner[] = {
+        { 4 * MB, MB, 0 },
+        { 17 * MB, MB, 0 },
+        { 30 * MB, MB, UMODE_REGION_WRITE },
+    };
+    const unsigned RO = MMU_ATTR_RO_CODE | MMU_USER_RO, RW = MMU_ATTR_RAM | MMU_USER_RW;
+    unsigned before[64];
+    unsigned i;
+
+    for (i = 0; i < 64; i++) {
+        table[i] = MMU_ATTR_RAM;
+    }
+    umode_map_regions(outer, 3, 1, fake_map);
+    memcpy(before, table, sizeof(table));
+    CHECK_EQ(table[4], RO);
+    CHECK_EQ(table[16], RW);
+    CHECK_EQ(table[17], RW);
+    CHECK_EQ(table[20], RW);
+
+    /* Nested entry. */
+    umode_map_regions(outer, 3, 0, fake_map);
+    umode_map_regions(inner, 3, 1, fake_map);
+    for (i = 0; i < 64; i++) {
+        unsigned want = MMU_ATTR_RAM;
+
+        if (i == 4 || i == 17) {
+            want = RO;          /* listed by both: the inner permission */
+        } else if (i == 30) {
+            want = RW;
+        }
+        CHECK_EQ(table[i], want);   /* 16 and 20: outer-only, privileged */
+    }
+
+    /* Nested exit: the outer view comes back exactly. */
+    umode_map_regions(inner, 3, 0, fake_map);
+    umode_map_regions(outer, 3, 1, fake_map);
+    CHECK_EQ(memcmp(before, table, sizeof(table)), 0);
+    CHECK_EQ(table[30], MMU_ATTR_RAM);
+}
+
+/* The nested rule: no inner write access to anything the outer task lists. */
+TEST(nest_check)
+{
+    static const umode_region_t outer[] = {
+        { 4 * MB, MB, 0 },                      /* code, read-only */
+        { 16 * MB, 2 * MB, UMODE_REGION_WRITE },
+        { 20 * MB, MB, UMODE_REGION_WRITE },
+    };
+    umode_region_t in[2];
+
+    /* No sharing. */
+    in[0] = (umode_region_t){ 30 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 1, MB), 0);
+    CHECK_EQ(umode_nest_check(outer, 3, in, 1, 0), 0);
+    /* Read-only sharing is allowed, even of a writable outer section. */
+    in[1] = (umode_region_t){ 4 * MB, MB, 0 };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), 0);
+    in[1] = (umode_region_t){ 17 * MB, MB, 0 };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), 0);
+    /* Write sharing of the same section. */
+    in[1] = (umode_region_t){ 20 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), UMODE_ERR_SHARED);
+    /* Inside a multi-section outer region. */
+    in[1] = (umode_region_t){ 17 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), UMODE_ERR_SHARED);
+    /* Outer read-only, inner writable: the outer task runs it. */
+    in[1] = (umode_region_t){ 4 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), UMODE_ERR_SHARED);
+    /* Adjacent sections. */
+    in[1] = (umode_region_t){ 3 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), 0);
+    in[1] = (umode_region_t){ 18 * MB, 2 * MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), 0);
+    /* Same section, disjoint bytes: refused with the MMU on, allowed with it off. */
+    {
+        static const umode_region_t small[] = { { 33 * MB, 0x1000, 0 } };
+
+        in[1] = (umode_region_t){ 33 * MB + 0x8000, 0x1000, UMODE_REGION_WRITE };
+        CHECK_EQ(umode_nest_check(small, 1, &in[1], 1, MB), UMODE_ERR_SHARED);
+        CHECK_EQ(umode_nest_check(small, 1, &in[1], 1, 0), 0);
+    }
+    /* MMU off: one shared byte is enough. */
+    in[1] = (umode_region_t){ 4 * MB - 0x1000, 0x1001, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, 0), UMODE_ERR_SHARED);
+    in[1] = (umode_region_t){ 18 * MB - 1, 1, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, 0), UMODE_ERR_SHARED);
+    in[1] = (umode_region_t){ 4 * MB - 0x1000, 0x1000, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, 0), 0);
+    in[1] = (umode_region_t){ 18 * MB, 1, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, 0), 0);
 }
