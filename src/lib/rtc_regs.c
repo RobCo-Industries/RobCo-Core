@@ -7,6 +7,8 @@
  *   DS1307, DS1338: bit 7 of the seconds is the clock-halt bit.
  *   DS3231: bit 7 of the seconds is always 0, bit 7 of the month is the
  *   century bit, and the oscillator-stop flag is bit 7 of status (0x0F).
+ *
+ * rtc_detect() tells the families apart from bytes read only, see rtc.h.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -111,4 +113,47 @@ int rtc_regs_encode(const datetime_t *dt, uint8_t regs[RTC_TIME_REGS])
     regs[5] = dt_bcd_encode(dt->month);      /* century bit 0 on a DS3231 */
     regs[6] = dt_bcd_encode(dt->year - 2000u);
     return 0;
+}
+
+#define DS3231_WRAP         0x13u   /* index where the DS3231 repeats 0x00 */
+#define DS3231_TEMP_LSB     0x12u
+
+static int time_of(const uint8_t *regs, uint32_t *s)
+{
+    datetime_t dt;
+
+    if (rtc_regs_decode(RTC_CHIP_DS3231, regs, 0, &dt) != 0) {
+        return -1;
+    }
+    return dt_to_seconds(&dt, s);
+}
+
+int rtc_detect(const uint8_t regs[RTC_PROBE_LEN])
+{
+    uint32_t t0, t1;
+    unsigned i;
+    int uniform = 1;
+
+    if (regs == NULL) {
+        return RTC_CHIP_NONE;
+    }
+    for (i = 1; i < RTC_PROBE_LEN; i++) {
+        if (regs[i] != regs[0]) {
+            uniform = 0;
+        }
+    }
+    if (uniform && (regs[0] == 0x00u || regs[0] == 0xffu)) {
+        return RTC_CHIP_NONE;
+    }
+    /* Read-only evidence for a DS3231. Any doubt means DS1307 family. */
+    if ((regs[RTC_DS3231_STATUS] & 0x70u) != 0 ||
+        (regs[DS3231_TEMP_LSB] & 0x3fu) != 0 ||
+        time_of(regs, &t0) != 0 || time_of(regs + DS3231_WRAP, &t1) != 0) {
+        return RTC_CHIP_DS1307;
+    }
+    /* 2099-12-31 23:59:59 to 2000-01-01 is not a one second step. */
+    if (t1 != t0 && t1 != t0 + 1u) {
+        return RTC_CHIP_DS1307;
+    }
+    return RTC_CHIP_DS3231;
 }

@@ -181,3 +181,147 @@ TEST(encode_round_trip)
     CHECK_EQ(decode(RTC_CHIP_DS3231, r, 0, &out), 0);
     CHECK_EQ(out.hour, 23);
 }
+
+/* ---- rtc_detect(): read-only chip detection ---- */
+
+/* A DS3231 read of RTC_PROBE_LEN bytes from 0x00: 0x13 repeats 0x00. */
+static void ds3231_dump(uint8_t d[RTC_PROBE_LEN], const uint8_t *t0, const uint8_t *t1)
+{
+    static const uint8_t mid[] = {
+        0x00, 0x00, 0x00, 0x01,     /* 0x07 alarm 1 */
+        0x00, 0x00, 0x01,           /* 0x0b alarm 2 */
+        0x1c,                       /* 0x0e control */
+        0x88,                       /* 0x0f status: OSF and EN32kHz */
+        0x00,                       /* 0x10 aging */
+        0x19, 0x40,                 /* 0x11 0x12 temperature 25.25 C */
+    };
+
+    memcpy(d, t0, RTC_TIME_REGS);
+    memcpy(d + RTC_TIME_REGS, mid, sizeof(mid));
+    memcpy(d + 0x13, t1, RTC_TIME_REGS);
+}
+
+/* A DS1307 read: control at 0x07, then RAM from 0x08. */
+static void ds1307_dump(uint8_t d[RTC_PROBE_LEN], uint32_t seed)
+{
+    unsigned i;
+
+    memcpy(d, base, RTC_TIME_REGS);
+    d[7] = 0x10;
+    for (i = 8; i < RTC_PROBE_LEN; i++) {
+        seed = seed * 1103515245u + 12345u;
+        d[i] = (uint8_t)(seed >> 16);
+    }
+}
+
+TEST(detect_ds3231)
+{
+    uint8_t d[RTC_PROBE_LEN];
+
+    ds3231_dump(d, base, base);
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS3231);
+}
+
+TEST(detect_ds3231_tick_during_read)
+{
+    uint8_t d[RTC_PROBE_LEN];
+    uint8_t t1[RTC_TIME_REGS];
+
+    memcpy(t1, base, sizeof(t1));
+    t1[0] = 0x27;
+    ds3231_dump(d, base, t1);
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS3231);
+    /* Two seconds is not a tick. */
+    t1[0] = 0x28;
+    ds3231_dump(d, base, t1);
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+    /* Backwards is not a tick. */
+    ds3231_dump(d, t1, base);
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+}
+
+TEST(detect_ds3231_tick_59_to_00)
+{
+    static const uint8_t t0[RTC_TIME_REGS] = { 0x59, 0x59, 0x23, 0x01, 0x31, 0x12, 0x26 };
+    static const uint8_t t1[RTC_TIME_REGS] = { 0x00, 0x00, 0x00, 0x02, 0x01, 0x01, 0x27 };
+    uint8_t d[RTC_PROBE_LEN];
+    uint8_t m[RTC_TIME_REGS];
+
+    ds3231_dump(d, t0, t1);
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS3231);
+    /* Seconds 59 to 00 within the same hour. */
+    memcpy(m, base, sizeof(m));
+    m[0] = 0x59;
+    memcpy(d, m, sizeof(m));
+    m[0] = 0x00;
+    m[1] = 0x10;
+    memcpy(d + 0x13, m, sizeof(m));
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS3231);
+}
+
+TEST(detect_ds1307_random_ram)
+{
+    uint8_t d[RTC_PROBE_LEN];
+    uint32_t seed;
+
+    for (seed = 1; seed < 200; seed++) {
+        ds1307_dump(d, seed);
+        CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+    }
+}
+
+TEST(detect_ds1307_ram_matches_by_chance)
+{
+    uint8_t d[RTC_PROBE_LEN];
+
+    /* RAM at 0x13 holds a copy of the time, but 0x12 and 0x0f rule it out. */
+    ds1307_dump(d, 7);
+    memcpy(d + 0x13, base, RTC_TIME_REGS);
+    d[0x0f] = 0x00;
+    d[0x12] = 0x41;
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+    d[0x12] = 0x40;
+    d[0x0f] = 0x10;
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+    /* Only the seconds match: the rest of the copy rules it out. */
+    ds1307_dump(d, 9);
+    d[0x0f] = 0x00;
+    d[0x12] = 0x00;
+    d[0x13] = base[0];
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+}
+
+TEST(detect_qemu_ds1338_zero_ram)
+{
+    uint8_t d[RTC_PROBE_LEN];
+
+    /* QEMU's model starts with RAM zero, even at second 00. */
+    memset(d, 0, sizeof(d));
+    memcpy(d, base, RTC_TIME_REGS);
+    d[0] = 0x00;
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+    d[0] = 0x59;
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+}
+
+TEST(detect_ds3231_invalid_time_is_ds1307)
+{
+    uint8_t d[RTC_PROBE_LEN];
+    uint8_t t[RTC_TIME_REGS];
+
+    memcpy(t, base, sizeof(t));
+    t[5] = 0x00;
+    ds3231_dump(d, t, t);
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_DS1307);
+}
+
+TEST(detect_dead_device)
+{
+    uint8_t d[RTC_PROBE_LEN];
+
+    memset(d, 0x00, sizeof(d));
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_NONE);
+    memset(d, 0xff, sizeof(d));
+    CHECK_EQ(rtc_detect(d), RTC_CHIP_NONE);
+    CHECK_EQ(rtc_detect(rc_launder(NULL)), RTC_CHIP_NONE);
+}
