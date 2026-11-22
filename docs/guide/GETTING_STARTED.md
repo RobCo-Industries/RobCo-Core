@@ -64,7 +64,10 @@ hello-pi/
   main.c
   robco-core/          git submodule
   tests/
+    conftest.py
     test_boot.py
+    host/
+      test_format.c
   build/               created by make
   .venv/               created by make venv
 ```
@@ -80,9 +83,13 @@ LINK_ADDR  := 0x8000
 SRCS       := main.c
 CONFIG_H   := robco_config.h
 
-include $(ROBCO_CORE)/mk/robco.mk
+# Host unit tests in tests/host, see "Test pure code on the host".
+HOST_TEST_DIR := tests/host
 
-.PHONY: venv test
+include $(ROBCO_CORE)/mk/robco.mk
+include $(ROBCO_CORE)/mk/host.mk
+
+.PHONY: venv test test-target check-pins
 venv: .venv/.installed
 
 .venv/.installed: $(ROBCO_CORE)/tests/requirements.txt
@@ -90,11 +97,17 @@ venv: .venv/.installed
 	.venv/bin/pip install -q -r $<
 	touch $@
 
-test: all venv
-	.venv/bin/pytest tests -v
+BOARD ?= all
+test: check-pins test-host test-target
+
+test-target: all venv
+	.venv/bin/pytest tests -v --board $(BOARD)
+
+check-pins:
+	$(ROBCO_CORE)/tools/check_pins.sh .github/workflows/ci.yml
 ```
 
-Recipe lines start with a tab. The first five variables and the `include` are all a build needs. The `venv` and `test` targets are for the test you add below.
+Recipe lines start with a tab. The first five variables and the first `include` are all a build needs. The rest is for the tests you add below. `check-pins` needs the workflow from [Run it in CI](#run-it-in-ci); leave it out of `test` until you add one.
 
 Every variable `mk/robco.mk` reads:
 
@@ -281,11 +294,27 @@ qemu-system-aarch64 -M raspi3b -nographic \
   -device loader,addr=0x80000,cpu-num=0
 ```
 
-A run by hand starts the image with r0 to r3 at 0 and no ATAGS. Real firmware passes a machine id and ATAGS, and enters `raspi2b` and `raspi3b` in HYP mode. The test harness reproduces that. Use it for anything beyond a first look.
+A run by hand starts the image with r0 to r3 at 0 and no ATAGS. Real firmware passes a machine id and ATAGS, and enters `raspi2b` and `raspi3b` in HYP mode. The test harness reproduces that. Its runner does the same with your terminal as the console:
+
+```sh
+PYTHONPATH=robco-core/tests python3 -m harness.run build/hello-pi.img --board raspi3b
+```
+
+Press Ctrl-A, then x, to quit. `--sd build/sd.img` inserts a card, `--mode svc` enters in SVC mode, and `--serial2 tcp:4555` puts the script channel on a TCP port. See [tests/README.md](../../tests/README.md#run-an-image-by-hand).
 
 ## Test it with the harness
 
 `boot()` in `robco-core/tests/harness/boot.py` boots an image the way the firmware does. It loads a firmware stub at `0x0` that parks the other cores, writes ATAGS at `0x100` and enters the image at `0x8000` with the firmware's registers and mode. It connects to the serial port and kills QEMU when the test ends.
+
+The harness is also a pytest plugin. Enable it with three lines in `tests/conftest.py`:
+
+```python
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../robco-core/tests"))
+pytest_plugins = ["harness.plugin"]
+```
+
+It adds the `--board` option and the `board`, `need_mtools` and `robco_build` fixtures. A test that takes `board` runs once per board and skips a board the installed QEMU lacks. `robco_build(directory)` runs `make` once per session and returns the image path. [tests/README.md](../../tests/README.md#the-harness-in-a-project) lists the details.
 
 Create `tests/test_boot.py`:
 
@@ -294,23 +323,15 @@ Create `tests/test_boot.py`:
 
 import os
 import re
-import sys
 
-import pytest
+from harness.boot import boot
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "robco-core", "tests"))
-
-from harness.boot import boot  # noqa: E402
-
-IMAGE = os.path.join(ROOT, "build", "hello-pi.img")
-BOARDS = os.environ.get("BOARD", "raspi0 raspi2b raspi3b").split()
 
 
-@pytest.mark.parametrize("board", BOARDS)
-def test_boot(board):
-    with boot(IMAGE, board) as vm:
-        vm.wait_for("ev=ready", timeout=10)
+def test_boot(board, robco_build):
+    with boot(robco_build(ROOT), board) as vm:
+        vm.wait_for("ev=ready", timeout=10, line=True)
         boots = [m for m in vm.markers() if m["ev"] == "boot"]
         assert boots[0]["stage"] == "hellopi"
         vm.send("abc")
@@ -320,16 +341,17 @@ def test_boot(board):
 Run it:
 
 ```sh
-make test
+make test-target
 ```
 
 ```
 tests/test_boot.py::test_boot[raspi0] PASSED
+tests/test_boot.py::test_boot[raspi1ap] PASSED
 tests/test_boot.py::test_boot[raspi2b] PASSED
 tests/test_boot.py::test_boot[raspi3b] PASSED
 ```
 
-`make test BOARD=raspi2b` runs one board. The first run creates `.venv` from `robco-core/tests/requirements.txt` and builds the firmware stub inside the submodule's ignored `build/` directory.
+`make test-target BOARD=raspi2b` runs one board. The first run creates `.venv` from `robco-core/tests/requirements.txt` and builds the firmware stub inside the submodule's ignored `build/` directory.
 
 What the test uses:
 
@@ -342,7 +364,29 @@ What the test uses:
 | `vm.serial` | All serial text so far, CRLF turned into LF |
 | `vm.screendump(path)` | Writes the framebuffer as a PPM file |
 
-`boot()` also takes `mode="svc"`, `sd=path` for an SD card image, `serial2=True` for the mini UART and `extra_args=[...]` for QEMU. [tests/README.md](../../tests/README.md#writing-a-target-test) has more examples.
+`boot()` also takes `mode="svc"`, `sd=path` for an SD card image, `serial2=True` for the mini UART and `extra_args=[...]` for QEMU. With `serial2=True`, `vm.script("command")` sends a line on the script channel and returns its status and output lines. Your image can answer its own commands there, such as a screen dump, through `input_script_set_handler()`. See [the input reference](./api/input.md#project-commands). [tests/README.md](../../tests/README.md#writing-a-target-test) has more examples.
+
+## Test pure code on the host
+
+Code that touches no hardware, such as parsers and formatting, builds and runs on your computer too, with ASan and UBSan. `mk/host.mk` builds each `tests/host/test_<name>.c` with the host compiler and links it with the pure part of the library, `robco-core/src/lib`. `HOST_SRCS` adds your own pure files, `HOST_INCLUDES` their include directories.
+
+Create `tests/host/test_format.c`:
+
+```c
+#include <robco/klibc.h>
+
+#include "rc_test.h"
+
+TEST(marker)
+{
+    char buf[32];
+
+    k_snprintf(buf, sizeof(buf), "@RC stage=%s", "hellopi");
+    CHECK_STR(buf, "@RC stage=hellopi");
+}
+```
+
+`make test-host` builds `build/host/test_format` and runs it. `rc_test.h` comes from the library and gives `TEST()`, `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. [tests/README.md](../../tests/README.md#host-tests-in-a-project) lists every variable, such as `HOST_CORE_SETS=fs fatfs` to link the file system.
 
 ## Run it in CI
 

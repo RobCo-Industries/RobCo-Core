@@ -24,8 +24,9 @@ Two boot chains will use it:
 - An I2C master, a DS1307, DS1338 or DS3231 real-time clock with a software clock, an SPI master, date and time functions and an INI parser.
 - A screen console with four colour schemes and two built-in 8x16 fonts, Fixedsys Excelsior by default and Spleen. See [FONTS.md](./docs/FONTS.md).
 - Hardware-independent code: klibc, `k_printf`, CRC-32, a heap, `rimg` image validation and the boot info block.
-- `tools/rimg.py` to seal and check images. Every build seals its image. `tools/mksdimage.sh` builds an SD card image, also through the optional `make sdimage` target of `mk/robco.mk`.
+- `tools/rimg.py` to seal, pack and check images, META title and icon included. Every build seals its image. `tools/mksdimage.sh` builds an SD card image, also through the optional `make sdimage` target of `mk/robco.mk`, which a project extends with its own files.
 - Examples in `examples/`, a QEMU test harness, host unit tests, target tests on four QEMU boards, a canary suite and a pinned CI container.
+- For projects that use the library as a submodule: host tests through `mk/host.mk`, a pytest plugin and an interactive runner in `tests/harness`, project commands on the script channel and `tools/check_pins.sh` for the CI pins. [Getting started](./docs/guide/GETTING_STARTED.md) shows each one.
 
 The [specification index](./docs/spec/README.md) lists what is specified but not implemented yet. That includes the `BOOT.CFG` boot menu, the board name from the revision code and the Pip-OS ABI. What QEMU cannot prove, such as sound and cache behaviour, is listed in [HARDWARE_VALIDATION.md](./docs/HARDWARE_VALIDATION.md).
 
