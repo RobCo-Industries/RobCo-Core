@@ -10,6 +10,7 @@
 #include <robco/board.h>
 #include <robco/cache.h>
 #include <robco/exc.h>
+#include <robco/klibc.h>
 #include <robco/mmu.h>
 #include <robco/umode.h>
 
@@ -40,6 +41,8 @@ uintptr_t robco_mmu_table(void);
 static struct {
     volatile int active;
     volatile int ended;
+    volatile int in_call;   /* a system-call handler runs */
+    uint32_t call;          /* its number, frame r7 */
     umode_exit_t *out;
     umode_region_t regions[UMODE_MAX_REGIONS];
     unsigned count;
@@ -84,8 +87,16 @@ static void to_kernel(exc_frame_t *f)
 /* Fault hook, ABT or UND mode, IRQs masked. Only USR faults of the task. */
 static int umode_hook(unsigned type, exc_frame_t *f)
 {
+    int rc;
+
     if (!U.active || (f->cpsr & MODE_MASK) != MODE_USR) {
-        return U.prev_hook != 0 ? U.prev_hook(type, f) : EXC_NOT_HANDLED;
+        rc = U.prev_hook != 0 ? U.prev_hook(type, f) : EXC_NOT_HANDLED;
+        if (rc != EXC_RESUME && U.active && U.in_call) {
+            /* A handler faulted: name the call before the fatal line. */
+            k_printf("\n@RC stage=%s ev=umode_call nr=%u\n", ROBCO_STAGE_NAME,
+                     (unsigned)U.call);
+        }
+        return rc;
     }
     record(UMODE_FAULT, 0, type, f);
     to_kernel(f);
@@ -110,11 +121,14 @@ void robco_umode_svc_call(exc_frame_t *f)
         U.ended = 1;
         return;
     }
+    U.call = f->r[7];
+    U.in_call = 1;
     if (U.fn != 0) {
         U.fn(f, U.ctx);
     } else {
         f->r[0] = (uint32_t)-UMODE_ENOSYS;
     }
+    U.in_call = 0;
 }
 
 /*
@@ -252,6 +266,7 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
         U.regions[i] = task->regions[i];
     }
     U.count = task->region_count;
+    U.in_call = 0;
     U.stub = task->stub;
     U.out = out;
     U.ended = 0;

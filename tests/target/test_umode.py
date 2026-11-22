@@ -185,11 +185,11 @@ def test_umode(board, umode_vm):
     vm.wait_for("umode-echo-7\n", timeout=30)
 
 
-@pytest.mark.parametrize("variant,flag,ev,etype", [
-    ("kfault", "UMODE_KFAULT", "kfault", "undef"),
-    ("ksvc", "UMODE_KSVC", "ksvc", "svc"),
+@pytest.mark.parametrize("variant,flag,ev,etype,call", [
+    ("kfault", "UMODE_KFAULT", "kfault", "undef", "6"),
+    ("ksvc", "UMODE_KSVC", "ksvc", "svc", None),
 ])
-def test_umode_kernel_fault(board, example_image, variant, flag, ev, etype):
+def test_umode_kernel_fault(board, example_image, variant, flag, ev, etype, call):
     """A fault in a handler, or a privileged svc, stays fatal with umode linked."""
     with boot(example_image("umode", variant, f"-D{flag}=1"), board) as vm:
         vm.wait_for(EXCEPTION, timeout=180)
@@ -197,5 +197,7 @@ def test_umode_kernel_fault(board, example_image, variant, flag, ev, etype):
         exc = events(vm, "exception")
         assert len(exc) == 1 and exc[0]["type"] == etype, vm.serial
         assert int(exc[0]["spsr"], 16) & 0x1F == 0x13, "taken in SVC mode"
+        # A handler fault names the call that was running.
+        assert [c["nr"] for c in events(vm, "umode_call")] == ([call] if call else []), vm.serial
         assert not events(vm, "done"), vm.serial
 
