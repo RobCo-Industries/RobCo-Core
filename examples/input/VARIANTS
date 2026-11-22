@@ -1,0 +1,2 @@
+# <build-dir> <extra cflags>
+build/repeat -DINPUT_DEMO_REPEAT=1
