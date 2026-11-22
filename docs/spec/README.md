@@ -26,9 +26,19 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Mailbox board revision, ARM memory and UART clock | Implemented |
 | PL011 console, pin mux and divisor | Implemented |
 | `mmio_probe()` | Implemented |
-| `unsupported board` panic on BCM2711 | Specified |
+| System timer, `timer_*()` | Implemented |
+| Interrupt controller, `irq_*()` | Implemented |
+| Periodic tick on timer channel 1, `tick_*()` | Implemented |
+| GPIO functions, levels and pulls | Implemented |
+| Reboot and halt through the PM watchdog | Implemented |
+| Hardware RNG | Implemented |
+| Framebuffer through the mailbox, `fb_*()` | Implemented |
+| 8x16 font and screen console, `console_*()` | Implemented |
+| `unsupported board` report on BCM2711: `ev=error code=unsupported_board`, then halt, in `src/board/board.c` | Implemented |
 | Board name from the revision code | Specified |
 | Mini UART maintenance port | Specified |
+| SD card storage on EMMC or SDHOST | Specified |
+| Input, PWM audio | Specified |
 
 ### MEMORY_MAP.md
 
@@ -36,7 +46,12 @@ Each table lists the parts of one document. "Implemented" means the code in this
 |---|---|
 | Per-image `.stack` section and `mem_size` | Implemented |
 | QEMU firmware stub range | Implemented |
-| Terminal and Pip-Boy chain slots | Specified |
+| `__heap_start` and the heap allocator, `k_malloc()` | Implemented |
+| Slot end checked at link time with `ROBCO_SLOT_END` | Implemented |
+| Heap regions within the map, `robco_heap_slot()` and `robco_heap_high()` | Implemented |
+| MMU with an identity map | Specified |
+| Slot bounds checked by `rimg_validate()` and `tools/rimg.py` | Implemented |
+| Handoff range: boot info at `0x00100000`, DTB or ATAGS copy at `0x00101000` | Implemented |
 
 ### IMAGE_FORMAT.md
 
@@ -45,8 +60,13 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Branch stub and `rimg_header_t` emitted by `start.S` | Implemented |
 | Magic and subtype constants in `rimg.h` | Implemented |
 | META block | Specified |
-| CRC, validation, `rimg_err_t` | Specified |
-| `tools/rimg.py` | Specified |
+| CRC-32 function, `crc32()` | Implemented |
+| Image CRC check, validation, `rimg_err_t`, `rimg_validate()` | Implemented |
+| `tools/rimg.py` `seal`, `info` and `verify` | Implemented |
+| Sealing every image in `mk/robco.mk` | Implemented |
+| Firmware download with pinned hashes, `tools/fetch_firmware.sh`, and boot directory, `tools/mkbootdir.sh` | Implemented |
+| Filling the META block in `tools/rimg.py` | Specified |
+| Loading images from the SD card | Specified |
 
 ### BOOT_PROTOCOL.md
 
@@ -54,8 +74,10 @@ Each table lists the parts of one document. "Implemented" means the code in this
 |---|---|
 | `robco_main(void)`, `robco_boot_args()`, `board_get()` | Implemented |
 | `ev=exception` marker | Implemented |
-| `robco_bootinfo_t`, trust rule, `robco_bootinfo()` | Specified |
-| Stage loading, DTB and ATAGS copy, `BOOT.CFG` | Specified |
+| Boot info block: `robco_bootinfo_t`, trust rule, `bootinfo_get()` | Implemented |
+| Register handoff, `robco_handoff()` | Implemented |
+| DTB and ATAGS copy, `bootinfo_copy_fw_blob()` | Implemented |
+| Stage loading from the SD card, `BOOT.CFG` | Specified |
 | Other `@RC` events, failure handling, emergency shell | Specified |
 
 ### PIPOS_ABI.md
@@ -72,6 +94,11 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Firmware stub and `boot()` | Implemented |
 | `sdimage.py` | Implemented |
 | Serial tests in `tests/target/` | Implemented |
-| Host tests, screen goldens, input tests, fault tests | Specified |
+| Host tests for klibc, CRC-32, the allocator, `rimg_validate()`, the boot info and the tick conversion | Implemented |
+| Unit tests for `tools/rimg.py` | Implemented |
+| Two-stage chain boot in QEMU | Implemented |
+| Console grid dump and a screendump golden | Implemented |
+| Fault tests: bad magic, bad CRC, out-of-slot images and a missing next stage in the chain, an undefined instruction in `hello` | Implemented |
+| Other host tests, input tests, other fault tests | Specified |
 | `expect.py`, `screen.py`, `inputs.py` | Specified |
 | Reusable workflow for sibling repos | Implemented |

@@ -16,6 +16,26 @@ void robco_halt(void) __attribute__((noreturn));
 /* Called by start.S. Detects the board, then calls robco_main(). */
 void robco_start(void);
 
+struct robco_bootinfo;
+
+/*
+ * Enters the next stage at `entry` in SVC mode with IRQ and FIQ masked,
+ * interrupt sources masked at the controller, system timer channels 1
+ * and 3 parked with their match flags cleared, the I-cache invalidated and
+ * the MMU and D-cache off. Registers: r0 = 0, r1 = the machine id saved at
+ * entry, r2 = fdt_or_atags, r3 = bi. Flush the UART first.
+ *
+ * Cache contract: the caller must enter with the MMU and D-cache off, or
+ * with every dirty line already cleaned to memory. The function turns the
+ * MMU and D-cache off if they are on, but it cleans the D-cache only on
+ * ARM1176. On ARMv7 and later it does not clean, so dirty lines, the boot
+ * info block and the loaded image included, would be lost. The library
+ * never turns the caches on, so images that use only the library meet
+ * this contract.
+ */
+void robco_handoff(uint32_t entry, const struct robco_bootinfo *bi, uint32_t fdt_or_atags)
+    __attribute__((noreturn));
+
 /* Provided by the project. */
 void robco_main(void);
 

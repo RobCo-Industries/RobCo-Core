@@ -95,6 +95,22 @@ jobs:
         if: steps.exists.outputs.exists == 'true' && github.ref == 'refs/heads/main'
         run: docker buildx imagetools create -t "${IMAGE_NAME}:latest" "${{ steps.tag.outputs.image }}"
 
+  host:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host unit tests
+        run: make test-host HOST_SANITIZE=require
+
   canary:
     needs: image
     runs-on: ubuntu-latest
@@ -125,4 +141,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Spikes, examples and target tests
-        run: make venv && make test-spikes test-examples test-target
+        run: make venv && make test-tools test-docs test-spikes test-examples test-target

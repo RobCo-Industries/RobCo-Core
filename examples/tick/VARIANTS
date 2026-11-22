@@ -1,0 +1,3 @@
+# <build-dir> <extra cflags>
+build/slow -DTICK_SLOW=1
+build/order -DTICK_ORDER=1

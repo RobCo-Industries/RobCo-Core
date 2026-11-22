@@ -5,7 +5,8 @@
 - Each image has its own link address. Ranges never overlap within a chain.
 - No image relocates itself. An image runs at the address it was linked for.
 - Every image carries its own stacks in its own `.stack` section. No image uses a stack set up by the previous stage.
-- `mem_size` in the image header covers code, data, BSS and stacks. The whole range must fit in the image's slot.
+- `mem_size` in the image header covers code, data, BSS and stacks. The whole range must fit in the image's slot. An image that sets `ROBCO_SLOT_END` to the end of its slot fails to link when it does not fit.
+- A heap stays inside a range its image owns. An image at `0x8000` puts its heap between `__heap_start` and the end of its slot, `robco_heap_slot()`. An image that owns the range from `0x01000000`, or runs alone, may use it with `robco_heap_high()`. See [the heap section of API.md](../guide/API.md#heap-alloch).
 - All addresses are ARM physical addresses. The MMU, when on, uses an identity map.
 - RAM above the last listed range, up to `mem_base + mem_size` from the mailbox, belongs to the last owner in the table. RAM above that belongs to the GPU, including the framebuffer.
 

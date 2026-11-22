@@ -83,7 +83,12 @@ FBRD  = div64 & 0x3F;
 
 If the mailbox clock query fails, the driver uses 48 MHz.
 
-On Pi 3 and Zero 2 W, Bluetooth normally owns the PL011. Without a DTB the firmware applies no overlay, and our pin mux takes GPIO14/15 back. Whether this is enough on these boards is pending hardware validation. If output stays silent, `dtoverlay=disable-bt` is the fallback, and this file will record it.
+On Pi 3 and Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` does not depend on the firmware for this. It muxes GPIO14/15 to the PL011 (ALT0) itself and takes the UART clock from the mailbox. Without a DTB the firmware applies no overlay, so nothing else changes the pins. Whether this is enough on these boards is pending hardware validation.
+
+`dtoverlay=disable-bt` is not a fallback under this policy. The card holds no `.dtb` file and no `overlays/` folder (see [below](#no-dtb-on-the-card)), and without them the firmware ignores `dtoverlay=`. If the PL011 stays silent on a board, the options are:
+
+- Use the mini UART as the console on that board. Its divisor depends on the core clock, which the firmware can change, so this needs a fixed core clock in `config.txt`.
+- Put the board's `.dtb` and the `disable-bt` overlay on the card and add `dtoverlay=disable-bt`. The firmware then passes a DTB in r2 instead of ATAGS. The library accepts both: `bootinfo_copy_fw_blob()` copies either one. This breaks the "no .dtb" rule, so the result goes into this file first.
 
 The mini UART is the second channel. Stages use it as the maintenance and test port. Its baud divisor comes from the core clock, clock id 4, which the firmware can change. That is why it is not the console. On hardware the mini UART pins on the 40-pin header are GPIO14/15, which the PL011 already uses. So on hardware the mini UART is not routed to any pin, and the maintenance port exists only in QEMU. In QEMU the second `-serial` option is the mini UART.
 
@@ -125,6 +130,8 @@ framebuffer_depth=32
 
 `arm_64bit=0` makes the firmware load the image at `0x8000` in AArch32 state. The framebuffer lines set the default mode. Stages still ask for 640x480x32 through the mailbox.
 
+`tools/mkbootdir.sh <image.img> <target-dir> [--kernel-name NAME]` writes a boot directory with these settings, the image and the firmware files from `tools/fetch_firmware.sh`. It first verifies the image with `tools/rimg.py` and fails if the image is invalid, if it is not linked at 0x8000, or if `python3` (or `PYTHON`) is missing. Copy its files to the card's boot partition.
+
 ## No .dtb on the card
 
 The card holds no `.dtb` file and no `overlays/` folder.
@@ -133,7 +140,7 @@ Without a DTB the firmware passes an ATAGS list in r2, at `0x100`. It applies no
 
 ## Pi 4
 
-BCM2711 has a row in the detection table so that the code does not design it out. Its peripheral base and GIC differ, and it needs its own firmware files. A stage that detects part `0xD08` prints the `unsupported_board` error marker and halts. Support is a later goal.
+BCM2711 has a row in the detection table so that the code does not design it out. Its peripheral base and GIC differ, and it needs its own firmware files. A stage that detects part `0xD08` prints the `unsupported_board` error marker and halts. Nothing else supports BCM2711.
 
 ## Startup sequence
 

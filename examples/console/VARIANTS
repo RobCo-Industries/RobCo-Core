@@ -1,0 +1,2 @@
+# Extra builds for make test-examples: <build-dir> <extra cflags>.
+build/spleen -DROBCO_FONT=ROBCO_FONT_SPLEEN

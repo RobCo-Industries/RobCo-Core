@@ -30,14 +30,10 @@ The script writes a test image with a known sector 0. It fails unless the `ev=re
 
 ## SD card
 
-Same layout as spike 1 (see `../s1-uart-hello/README.md`). Copy `build/s2.img` to the card and use this `config.txt`:
+Same layout as spike 1 (see `../s1-uart-hello/README.md`):
 
-```
-kernel=s2.img
-arm_64bit=0
-enable_uart=1
-disable_splash=1
-boot_delay=0
+```sh
+../../tools/mkbootdir.sh build/s2.img sdboot --kernel-name s2.img
 ```
 
 No `.dtb` files and no `overlays/` folder. Wiring is the same as spike 1.

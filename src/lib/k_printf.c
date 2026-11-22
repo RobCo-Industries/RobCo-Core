@@ -46,11 +46,12 @@ static void k_out_padded(k_out_t *o, const char *s, int len, int width, char pad
     }
 }
 
-static void k_out_uint(k_out_t *o, uint32_t value, uint32_t radix, int upper,
+/* uintptr_t so %p prints full pointers on a 64-bit host. 32 bits on the target. */
+static void k_out_uint(k_out_t *o, uintptr_t value, unsigned radix, int upper,
                        int negative, int width, char pad)
 {
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    char tmp[12];
+    char tmp[2 * sizeof(uintptr_t) * 2];
     int len = 0;
 
     do {
@@ -125,7 +126,8 @@ static void k_format(k_out_t *o, const char *fmt, va_list ap)
         case 'p':
             k_out(o, '0');
             k_out(o, 'x');
-            k_out_uint(o, (uint32_t)(uintptr_t)va_arg(ap, void *), 16, 0, 0, 8, '0');
+            k_out_uint(o, (uintptr_t)va_arg(ap, void *), 16, 0, 0,
+                       (int)(2 * sizeof(void *)), '0');
             break;
         case '%':
             k_out(o, '%');

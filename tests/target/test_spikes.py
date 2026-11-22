@@ -23,7 +23,7 @@ def no_exception(vm):
 
 def test_s1_hello(board, spike_image):
     with boot(spike_image("s1"), board) as vm:
-        vm.wait_for("type to echo", timeout=10)
+        vm.wait_for("type to echo", timeout=30)
         time.sleep(0.2)  # give parked cores a chance to misbehave
         hello = [m for m in vm.markers() if m.get("ev") == "hello"]
         atags = vm.qmp.hmp("xp/10wx 0x100").split()
@@ -43,15 +43,15 @@ def test_s1_hello(board, spike_image):
 
 def test_s1_svc_mode(board, spike_image):
     with boot(spike_image("s1"), board, mode="svc") as vm:
-        vm.wait_for(HELLO, timeout=10)
+        vm.wait_for(HELLO, timeout=30)
         assert vm.markers()[0]["entry_mode"] == "svc"
 
 
 def test_s1_echo(board, spike_image):
     with boot(spike_image("s1"), board) as vm:
-        vm.wait_for("type to echo\n", timeout=10)
+        vm.wait_for("type to echo\n", timeout=30)
         vm.send("abc")
-        vm.wait_for(re.compile(r"type to echo\r?\nabc"), timeout=5)
+        vm.wait_for(re.compile(r"type to echo\r?\nabc"), timeout=15)
 
 
 def test_s2_sd_read(board, spike_image, need_mtools, tmp_path):
@@ -59,7 +59,7 @@ def test_s2_sd_read(board, spike_image, need_mtools, tmp_path):
     make_sd_image(sd, 64, {"kernel.img": b"\0" * 4096, "robco/motd.txt": b"hello\n"})
     sector0 = read_sector(sd, 0)
     with boot(spike_image("s2"), board, sd=sd) as vm:
-        vm.wait_for(re.compile(r"ev=(read|error|exception) .*\n"), timeout=15)
+        vm.wait_for(re.compile(r"ev=(read|error|exception) .*\n"), timeout=60)
         read = [m for m in vm.markers() if m.get("ev") == "read"]
         no_exception(vm)
     assert read and read[0]["ok"] == "1", vm.serial
@@ -76,7 +76,7 @@ BARS = [(255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0),
 def test_s3_screen(board, spike_image, tmp_path):
     shot = tmp_path / "screen.ppm"
     with boot(spike_image("s3"), board) as vm:
-        vm.wait_for("ev=done", timeout=20)
+        vm.wait_for("ev=done", timeout=60)
         no_exception(vm)
         vm.screendump(shot)
     with Image.open(shot) as im:

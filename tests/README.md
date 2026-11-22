@@ -4,11 +4,52 @@
 
     make venv
     make test-canary
+    make test-tools           # pytest for tools/ and the Makefile
     make test-target          # spikes and examples on all four boards through boot()
+    make test-target BOARD=raspi0   # the same on one board
+
+`BOARD` defaults to `all`. It is passed to pytest as `--board`, so it
+takes a board name or `all`. The reusable workflow sets it per board.
 
 Needs `qemu-system-arm` and `qemu-system-aarch64` on `PATH`. A machine
 missing from the installed QEMU is skipped. V2 is skipped without
 `arm-none-eabi-gcc`.
+
+## Host tests
+
+    make test-host                  # build and run every tests/host/test_*.c
+    make test-host HOST_SANITIZE=0  # without ASan and UBSan
+    make test-host HOST_SANITIZE=require  # fail if they are missing (CI)
+    build/host/test_alloc realloc   # run only tests whose name contains "realloc"
+
+`make test` runs them first. Each `tests/host/test_<name>.c` becomes
+`build/host/test_<name>`, linked with every real `src/lib/*.c` and built
+with the host `cc`. Code in `src/lib/` must not touch registers or
+drivers; that code belongs in `src/drv/`, `src/arch/`, `src/board/` or
+`src/gfx/`. ASan and UBSan are on when the compiler supports
+them. The build defines `ROBCO_HOST`, which drops the library's own
+`memcpy`, `memset`, `memmove` and `memcmp` so the host libc ones are used.
+
+To add a test, create `tests/host/test_<name>.c`:
+
+```c
+#include <robco/crc32.h>
+
+#include "rc_test.h"
+
+TEST(check_value)
+{
+    CHECK_EQ(crc32("123456789", 9), 0xCBF43926u);
+}
+```
+
+`rc_test.h` gives `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. A
+failed check prints file, line and values, and the test goes on.
+
+What fits: code in `src/lib/` that touches no hardware and makes no
+assumption about pointer size (the host is 64-bit, the target 32-bit).
+What does not: drivers, MMIO, assembly, exceptions, timing and anything
+in `src/arch`, `src/board` or `src/drv`. Test those under `target/`.
 
 ## Layout
 
@@ -23,8 +64,22 @@ missing from the installed QEMU is skipped. V2 is skipped without
   cores, writes ATAGS at 0x100, switches to HYP on raspi2b and enters
   the image with r0 = 0, r1 = machine id, r2 = 0x100. `a64_shim.py`
   holds the AArch64 words that drop raspi3b to AArch32 first.
+- `host/`: host unit tests and `rc_test.h`.
 - `target/`: tests that boot real images. `--board NAME` picks boards
-  (repeatable, default raspi0 and raspi2b, `all` for all four).
+  (repeatable, default raspi0 and raspi2b, `all` for all four). They
+  boot the spikes and the examples `hello`, `tick`, `gpio`, `console`,
+  `heap` and `demo`. `test_chain.py` boots `chain1`, which validates
+  `chain2` (placed at 0x00200000 by a loader device) and hands off to it.
+  It also covers a bad CRC, a wrong magic, a wrong `load_addr`, a
+  `mem_size` past the slot, no image, `chain2` alone, a corrupt boot
+  info block, and a tick in `chain1` that must leave no stale timer
+  interrupt for `chain2`.
+- `tools/`: pytest unit tests for the host tools: `tools/rimg.py` on
+  images built in memory, one case per error code, the font and doc
+  tools, the `SLOT_END` link check, the `BOARD` variable of
+  `test-target`, and the argument handling, refusal cases and
+  `config.txt` of `fetch_firmware.sh` and `mkbootdir.sh`. The firmware
+  download test runs only with `ROBCO_NET_TESTS=1`.
 - `canary/`: checks the QEMU behaviours our code depends on. Run it
   after any QEMU upgrade. A failure means QEMU changed, not our code.
 

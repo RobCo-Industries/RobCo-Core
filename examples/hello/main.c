@@ -30,6 +30,10 @@ void robco_main(void)
     int gpio;
     int c;
 
+#if defined(HELLO_EARLY_FAULT) && HELLO_EARLY_FAULT
+    /* Faults before uart_init(): the exception report must start the UART itself. */
+    __asm__ volatile(".inst 0xe7f000f0");
+#endif
     uart_init(115200);
 
     k_printf("\n@RC stage=hello ev=boot midr=0x%08x soc=%s base=0x%08x board_rev=0x%08x "

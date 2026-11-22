@@ -1,6 +1,9 @@
 /*
  * RobCo AArch32 image. Run through cpp with -DLINK_ADDR=... and the
  * project's robco_config.h forced in, so stack sizes can be overridden.
+ * ROBCO_SLOT_END, from robco_config.h or SLOT_END in mk/robco.mk, is the
+ * first byte past the image's slot in docs/spec/MEMORY_MAP.md. When set,
+ * the link fails if the image and its stacks do not fit below it.
  */
 #ifndef LINK_ADDR
 #error "LINK_ADDR must be defined"
@@ -80,6 +83,15 @@ SECTIONS
     }
     __image_mem_end = .;
 
+    /* First free byte after the image. k_heap_init can start here. */
+    __heap_start = ALIGN(16);
+
+#ifdef ROBCO_SLOT_END
+    __slot_end = ROBCO_SLOT_END;
+#else
+    __slot_end = 0;
+#endif
+
     __image_file_size = __image_end - __image_start;
     __image_mem_size = __image_mem_end - __image_start;
 
@@ -91,3 +103,6 @@ SECTIONS
 
 ASSERT(SIZEOF(.boot) == 0x20, "branch area must be 0x20 bytes")
 ASSERT(SIZEOF(.rimg) == 64, "rimg header must be 64 bytes")
+#ifdef ROBCO_SLOT_END
+ASSERT(__image_mem_end <= ROBCO_SLOT_END, "image and stacks do not fit below ROBCO_SLOT_END, the end of the slot; see docs/spec/MEMORY_MAP.md")
+#endif

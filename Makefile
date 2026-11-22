@@ -3,7 +3,7 @@ VENV := .venv
 SPIKES := s1-uart-hello s2-sd-read s3-fb-mmu
 MACHINES := raspi0 raspi1ap raspi2b raspi3b
 
-.PHONY: venv test test-canary test-spikes test-examples test-target
+.PHONY: venv test test-host test-tools test-canary test-spikes test-examples test-target
 
 venv: $(VENV)/.installed
 
@@ -15,7 +15,15 @@ $(VENV)/.installed: tests/requirements.txt
 # test-target rebuilds the spike and example dirs; keep top-level targets serial.
 .NOTPARALLEL:
 
-test: test-canary test-spikes test-examples test-target
+test: test-host test-tools test-docs test-canary test-spikes test-examples test-target
+
+# Unit tests for the Python tools in tools/.
+test-tools: venv
+	$(VENV)/bin/pytest tests/tools -v
+
+# Links, API coverage, checked commands and banned words in the Markdown files.
+test-docs:
+	$(PYTHON) tools/check_docs.py
 
 test-canary: venv
 	$(VENV)/bin/pytest tests/canary -v
@@ -53,6 +61,11 @@ test-examples:
 	done; \
 	echo "test-examples: all passed"
 
-# Target tests: boot spikes and examples through tests/harness/boot.py on every board.
+# Target tests: boot spikes and examples through tests/harness/boot.py.
+# BOARD picks one QEMU board, or all of them (default).
+BOARD ?= all
 test-target: venv
-	$(VENV)/bin/pytest tests/target -v --board all
+	$(VENV)/bin/pytest tests/target -v --board $(BOARD)
+
+# Host unit tests: src/lib built with the host cc, ASan and UBSan.
+include mk/host.mk

@@ -1,4 +1,5 @@
-# RobCo CI image: QEMU 10.1.2 (arm, aarch64) and the arm-none-eabi toolchain.
+# RobCo CI image: QEMU 10.1.2 (arm, aarch64), the arm-none-eabi toolchain
+# and a host gcc for the host unit tests.
 # The image tag is derived from this file. See ci/README.md.
 
 ARG UBUNTU=ubuntu:24.04
@@ -40,8 +41,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libglib2.0-0t64 libpixman-1-0 libfdt1 zlib1g \
       gcc-arm-none-eabi binutils-arm-none-eabi \
+      gcc libc6-dev \
       make git mtools dosfstools \
-      python3 python3-venv python3-pip ca-certificates \
+      python3 python3-venv python3-pip ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=qemu-build /out/usr/local/ /usr/local/
 RUN qemu-system-arm --version \

@@ -17,18 +17,10 @@ make -C ../.. venv        # once, for the screen check
 
 ## SD card
 
-Same layout as spike 1 (see `../s1-uart-hello/README.md`), with `s3.img` from `build/s3.img`.
+Same layout as spike 1 (see `../s1-uart-hello/README.md`):
 
-`config.txt`:
-
-```
-kernel=s3.img
-arm_64bit=0
-enable_uart=1
-disable_splash=1
-boot_delay=0
-hdmi_force_hotplug=1
-disable_overscan=1
+```sh
+../../tools/mkbootdir.sh build/s3.img sdboot --kernel-name s3.img
 ```
 
 Connect HDMI and the UART adapter as in spike 1.
