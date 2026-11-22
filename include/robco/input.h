@@ -53,6 +53,7 @@ typedef struct {
 #define INPUT_ERR_TICK      (-4)    /* the tick does not run at the given rate */
 #define INPUT_ERR_SPACE     (-5)    /* a fixed table is full */
 #define INPUT_ERR_STATE     (-6)    /* wrong call order */
+#define INPUT_ERR_NO_UART   (-7)    /* the UART the backend reads is not initialised */
 
 /* ---- Pure ring queue, src/lib/input_queue.c ---- */
 
@@ -266,7 +267,10 @@ int input_serial_start(int mode);
 
 #define INPUT_SCRIPT_LINE_MAX 128
 
-/* Starts reading script lines from the mini UART. Call uart_mini_init() first. */
+/*
+ * Starts reading script lines from the mini UART. Call uart_mini_init()
+ * first: before it, returns INPUT_ERR_NO_UART.
+ */
 int input_script_start(void);
 
 #endif

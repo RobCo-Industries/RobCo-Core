@@ -90,10 +90,18 @@ int uart_mini_poll(void)
     return (int)(mmio_read(mu_base + AUX_MU_IO) & 0xff);
 }
 
+int uart_mini_ready(void)
+{
+    return mu_base != 0;
+}
+
 int uart_mini_getc(void)
 {
     int c;
 
+    if (mu_base == 0) {
+        return -1;
+    }
     while ((c = uart_mini_poll()) < 0) {
     }
     return c;

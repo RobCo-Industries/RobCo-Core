@@ -200,6 +200,9 @@ int input_script_start(void)
     if (started) {
         return INPUT_ERR_STATE;
     }
+    if (!uart_mini_ready()) {
+        return INPUT_ERR_NO_UART;
+    }
     len = 0;
     overflow = 0;
     waiting = 0;

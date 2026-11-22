@@ -39,6 +39,9 @@ def start(vm):
     init = markers(vm, "init")
     assert len(init) == 1, vm.serial
     assert init[0]["mini"] == "0" and init[0]["gpio"] == "0", vm.serial
+    assert init[0]["script"] == "0", vm.serial
+    # Before uart_mini_init(): INPUT_ERR_NO_UART, and a getc that returns -1 at once.
+    assert (init[0]["early_script"], init[0]["early_getc"]) == ("-7", "-1"), vm.serial
 
 
 def tap(code):

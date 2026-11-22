@@ -72,11 +72,15 @@ void robco_main(void)
     uint32_t pushed, dropped;
     unsigned i;
     int mini, gpio, rep = 0;
+    int script, early_script, early_getc;
 
     uart_init(115200);
     k_printf("\n@RC stage=input ev=boot soc=%s base=0x%08x\n", b->soc_name,
              (unsigned)b->periph_base);
 
+    /* Before uart_mini_init(): both must fail at once instead of hanging. */
+    early_script = input_script_start();
+    early_getc = uart_mini_getc();
     mini = uart_mini_init(115200);
     irq_init();
     tick_init(TICK_HZ);
@@ -92,8 +96,9 @@ void robco_main(void)
     rep = input_set_repeat(REPEAT_DELAY_MS, REPEAT_RATE_MS);
 #endif
     input_serial_start(INPUT_SERIAL_MAIN);
-    input_script_start();
-    k_printf("@RC stage=input ev=init mini=%d gpio=%d repeat=%d\n", mini, gpio, rep);
+    script = input_script_start();
+    k_printf("@RC stage=input ev=init mini=%d gpio=%d repeat=%d script=%d early_script=%d "
+             "early_getc=%d\n", mini, gpio, rep, script, early_script, early_getc);
 
     /* The guard decides within about 100 ms of tick time. */
     while (input_gpio_status() == INPUT_GPIO_CHECKING) {

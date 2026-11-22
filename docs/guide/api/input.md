@@ -59,6 +59,7 @@ typedef struct {
 | `INPUT_ERR_TICK` | `-4` | The tick does not run at the given rate |
 | `INPUT_ERR_SPACE` | `-5` | A fixed table or the tick callback slots are full |
 | `INPUT_ERR_STATE` | `-6` | Wrong call order, or already started |
+| `INPUT_ERR_NO_UART` | `-7` | The UART the backend reads is not initialised |
 
 ### Init order
 
@@ -208,7 +209,7 @@ A terminal sends a key once, so each key gives a press and a release. An arrow w
 int input_script_start(void);
 ```
 
-Reads lines from the mini UART from `input_poll()` and answers each on the mini UART with `ok` or `err <reason>`, followed by CR LF. Returns `0`, `INPUT_ERR_STATE` on a second call, or `INPUT_ERR_SPACE` when no poller slot is free. It does not check that `uart_mini_init()` ran: before it, the backend reads nothing and its answers go nowhere. Lines end at CR or LF and hold up to 127 characters. Empty lines get no answer.
+Reads lines from the mini UART from `input_poll()` and answers each on the mini UART with `ok` or `err <reason>`, followed by CR LF. Returns `0`, `INPUT_ERR_STATE` on a second call, `INPUT_ERR_NO_UART` before a successful `uart_mini_init()`, or `INPUT_ERR_SPACE` when no poller slot is free. After an error you can call it again. Lines end at CR or LF and hold up to 127 characters. Empty lines get no answer.
 
 | Line | Events | Answer |
 |---|---|---|
@@ -299,7 +300,7 @@ The held-key state behind `input_key_down()` and auto-repeat. It keeps one bit p
 | Key state covers codes 0 to 31. | `input_key_down()` and repeat ignore KEY events with a higher code. |
 | The console backend takes every byte. | After `input_serial_start()`, `uart_getc()` and `uart_poll()` in other code compete for bytes. |
 | Serial input needs a busy loop. | In main mode the backends read only inside `input_poll()`. A main loop that stalls longer than the UART FIFO lasts loses bytes. |
-| `wait` blocks the script, not the system. | Lines after `wait` stay in the mini UART FIFO and the host until the time passes. On a board the mini UART receive FIFO holds 8 bytes, so a host must not send more during a `wait`. |
+| `wait` blocks the script, not the system. | Lines after `wait` stay in the mini UART FIFO and the host until the time passes. On a board the mini UART receive FIFO holds 8 bytes, so a host must not send more during a `wait`. See [Mini UART](#mini-uart-uart_minih). |
 | Timestamps use the system timer. | `t_ms` is `timer_now_ms()`, not `tick_ms()`, so it is valid from IRQ context and before the tick starts. |
 
 ### Example
@@ -380,16 +381,17 @@ Sets the enable bit in AUXENB, 8-bit mode, no interrupts and no flow control, cl
 
 ```c
 void uart_mini_putc(char c);        /* '\n' goes out as "\r\n" */
-int uart_mini_getc(void);           /* blocking */
+int uart_mini_getc(void);           /* blocking; -1 at once before uart_mini_init() */
 int uart_mini_poll(void);           /* -1 when nothing is pending */
+int uart_mini_ready(void);          /* 1 after uart_mini_init() succeeded, else 0 */
 void uart_mini_puts(const char *s);
 ```
 
-These behave like their `uart_*` counterparts. Before init, `uart_mini_putc()` and `uart_mini_puts()` do nothing and `uart_mini_poll()` returns -1. `uart_mini_getc()` before init never returns.
+These behave like their `uart_*` counterparts. Before init, `uart_mini_putc()` and `uart_mini_puts()` do nothing, and `uart_mini_poll()` and `uart_mini_getc()` return -1 at once. After init, `uart_mini_getc()` waits for a byte. `uart_mini_ready()` tells whether init succeeded.
 
 `uart_mini_init()` does not mux any pin. In QEMU it works without pins. On a board its pins are GPIO14 and 15 (ALT5), the same pins as the PL011 console, and a board can only wire one of them there. To use the script channel on a board, a project must either give up the PL011 on those pins, or route the PL011 elsewhere and set GPIO14 and 15 to ALT5 itself before `uart_mini_init()`. The mini UART baud also follows the core clock, which the firmware can change, so fix `core_freq` in `config.txt` when you use it on a board.
 
 | Edge | Detail |
 |---|---|
-| `uart_mini_getc()` before init hangs. | It loops on `uart_mini_poll()`, which returns -1 until init. |
+| The receive FIFO holds 8 bytes. | Nothing reads the mini UART in the background: the script backend reads it only inside `input_poll()`, and holds the bytes during a `wait`. On a board, a host that sends more than 8 bytes while the consumer is busy, during a `wait` or a long frame, loses the rest. QEMU does not show this. A project should pace the host: send a line, then wait for its `ok` before the next one. If it cannot, it should call `input_poll()` at least every 8 byte times, about 0.7 ms at 115200 baud, or lower the baud rate. |
 | The baud drifts with the core clock. | The register is set once from the clock at init. A later core clock change breaks the baud. |

@@ -21,8 +21,9 @@
 int uart_mini_init(uint32_t baud);
 
 void uart_mini_putc(char c);        /* '\n' goes out as "\r\n" */
-int uart_mini_getc(void);           /* blocking */
+int uart_mini_getc(void);           /* blocking; -1 at once before uart_mini_init() */
 int uart_mini_poll(void);           /* -1 when nothing is pending */
+int uart_mini_ready(void);          /* 1 after uart_mini_init() succeeded, else 0 */
 void uart_mini_puts(const char *s);
 
 #endif

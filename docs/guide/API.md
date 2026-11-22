@@ -257,7 +257,7 @@ int uart_getc(void);            /* blocking */
 int uart_poll(void);            /* -1 when nothing is pending */
 ```
 
-Read one byte. `uart_getc()` waits forever. `uart_poll()` returns at once with the byte, or `-1` when the receive FIFO is empty or the UART is not initialised. There is no receive interrupt: poll from your main loop.
+Read one byte. `uart_getc()` waits for a byte, or returns `-1` at once before `uart_init()`. `uart_poll()` returns at once with the byte, or `-1` when the receive FIFO is empty or the UART is not initialised. There is no receive interrupt: poll from your main loop.
 
 ```c
 void uart_flush(void);          /* waits until the transmitter is idle */
