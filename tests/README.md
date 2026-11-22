@@ -113,7 +113,10 @@ temporary directory outside the repository and builds it there.
 - `target/`: tests that boot real images. `--board NAME` picks boards
   (repeatable, default raspi0 and raspi2b, `all` for all four). They
   boot the spikes and the examples `hello`, `tick`, `gpio`, `console`,
-  `heap`, `demo`, `sdraw`, `storage`, `mmu`, `input`, `audio`, `rtc` and `spi`.
+  `heap`, `demo`, `sdraw`, `storage`, `mmu`, `input`, `audio`, `rtc`, `spi` and `umode`.
+  `test_umode.py` runs user-mode tasks with the MMU off and on: system
+  calls, register and flag preservation, faults with their addresses,
+  watchdog kills, and the fatal path for kernel faults.
   `test_sdraw.py` and `test_storage.py` attach an SD image.
   `test_storage.py` also boots the read-only build of `storage`. `test_input.py` drives the
   serial and script backends, the second over the mini UART.
@@ -280,5 +283,7 @@ with QEMU's exit status. `--qemu-arg` adds a QEMU argument.
 ## What QEMU cannot prove
 
 Caches, PWM sound, GPIO input, real SPI signalling and SD pin routing
-on boards with WiFi need a real board. The checklist is in
+on boards with WiFi need a real board. QEMU enforces MMU permissions,
+but real fault status values and the behaviour of privileged
+instructions in USR mode need real silicon too. The checklist is in
 [docs/HARDWARE_VALIDATION.md](../docs/HARDWARE_VALIDATION.md).

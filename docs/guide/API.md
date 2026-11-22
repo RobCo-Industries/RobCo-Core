@@ -11,6 +11,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | [Input](./api/input.md) | `input.h`, `uart_mini.h` |
 | [Audio](./api/audio.md) | `audio.h` |
 | [Buses, clock and configuration](./api/buses.md) | `i2c.h`, `rtc.h`, `datetime.h`, `spi.h`, `ini.h` |
+| [User mode](./api/umode.md) | `umode.h` |
 
 ## Contents
 
@@ -47,6 +48,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | `datetime.h` | [Date and time](./api/buses.md#date-and-time-datetimeh) |
 | `spi.h` | [SPI master](./api/buses.md#spi-master-spih) |
 | `ini.h` | [Configuration files](./api/buses.md#configuration-files-inih) |
+| `umode.h` | [User-mode tasks](./api/umode.md#user-mode-tasks-umodeh) |
 | `crc32.h` | [CRC-32](#crc-32-crc32h) |
 | `rimg.h` | [Image header](#image-header-rimgh) |
 | `bootinfo.h` | [Boot info block](#boot-info-block-bootinfoh) |
@@ -61,7 +63,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | Init | A driver with an `_init` function does nothing useful before that call. Most calls before init return silently or return an error. |
 | Context | "Main context" means SVC mode with IRQs either masked or enabled. "IRQ context" means inside an interrupt handler or a tick callback. IRQs are masked there. |
 | Cores | Only core 0 runs. `start.S` parks the other cores. |
-| Caches | The library turns on the MMU and caches only when the image calls `mmu_enable()`. Every component works with them on or off. |
+| Caches | The library turns on the MMU and caches only when the image calls `mmu_enable()`. Every component works with them on or off. The default map is privileged-only: USR mode gets access only through [permission flags](./api/memory.md#permissions). |
 | Locking | The library has no locks. Functions that touch shared state from both contexts say so. |
 | Addresses | All addresses are ARM physical addresses. |
 
