@@ -112,6 +112,21 @@ build/fault -DHELLO_FAULT=1
 
 Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and built as `build/host/test_<name>`. `rc_test.h` gives `TEST()`, `CHECK`, `CHECK_EQ`, `CHECK_STR` and `CHECK_MEM`. See [tests/README.md](../../tests/README.md#host-tests).
 
+## Tool tests
+
+`tests/tools/` holds pytest tests for the host tools and the build. `make test-tools` runs them.
+
+| File | Tests |
+|---|---|
+| `test_rimg_tool.py` | `tools/rimg.py` on images built in memory, one case per error code |
+| `test_check_docs.py` | `tools/check_docs.py` on small trees in a temp directory |
+| `test_font_tools.py` | `tools/font2c.py` and `tools/font_specimen.py` |
+| `test_scheme_ids.py` | The console scheme ids in `console.h` match `con_scheme` in BOOT_PROTOCOL.md |
+| `test_slot_end.py` | The `ROBCO_SLOT_END` link check |
+| `test_makefile.py` | The top-level Makefile, such as the `BOARD` variable of `make test-target` |
+| `test_boot_scripts.py` | `tools/fetch_firmware.sh` and `tools/mkbootdir.sh` |
+| `test_fs_interop.py` | `build/host/fs_tool` against mtools images. It builds the tool itself and skips without mtools. |
+
 ## Add a target test
 
 Create `tests/target/test_<name>.py`. Take the `board` fixture to run on each `--board`, and `example_image` to build an example once per session:
