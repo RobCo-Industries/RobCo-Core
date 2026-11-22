@@ -12,7 +12,7 @@ $(VENV)/.installed: tests/requirements.txt
 	$(VENV)/bin/pip install -q -r tests/requirements.txt
 	touch $@
 
-test: test-canary test-spikes
+test: test-canary test-spikes test-examples
 
 test-canary: venv
 	$(VENV)/bin/pytest tests/canary -v
@@ -32,3 +32,17 @@ test-spikes: venv
 	  $(VENV)/bin/python spikes/s3-fb-mmu/check_screen.py $$m || fail "s3-fb-mmu check_screen on $$m"; \
 	done; \
 	echo "test-spikes: all passed"
+
+# Builds examples/hello warning-free, then boots it normally and with
+# --fault on every machine. Stops at the first failure.
+.PHONY: test-examples
+test-examples:
+	@set -eu; \
+	fail() { echo "FAIL: $$1" >&2; exit 1; }; \
+	$(MAKE) -C examples/hello CI=1 || fail "hello build"; \
+	$(MAKE) -C examples/hello CI=1 BUILD=build/fault EXTRA_CFLAGS=-DHELLO_FAULT=1 || fail "hello fault build"; \
+	for m in $(MACHINES); do \
+	  examples/hello/run-qemu.sh $$m || fail "hello on $$m"; \
+	  examples/hello/run-qemu.sh $$m --fault || fail "hello --fault on $$m"; \
+	done; \
+	echo "test-examples: all passed"
