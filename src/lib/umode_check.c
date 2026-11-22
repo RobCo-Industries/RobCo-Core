@@ -215,6 +215,36 @@ int umode_task_check(const umode_task_t *t, const umode_limits_t *lim)
     return 0;
 }
 
+int umode_nest_check(const umode_region_t *outer, unsigned outer_count,
+                     const umode_region_t *inner, unsigned inner_count, size_t section)
+{
+    uintptr_t il, ol;
+    unsigned i, j;
+    int ok;
+
+    for (i = 0; i < inner_count; i++) {
+        if (!(inner[i].flags & UMODE_REGION_WRITE)) {
+            continue;
+        }
+        il = last_byte(inner[i].start, inner[i].size, &ok);
+        if (!ok) {
+            continue;
+        }
+        for (j = 0; j < outer_count; j++) {
+            ol = last_byte(outer[j].start, outer[j].size, &ok);
+            if (!ok) {
+                continue;
+            }
+            if (section != 0 ? meet(inner[i].start / section, il / section,
+                                    outer[j].start / section, ol / section)
+                             : meet(inner[i].start, il, outer[j].start, ol)) {
+                return UMODE_ERR_SHARED;
+            }
+        }
+    }
+    return 0;
+}
+
 long umode_stray_section(const umode_region_t *regions, unsigned count,
                          int (*user)(uint32_t addr))
 {

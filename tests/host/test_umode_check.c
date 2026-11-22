@@ -554,3 +554,55 @@ TEST(nested_mapping)
     CHECK_EQ(memcmp(before, table, sizeof(table)), 0);
     CHECK_EQ(table[30], MMU_ATTR_RAM);
 }
+
+/* The nested rule: no inner write access to anything the outer task lists. */
+TEST(nest_check)
+{
+    static const umode_region_t outer[] = {
+        { 4 * MB, MB, 0 },                      /* code, read-only */
+        { 16 * MB, 2 * MB, UMODE_REGION_WRITE },
+        { 20 * MB, MB, UMODE_REGION_WRITE },
+    };
+    umode_region_t in[2];
+
+    /* No sharing. */
+    in[0] = (umode_region_t){ 30 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 1, MB), 0);
+    CHECK_EQ(umode_nest_check(outer, 3, in, 1, 0), 0);
+    /* Read-only sharing is allowed, even of a writable outer section. */
+    in[1] = (umode_region_t){ 4 * MB, MB, 0 };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), 0);
+    in[1] = (umode_region_t){ 17 * MB, MB, 0 };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), 0);
+    /* Write sharing of the same section. */
+    in[1] = (umode_region_t){ 20 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), UMODE_ERR_SHARED);
+    /* Inside a multi-section outer region. */
+    in[1] = (umode_region_t){ 17 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), UMODE_ERR_SHARED);
+    /* Outer read-only, inner writable: the outer task runs it. */
+    in[1] = (umode_region_t){ 4 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), UMODE_ERR_SHARED);
+    /* Adjacent sections. */
+    in[1] = (umode_region_t){ 3 * MB, MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), 0);
+    in[1] = (umode_region_t){ 18 * MB, 2 * MB, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, MB), 0);
+    /* Same section, disjoint bytes: refused with the MMU on, allowed with it off. */
+    {
+        static const umode_region_t small[] = { { 33 * MB, 0x1000, 0 } };
+
+        in[1] = (umode_region_t){ 33 * MB + 0x8000, 0x1000, UMODE_REGION_WRITE };
+        CHECK_EQ(umode_nest_check(small, 1, &in[1], 1, MB), UMODE_ERR_SHARED);
+        CHECK_EQ(umode_nest_check(small, 1, &in[1], 1, 0), 0);
+    }
+    /* MMU off: one shared byte is enough. */
+    in[1] = (umode_region_t){ 4 * MB - 0x1000, 0x1001, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, 0), UMODE_ERR_SHARED);
+    in[1] = (umode_region_t){ 18 * MB - 1, 1, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, 0), UMODE_ERR_SHARED);
+    in[1] = (umode_region_t){ 4 * MB - 0x1000, 0x1000, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, 0), 0);
+    in[1] = (umode_region_t){ 18 * MB, 1, UMODE_REGION_WRITE };
+    CHECK_EQ(umode_nest_check(outer, 3, in, 2, 0), 0);
+}

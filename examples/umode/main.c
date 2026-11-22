@@ -548,7 +548,14 @@ static const umode_region_t inner_kernel[] = {
     { 0, REGION_SIZE, UMODE_REGION_WRITE },
 };
 
-enum { LAY_OK, LAY_KERNEL, LAY_STUB, LAY_USERMAP };
+/* Inner layout with write access to the outer task's shared region: refused. */
+static const umode_region_t inner_wrshare[] = {
+    { CODE_BASE, REGION_SIZE, 0 },
+    { SHARED_BASE, REGION_SIZE, UMODE_REGION_WRITE },
+    { I_DATA_BASE, REGION_SIZE, UMODE_REGION_WRITE },
+};
+
+enum { LAY_OK, LAY_KERNEL, LAY_STUB, LAY_USERMAP, LAY_WRSHARE };
 
 /* Inner tasks, by selector (outer r0 of SYS_RUN). */
 static const struct {
@@ -574,6 +581,7 @@ static const struct {
     { "badkern",  28, 0,             LAY_KERNEL,  0 },  /* 13 */
     { "badstub",  28, 0,             LAY_STUB,    0 },  /* 14 */
     { "badmap",   28, 0,             LAY_USERMAP, 0 },  /* 15 */
+    { "badshare", 28, 0,             LAY_WRSHARE, 0 },  /* 16 */
 };
 
 /* Exit records, one per depth: an inner handler may try to start a third task. */
@@ -603,6 +611,8 @@ static void run_inner(exc_frame_t *f)
     if (inners[sel].layout == LAY_KERNEL) {
         t.regions = inner_kernel;
         t.region_count = 1;
+    } else if (inners[sel].layout == LAY_WRSHARE) {
+        t.regions = inner_wrshare;
     } else if (inners[sel].layout == LAY_STUB) {
         t.stub = CODE_BASE;     /* read-only to the inner task */
     } else if (inners[sel].layout == LAY_USERMAP) {
@@ -645,6 +655,7 @@ static const struct {
     { "badkern",  24, { 13 },       0 },
     { "badstub",  24, { 14 },       0 },
     { "badmap",   24, { 15 },       1 },
+    { "badshare", 24, { 16 },       0 },
     { "seq",      27, { 12, 1, 0 }, 0 },
 };
 

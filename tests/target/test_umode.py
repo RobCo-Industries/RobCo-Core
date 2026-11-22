@@ -313,15 +313,15 @@ def test_umode_handler_mmu_change(board, example_image):
 # Nested tasks: an outer task whose handler starts an inner task (SYS_RUN).
 O_PRIV, SHARED, UNMAPPED = 0x01200000, 0x01300000, 0xE0000000
 NEST_OFF = ["value", "exit", "undef", "rdpriv", "rdshared", "spin", "busy", "depth", "range",
-            "kill", "badkern", "badstub", "seq"]
+            "kill", "badkern", "badstub", "badshare", "seq"]
 NEST_ON = ["value", "exit", "undef", "rdpriv", "rdshared", "wrshared", "rdunmap", "pabt", "spin",
-           "busy", "depth", "range", "kill", "badkern", "badstub", "badmap", "seq"]
+           "busy", "depth", "range", "kill", "badkern", "badstub", "badmap", "badshare", "seq"]
 # Inner tasks each outer case starts, in order. "busy" starts "ret" at depth 2 first: refused.
 INNERS = {"value": ["ret"], "busy": ["ret", "busy"], "range": ["range"], "kill": ["kill"],
           "seq": ["kill", "exit", "ret"]}
 # Outer result: (reason, code). Default: returned, the inner code + 1.
 OUTER = {"kill": ("killed", 6), "badkern": ("returned", -8), "badstub": ("returned", -13),
-         "badmap": ("returned", -14), "seq": ("returned", 42)}
+         "badmap": ("returned", -14), "badshare": ("returned", -15), "seq": ("returned", 42)}
 
 
 def u32(v):
@@ -337,7 +337,7 @@ def check_inner(i, mmu):
         assert (n, i["after"], i["rc"], i["reason"]) == ("ret", "2", "-1", "none"), i
         return
     assert (i["depth"], i["after"]) == ("1", "1"), i
-    rc = {"badkern": "-9", "badstub": "-14", "badmap": "-15"}.get(n, "0")
+    rc = {"badkern": "-9", "badstub": "-14", "badmap": "-15", "badshare": "-16"}.get(n, "0")
     assert i["rc"] == rc, i
     if rc != "0":
         return

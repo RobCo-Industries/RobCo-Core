@@ -332,6 +332,14 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
     if (rc != 0) {
         return rc;
     }
+    /* Nested: the inner task never writes what the outer task lists. Nothing changed yet. */
+    if (outer != 0) {
+        rc = umode_nest_check(outer->regions, outer->count, task->regions, task->region_count,
+                              mmu ? MMU_SECTION_SIZE : 0);
+        if (rc != 0) {
+            return rc;
+        }
+    }
     /* Nested: the outer task's sections become privileged-only before the scan. */
     if (mmu && outer != 0) {
         map_regions(outer, 0);
@@ -373,7 +381,7 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
     /*
      * Map first: the caller may have left a region unmapped or read-only.
      * The stub is in a writable region, so the kernel can write it then.
-     * A section both tasks list now has the inner task's permission.
+     * A section both tasks list is read-only to the inner task.
      */
     if (mmu) {
         map_regions(t, 1);
@@ -418,7 +426,11 @@ int umode_run(const umode_task_t *task, umode_exit_t *out)
         }
     }
     if (outer != 0) {
-        /* The inner task may have written memory the outer task runs. */
+        /*
+         * The inner task wrote only its own regions, which the outer task
+         * does not list, so no outer code is dirty in the D-cache. Drop the
+         * inner task's lines from the I-cache anyway.
+         */
         cache_invalidate_icache();
     }
     __asm__ volatile("msr cpsr_c, %0" :: "r"(cpsr) : "memory");

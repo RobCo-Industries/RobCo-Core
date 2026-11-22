@@ -60,6 +60,7 @@ Some privileged instructions do not fault in USR mode. They are ignored instead,
 | `UMODE_ERR_SP` | `-13` | `sp` not 8-byte aligned, or the 8 bytes below it are not writable |
 | `UMODE_ERR_STUB` | `-14` | `stub` not word-aligned, not inside writable memory, or on the entry word |
 | `UMODE_ERR_USERMAP` | `-15` | MMU on and a section outside the regions is already user-accessible |
+| `UMODE_ERR_SHARED` | `-16` | Nested: a writable inner region shares a section (MMU on) or a byte (MMU off) with an outer region |
 | `UMODE_ENOSYS` | `38` | A call with no handler installed returns `-38` |
 | `UMODE_STUB_SIZE` | `8u` | Bytes of the return stub |
 
@@ -166,9 +167,16 @@ void umode_map_regions(const umode_region_t *regions, unsigned count, int user,
                        int (*map)(uint32_t start, uint32_t size, unsigned attr));
 ```
 
-`umode_region_attr()` returns the `mmu_map()` attribute of a region: `MMU_ATTR_RAM` when `user` is `0`, otherwise `MMU_ATTR_RAM | MMU_USER_RW` for a writable region and `MMU_ATTR_RO_CODE | MMU_USER_RO` for a read-only one. `umode_map_regions()` calls `map` once per region, in order, with that attribute. `umode_run()` passes `mmu_map()`. A later call wins on a section, which gives a section both tasks list the inner task's permission. `tests/host/test_umode_check.c` replays the nested sequence on a fake table and checks every section at each step.
+`umode_region_attr()` returns the `mmu_map()` attribute of a region: `MMU_ATTR_RAM` when `user` is `0`, otherwise `MMU_ATTR_RAM | MMU_USER_RW` for a writable region and `MMU_ATTR_RO_CODE | MMU_USER_RO` for a read-only one. `umode_map_regions()` calls `map` once per region, in order, with that attribute. `umode_run()` passes `mmu_map()`. A later call wins on a section, which gives a section both tasks list the inner task's permission. That permission is read-only, because `umode_nest_check()` refuses write sharing. `tests/host/test_umode_check.c` replays the nested sequence on a fake table and checks every section at each step.
 
 `umode_stray_section()` walks the 4096 sections of the 32-bit address space. It returns the index of the first section that touches no region and for which `user(base address)` is non-zero, or `-1`. `umode_run()` passes [`mmu_section_user()`](memory.md) and fails with `UMODE_ERR_USERMAP` on a match.
+
+```c
+int umode_nest_check(const umode_region_t *outer, unsigned outer_count,
+                     const umode_region_t *inner, unsigned inner_count, size_t section);
+```
+
+The nested rule, pure, in `src/lib/umode_check.c`. Returns `UMODE_ERR_SHARED` when a writable inner region shares a section with any outer region, or a byte when `section` is `0`. Returns `0` otherwise. Read-only inner regions may share. `umode_run()` calls it for an inner task after `umode_task_check()`, with the MMU section size or `0`.
 
 ```c
 int umode_task_check(const umode_task_t *task, const umode_limits_t *lim);
@@ -263,7 +271,7 @@ Latency: a task in USR mode ends at the end of the IRQ that made the request, or
 | Thumb is not supported. | A task in Thumb state is killed at its first fault or system call. |
 | Handlers are not preemptible by the kill. | A request during a handler waits for the handler to return. |
 | Two levels only. | An inner task cannot start a third task. Tasks never run side by side: the outer task waits in its system call. |
-| Shared sections are shared memory. | A section both tasks list holds the same bytes for both. A writable one lets the inner task change the outer task's data, stub or code. |
+| Shared sections are read-only to the inner task. | An inner task cannot get write access to a section the outer task lists. `umode_run()` refuses it with `UMODE_ERR_SHARED`. The outer task can still change a section it shares read-only, so the inner task may see those bytes change between its runs. |
 | The task's own memory is unprotected from itself. | A task can overwrite its own stub, stack or heap. |
 | FIQ stays masked in the task. | The library has no FIQ handler. |
 | Kernel code fetch on ARM1176 is unproven. | On QEMU ARMv6 a task can run kernel instructions, still in USR mode. Its loads, stores and privileged instructions still fault, so it cannot read kernel data, write kernel memory or touch MMIO. It can learn kernel code bytes by running them and watching its registers. It can reuse kernel code with its own registers, but any call that loads kernel data or touches a peripheral faults. |
@@ -276,7 +284,8 @@ A system-call handler may call `umode_run()` to start an inner task. Pip-OS uses
 The model:
 
 - Depth is 2 at most. A call at depth 2 returns `UMODE_ERR_BUSY` and changes nothing. A call from an IRQ handler or the fault hook returns `UMODE_ERR_BUSY` too.
-- The inner task is validated like any task: `umode_task_check()`, the stray user-mapping scan and the stub rules. It may list sections of the outer task, for example the outer task's code read-only.
+- The inner task is validated like any task: `umode_task_check()`, the stray user-mapping scan and the stub rules. It may list sections of the outer task read-only, for example the outer task's code.
+- The inner task may not write anything the outer task lists. If a writable inner region shares a section with an outer region (MMU on), or a byte (MMU off), `umode_run()` returns `UMODE_ERR_SHARED` before it changes anything. This holds even when the outer region is read-only. The outer task's mappings stay as they were and the outer task goes on. `umode_nest_check()` in `src/lib/umode_check.c` holds the rule.
 - The outer task waits inside its system call. Its registers, banked `sp` and `lr`, status word and pending kill sit in its system-call frame and in its own record. Nothing the inner task does changes them.
 - When the inner task ends for any reason, `umode_run()` returns `0` to the handler with the inner result in `*out`. The handler goes on, and its result goes to the outer task as usual.
 - The same handler serves both tasks. `umode_depth()` tells it which one called.
@@ -287,8 +296,8 @@ Mappings with the MMU on:
 
 1. On entry, after `umode_task_check()` passes, every outer region becomes `MMU_ATTR_RAM`, privileged-only.
 2. The stray user-mapping scan runs next, so the outer task's own sections do not trip it. If it fails, the outer regions get their user mappings back and `umode_run()` returns `UMODE_ERR_USERMAP`.
-3. The inner regions are mapped for USR mode. A section both tasks list gets the inner permission.
-4. When the inner task ends, its regions become `MMU_ATTR_RAM`, then the outer regions get their user mappings back, with the same flags as before. The instruction cache is invalidated, so the outer task never runs stale code.
+3. The inner regions are mapped for USR mode. A section both tasks list is read-only to the inner task.
+4. When the inner task ends, its regions become `MMU_ATTR_RAM`, then the outer regions get their user mappings back, with the same flags as before. The inner task wrote only its own regions, which the outer task does not list. So no outer code is dirty in the data cache. `umode_run()` still invalidates the instruction cache.
 
 `mmu_map()` invalidates the TLB and the branch predictor at each step, so neither task runs through a stale TLB entry. With the MMU off, nesting works the same way without memory protection.
 
@@ -298,7 +307,7 @@ What the handler author must get right:
 
 - Start the inner task only from the outer task's handler, and pass an exit record that stays valid until `umode_run()` returns.
 - Use `umode_depth()` to decide which calls the inner task may make. Refuse the launch call at depth 2, or let `umode_run()` refuse it.
-- Check every pointer after the inner task ends again. A pointer the outer task passed before the launch is still in its regions, but the inner task may have changed the bytes behind it if it had write access.
+- Check every pointer after the inner task ends again. A pointer the outer task passed before the launch is still in its regions. The inner task cannot write those bytes, but the handler may have.
 - Give each depth its own watchdog. A tick watchdog that requests a kill hits the innermost task, so the outer task's limit cannot fire while the inner task runs.
 - Do not change mappings or the MMU state between tasks. `umode_run()` halts with `ev=umode_mmu_changed` if the MMU state differs from the outer task's when it starts the inner task.
 
