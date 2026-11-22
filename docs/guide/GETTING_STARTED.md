@@ -111,6 +111,10 @@ Every variable `mk/robco.mk` reads:
 | `EXTRA_CFLAGS` | empty | Added to every compile, library included |
 | `CI` | empty | `CI=1` adds `-Werror` |
 | `SLOT_END` | empty | Sets `ROBCO_SLOT_END` for the linker script |
+| `SDIMAGE_DIR` | empty | A tree `make sdimage` copies to the card root |
+| `SDIMAGE_FILES` | empty | `source:destination` pairs `make sdimage` copies, such as `$(BUILD)/hello-pi.img:HELLO.IMG` |
+| `SDIMAGE_DEPS` | empty | Extra prerequisites of `make sdimage` |
+| `SDIMAGE_MIB` | `64` | Card size in MiB |
 
 The fragment compiles every `.c` and `.S` file under `robco-core/src/*/` into `build/librobco.a`. The linker keeps only what your image uses.
 
@@ -359,6 +363,21 @@ jobs:
 ```
 
 The inputs are documented at the top of [robco-ci.yml](../../.github/workflows/robco-ci.yml).
+
+## Build a card image for QEMU
+
+`make sdimage` writes `build/sd.img`, a card image with an MBR and one FAT partition. It stages the card in `$(SDIMAGE_STAGE)`, which is `build/sdstage`. It copies `SDIMAGE_DIR`, then each `SDIMAGE_FILES` pair, then runs the double-colon target `sdimage-stage`, then packs the stage with `tools/mksdimage.sh`. Set the variables before the `include`. Add your own steps with `sdimage-stage::` rules anywhere in the Makefile:
+
+```make
+SDIMAGE_FILES := build/hello-pi.img:HELLO.IMG config/HELLO.CFG:HELLO/HELLO.CFG
+
+include $(ROBCO_CORE)/mk/robco.mk
+
+sdimage-stage::
+	mkdir -p $(SDIMAGE_STAGE)/HELLO/SAVE
+```
+
+`boot(image, board, sd="build/sd.img")` inserts the card in a test.
 
 ## Put it on an SD card
 

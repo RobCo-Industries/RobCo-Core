@@ -75,3 +75,40 @@ def test_fs_without_fatfs_is_refused(project):
     r = make(project, "test-host", "HOST_CORE_SETS=fs", check=False)
     assert r.returncode != 0
     assert "fs needs fatfs" in r.stderr
+
+
+MTOOLS = ("mformat", "mcopy", "mmd", "mdir", "mtype")
+need_mtools = pytest.mark.skipif(not all(shutil.which(t) for t in MTOOLS),
+                                 reason="mtools not installed")
+PART_OFF = 2048 * 512
+
+
+def mt(*args):
+    env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+    return subprocess.run(list(args), check=True, env=env, capture_output=True).stdout
+
+
+@need_cross
+@need_mtools
+def test_sdimage_files_and_hook(project):
+    r = make(project, "CI=1", "sdimage")
+    out = r.stdout + r.stderr
+    assert "warning" not in out.lower(), out
+    card = f"{project / 'build' / 'sd.img'}@@{PART_OFF}"
+    listing = sorted(mt("mdir", "-/", "-b", "-i", card, "::").decode().split())
+    assert listing == ["::/DATA/", "::/DATA/HELLO.TXT", "::/DATA/STAMP.TXT",
+                               "::/SAMPLE.IMG"]
+    with open(project / "build" / "sample.img", "rb") as f:
+        assert mt("mtype", "-i", card, "::/SAMPLE.IMG") == f.read()
+    with open(project / "data" / "hello.txt", "rb") as f:
+        assert mt("mtype", "-i", card, "::/DATA/HELLO.TXT") == f.read()
+    assert mt("mtype", "-i", card, "::/DATA/STAMP.TXT") == b"staged by sample\n"
+    # A second run starts from an empty stage and gives the same card.
+    make(project, "CI=1", "sdimage")
+    assert sorted(mt("mdir", "-/", "-b", "-i", card, "::").decode().split()) == listing
+
+
+def test_sdimage_rejects_a_bad_pair(project):
+    r = make(project, "sdimage", "SDIMAGE_FILES=data/hello.txt", check=False)
+    assert r.returncode != 0
+    assert "is not source:destination" in r.stderr
