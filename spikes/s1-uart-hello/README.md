@@ -1,0 +1,74 @@
+# Spike 1: UART hello
+
+One 32-bit image for every Pi from the Zero to the 3. It detects the board from MIDR at runtime and prints a line on the PL011 UART at 115200 8N1. Then it echoes what you type.
+
+Shared startup code lives in `../common/`.
+
+## Build and test in QEMU
+
+```sh
+make                      # build/s1.elf and build/s1.img
+./run-qemu.sh raspi0      # also raspi1ap, raspi2b, raspi3b
+```
+
+`run-qemu.sh` exits non-zero if the `@RC` line is missing or shows the wrong SoC.
+
+## SD card
+
+Use a FAT32 partition. Copy these files to its root:
+
+- `bootcode.bin`, `start.elf`, `fixup.dat` from the official firmware repo: <https://github.com/raspberrypi/firmware/tree/master/boot>
+- `config.txt`, shown below
+- `s1.img`, copied from `build/s1.img`
+
+Do not put any `.dtb` files or an `overlays/` folder on the card. Without a DTB the firmware passes ATAGS in r2 and applies no overlays. We want the plain firmware handoff.
+
+`config.txt`:
+
+```
+kernel=s1.img
+arm_64bit=0
+enable_uart=1
+disable_splash=1
+boot_delay=0
+```
+
+## Wiring
+
+Use a 3.3 V USB-serial adapter. Do not use a 5 V one.
+
+| Pi header pin | Signal       | Adapter |
+|---------------|--------------|---------|
+| 6             | GND          | GND     |
+| 8             | GPIO14 (TXD) | RX      |
+| 10            | GPIO15 (RXD) | TX      |
+
+Open the adapter at 115200 8N1, no flow control. For example `screen /dev/tty.usbserial-XXXX 115200`.
+
+On the Pi 3 and Zero 2 W, the PL011 is normally used by Bluetooth. The spike muxes GPIO14/15 to the PL011 itself. If you see nothing on these boards, add `dtoverlay=disable-bt` to `config.txt` and report it.
+
+## Expected output
+
+On a Pi Zero. Values differ per board.
+
+```
+@RC stage=spike1 ev=hello midr=0x410fb767 soc=bcm2835 base=0x20000000 board_rev=0x00900093 mem=0x1c000000 uart_clk=48000000 entry_mode=svc fw_r0=0x0 fw_r1=0xc42 fw_r2=0x100
+RobCo spike 1: UART hello
+arm memory: base 0x00000000 size 448 MiB
+uart clock: 48000000 Hz (mailbox)
+type to echo
+```
+
+On a Pi 3 or Zero 2 W, expect `soc=bcm2837 base=0x3f000000` and `entry_mode=hyp`.
+
+If the CPU faults, the image prints a line with `ev=exception`, the exception name, the PC and DFSR/DFAR, then halts.
+
+## What to report back
+
+For each board:
+
+1. The board name and the full `@RC` line.
+2. Whether the first characters are garbled.
+3. Whether typing echoes back.
+4. Any `ev=exception` line.
+5. Whether you needed `dtoverlay=disable-bt`.
