@@ -1,0 +1,106 @@
+"""Build SD card images with mtools. No root, no loop devices.
+
+    make_sd_image("sd.img", 64, {"kernel.img": Path("build/kernel.img"),
+                                 "robco/motd.txt": b"hello\\n"})
+
+The image has an MBR with one FAT partition at LBA 2048. Sizes are
+rounded up to a power of 2 because QEMU's SD card model needs that.
+"""
+
+import os
+import shutil
+import struct
+import subprocess
+import tempfile
+from pathlib import Path
+
+SECTOR = 512
+PART_LBA = 2048
+FAT32_MIN_MIB = 64  # below this, FAT16
+TOOLS = ("mformat", "mcopy", "mmd")
+
+
+class MtoolsMissing(RuntimeError):
+    pass
+
+
+def have_mtools():
+    return all(shutil.which(t) for t in TOOLS)
+
+
+def _pow2_mib(size_mib):
+    n = 1
+    while n < size_mib:
+        n *= 2
+    return max(n, 4)
+
+
+def _mbr(part_type, lba, sectors):
+    # One entry, CHS fields set to the LBA-only marker values.
+    entry = struct.pack("<B3sB3sII", 0x00, b"\xfe\xff\xff", part_type, b"\xfe\xff\xff",
+                        lba, sectors)
+    return bytes(446) + entry + bytes(48) + b"\x55\xaa"
+
+
+def make_sd_image(path, size_mib, files=None, label="ROBCO"):
+    """Create `path`: MBR, one FAT partition at LBA 2048, the given files.
+
+    `files` maps names inside the card ("dir/name") to bytes or a Path.
+    A name ending in "/" creates an empty directory. Returns the size in
+    bytes, which is `size_mib` rounded up to a power of 2.
+    """
+    if not have_mtools():
+        raise MtoolsMissing("mtools (mformat, mcopy, mmd) not installed")
+    size = _pow2_mib(size_mib) << 20
+    sectors = size // SECTOR - PART_LBA
+    fat32 = size >= FAT32_MIN_MIB << 20
+    with open(path, "wb") as f:
+        f.write(_mbr(0x0C if fat32 else 0x0E, PART_LBA, sectors))
+        f.truncate(size)
+
+    env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+    img = f"{os.fspath(path)}@@{PART_LBA * SECTOR}"
+
+    def mt(*args):
+        subprocess.run(list(args), check=True, env=env, capture_output=True)
+
+    # One-sector clusters keep small cards above the FAT12 cluster limit.
+    fmt = ["mformat", "-i", img] + (["-F"] if fat32 else ["-c", "1"])
+    mt(*fmt, "-v", label[:11], "-T", str(sectors), "-h", "64", "-s", "32",
+       "-H", str(PART_LBA), "::")
+
+    made = set()
+
+    def mkdirs(parts):
+        for i in range(1, len(parts) + 1):
+            d = "/".join(parts[:i])
+            if d not in made:
+                mt("mmd", "-i", img, "::" + d)
+                made.add(d)
+
+    with tempfile.TemporaryDirectory(prefix="sdimg") as tmp:
+        for i, (name, data) in enumerate(sorted((files or {}).items())):
+            parts = [p for p in name.split("/") if p]
+            if name.endswith("/"):
+                mkdirs(parts)
+                continue
+            mkdirs(parts[:-1])
+            src = data
+            if isinstance(data, (bytes, bytearray)):
+                src = Path(tmp) / f"f{i}"
+                src.write_bytes(data)
+            mt("mcopy", "-i", img, os.fspath(src), "::" + "/".join(parts))
+    return size
+
+
+def corrupt(path, offset, data):
+    """Overwrite bytes at `offset` in the image, for fault tests."""
+    with open(path, "r+b") as f:
+        f.seek(offset)
+        f.write(bytes(data))
+
+
+def read_sector(path, lba):
+    with open(path, "rb") as f:
+        f.seek(lba * SECTOR)
+        return f.read(SECTOR)

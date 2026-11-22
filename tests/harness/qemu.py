@@ -40,13 +40,14 @@ def loader_words(addr, words, entry=None):
 
 class Qemu:
     def __init__(self, binary, machine, args=(), qmp=True, qtest=False,
-                 serial_count=0, timeout=20.0):
+                 serial_count=0, timeout=20.0, null_serial=True):
         self.binary = binary
         self.machine = machine
         self.extra = list(args)
         self.use_qmp = qmp
         self.use_qtest = qtest
         self.serial_count = serial_count
+        self.null_serial = null_serial  # False when the caller adds its own -serial
         self.timeout = timeout
         self.tmpdir = tempfile.mkdtemp(prefix="qh")
         self.proc = None
@@ -65,7 +66,7 @@ class Qemu:
         if self.serial_count:
             for p in self.serial_paths:
                 cmd += ["-serial", f"file:{p}"]
-        else:
+        elif self.null_serial:
             cmd += ["-serial", "null"]
         if self.use_qmp:
             cmd += ["-qmp", f"unix:{self._sock('qmp')},server=on,wait=off"]
