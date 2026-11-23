@@ -173,7 +173,7 @@ class FakeQemu:
     def __init__(self, rc=None):
         self.proc = FakeProc(rc)
 
-    def hmp(self, command):
+    def hmp(self, command, timeout=None):
         raise OSError("socket closed")
 
     def stderr(self):
@@ -256,25 +256,118 @@ def test_slow_monitor_and_slow_symbols_keep_the_hardware_state(tmp_path, monkeyp
     assert took < budget + 0.5
 
 
-def test_monitor_failing_on_third_command_keeps_earlier_parts():
-    lines = dump.collect(slow_hmp("raspi0", 0, fail_on=3), "raspi0", sleep=lambda s: None)
+def test_monitor_failing_on_fifth_command_keeps_earlier_parts():
+    # Order without pause: controller, timer, then samples #1, #2, #3.
+    lines = dump.collect(slow_hmp("raspi0", 0, fail_on=5), "raspi0", sleep=lambda s: None)
     text = "\n".join(lines)
-    assert "cpu0 samples (2, 100 ms apart):" in text
+    assert "cpu0 samples while running (2, 100 ms apart):" in text
     assert "not collected: cpu0 sample #3 of 5: OSError: monitor gone" in text
     assert "interrupt controller @" in text and "system timer @" in text
-    assert "info registers (sample #1):" in text
+    assert "info registers (first sample):" in text
+    assert "device registers: read with the VM running" in text
 
 
 def test_over_budget_names_each_missing_part():
-    clock = iter([0.0, 0.0, 0.0] + [99.0] * 50).__next__
+    # In time for the controller only: one clock read per step.
+    clock = iter([0.0] + [99.0] * 50).__next__
     lines = dump.collect(fake_hmp("raspi2b"), "raspi2b", sleep=lambda s: None,
                          deadline=1.0, clock=clock)
     text = "\n".join(lines)
-    assert "cpu0 samples (1, 100 ms apart):" in text
-    assert "not collected: cpu0 sample #2 of 5: over the time budget" in text
-    for part in ("interrupt controller", "local controller", "system timer"):
+    assert "interrupt controller @ " in text
+    for part in ("local controller", "system timer", "cpu0 sample #1 of 5"):
         assert f"not collected: {part}: over the time budget" in text
+    assert "summary: guest executing: unknown (no cpu samples)" in text
+
+
+def test_over_budget_after_the_timer_keeps_one_sample():
+    # controller, local, timer, sample #1 (read and parse), then late.
+    clock = iter([0.0] * 5 + [99.0] * 50).__next__
+    lines = dump.collect(fake_hmp("raspi2b"), "raspi2b", sleep=lambda s: None,
+                         deadline=1.0, clock=clock)
+    text = "\n".join(lines)
+    assert "cpu0 samples while running (1, 100 ms apart):" in text
+    assert "not collected: cpu0 sample #2 of 5: over the time budget" in text
     assert "symbols: none, over the time budget" in text
+
+
+# Stop, read the devices, resume.
+
+def recorded(machine, fail=None):
+    """hmp, pause and resume that log every call into one list."""
+    inner, log = fake_hmp(machine), []
+
+    def hmp(cmd):
+        log.append(cmd)
+        if fail and fail(cmd):
+            raise OSError(f"failed: {cmd}")
+        return inner(cmd)
+
+    def pause():
+        log.append("stop")
+        if fail and fail("stop"):
+            raise OSError("failed: stop")
+
+    def resume():
+        log.append("cont")
+    return hmp, pause, resume, log
+
+
+def test_devices_are_read_on_the_stopped_vm():
+    hmp, pause, resume, log = recorded("raspi0")
+    lines = dump.collect(hmp, "raspi0", sleep=lambda s: None, pause=pause, resume=resume)
+    text = "\n".join(lines)
+    assert log == ["stop", "xp /7wx 0x2000b200", "xp /7wx 0x20003000", "info registers",
+                   "cont"] + ["info registers"] * 5
+    assert "device registers: read with the VM stopped (QMP stop, then cont)" in text
+    assert "cpu0 at stop: pc=0x00009740 lr=0x000085a8 " in text
+    assert "cpu0 samples while running (5, 100 ms apart):" in text
+
+
+@pytest.mark.parametrize("failing", ["stop", "xp /7wx 0x2000b200", "xp /7wx 0x20003000",
+                                     "info registers"])
+def test_vm_is_resumed_when_a_step_fails(failing):
+    hmp, pause, resume, log = recorded("raspi0", fail=lambda c: c == failing)
+    text = "\n".join(dump.collect(hmp, "raspi0", sleep=lambda s: None, pause=pause,
+                                  resume=resume))
+    assert log.count("cont") == 1
+    assert log.index("cont") > log.index(failing)
+    if failing == "stop":
+        assert "device registers: read with the VM running (QMP stop failed)" in text
+        assert "xp /7wx 0x20003000" in log  # the reads still happen
+    else:
+        assert "device registers: read with the VM stopped" in text
+
+
+def test_vm_is_resumed_over_budget():
+    hmp, pause, resume, log = recorded("raspi0")
+    clock = iter([0.0] + [99.0] * 50).__next__  # in time for the stop only
+    with pytest.raises(dump.OverBudget):
+        dump.collect(hmp, "raspi0", sleep=lambda s: None, pause=pause, resume=resume,
+                     deadline=1.0, clock=clock)
+    assert log == ["stop", "cont"]
+
+
+def test_vm_is_resumed_when_a_read_raises_through():
+    hmp, pause, resume, log = recorded("raspi0")
+
+    def interrupted(cmd):
+        if cmd.startswith("xp"):
+            raise KeyboardInterrupt
+        return hmp(cmd)
+    with pytest.raises(KeyboardInterrupt):
+        dump.collect(interrupted, "raspi0", sleep=lambda s: None, pause=pause, resume=resume)
+    assert log == ["stop", "cont"]
+
+
+def test_failed_resume_is_reported():
+    hmp, pause, _, log = recorded("raspi0")
+
+    def resume():
+        raise OSError("socket closed")
+    text = "\n".join(dump.collect(hmp, "raspi0", sleep=lambda s: None, pause=pause,
+                                  resume=resume))
+    assert "not collected: resume the VM (cont): OSError: socket closed" in text
+    assert "then cont, which failed" in text
 
 
 def test_nothing_collected_raises():
@@ -294,3 +387,30 @@ def test_absent_symbol_tool(tmp_path, monkeypatch):
     assert "symbols: none, arm-none-eabi-addr2line and arm-none-eabi-nm not found" in text
     assert text.count(" pc=0x00009740 lr=0x000085a8 ") == 5
     assert "system timer @" in text
+
+
+@pytest.mark.parametrize("state, devices, head, why", [
+    ("stopped", "read with the VM already stopped (no stop, no cont)",
+     "cpu0 samples of the stopped VM", "the VM was stopped during the samples"),
+    ("unknown", "VM run state unknown",
+     "cpu0 samples, VM run state unknown", "the VM run state is unknown"),
+])
+def test_labels_follow_the_run_state(state, devices, head, why):
+    text = "\n".join(dump.collect(fake_hmp("raspi0"), "raspi0", sleep=lambda s: None,
+                                  state=state))
+    assert f"device registers: {devices}" in text
+    assert f"{head} (5, 100 ms apart):" in text
+    assert "while running" not in text
+    assert f"summary: guest executing: cannot be judged ({why})" in text, text
+
+
+def test_failed_stop_and_cont_leave_the_state_unknown():
+    hmp, _, _, log = recorded("raspi0")
+
+    def broken():
+        raise OSError("socket closed")
+    text = "\n".join(dump.collect(hmp, "raspi0", sleep=lambda s: None, pause=broken,
+                                  resume=broken))
+    assert "device registers: VM run state unknown (QMP stop and cont failed)" in text
+    assert "cpu0 samples, VM run state unknown" in text
+    assert "while running" not in text

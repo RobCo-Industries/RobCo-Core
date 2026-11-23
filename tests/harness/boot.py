@@ -24,7 +24,7 @@ import threading
 import time
 
 from . import dump
-from .qemu import Qemu, QemuError, loader_words
+from .qemu import KEEPALIVE_INTERVAL, Qemu, QemuError, keepalive_default, loader_words
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FWSTUB_DIR = os.path.join(HERE, "..", "fwstub")
@@ -231,9 +231,14 @@ class Vm:
     def state_dump(self, title="guest state"):
         """A text snapshot of the guest: CPU samples, IRQ controllers, system timer.
 
-        Samples CPU0's pc, lr, sp and CPSR 5 times, 100 ms apart, then
-        reads the interrupt controller and system timer registers over
-        HMP. Resolves pc and lr to symbols when the image's ELF is known.
+        Stops the VM (QMP stop), reads the interrupt controller and system
+        timer registers and one CPU0 sample, resumes it (cont), then
+        samples CPU0's pc, lr, sp and CPSR 5 times, 100 ms apart, while it
+        runs. The VM is resumed even when a step fails. It asks QEMU first
+        (query-status): a VM that was already stopped stays stopped, and
+        if QEMU does not answer, the dump sends no stop and no cont and
+        labels the run state unknown. The block says which. Resolves pc and lr
+        to symbols when the image's ELF is known.
         Never raises. Each failed or late part becomes one "not collected"
         line and the rest is kept; "state dump failed" means nothing could
         be read. Runs within DUMP_BUDGET seconds, symbol lookup included.
@@ -247,7 +252,9 @@ class Vm:
             return dump.block([f"not collected: QEMU has exited (status {rc})"],
                               machine, title)
         deadline = time.monotonic() + self.DUMP_BUDGET
-        sock = getattr(q, "_qmp", None)
+
+        def read_timeout():
+            return max(0.05, min(deadline - time.monotonic(), self.DUMP_READ_TIMEOUT))
 
         def hmp(cmd):
             left = deadline - time.monotonic()
@@ -255,20 +262,35 @@ class Vm:
                 raise QemuError(f"over the {self.DUMP_BUDGET}s budget before {cmd!r}")
             if q.proc.poll() is not None:
                 raise QemuError(f"QEMU exited during the dump ({q.proc.returncode})")
-            if sock is not None:
-                sock.settimeout(min(left, self.DUMP_READ_TIMEOUT))
-            return q.hmp(cmd)
+            return q.hmp(cmd, timeout=min(left, self.DUMP_READ_TIMEOUT))
 
+        # Stop the VM so the device reads see the state that stalled it,
+        # unless it is already stopped (then leave it as it is). Ask QEMU:
+        # the cached flag misses a STOP event that is not read yet. When
+        # QEMU does not answer, the state is unknown: no stop, no cont.
+        pause = resume = None
+        state = "unknown"
+        if hasattr(q, "command"):
+            try:
+                status = q.command("query-status", timeout=read_timeout())
+                q.vm_running = bool(status["running"])
+                state = "running" if q.vm_running else "stopped"
+            except Exception:  # noqa: BLE001 - the labels say "unknown"
+                pass
+        if state == "running":
+            def pause():
+                q.command("stop", timeout=read_timeout())
+
+            def resume():
+                # Never skipped for the budget: the VM must run again.
+                q.command("cont", timeout=self.DUMP_READ_TIMEOUT)
+        ka = q.keepalive_status() if hasattr(q, "keepalive_status") else "off"
         try:
-            lines = dump.collect(hmp, machine, self.elf, deadline=deadline)
+            lines = dump.collect(hmp, machine, self.elf, deadline=deadline,
+                                 pause=pause, resume=resume, state=state)
+            lines.insert(1, f"keep-alive: {ka}")
         except Exception as e:  # noqa: BLE001 - never mask the caller's error
-            lines = [f"state dump failed: {type(e).__name__}: {e}"]
-        finally:
-            if sock is not None:
-                try:
-                    sock.settimeout(q.timeout)
-                except OSError:
-                    pass
+            lines = [f"state dump failed: {type(e).__name__}: {e}", f"keep-alive: {ka}"]
         return dump.block(lines, machine, title)
 
     def _with_state(self, message):
@@ -338,11 +360,14 @@ def boot_args(image, board, mode="auto", sd=None):
 
 @contextlib.contextmanager
 def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
-         timeout=10.0, elf=None):
+         timeout=10.0, elf=None, keepalive=None):
     """Boot `image` on `board` and yield a Vm. QEMU is always killed on exit.
 
     elf is the image's ELF, used to name functions in the state dump.
     By default it is the .elf next to the .img, if one exists.
+    keepalive sends a QMP query-status every 20 ms while the VM runs
+    (tests/README.md, "QEMU keep-alive"). None follows the environment
+    variable ROBCO_QEMU_KEEPALIVE (on unless it is 0 or off).
     """
     if board not in BOARDS:
         raise ValueError(f"unknown board {board!r}, expected one of {sorted(BOARDS)}")
@@ -362,6 +387,8 @@ def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
         socks = [_connect_unix(p, q, timeout) for p in paths]
         vm = Vm(q, socks, elf if elf is not None else dump.find_elf(image))
         q.execute("cont")
+        if keepalive_default() if keepalive is None else keepalive:
+            q.start_keepalive(KEEPALIVE_INTERVAL)
         yield vm
     finally:
         if vm is not None:

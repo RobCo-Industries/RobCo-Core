@@ -1,7 +1,8 @@
 """Guest state snapshot for hang diagnostics. Stdlib only.
 
-collect() builds a text block from HMP commands: CPU registers sampled
-several times, the interrupt controllers and the system timer. boot.Vm
+collect() builds a text block from HMP commands: the interrupt
+controllers and the system timer read on the stopped VM, then CPU
+registers sampled several times while it runs. boot.Vm
 appends it to the QemuError of a wait that times out; Vm.state_dump()
 returns it on demand. The parsers are separate so tool tests can run
 them on captured QEMU output.
@@ -118,8 +119,13 @@ def format_timer(words):
     return lines
 
 
-def summary(samples):
-    """One line: was the guest still executing, were IRQs masked."""
+def summary(samples, why_unknown=None):
+    """One line: was the guest still executing, were IRQs masked.
+
+    why_unknown is None when the VM ran during the samples. Otherwise it
+    says why it may not have run: fixed registers then prove nothing and
+    the line says "cannot be judged" instead of "no".
+    """
     first = samples[0]
     pc_moved = any(s["pc"] != first["pc"] for s in samples)
     keys = ["pc", "lr", "sp", "cpsr"] + [f"r{i}" for i in range(13)]
@@ -129,6 +135,8 @@ def summary(samples):
         run = "yes (pc changed between samples)"
     elif regs_moved:
         run = "yes (pc fixed, registers changed)"
+    elif why_unknown:
+        run = f"cannot be judged ({why_unknown})"
     else:
         run = f"no (pc and registers fixed over {n} samples)"
     masked = [decode_cpsr(s["cpsr"])["I"] for s in samples]
@@ -201,19 +209,48 @@ def nm_lookup(nm_text, addrs):
     return names
 
 
+# Run state of the VM during the cpu samples, as far as the dump knows it:
+# "running"         it ran before the dump, which did not stop it
+# "resumed"         the dump stopped it (QMP stop) and cont succeeded
+# "already stopped" it was stopped before the dump, which left it so
+# "resume failed"   the dump stopped it and cont failed: may still be stopped
+# "unknown"         nobody knows (no state given, or stop and cont failed)
+RUN_STATES = ("running", "resumed", "already stopped", "resume failed", "unknown")
+
+
+def run_state(state, tried_pause, stopped, resumed):
+    """The RUN_STATES entry for the sampling phase."""
+    if tried_pause:
+        if stopped:
+            return "resumed" if resumed else "resume failed"
+        return "running" if resumed else "unknown"
+    return {"running": "running", "stopped": "already stopped"}.get(state, "unknown")
+
+
 class OverBudget(Exception):
     """The dump's time budget ran out before a step."""
 
 
 def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=time.sleep,
-            deadline=None, clock=time.monotonic):
+            deadline=None, clock=time.monotonic, pause=None, resume=None, state="running"):
     """Build the snapshot text. `hmp(cmd)` runs one HMP command.
 
+    Order: pause() (QMP stop), the device registers (interrupt
+    controllers, system timer), one CPU0 sample of the stopped VM,
+    resume() (QMP cont), then `samples` CPU0 samples of the running VM,
+    then symbols. resume() runs whenever pause() was tried, also when a
+    step failed or the budget ran out. Without pause the devices are
+    read on the running VM and the block says so.
+
+    `state` is the run state before the dump: "running", "stopped" or
+    "unknown". The dump tracks it (see RUN_STATES) and every label and
+    the summary say what that state allows, never more.
+
     `deadline` is a `clock()` time. Every step checks it first, and the
-    symbol lookup gets only what is left. Hardware state is read first,
-    symbols last. A failed or late step costs only its own part: the
-    block keeps everything read so far and adds one `not collected:`
-    line per missing part. Raises only when nothing could be read.
+    symbol lookup gets only what is left. A failed or late step costs
+    only its own part: the block keeps everything read so far and adds
+    one `not collected:` line per missing part. Raises only when nothing
+    could be read.
     """
     missing, errors = [], []
 
@@ -232,71 +269,125 @@ def collect(hmp, machine, elf=None, samples=SAMPLES, interval=INTERVAL, sleep=ti
             missing.append(f"not collected: {name}: {type(e).__name__}: {e}")
             return None
 
-    regs, first_text = [], None
+    def sample(name):
+        text = step(name, lambda: hmp("info registers").replace("\r", ""))
+        if text is None:
+            return None, None
+        return step(name, lambda: parse_registers(text)), text
+
+    stopped, tried_pause, resume_error = False, False, None
+    hw, stop_regs, first_text = [], None, None
+    try:
+        if pause is not None:
+            tried_pause = True
+            stopped = step("stop the VM", lambda: pause() or True) is not None
+        base = PERIPH_BASE.get(machine)
+        if base is None:
+            hw.append(f"peripherals: unknown board {machine!r}, skipped")
+        else:
+            ic = step("interrupt controller",
+                      lambda: parse_xp(hmp(f"xp /{len(IC_REGS)}wx {base + IC_OFFSET:#x}")))
+            if ic is not None:
+                hw.append(f"interrupt controller @ {base + IC_OFFSET:#010x}:")
+                hw.append("  " + " ".join(f"{n}={v:#010x}" for n, v in zip(IC_REGS, ic)))
+            local = LOCAL_BASE.get(machine)
+            if local is not None:
+                def read_local():
+                    return [f"{n}={parse_xp(hmp(f'xp /1wx {local + off:#x}'))[0]:#010x}"
+                            for n, off in LOCAL_REGS]
+                vals = step("local controller", read_local)
+                if vals is not None:
+                    hw.append(f"local controller @ {local:#010x}:")
+                    hw.append("  " + " ".join(vals))
+            st = step("system timer",
+                      lambda: format_timer(parse_xp(hmp(f"xp /7wx {base + ST_OFFSET:#x}"))))
+            if st is not None:
+                hw.append(f"system timer @ {base + ST_OFFSET:#010x}:")
+                hw += ["  " + line for line in st]
+        if stopped:
+            stop_regs, first_text = sample("cpu0 sample of the stopped VM")
+    finally:
+        resumed = None
+        if tried_pause:
+            try:
+                resume()
+                resumed = True
+            except Exception as e:  # noqa: BLE001 - say so, keep the rest
+                errors.append(e)
+                resumed = False
+                resume_error = f"{type(e).__name__}: {e}"
+                missing.append(f"not collected: resume the VM (cont): {type(e).__name__}: {e};"
+                               " the VM may still be stopped")
+
+    regs = []
     for i in range(samples):
         if i:
             sleep(interval)
-        text = step(f"cpu0 sample #{i + 1} of {samples}",
-                    lambda: hmp("info registers").replace("\r", ""))
-        if text is None:
-            break
-        r = step(f"cpu0 sample #{i + 1} of {samples}", lambda: parse_registers(text))
+        r, text = sample(f"cpu0 sample #{i + 1} of {samples}")
         if r is None:
             break
         first_text = first_text or text
         regs.append(r)
 
-    hw = []
-    base = PERIPH_BASE.get(machine)
-    if base is None:
-        hw.append(f"peripherals: unknown board {machine!r}, skipped")
-    else:
-        ic = step("interrupt controller",
-                  lambda: parse_xp(hmp(f"xp /{len(IC_REGS)}wx {base + IC_OFFSET:#x}")))
-        if ic is not None:
-            hw.append(f"interrupt controller @ {base + IC_OFFSET:#010x}:")
-            hw.append("  " + " ".join(f"{n}={v:#010x}" for n, v in zip(IC_REGS, ic)))
-        local = LOCAL_BASE.get(machine)
-        if local is not None:
-            def read_local():
-                return [f"{n}={parse_xp(hmp(f'xp /1wx {local + off:#x}'))[0]:#010x}"
-                        for n, off in LOCAL_REGS]
-            vals = step("local controller", read_local)
-            if vals is not None:
-                hw.append(f"local controller @ {local:#010x}:")
-                hw.append("  " + " ".join(vals))
-        st = step("system timer", lambda: format_timer(parse_xp(hmp(f"xp /7wx {base + ST_OFFSET:#x}"))))
-        if st is not None:
-            hw.append(f"system timer @ {base + ST_OFFSET:#010x}:")
-            hw += ["  " + line for line in st]
-
-    if not regs and not hw:
+    if not regs and not hw and stop_regs is None:
         raise errors[0] if errors else OverBudget("over the time budget before the first read")
 
     # Symbols last, with only the remaining budget.
+    all_regs = regs + ([stop_regs] if stop_regs else [])
     names, sym_note = {}, None
-    if regs:
+    if all_regs:
         rem = left()
         if rem is not None and rem <= 0:
             sym_note = "symbols: none, over the time budget before the lookup"
         else:
-            names, sym_note = resolve([a for r in regs for a in (r["pc"], r["lr"])], elf,
+            names, sym_note = resolve([a for r in all_regs for a in (r["pc"], r["lr"])], elf,
                                       timeout=5.0 if rem is None else min(5.0, rem))
 
     def sym(a):
         return f" <{names[a]}>" if names.get(a) else ""
 
-    out = []
+    def fmt(r):
+        return (f"pc={r['pc']:#010x}{sym(r['pc'])} lr={r['lr']:#010x}{sym(r['lr'])}"
+                f" sp={r['sp']:#010x} cpsr={format_cpsr(r['cpsr'])}")
+
+    run = run_state(state, tried_pause, stopped, resumed)
+    hdr = f"{len(regs)}, {int(interval * 1000)} ms apart"
+    if run in ("resumed", "running"):
+        out = [summary(regs) if regs else "summary: guest executing: unknown (no cpu samples)"]
+        samples_head = f"cpu0 samples while running ({hdr}):"
+    else:
+        why = {"already stopped": "the VM was stopped during the samples",
+               "resume failed": f"cont failed ({resume_error}), the VM may still be stopped",
+               "unknown": "the VM run state is unknown"}[run]
+        out = [summary(regs, why) if regs else f"summary: guest executing: unknown ({why})"]
+        samples_head = {"already stopped": f"cpu0 samples of the stopped VM ({hdr}):",
+                        "resume failed": f"cpu0 samples after a failed cont, the VM may"
+                                         f" still be stopped ({hdr}):",
+                        "unknown": f"cpu0 samples, VM run state unknown ({hdr}):"}[run]
+    if stopped:
+        out.append("device registers: read with the VM stopped (QMP stop, then cont"
+                   + (")" if resumed else ", which failed)"))
+    elif tried_pause:
+        out.append("device registers: read with the VM running (QMP stop failed)"
+                   if resumed else "device registers: VM run state unknown (QMP stop and"
+                                   " cont failed)")
+    elif run == "already stopped":
+        out.append("device registers: read with the VM already stopped (no stop, no cont)")
+    elif run == "unknown":
+        out.append("device registers: VM run state unknown")
+    else:
+        out.append("device registers: read with the VM running")
+    if stop_regs:
+        out.append(f"cpu0 at stop: {fmt(stop_regs)}")
     if regs:
-        out += [summary(regs), f"cpu0 samples ({len(regs)}, {int(interval * 1000)} ms apart):"]
-        for i, r in enumerate(regs, 1):
-            out.append(f"  #{i} pc={r['pc']:#010x}{sym(r['pc'])} lr={r['lr']:#010x}{sym(r['lr'])}"
-                       f" sp={r['sp']:#010x} cpsr={format_cpsr(r['cpsr'])}")
+        out.append(samples_head)
+        out += [f"  #{i} {fmt(r)}" for i, r in enumerate(regs, 1)]
+    if all_regs:
         out.append(sym_note)
     out += hw
     out += missing
     if first_text is not None:
-        out.append("info registers (sample #1):")
+        out.append("info registers (first sample):")
         out += ["  " + line for line in core_registers(first_text)]
     return out
 
