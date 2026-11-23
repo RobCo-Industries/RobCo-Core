@@ -86,7 +86,11 @@ int tft_present_px32(const uint32_t *src, uint32_t pitch_bytes, unsigned order);
 int tft_present_px32_rect(const uint32_t *src, uint32_t pitch_bytes, unsigned order,
                           unsigned x, unsigned y, unsigned w, unsigned h);
 
-/* Sleep in (non-zero) or out, then waits 120 ms. The backlight follows. */
+/*
+ * Sleep in (non-zero) or out, then waits 120 ms. The backlight follows.
+ * Returns TFT_ERR_TIMER and sends nothing when the system timer has stopped.
+ * After a failed call the driver state is that of the last call that worked.
+ */
 int tft_sleep(int on);
 
 /* Display on or off. The picture in panel memory is kept. The backlight follows. */

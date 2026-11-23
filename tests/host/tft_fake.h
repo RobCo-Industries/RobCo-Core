@@ -57,6 +57,8 @@ static int fake_open = -1;
 static int fake_timer_frozen;
 static uint32_t fake_clock;
 static int fake_write_fail;     /* spi_write() fails when this is non-zero */
+static unsigned fake_write_fail_at; /* when non-zero, the Nth spi_write() from now fails once */
+static unsigned fake_pin_fail_at;   /* when non-zero, the Nth pin write from now fails once */
 static int fake_spi_init_calls;
 static uint8_t fake_rx[4];
 static unsigned fake_writes;    /* spi_write() calls */
@@ -94,6 +96,8 @@ static void fake_reset(int dc_pin)
     fake_open = -1;
     fake_timer_frozen = 0;
     fake_write_fail = 0;
+    fake_write_fail_at = 0;
+    fake_pin_fail_at = 0;
     fake_spi_init_calls = 0;
     memset(fake_rx, 0, sizeof(fake_rx));
 }
@@ -164,6 +168,9 @@ int spi_write(unsigned cs, const void *tx, size_t len)
     if (fake_open != (int)cs || tx == NULL) {
         return SPI_ERR_ARG;
     }
+    if (fake_write_fail_at != 0 && --fake_write_fail_at == 0) {
+        return SPI_ERR_TIMEOUT;
+    }
     if (fake_write_fail) {
         return SPI_ERR_TIMEOUT;
     }
@@ -190,6 +197,9 @@ int spi_transfer(unsigned cs, const void *tx, void *rx, size_t len)
 static int fake_pin(unsigned pin, int level)
 {
     if (pin >= GPIO_PIN_COUNT) {
+        return GPIO_ERR_PIN;
+    }
+    if (fake_pin_fail_at != 0 && --fake_pin_fail_at == 0) {
         return GPIO_ERR_PIN;
     }
     if ((int)pin == fake_dc_pin) {

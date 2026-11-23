@@ -179,6 +179,11 @@ static int backlight(int on)
     return gpio_write((unsigned)cfg.backlight_pin, on) < 0 ? TFT_ERR_BUS : 0;
 }
 
+/*
+ * Driver state (asleep, shown, size, ready) changes only after every bus
+ * and pin call of a step succeeds. On a failure the state keeps the last
+ * step that succeeded, and the backlight goes back to match it.
+ */
 static int light_follows(void)
 {
     return backlight(shown && !asleep);
@@ -244,11 +249,11 @@ int tft_init(const tft_config_t *c)
     if (command(CMD_DISPON, NULL, 0) < 0) {
         return TFT_ERR_BUS;
     }
-    asleep = 0;
-    shown = 1;
-    if (light_follows() < 0) {
+    if (backlight(1) < 0) {
         return TFT_ERR_BUS;
     }
+    asleep = 0;
+    shown = 1;
     if (cfg.rotation == 90 || cfg.rotation == 270) {
         width = GLASS_H;
         height = GLASS_W;
@@ -414,20 +419,31 @@ int tft_sleep(int on)
     if (!ready) {
         return TFT_ERR_INIT;
     }
+    if (!timer_runs()) {
+        return TFT_ERR_TIMER;
+    }
     on = on != 0;
     if (on) {
-        asleep = 1;
-        rc = light_follows();
+        rc = backlight(0);
         if (rc == 0) {
             rc = command(CMD_SLPIN, NULL, 0);
         }
+        timer_delay_ms(SLEEP_WAIT_MS);
+        if (rc == 0) {
+            asleep = 1;
+        }
     } else {
         rc = command(CMD_SLPOUT, NULL, 0);
+        timer_delay_ms(SLEEP_WAIT_MS);
+        if (rc == 0) {
+            rc = backlight(shown);
+        }
+        if (rc == 0) {
+            asleep = 0;
+        }
     }
-    timer_delay_ms(SLEEP_WAIT_MS);
-    if (rc == 0 && !on) {
-        asleep = 0;
-        rc = light_follows();
+    if (rc < 0) {
+        (void)light_follows();
     }
     return rc;
 }
@@ -440,15 +456,21 @@ int tft_display(int on)
         return TFT_ERR_INIT;
     }
     on = on != 0;
-    if (!on) {
-        shown = 0;
-        rc = light_follows();
-        return rc < 0 ? rc : command(CMD_DISPOFF, NULL, 0);
+    if (on) {
+        rc = command(CMD_DISPON, NULL, 0);
+        if (rc == 0) {
+            rc = backlight(!asleep);
+        }
+    } else {
+        rc = backlight(0);
+        if (rc == 0) {
+            rc = command(CMD_DISPOFF, NULL, 0);
+        }
     }
-    rc = command(CMD_DISPON, NULL, 0);
     if (rc == 0) {
-        shown = 1;
-        rc = light_follows();
+        shown = on;
+    } else {
+        (void)light_follows();
     }
     return rc;
 }

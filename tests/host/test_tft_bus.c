@@ -497,3 +497,223 @@ TEST(bus_error_releases_chip_select)
     fake_write_fail = 0;
     CHECK_EQ(tft_fill_rect(0, 0, 10, 10, 0), 0);
 }
+
+/* Level of the last backlight edge in the transcript, or -1 when none. */
+static int last_bl(void)
+{
+    size_t i = fake_n;
+
+    while (i-- > 0) {
+        if (fake_ev[i].kind == EV_PIN && fake_ev[i].a == BL) {
+            return (int)fake_ev[i].b;
+        }
+    }
+    return -1;
+}
+
+/* Arms one failure: the nth SPI write (pin == 0) or the nth pin write (pin != 0). */
+static void arm(int pin, unsigned n)
+{
+    fake_write_fail_at = pin ? 0 : n;
+    fake_pin_fail_at = pin ? n : 0;
+}
+
+static void disarm(void)
+{
+    fake_write_fail_at = 0;
+    fake_pin_fail_at = 0;
+}
+
+enum { OP_SLEEP_IN, OP_SLEEP_OUT, OP_HIDE, OP_SHOW, OP_COUNT };
+
+static int op_run(int op)
+{
+    switch (op) {
+    case OP_SLEEP_IN: return tft_sleep(1);
+    case OP_SLEEP_OUT: return tft_sleep(0);
+    case OP_HIDE: return tft_display(0);
+    default: return tft_display(1);
+    }
+}
+
+/* Init with a backlight, then the state each operation starts from. */
+static void op_start(int op)
+{
+    tft_config_t c = config();
+
+    c.backlight_pin = BL;
+    CHECK_EQ(init_with(&c), 0);
+    if (op == OP_SLEEP_OUT) {
+        CHECK_EQ(tft_sleep(1), 0);
+    } else if (op == OP_SHOW) {
+        CHECK_EQ(tft_display(0), 0);
+    }
+    fake_clear();
+}
+
+/*
+ * Each operation with each of its SPI and pin writes failing in turn.
+ * After the failure the driver acts as if the call had not happened: a
+ * probe call shows the old state, a retry sends the full transcript, and
+ * a later tft_display(1) leaves the backlight right.
+ */
+TEST(failed_power_step_keeps_the_old_state)
+{
+    static const ev_t sleep_in[] = { PIN(BL, 0), CSL, C(0x10), CSH, MS(120) };
+    static const ev_t sleep_out[] = { CSL, C(0x11), CSH, MS(120), PIN(BL, 1) };
+    static const ev_t hide[] = { PIN(BL, 0), CSL, C(0x28), CSH };
+    static const ev_t show[] = { CSL, C(0x29), CSH, PIN(BL, 1) };
+    /* Probe, then the backlight level the probe must leave. */
+    static const struct {
+        int sleep;      /* 1: probe with tft_sleep(0), 0: with tft_display(1) */
+        int bl;
+    } probe[OP_COUNT] = {
+        { 0, 1 },       /* SLPIN failed: still awake and shown */
+        { 0, 0 },       /* SLPOUT failed: still asleep */
+        { 1, 1 },       /* DISPOFF failed: still shown */
+        { 1, 0 },       /* DISPON failed: still hidden */
+    };
+    const ev_t *want[OP_COUNT] = { sleep_in, sleep_out, hide, show };
+    const size_t want_n[OP_COUNT] = { 5, 5, 4, 4 };
+    int op, pin;
+    unsigned n, fails;
+    int rc;
+
+    for (op = 0; op < OP_COUNT; op++) {
+        for (pin = 0; pin < 2; pin++) {
+            fails = 0;
+            for (n = 1; n < 20; n++) {
+                op_start(op);
+                arm(pin, n);
+                rc = op_run(op);
+                disarm();
+                if (rc == 0) {
+                    break;
+                }
+                fails++;
+                CHECK_EQ(rc, TFT_ERR_BUS);
+                CHECK_EQ(fake_open, -1);
+                fake_clear();
+                CHECK_EQ(probe[op].sleep ? tft_sleep(0) : tft_display(1), 0);
+                if (last_bl() != probe[op].bl) {
+                    printf("  op %d, %s write %u: probe backlight %d\n", op,
+                           pin ? "pin" : "SPI", n, last_bl());
+                }
+                CHECK_EQ(last_bl(), probe[op].bl);
+
+                op_start(op);
+                arm(pin, n);
+                CHECK_EQ(op_run(op), TFT_ERR_BUS);
+                disarm();
+                fake_clear();
+                CHECK_EQ(op_run(op), 0);
+                CHECK_EQ(diff(want[op], want_n[op]), -1);
+                fake_clear();
+                CHECK_EQ(tft_display(1), 0);
+                CHECK_EQ(last_bl(), op == OP_SLEEP_IN ? 0 : 1);
+            }
+            CHECK(fails > 0);
+            CHECK(n < 20);
+        }
+    }
+}
+
+/* A stopped timer stops tft_sleep() before anything reaches the panel. */
+TEST(sleep_with_stopped_timer_sends_nothing)
+{
+    op_start(OP_SLEEP_IN);
+    fake_timer_frozen = 1;
+    CHECK_EQ(tft_sleep(1), TFT_ERR_TIMER);
+    CHECK_EQ(tft_sleep(0), TFT_ERR_TIMER);
+    CHECK_EQ(fake_n, 0);
+    fake_timer_frozen = 0;
+    CHECK_EQ(tft_display(1), 0);
+    CHECK_EQ(last_bl(), 1);
+}
+
+static void refused(void)
+{
+    uint32_t id;
+
+    CHECK_EQ(tft_sleep(1), TFT_ERR_INIT);
+    CHECK_EQ(tft_sleep(0), TFT_ERR_INIT);
+    CHECK_EQ(tft_display(0), TFT_ERR_INIT);
+    CHECK_EQ(tft_display(1), TFT_ERR_INIT);
+    CHECK_EQ(tft_fill_rect(0, 0, 1, 1, 0), TFT_ERR_INIT);
+    CHECK_EQ(tft_present_px32(frame, 320 * 4, TFT_SRC_XRGB), TFT_ERR_INIT);
+    CHECK_EQ(tft_read_id(&id), TFT_ERR_INIT);
+    CHECK_EQ(tft_width(), 0);
+    CHECK_EQ(tft_height(), 0);
+    CHECK_EQ(tft_get_hz(), 0);
+    CHECK_EQ(fake_n, 0);
+}
+
+/* tft_init() failing at each write leaves the driver refusing calls; a second init works. */
+TEST(failed_init_refuses_calls_then_retries_cleanly)
+{
+    static const ev_t hard[] = {
+        RATE(32000000),
+        PIN(RST, 0), US(10), PIN(RST, 1), MS(120),
+        CSL, C(0x11), CSH, MS(120),
+        CSL, C(0x3a), D(0x55), CSH,
+        CSL, C(0x36), D(0x28), CSH,
+        CSL, C(0x20), CSH,
+        CSL, C(0x29), CSH,
+    };
+    static const ev_t soft[] = {
+        RATE(32000000),
+        PIN(BL, 0),
+        CSL, C(0x01), CSH, MS(120),
+        CSL, C(0x11), CSH, MS(120),
+        CSL, C(0x3a), D(0x55), CSH,
+        CSL, C(0x36), D(0x28), CSH,
+        CSL, C(0x20), CSH,
+        CSL, C(0x29), CSH,
+        PIN(BL, 1),
+    };
+    tft_config_t c;
+    int wiring, pin;
+    unsigned n, fails;
+    int rc;
+
+    for (wiring = 0; wiring < 2; wiring++) {
+        c = config();
+        if (wiring) {
+            c.reset_pin = TFT_PIN_NONE;
+            c.backlight_pin = BL;
+        }
+        for (pin = 0; pin < 2; pin++) {
+            fails = 0;
+            for (n = 1; n < 40; n++) {
+                /* A working panel first, so stale state would show. */
+                CHECK_EQ(init_with(&c), 0);
+                fake_clear();
+                arm(pin, n);
+                rc = tft_init(&c);
+                disarm();
+                if (rc == 0) {
+                    break;
+                }
+                fails++;
+                CHECK_EQ(rc, TFT_ERR_BUS);
+                CHECK_EQ(fake_open, -1);
+                fake_clear();
+                refused();
+                CHECK_EQ(tft_init(&c), 0);
+                if (wiring) {
+                    EXPECT(soft);
+                } else {
+                    EXPECT(hard);
+                }
+                CHECK_EQ(tft_width(), 320);
+                fake_clear();
+                CHECK_EQ(tft_display(1), 0);
+                if (wiring) {
+                    CHECK_EQ(last_bl(), 1);
+                }
+            }
+            CHECK(fails > 0);
+            CHECK(n < 40);
+        }
+    }
+}

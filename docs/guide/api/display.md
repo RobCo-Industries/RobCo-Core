@@ -130,6 +130,8 @@ int tft_read_id(uint32_t *id);
 
 `tft_sleep(1)` sends SLPIN and `tft_sleep(0)` sends SLPOUT. Both wait 120 ms. `tft_display()` sends DISPON or DISPOFF. The panel keeps its memory in both states, and pixels sent meanwhile still land in it. The backlight pin, when set, is on only while the display is on and the panel is awake.
 
+A failed call leaves the driver state as it was after the last call that succeeded, and the backlight goes back to match it. The caller can retry the same call. A failed `tft_init()` leaves the driver uninitialised, so other calls return `TFT_ERR_INIT` until an init succeeds. `tft_sleep()` returns `TFT_ERR_TIMER` and sends nothing when the system timer has stopped.
+
 `tft_read_id()` sends RDDID (`04`) at `TFT_READ_HZ` and stores the next four bytes, the first in the top bits. The data sheet's read cycle is slower than its write cycle, hence the lower rate. The data sheet puts a dummy clock before the three id bytes. Whether that is one bit or a whole byte on the 4-wire interface is not certain, so the driver returns the raw bytes and does not compare them with an expected id. All zeros or all ones, which an absent panel or an unwired MISO gives, return `TFT_ERR_NO_PANEL`.
 
 ### Tap and pixel helpers
