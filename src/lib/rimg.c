@@ -180,3 +180,24 @@ int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
     }
     return RIMG_OK;
 }
+
+int rimg_self_scan(const rimg_header_t *h, const char magic[8], uint32_t load_addr,
+                   uint32_t file_size, uint32_t *scan)
+{
+    if (h == NULL || magic == NULL || memcmp(h->magic, magic, 8) != 0) {
+        return RIMG_E_MAGIC;
+    }
+    if (h->hdr_version != RIMG_HDR_VERSION || h->hdr_size != RIMG_HDR_SIZE) {
+        return RIMG_E_VERSION;
+    }
+    if (h->file_size != file_size || file_size < RIMG_HDR_END) {
+        return RIMG_E_SIZE;
+    }
+    if (h->load_addr != load_addr) {
+        return RIMG_E_BOUNDS;
+    }
+    if (scan != NULL) {
+        *scan = file_size;
+    }
+    return RIMG_OK;
+}

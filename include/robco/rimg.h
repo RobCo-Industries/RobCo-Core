@@ -144,10 +144,24 @@ int rimg_check_header(const void *head, size_t avail, const rimg_expect_t *expec
 uint32_t rimg_crc(const void *image, uint32_t file_size);
 
 /*
+ * The header checks of rimg_self_check(), before it reads past the header.
+ * Compares the running image's header `h` with the values the image was
+ * linked with, in the order of the validation steps: magic (RIMG_E_MAGIC),
+ * hdr_version and hdr_size (RIMG_E_VERSION), file_size (RIMG_E_SIZE),
+ * load_addr (RIMG_E_BOUNDS). On RIMG_OK, *scan is the number of bytes the
+ * CRC may cover, which is `file_size`. Touches no hardware.
+ */
+int rimg_self_scan(const rimg_header_t *h, const char magic[8], uint32_t load_addr,
+                   uint32_t file_size, uint32_t *scan);
+
+/*
  * Checks the running image against its own sealed CRC, over the whole
- * file with no skipped range. Returns RIMG_OK or RIMG_E_CRC. Call it
- * early: a .data variable the image wrote before the call changes the
- * result. The startup code keeps its own state out of the file bytes.
+ * file with no skipped range. It first checks the header with
+ * rimg_self_scan() against the linked magic, load address and file size,
+ * so a corrupt file_size gives RIMG_E_SIZE and no read past the image.
+ * Returns RIMG_OK, the code of a failed header check, or RIMG_E_CRC.
+ * Call it early: a .data variable the image wrote before the call changes
+ * the result. The startup code keeps its own state out of the file bytes.
  */
 int rimg_self_check(void);
 

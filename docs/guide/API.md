@@ -1018,7 +1018,14 @@ The image CRC from the [spec](../spec/IMAGE_FORMAT.md#crc): CRC-32 over `[0, fil
 int rimg_self_check(void);
 ```
 
-Checks the running image against its own sealed CRC, over the whole file. Returns `RIMG_OK` or `RIMG_E_CRC`. Call it early in `robco_main()`. The library keeps its startup state in BSS, but a `.data` variable that the image writes before the call changes the result. `examples/chain2` built with `CHAIN2_SELF_CHECK=1` calls it after its boot line.
+Checks the running image against its own sealed CRC, over the whole file. It first checks the header with `rimg_self_scan()` against the values the image was linked with. A header that does not match returns that check's code, and the CRC scan does not run. So a corrupt `file_size` gives `RIMG_E_SIZE` and no read past the image. Otherwise it returns `RIMG_OK` or `RIMG_E_CRC`. Call it early in `robco_main()`. The library keeps its startup state in BSS, but a `.data` variable that the image writes before the call changes the result. `examples/chain2` built with `CHAIN2_SELF_CHECK=1` calls it after its boot line.
+
+```c
+int rimg_self_scan(const rimg_header_t *h, const char magic[8], uint32_t load_addr,
+                   uint32_t file_size, uint32_t *scan);
+```
+
+The header checks of `rimg_self_check()`, in the order of the validation steps. `magic` must match (`RIMG_E_MAGIC`). `hdr_version` and `hdr_size` must be 1 and 64 (`RIMG_E_VERSION`). `file_size` must equal the linked size `__image_file_size` (`RIMG_E_SIZE`). `load_addr` must equal the linked start (`RIMG_E_BOUNDS`). On `RIMG_OK` it sets `*scan` to the bytes the CRC may cover. It touches no hardware.
 
 ```c
 const char *rimg_strerror(int code);

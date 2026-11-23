@@ -244,6 +244,28 @@ def test_chain2_checks_own_crc(board, example_image):
         assert one(vm, "chain2", "boot")["entry_mode"] == "svc", vm.serial
 
 
+
+def test_chain2_self_check_bad_size(board, example_image, tmp_path):
+    """A file_size made larger after sealing gives rc=size, with no read past the image.
+
+    The trampoline enters chain2 with no validation, as the firmware would.
+    """
+    nxt = example_image("chain2", "selfcheck", "-DCHAIN2_SELF_CHECK=1")
+    with open(nxt, "rb") as f:
+        data = bytearray(f.read())
+    # Far past RAM: a scan this long would fault.
+    struct.pack_into("<I", data, 0x34, 0xF0000000)
+    bad = tmp_path / "selfsize.img"
+    bad.write_bytes(bytes(data))
+    tramp = tmp_path / "tramp.img"
+    tramp.write_bytes(TRAMPOLINE)
+    with boot(tramp, board, extra_args=chain_args(bad)) as vm:
+        vm.wait_for(READY, timeout=60)
+        check = one(vm, "chain2", "selfcheck")
+        assert check["rc"] == "size", vm.serial
+        assert check["size"] == str(0xF0000000), vm.serial
+        assert not events(vm, "chain2", "exception"), vm.serial
+
 # Loading from the SD card: chain1 built with CHAIN1_SD=1.
 PRIMARY = "/ROBCO/MFBOOT.SYS"
 BACKUP = "/ROBCO/MFBOOT.BAK"

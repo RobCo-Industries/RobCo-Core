@@ -179,7 +179,7 @@ A loader that fails at step 6 has already overwritten the slot. That is fine, be
 
 The loader does not zero BSS. The image's own startup code does that.
 
-An image can check its own CRC after start with `rimg_self_check()`. The CRC then holds only while the image has not written its `.data`. RobCo-Core's startup code writes nothing into the file bytes: it saves the entry registers in BSS, after it zeroes BSS.
+An image can check its own CRC after start with `rimg_self_check()`. The CRC then holds only while the image has not written its `.data`. The firmware loads some images with no validation, so the header itself may be corrupt. `rimg_self_check()` first compares the header with the values the image was linked with, in step order: the magic (step 1), `hdr_version` and `hdr_size` (step 2), `file_size` against the linked size (step 3), and `load_addr` against the linked start (step 4). It reports the code of the first mismatch and scans nothing. Only then does it run step 6 over the linked size. RobCo-Core's startup code writes nothing into the file bytes: it saves the entry registers in BSS, after it zeroes BSS.
 
 ## Files on the SD card
 
