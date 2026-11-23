@@ -176,7 +176,7 @@ typedef struct __attribute__((packed)) pip_gfx_info {
 | `0x08` | 4 | `backend` |
 | `0x0C` | 4 | `fg_default` |
 
-Drawing goes to a back buffer. `present` shows it. On HDMI, Pip-OS scales the surface by 2 into the 640x480 framebuffer. On the SPI TFT it copies 1:1. The surface is the same on both backends, so one set of golden images covers both.
+Drawing goes to a back buffer. `present` shows it. On HDMI, Pip-OS scales the surface by the largest whole factor that fits the framebuffer and centres it. The border around it is black. On the default 640x480 mode the factor is 2. On the SPI TFT it copies 1:1. The surface is the same on both backends, so one set of golden images covers both.
 
 ### Drawing state
 
@@ -251,7 +251,7 @@ typedef struct __attribute__((packed)) pip_event {
     uint32_t type;      /* PIP_EV_* */
     uint32_t code;
     int32_t  value;
-    uint32_t time_ms;   /* ticks_ms when the event happened */
+    uint32_t time_ms;   /* ticks_ms when Pip-OS registered the event */
 } pip_event_t;          /* 16 bytes */
 ```
 
@@ -260,7 +260,7 @@ typedef struct __attribute__((packed)) pip_event {
 | 1 | `PIP_EV_BUTTON` | Button number, the bit position from `read_buttons` | 1 press, 0 release, 2 repeat while held |
 | 2 | `PIP_EV_DIAL` | 0 | Signed detents. Positive is clockwise. |
 
-`time_ms` is in `ticks_ms` units. It is never later than the `ticks_ms` value an image reads after it gets the event. Stamps of successive events never go backwards.
+`time_ms` is the `ticks_ms` time when Pip-OS registered the event. GPIO buttons and the dial are sampled every 10 ms, so their stamp comes within about 10 ms of the change, after the 20 ms button debounce. Input from the serial console or the script channel is stamped when Pip-OS reads it, which can be later than the key press. It is never later than the `ticks_ms` value an image reads after it gets the event. Stamps of successive events never go backwards.
 
 A held button repeats. The first event with `value` 2 comes 500 ms after the press, then one every 100 ms until the release. Only the last button pressed repeats. Repeats follow a fixed schedule from the press. After a stall the schedule restarts from the current time instead of sending a burst. Repeat events count toward the 32.
 
