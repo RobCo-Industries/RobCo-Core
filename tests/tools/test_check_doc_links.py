@@ -300,3 +300,100 @@ def test_dotted_and_underscored_branch_names_are_ignored(tmp_path, no_git):
     base = "https://github.com/RobCo-Industries/RobCo-Core/tree/"
     write(proj, "a.md", f"{base}v1.0.2 {base}my_branch {base}{OLD[:20]}_x {base}{OLD}.x\n")
     assert run(proj, no_git).returncode == 0
+
+
+# More than one pinned repository: --repo and nested submodules.
+
+PIPOS = "RobCo-Industries/Pip-OS"
+OUTER = "external/pip-os"
+INNER = OUTER + "/external/robco-core"
+PIPOS_COMMIT = "3" * 40
+PIPOS_OLD = "4" * 40
+
+
+def repo_link(repo, commit, path="docs/x.md"):
+    return f"https://github.com/{repo}/blob/{commit}/{path}"
+
+
+def run_repo(proj, env, repo, sub, *args):
+    return subprocess.run(["bash", str(SCRIPT), "--repo", repo, str(proj), sub, *args],
+                          capture_output=True, text=True, env=env)
+
+
+def make_nested(tmp_path):
+    """A project pinning Pip-OS, which pins RobCo-Core, laid out as git does.
+
+    The outer .git file points at .git/modules/pip-os. The inner one points at
+    .git/modules/pip-os/modules/robco-core, inside the parent's modules folder.
+    """
+    proj = tmp_path / "proj"
+    outer_git = proj / ".git" / "modules" / "pip-os"
+    inner_git = outer_git / "modules" / "robco-core"
+    inner_git.mkdir(parents=True)
+    (proj / INNER).mkdir(parents=True)
+    (proj / OUTER / ".git").write_text("gitdir: ../../.git/modules/pip-os\n")
+    (proj / INNER / ".git").write_text("gitdir: ../../../../.git/modules/pip-os/modules/robco-core\n")
+    (outer_git / "HEAD").write_text(PIPOS_COMMIT + "\n")
+    (inner_git / "HEAD").write_text(COMMIT + "\n")
+    return proj
+
+
+def test_other_repo_name(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"[ok]({repo_link(PIPOS, COMMIT)})\n[core]({link(OLD)})\n"
+          f"[old]({repo_link(PIPOS, OLD)})\n")
+    r = run_repo(proj, no_git, PIPOS, SUB)
+    assert r.returncode == 1
+    assert f"a.md:3 links Pip-OS at {OLD}, the submodule is at {COMMIT}" in r.stderr
+    assert "a.md:2" not in r.stderr
+
+
+def test_repo_dot_is_literal(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"[x]({repo_link('o/a.b', OLD)})\n")
+    assert run_repo(proj, no_git, "o/axb", SUB).returncode == 0
+    r = run_repo(proj, no_git, "o/a.b", SUB)
+    assert r.returncode == 1, r.stdout
+
+
+def test_bad_repo_is_usage_error(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    for bad in ("RobCo-Core", "a/b/c", "a/b c", ""):
+        assert run_repo(proj, no_git, bad, SUB).returncode == 2
+
+
+def test_nested_submodule_commit(tmp_path, no_git):
+    proj = make_nested(tmp_path)
+    write(proj, "README.md", f"[core]({link(COMMIT)})\n")
+    r = run(proj, no_git, sub=INNER)
+    assert r.returncode == 0, r.stderr
+    assert f"ok ({COMMIT})" in r.stdout
+
+
+def test_nested_skips_outer_submodule(tmp_path, no_git):
+    proj = make_nested(tmp_path)
+    write(proj, OUTER + "/docs/x.md", f"[old]({link(OLD)})\n")
+    write(proj, "external/notes.md", f"[core]({link(COMMIT)})\n")
+    r = run(proj, no_git, sub=INNER)
+    assert r.returncode == 0, r.stderr
+
+
+def test_two_repos_one_stale_link_each(tmp_path, no_git):
+    proj = make_nested(tmp_path)
+    write(proj, "docs/a.md", f"[p]({repo_link(PIPOS, PIPOS_COMMIT)})\n[p]({repo_link(PIPOS, PIPOS_OLD)})\n")
+    write(proj, "docs/b.md", f"[c]({link(COMMIT)})\n[c]({link(OLD)})\n")
+    p = run_repo(proj, no_git, PIPOS, OUTER)
+    c = run(proj, no_git, sub=INNER)
+    assert p.returncode == 1 and c.returncode == 1
+    assert f"docs/a.md:2 links Pip-OS at {PIPOS_OLD}, the submodule is at {PIPOS_COMMIT}" in p.stderr
+    assert "docs/b.md" not in p.stderr
+    assert f"docs/b.md:2 links RobCo-Core at {OLD}, the submodule is at {COMMIT}" in c.stderr
+    assert "docs/a.md" not in c.stderr
+
+
+def test_two_argument_form_unchanged(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"[old]({link(OLD)})\n")
+    r = subprocess.run(["bash", str(SCRIPT), str(proj), SUB], capture_output=True, text=True, env=no_git)
+    assert r.returncode == 1
+    assert f"a.md:1 links RobCo-Core at {OLD}, the submodule is at {COMMIT}" in r.stderr

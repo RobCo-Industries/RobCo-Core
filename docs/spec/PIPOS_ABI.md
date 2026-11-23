@@ -1,8 +1,8 @@
 # Pip-OS ABI
 
-This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.1, `abi_version = 0x00010001` in the image header.
+This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.2, `abi_version = 0x00010002` in the image header.
 
-Version rule: a new call raises the minor version. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.1 also runs on a 1.0 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS`. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`.
+Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.2 also runs on a 1.0 or 1.1 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back.
 
 Rows marked "draft" in a status column may change before 1.0 is frozen. Rows marked "stable" will not change within major version 1.
 
@@ -151,7 +151,7 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 
 The existing Pip-OS calls `read_save` and `write_save` took a byte offset. They now take a save name, so their argument lists are draft.
 
-Buttons for `read_buttons`: bit 0 up, 1 down, 2 left, 3 right, 4 select, 5 dial press. Sensors for `read_sensor`: 0 RTC, 1 battery, 2 geiger, 3 GPS, 4 accelerometer, 5 temperature, 6 heart rate. These values come from Pip-OS and are stable.
+Buttons for `read_buttons`: bit 0 up, 1 down, 2 left, 3 right, 4 select, 5 dial press, 6 back. Button 6 was added in ABI 1.2. Sensors for `read_sensor`: 0 RTC, 1 battery, 2 geiger, 3 GPS, 4 accelerometer, 5 temperature, 6 heart rate. These values come from Pip-OS and are stable.
 
 Holotapes cannot call `holo_launch`, `power` or `set_time`. They get `-PIP_EPERM`.
 
@@ -243,7 +243,7 @@ A row of `blit_1bpp` is `(w + 7) / 8` bytes. A row of `blit_rgb` is `4 * w` byte
 
 ## Input
 
-`read_buttons` returns the buttons that are down now. It stays right after a queue overflow.
+`read_buttons` returns the buttons that are down now, as a mask of bits 0 to 6. The buttons are up, down, left, right, select, dial press and back. Back sends press, release and repeat events like the others. It stays right after a queue overflow.
 
 `read_dial` returns the dial position in degrees, 0 to 359. One detent of the dial is 15 degrees. The position comes from a running total of detents since boot, so it does not depend on the event queue. It counts turns whose events were dropped and turns made while no image runs. An image start or end does not reset it.
 
@@ -260,7 +260,7 @@ typedef struct __attribute__((packed)) pip_event {
 
 | `type` | Name | `code` | `value` |
 |---|---|---|---|
-| 1 | `PIP_EV_BUTTON` | Button number, the bit position from `read_buttons` | 1 press, 0 release, 2 repeat while held |
+| 1 | `PIP_EV_BUTTON` | Button number 0 to 6, the bit position from `read_buttons` | 1 press, 0 release, 2 repeat while held |
 | 2 | `PIP_EV_DIAL` | 0 | Signed detents. Positive is clockwise. |
 
 `time_ms` is the `ticks_ms` time when Pip-OS registered the event. GPIO buttons and the dial are sampled every 10 ms, so their stamp comes within about 10 ms of the change, after the 20 ms button debounce. Input from the serial console or the script channel is stamped when Pip-OS reads it, which can be later than the key press. It is never later than the `ticks_ms` value an image reads after it gets the event. Stamps follow `ticks_ms`, so they wrap when it wraps. Between wraps, stamps of successive events never go backwards. Compare stamps the way the `ticks_ms` row of the syscall table says to compare `ticks_ms` values.

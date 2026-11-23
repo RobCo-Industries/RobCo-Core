@@ -426,6 +426,13 @@ robco-core/tools/check_doc_links.sh . robco-core docs/generated
 
 It prints `check-doc-links: ok (<commit>)`, or names the file and line of each stale link and exits 1. It reads the commit from the submodule's git files, like `check_pins.sh`, and never calls git. It scans every `*.md` file under the root. It skips `CHANGELOG.md`, which records old pins on purpose, and the agent instruction files such as `AGENTS.md`. It also skips the submodule, the agent settings folder and every directory named `.git`, `.venv`, `build`, `node_modules`, `vendor` or `third_party`. The script header lists each name. It fails with a clear message when the submodule or its git files are missing. Add it to `make test` next to `check-pins`.
 
+A project that pins another RobCo repository checks its links the same way. Name the repository with `--repo owner/name`; the default is `RobCo-Industries/RobCo-Core`. One run checks one repository, so call the script once per pinned repository. The submodule path may be nested. When it is, the script also skips the outer submodule that holds it:
+
+```sh
+external/pip-os/external/robco-core/tools/check_doc_links.sh --repo RobCo-Industries/Pip-OS . external/pip-os
+external/pip-os/external/robco-core/tools/check_doc_links.sh . external/pip-os/external/robco-core
+```
+
 The inputs are documented at the top of [robco-ci.yml](../../.github/workflows/robco-ci.yml).
 
 ## Build a card image for QEMU
