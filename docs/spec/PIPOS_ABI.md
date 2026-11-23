@@ -65,7 +65,7 @@ Pip-OS writes the struct and the exit trampoline at the bottom of the image's st
 | Unknown number | Returns `-PIP_ENOSYS` |
 | Preserved | r4 to r11, sp, lr |
 | Clobbered | r0 to r3, r12, flags |
-| Pointers | Pip-OS checks every pointer and length. The whole range must lie in the caller's image or heap region. Otherwise it returns `-PIP_EFAULT`. |
+| Pointers | Pip-OS checks every pointer and length. The whole range must lie in the caller's image or heap region. Otherwise it returns `-PIP_EFAULT`. A holotape's input pointers may also point into the ROM slot, which it can read. |
 
 `libpip.a` wraps each call as a C function with the name `pip_<name>`.
 
@@ -372,7 +372,16 @@ typedef struct __attribute__((packed)) pip_dirent {
 
 A holotape is a file `/PIPBOY/HOLO/<NAME>.HTP` in the `ROBCO78` image format.
 
-`holo_enumerate` lists the files whose header passes the magic, version and size checks. It does not check the CRC. It writes at most `max` entries, 1 to 32, and returns the count.
+`holo_enumerate` reads `/PIPBOY/HOLO` in directory order and lists the files named `NAME.HTP` whose header passes the magic, version and size checks. It does not check the CRC. It writes at most `max` entries, 1 to 32, and returns the count. A missing folder gives 0 entries. Pip-OS checks the whole `max` entries of `out` before it reads the card. A file with a long name is listed under its 8.3 alias. A file too short for a header is skipped.
+
+| Holotape call error | Cause |
+|---|---|
+| `-PIP_EINVAL` | A bad name, `max` outside 1 to 32, or `args` without a NUL in the first 100 bytes |
+| `-PIP_EFAULT` | A NULL or bad pointer |
+| `-PIP_EIO` | A card read error in `holo_enumerate` or `holo_launch`. The entries in `out` are then undefined. |
+| `-PIP_EPERM` | A holotape calls `holo_launch` |
+
+A name is a plain 8.3 `NAME.HTP`: 1 to 8 characters from the file path set in [Files](#files), then `.HTP`. It is case-insensitive. A folder, `.`, `..`, a wildcard, a space or a longer name is a bad name. Names that start with `#` or `~` are ordinary tapes.
 
 ```c
 typedef struct __attribute__((packed)) pip_holo_info {
@@ -389,14 +398,16 @@ typedef struct __attribute__((packed)) pip_holo_info {
 
 `holo_launch` takes a file name from `holo_enumerate`, without a folder, and an argument string of at most 99 bytes. It runs these steps:
 
-1. Load and validate the file, with every step from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). A failure returns `-PIP_ENOENT` for a missing file and `-PIP_ENOEXEC` for a bad one.
-2. Stop the sound, empty the event queue, and give the holotape a fresh drawing state.
+1. Load and validate the file, with every step from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). A failure returns `-PIP_ENOENT` for a missing file, `-PIP_EIO` for a card error and `-PIP_ENOEXEC` for any other failed step. A name that the card resolves to a folder, or to a file listed under another name, counts as missing. A data holotape, subtype 2, fails validation.
+2. Stop the sound, empty the event queue, clear the back buffer, and give the holotape a fresh drawing state.
 3. Run the holotape. The ROM waits inside `holo_launch`.
 4. When the holotape ends, close its files, stop the sound, empty the event queue and restore the ROM's drawing state.
 
 `holo_launch` returns the holotape's exit status, 0 to 255, or `-PIP_EFAULT` when Pip-OS killed it. The back buffer holds whatever the holotape drew, so the ROM redraws its screen.
 
-`holo_last_status` returns what the last `holo_launch` returned, or `-PIP_ENOENT` when none ran since boot.
+While a holotape runs, every call sees it as the caller: its kind, its memory for pointer checks and its heap in `mem_info`. It has its own 8 file handles. The ROM's handles stay open but do not work for the holotape.
+
+`holo_last_status` returns what the ROM's last `holo_launch` call returned, whatever it was, argument errors included. It returns `-PIP_ENOENT` when the ROM made no call since boot. A holotape's refused `holo_launch` does not change it.
 
 Holotapes are files on the card, so nothing can be inserted or removed while Pip-OS runs. `holo_eject_event` returns 0. It is kept for hardware with a tape slot.
 
@@ -415,7 +426,7 @@ Pip-OS runs every image in USR mode behind an identity map of 1 MiB sections.
 
 - Pip-OS checks the image's CRC before it runs it.
 - An image that faults is ended. A fault is a bad memory access or an undefined instruction.
-- When a holotape faults, control returns to the ROM and `holo_launch` returns `-PIP_EFAULT`.
+- When a holotape faults, control returns to the ROM and `holo_launch` returns `-PIP_EFAULT`. Pip-OS shows nothing on screen. The ROM decides what to show.
 - When the ROM faults, Pip-OS shows the fault on screen and stops running the ROM.
 
 The sandbox does not protect an image from itself: its code, heap and stack are all writable. It sets no limit on CPU time, so an image that loops forever holds the device.
