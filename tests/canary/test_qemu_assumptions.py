@@ -257,3 +257,21 @@ def test_v15_serial_order(machine):
 
     assert chardev_of("pl011") == "serial0"
     assert chardev_of("bcm2835-aux") == "serial1"
+
+
+@pytest.mark.parametrize("binary,machine", [(ARM, m) for m in ARM_MACHINES] + [(A64, "raspi3b")])
+def test_v16_spi0_transfer_completes(binary, machine):
+    """V16: SPI0 is modelled. With nothing attached a byte completes at once and reads 0."""
+    need(binary, machine)
+    cs, fifo = BASE.get(machine, 0x3F000000) + 0x204000, BASE.get(machine, 0x3F000000) + 0x204004
+    with Qemu(binary, machine, qtest=True) as q:
+        q.writel(cs, 0x30)          # clear both FIFOs
+        q.writel(cs, 0x80)          # TA: start a transfer
+        q.writel(fifo, 0xA5)
+        status = q.readl(cs)
+        assert status & (1 << 16), hex(status)     # DONE
+        assert status & (1 << 17), hex(status)     # RXD: a byte came back
+        assert q.readl(fifo) == 0
+        assert q.readl(cs) & (1 << 17) == 0        # RX FIFO empty again
+        q.writel(cs, 0x30)
+        assert q.readl(cs) & 0x80 == 0
