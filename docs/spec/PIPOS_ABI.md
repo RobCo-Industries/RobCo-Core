@@ -1,6 +1,8 @@
 # Pip-OS ABI
 
-This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.0, `abi_version = 0x00010000` in the image header.
+This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.1, `abi_version = 0x00010001` in the image header.
+
+Version rule: a new call raises the minor version. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.1 also runs on a 1.0 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS`. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`.
 
 Rows marked "draft" in a status column may change before 1.0 is frozen. Rows marked "stable" will not change within major version 1.
 
@@ -120,6 +122,7 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 | `0x23` | `volume` | `uint32 level`, 0 to 100 | Previous level | draft |
 | `0x24` | `audio_status` | none | 1 if playing, 0 if idle | draft |
 | `0x25` | `play_seq` | `const pip_note_t *notes, uint32 count` | 0 | draft |
+| `0x26` | `sample_queue` | `const uint8 *data, uint32 length` | 0, or an error | draft |
 | `0x30` | `read_sensor` | `uint32 sensor, uint32 *value` | 0, or `-PIP_ENODEV` | stable |
 | `0x31` | `sensor_available` | `uint32 sensor` | 1 or 0 | stable |
 | `0x40` | `get_time` | `uint32 *unix_seconds` | 0, or `-PIP_ENODEV` when no clock is set | stable |
@@ -276,12 +279,17 @@ There is one voice. `tone`, `sample` and `play_seq` return at once and the sound
 | `sample` | 8-bit unsigned mono at 8000 Hz. 128 is silence. 1 to 65536 bytes, so length 0 returns `-PIP_EINVAL`. Pip-OS checks the length before the pointer. It copies the data before it returns. |
 | `play_seq` | `count` is 1 to 256. Pip-OS checks every note before anything plays. One bad note refuses the whole sequence. It copies the notes before it returns. |
 | `volume` | 0 to 100. Returns the previous level. The start value comes from `PIPOS.CFG`, 100 without one. A new level applies to a playing `sample` at once, and to a tone or sequence from its next note. At 0 sounds still play silently and `audio_status` reports them. |
-| `audio_status` | 1 while a sound the image started plays. The power-on beep does not count. |
-| `audio_stop` | Stops the sound. Returns 0 also when nothing plays. |
+| `audio_status` | 1 while a sound the image started plays, or a queued sample waits. The power-on beep does not count. |
+| `sample_queue` | Same format, limits, check order and error codes as `sample` for the length and the pointer. Pip-OS copies the data before it returns. If a `sample` or a queued sample plays, the data plays right after it with no gap. One sample can wait: when one already waits, the call returns `-PIP_EBUSY` and changes nothing. If no sample plays, `sample_queue` acts exactly like `sample`: it starts the data now and replaces a tone or a sequence. Added in ABI 1.1. |
+| `audio_stop` | Stops the sound and drops a waiting sample. Returns 0 also when nothing plays. |
 
-A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call refused for its arguments plays nothing and leaves the current sound playing.
+A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample`, `sample_queue` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call refused for its arguments plays nothing and leaves the current sound playing.
 
-The volume belongs to the device, not to the image. A level set by a ROM or a holotape stays after it ends, until the next power-on. Pip-OS stops the sound an image started when the image starts and when it ends.
+The volume belongs to the device, not to the image. A level set by a ROM or a holotape stays after it ends, until the next power-on. Pip-OS stops the sound an image started, and a waiting sample, when the image starts and when it ends.
+
+`tone`, `sample`, `play_seq` and `audio_stop` drop the waiting sample as well as the playing one.
+
+Streaming: a ROM calls `sample_queue` in its loop with the next chunk until it returns 0, then prepares the following chunk. A chunk of 65536 bytes lasts 8.192 s. If the ROM is late and the sound ends, the next call starts it again, with a gap.
 
 ```c
 typedef struct __attribute__((packed)) pip_note {

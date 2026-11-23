@@ -12,6 +12,11 @@
  * so the tick and the PCM IRQ never run at the same time. A stop or a
  * replacement cuts PCM at once, with IRQs masked, so the caller owns its
  * buffer again when the call returns. The tick still prints the stop line.
+ *
+ * Queued PCM: audio_pcm_queue() chains a buffer, with IRQs masked, into
+ * `pcm` when it plays or into `pcm_req` when its start waits for the tick.
+ * The engine switches to it in the channel 3 IRQ, on the same time base.
+ * A cut drops the waiting buffer with the playing one.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -77,6 +82,7 @@ void audio_pwm_sample(uint32_t dat);
 void audio_trace_out(uint32_t hz, unsigned vol, uint32_t t_ms);
 void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms);
 void audio_trace_pcm_end(uint32_t n, uint32_t last, uint32_t t0_ms, uint64_t dur_us);
+void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_flush(void);
 
 static int backend = -1;            /* AUDIO_BACKEND_PWM or _TRACE once initialised */
@@ -104,6 +110,9 @@ static volatile int playing;
 /* PCM request, prepared by the main context with IRQs masked. */
 static audio_pcm_t pcm_req;
 static uint32_t pcm_req_crc;
+
+/* CRC of the buffer queued with audio_pcm_queue(), for its trace line. IRQs masked. */
+static uint32_t pcm_next_crc;
 
 /* Tick context only. */
 static audio_seq_t seq;
@@ -217,6 +226,13 @@ static void pcm_run(uint32_t now)
 
     for (;;) {
         r = audio_pcm_poll(&pcm, now, &pos);
+        if (pcm.switches) {
+            pcm.switches = 0;
+            if (backend != AUDIO_BACKEND_PWM) {
+                audio_trace_pcm_next(pcm.len, pcm_next_crc, pcm_t0_ms,
+                                     timer_now_us() - pcm_t0_us);
+            }
+        }
         if (r == AUDIO_PCM_END) {
             pcm_finish();
             return;
@@ -281,6 +297,7 @@ static void pcm_cut_locked(void)
         return;
     }
     pcm.active = 0;
+    pcm.next = 0;
     pcm_cut = 1;
     irq_disable(IRQ_TIMER3);
     timer_compare_clear(PCM_CHANNEL);
@@ -293,6 +310,7 @@ static void pcm_cut_locked(void)
 static void pcm_halt(void)
 {
     pcm.active = 0;
+    pcm.next = 0;
     pcm_cut = 0;
     irq_disable(IRQ_TIMER3);
     timer_compare_clear(PCM_CHANNEL);
@@ -678,6 +696,71 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
     req.valid = 1;
     irq_restore(s);
     return 0;
+}
+
+/* The play a queued buffer would join: the pending start, or the one that plays. IRQs masked. */
+static audio_pcm_t *queue_target_locked(void)
+{
+    if (req.valid) {
+        return req.pcm && !req.stop ? &pcm_req : 0;
+    }
+    return pcm.active ? &pcm : 0;
+}
+
+/* 0 when a buffer can be queued now, else AUDIO_ERR_STATE or AUDIO_ERR_BUSY. IRQs masked. */
+static int queue_check_locked(void)
+{
+    audio_pcm_t *t = queue_target_locked();
+
+    if (!t || (t->flags & AUDIO_LOOP)) {
+        return AUDIO_ERR_STATE;
+    }
+    return t->next ? AUDIO_ERR_BUSY : 0;
+}
+
+int audio_pcm_queue(const uint8_t *data, size_t len)
+{
+    uint32_t crc = 0;
+    uint32_t s;
+    int ret;
+
+    if (backend < 0) {
+        return AUDIO_ERR_NO_INIT;
+    }
+    /* Same pointer and length rules as audio_play_pcm(); any valid rate will do. */
+    ret = audio_pcm_check(data, len, AUDIO_PCM_RATE_MIN, 0);
+    if (ret) {
+        return ret;
+    }
+    /* Fail fast before the CRC scans the buffer. The check repeats below. */
+    s = irq_save();
+    ret = queue_check_locked();
+    irq_restore(s);
+    if (ret) {
+        return ret;
+    }
+    if (backend == AUDIO_BACKEND_TRACE) {
+        crc = crc32(data, len);
+    }
+    s = irq_save();
+    ret = queue_check_locked();
+    if (!ret) {
+        audio_pcm_chain(queue_target_locked(), data, len);
+        pcm_next_crc = crc;
+    }
+    irq_restore(s);
+    return ret;
+}
+
+int audio_pcm_can_queue(void)
+{
+    uint32_t s;
+    int ok;
+
+    s = irq_save();
+    ok = queue_check_locked() == 0;
+    irq_restore(s);
+    return ok;
 }
 
 int audio_play_rtttl(const char *text, unsigned flags)

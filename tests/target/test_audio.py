@@ -21,10 +21,15 @@ TUNE = [(523, 150), (784, 150), (659, 150), (0, 150), (1047, 300), (880, 150), (
 LOOP = [(660, 60), (0, 40), (990, 60)]
 
 TONE_CASES = ["beep", "seq", "tune", "loop", "interrupt"]
-PCM_CASES = ["pcm", "pcm_fast", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick", "pcm_args"]
+PCM_CASES = ["pcm", "pcm_fast", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick", "pcm_args",
+             "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under"]
 
 # AUDIO_ERR_* codes.
-ERR_NO_INIT, ERR_RANGE, ERR_ARG, ERR_BUSY = -1, -6, -7, -8
+ERR_NO_INIT, ERR_RANGE, ERR_ARG, ERR_BUSY, ERR_STATE = -1, -6, -7, -8, -11
+
+# The pcm_chain chunks of examples/audio/main.c as (offset, length), at 8000 Hz.
+CHAIN = [(0, 800), (800, 600), (1400, 1000)]
+PCM_BUF = 22050
 
 # A late end is fine under load; this only catches a play that never ends on time.
 PCM_END_SLACK_MS = 1000
@@ -147,6 +152,25 @@ def check_pcm(vm, c):
     assert c["pcm_args"] == [], c["pcm_args"]
     check_pcm_args(vm)
 
+    check_pcm_chain(c["pcm_chain"])
+    check_pcm_chain_results(vm)
+
+    # Queue errors around a looped play: one start, one stop, nothing chained.
+    marks = c["pcm_qerr"]
+    assert [m["op"] for m in marks] == ["pcm", "stop"], marks
+    check_pcm_qerr(vm)
+
+    # A stop, then a tone, each with a buffer waiting: no pcm_next, no pcm_end.
+    marks = c["pcm_qcut"]
+    assert [m["op"] for m in marks] == ["pcm", "stop", "pcm", "stop", "tone", "stop"], marks
+    assert marks[4]["hz"] == "440", marks
+    check_pcm_qcut(vm)
+
+    # Underrun: the first play ends alone, then a new play starts.
+    marks = c["pcm_under"]
+    assert [m["op"] for m in marks] == ["pcm", "pcm_end", "pcm", "pcm_end"], marks
+    check_pcm_under(vm)
+
 
 def check_busy_big(swap):
     """A busy audio_play_pcm() returns before it scans its 16 MB buffer."""
@@ -164,6 +188,61 @@ def check_pcm_cut(vm):
         # The IRQ ran before the cut, so a late read would show.
         assert int(m["before"]) > 0, m
         assert m["after"] == "0", m
+
+
+def check_pcm_chain(marks):
+    """Three chunks back to back: one start, two switches in order, one end."""
+    assert [m["op"] for m in marks] == ["pcm", "pcm_next", "pcm_next", "pcm_end"], marks
+    data = pcm_data(PCM_BUF)
+    (a_off, a_len), (b_off, b_len), (c_off, c_len) = CHAIN
+    start, nb, nc, end = marks
+    assert (int(start["rate"]), int(start["len"]), int(start["vol"])) == (8000, a_len, 100), start
+    assert start["crc"] == "%08x" % zlib.crc32(data[a_off:a_off + a_len]), start
+    for m, (off, n) in ((nb, CHAIN[1]), (nc, CHAIN[2])):
+        assert int(m["len"]) == n, m
+        assert m["crc"] == "%08x" % zlib.crc32(data[off:off + n]), m
+    total = a_len + b_len + c_len
+    t0 = int(start["t_ms"])
+    # Each switch is due once the earlier chunks have played.
+    assert int(nb["t_ms"]) - t0 >= a_len * 1000 // 8000, marks
+    assert int(nc["t_ms"]) - t0 >= (a_len + b_len) * 1000 // 8000, marks
+    # The whole schedule: never shorter than the total length over the rate.
+    nominal = total * 1000 // 8000
+    took = int(end["t_ms"]) - t0
+    assert nominal <= took < nominal + PCM_END_SLACK_MS, (took, nominal)
+    # n counts over the three chunks; last is an index in the final one.
+    assert nominal // 2 <= int(end["n"]) <= total, end
+    last = int(end["last"])
+    assert max(0, c_len - 1 - 8000 * PCM_LAST_SLACK_MS // 1000) <= last <= c_len - 1, end
+
+
+def check_pcm_chain_results(vm):
+    m = events(vm, "pcm_chain")[-1]
+    got = {k: int(v) for k, v in m.items() if k not in ("stage", "ev")}
+    assert got == {"can0": 1, "q1": 0, "can1": 0, "qbusy": ERR_BUSY, "can2": 1, "q2": 0,
+                   "can3": 0, "can4": 0, "under": ERR_STATE, "idle": 0}, m
+
+
+def check_pcm_qerr(vm):
+    m = events(vm, "pcm_qerr")[-1]
+    got = {k: int(v) for k, v in m.items() if k not in ("stage", "ev")}
+    assert got == {"idle": ERR_STATE, "null": ERR_ARG, "zero": ERR_ARG, "loop": ERR_STATE,
+                   "lcan": 0}, m
+
+
+def check_pcm_qcut(vm):
+    """No sample IRQ reads either buffer once audio_stop() or a tone returns."""
+    cuts = {m["kind"]: m for m in events(vm, "pcm_qcut")}
+    assert set(cuts) == {"stop", "tone"}, vm.serial
+    for m in cuts.values():
+        assert (m["ret"], m["q"], m["cut"], m["can"]) == ("0", "0", "0", "0"), m
+        assert int(m["before"]) > 0, m
+        assert m["after"] == "0", m
+
+
+def check_pcm_under(vm):
+    m = events(vm, "pcm_under")[-1]
+    assert (int(m["under"]), int(m["can"]), int(m["again"])) == (ERR_STATE, 0, 0), m
 
 
 def check_pcm_args(vm):
@@ -295,3 +374,7 @@ def test_audio_forced_pwm(board, example_image):
             # audio_wait() returns after one second: the IRQ ended the play.
             assert 1000000 <= int(tick["us"]) < 1000000 + PCM_END_SLACK_MS * 1000, tick
             check_pcm_args(vm)
+            check_pcm_chain_results(vm)
+            check_pcm_qerr(vm)
+            check_pcm_qcut(vm)
+            check_pcm_under(vm)

@@ -144,8 +144,29 @@ int audio_play(const audio_note_t *seq, size_t count, unsigned flags);
 int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned flags);
 
 /*
+ * Queues the next PCM buffer behind the one that plays. It starts with no
+ * gap when the current buffer ends, at the same rate. One buffer can wait.
+ * The library does not copy: `data` must stay valid until that buffer has
+ * finished playing, or until audio_stop() or a call that replaces the sound
+ * returns.
+ * Returns 0, or AUDIO_ERR_NO_INIT, AUDIO_ERR_ARG (NULL, len 0, len above
+ * AUDIO_PCM_LEN_MAX), AUDIO_ERR_STATE when no PCM is playing or pending
+ * (start with audio_play_pcm()), AUDIO_ERR_BUSY when a buffer already waits,
+ * AUDIO_ERR_STATE when the playing PCM loops (AUDIO_LOOP never ends).
+ */
+int audio_pcm_queue(const uint8_t *data, size_t len);
+
+/*
+ * 1 when audio_pcm_queue() would accept a buffer now: PCM plays and no
+ * buffer waits. When this turns 1 again after a queue call, the buffer
+ * that was playing at the time of that call has finished and is free.
+ */
+int audio_pcm_can_queue(void);
+
+/*
  * Samples output since audio_init(). If `play` is not NULL, it gets the
- * samples output by the current or last PCM play. For tests.
+ * samples output by the current or last PCM play, counted from
+ * audio_play_pcm() over every queued buffer that followed. For tests.
  */
 uint32_t audio_pcm_samples(uint32_t *play);
 
@@ -225,10 +246,13 @@ typedef struct {
     uint32_t unit_us;       /* 1000000 / gcd(rate, 1000000) */
     uint32_t unit_n;        /* samples in unit_us */
     uint32_t origin_us;     /* time of sample origin_pos */
-    uint32_t origin_pos;    /* sample index at origin_us, below len */
+    uint32_t origin_pos;    /* sample index at origin_us, signed after a switch */
     uint32_t next_q;        /* samples after the origin of the next sample due */
-    uint32_t last;          /* last index output */
-    uint32_t n;             /* samples output */
+    uint32_t last;          /* last index output, in the current buffer */
+    uint32_t n;             /* samples output, over every chained buffer */
+    const uint8_t *next;    /* buffer that waits, or NULL */
+    uint32_t next_len;
+    uint32_t switches;      /* times a waiting buffer took over */
     int active;
 } audio_pcm_t;
 
@@ -251,6 +275,15 @@ void audio_pcm_start(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t r
  * played to its end. Samples between two calls are skipped. Wraps at 2^32 us.
  */
 int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos);
+
+/*
+ * Chains `data` behind the current buffer: when the position passes the
+ * end, it continues at pos - len in `data`, on the same clock grid. One
+ * buffer can wait. Returns 0, or AUDIO_ERR_STATE when the play is not
+ * active or loops, AUDIO_ERR_BUSY when a buffer already waits. Arguments
+ * must pass audio_pcm_check().
+ */
+int audio_pcm_chain(audio_pcm_t *p, const uint8_t *data, size_t len);
 
 /* Time in us, wrapping, when the next sample is due. */
 uint32_t audio_pcm_next_us(const audio_pcm_t *p);
