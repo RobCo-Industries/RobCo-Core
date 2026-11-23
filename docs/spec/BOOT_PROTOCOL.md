@@ -86,8 +86,8 @@ path = /ROBCO/DIAG.SYS
 |---|---|---|---|
 | `[boot]` | `default` | The name of an entry | The first entry |
 | `[boot]` | `timeout` | Seconds, 0 to 99 | None: the menu waits for a key |
-| `[entry NAME]` | `path` | Absolute path of the image, 2 to 63 characters, no space or tab | None: the entry is dropped |
-| `[entry NAME]` | `cmdline` | Up to 127 characters, copied to `cmdline` in the boot info | Empty |
+| `[entry NAME]` | `path` | Absolute path of the image, 2 to 63 characters from the path set in the rules below | None: the entry is dropped |
+| `[entry NAME]` | `cmdline` | Up to 127 printable ASCII characters, copied to `cmdline` in the boot info | Empty |
 
 | Limit | Value |
 |---|---|
@@ -104,6 +104,9 @@ Rules:
 - `[entry]` with no name, or a name that breaks the limit, drops the section and counts as `bad`.
 - When two sections have the same name, the first wins, also when it has no usable path. The others count as `dup`.
 - An entry with no usable `path` is dropped and counts as `bad`. A bad `path` value counts as `bad` too.
+- The rules below apply to the value after INI decoding, so a `\n` escape in a quoted value is a newline byte.
+- A usable `path` starts with `/`. Every byte is an ASCII letter, a digit, `/`, `.`, `_`, `-` or `~`. These are the FAT 8.3 name characters the stages need, and all of them lie in 0x21 to 0x7E. Any other byte makes the path bad, so the entry is dropped and counts as `bad`.
+- A usable `cmdline` holds only printable ASCII, 0x20 to 0x7E. A control byte, a byte above 0x7E or a newline from a `\n` escape makes it bad. The whole entry is then dropped and counts as `bad`. The stage does not boot the entry with an empty command line, because an operating image must not start with a changed command line.
 - `timeout` follows the number rule of `delay_ms`: one or more ASCII digits and nothing else. A value above 99 becomes 99 and counts as `clamped`. A bad value counts as `bad`, and the menu waits as with no key.
 - `timeout = 0` shows the menu, then boots the default entry at once. With no `timeout` key the menu waits for a key.
 - A `default` that names no entry, or no `default` key, means the first entry.
