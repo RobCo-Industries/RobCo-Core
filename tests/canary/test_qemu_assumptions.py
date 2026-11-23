@@ -259,7 +259,25 @@ def test_v15_serial_order(machine):
     assert chardev_of("bcm2835-aux") == "serial1"
 
 
-# V16: QEMU's pca9554 model. BSC1 registers, driven through qtest.
+@pytest.mark.parametrize("binary,machine", [(ARM, m) for m in ARM_MACHINES] + [(A64, "raspi3b")])
+def test_v16_spi0_transfer_completes(binary, machine):
+    """V16: SPI0 is modelled. With nothing attached a byte completes at once and reads 0."""
+    need(binary, machine)
+    cs, fifo = BASE.get(machine, 0x3F000000) + 0x204000, BASE.get(machine, 0x3F000000) + 0x204004
+    with Qemu(binary, machine, qtest=True) as q:
+        q.writel(cs, 0x30)          # clear both FIFOs
+        q.writel(cs, 0x80)          # TA: start a transfer
+        q.writel(fifo, 0xA5)
+        status = q.readl(cs)
+        assert status & (1 << 16), hex(status)     # DONE
+        assert status & (1 << 17), hex(status)     # RXD: a byte came back
+        assert q.readl(fifo) == 0
+        assert q.readl(cs) & (1 << 17) == 0        # RX FIFO empty again
+        q.writel(cs, 0x30)
+        assert q.readl(cs) & 0x80 == 0
+
+
+# V17: QEMU's pca9554 model. BSC1 registers, driven through qtest.
 BSC1 = {"raspi0": 0x20804000, "raspi1ap": 0x20804000, "raspi2b": 0x3F804000,
         "raspi3b": 0x3F804000}
 PCA_MACHINES = [(ARM, m) for m in ARM_MACHINES] + [(A64, "raspi3b")]
@@ -308,8 +326,8 @@ PCA_ARGS = ["-device", "pca9554,bus=i2c-bus.1,address=0x20,id=x0",
 
 
 @pytest.mark.parametrize("binary,machine", PCA_MACHINES, ids=[m for _, m in PCA_MACHINES])
-def test_v16_pca9554_registers(binary, machine):
-    """V16a: pca9554 sits on i2c-bus.1 at both address ranges; data sheet power-on values."""
+def test_v17_pca9554_registers(binary, machine):
+    """V17a: pca9554 sits on i2c-bus.1 at both address ranges; data sheet power-on values."""
     need(binary, machine)
     with Qemu(binary, machine, PCA_ARGS, qtest=True) as q:
         bus = Bsc1(q, machine)
@@ -330,8 +348,8 @@ def test_v16_pca9554_registers(binary, machine):
 
 
 @pytest.mark.parametrize("binary,machine", PCA_MACHINES, ids=[m for _, m in PCA_MACHINES])
-def test_v16_pca9554_pins_from_outside(binary, machine):
-    """V16b: qom-get pinN shows config|output; set_irq_in ANDs with the pin; qom-set rewrites registers."""
+def test_v17_pca9554_pins_from_outside(binary, machine):
+    """V17b: qom-get pinN shows config|output; set_irq_in ANDs with the pin; qom-set rewrites registers."""
     need(binary, machine)
     path = "/machine/peripheral/x0"
     with Qemu(binary, machine, PCA_ARGS, qtest=True) as q:

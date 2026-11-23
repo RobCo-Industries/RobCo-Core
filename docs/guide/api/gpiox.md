@@ -86,4 +86,4 @@ The shadow logic, in `src/lib/gpiox_shadow.c`, runs on the host. `gpiox_regs_t` 
 
 ### QEMU
 
-QEMU's `pca9554` model sits on `i2c-bus.1` at any address. `tests/target/test_gpiox.py` reads output pins through QMP `qom-get` and drives input pins through qtest. Canary V16 in [tests/README.md](../../../tests/README.md#canary-facts) lists what the model does. The driver is not validated on hardware.
+QEMU's `pca9554` model sits on `i2c-bus.1` at any address. `tests/target/test_gpiox.py` reads output pins through QMP `qom-get` and drives input pins through qtest. Canary V17 in [tests/README.md](../../../tests/README.md#canary-facts) lists what the model does. The driver is not validated on hardware.

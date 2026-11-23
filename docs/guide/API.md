@@ -1,6 +1,6 @@
 # API reference
 
-This page and the topic files under [api/](./api/) list every public function, type and constant in `include/robco/`. This page holds the conventions, boot, board, the core drivers, the screen, images, boot info and faults. The topic files hold memory, storage, input, audio and the buses.
+This page and the topic files under [api/](./api/) list every public function, type and constant in `include/robco/`. This page holds the conventions, boot, board, the core drivers, the screen, images, boot info and faults. The topic files hold memory, storage, input, audio, the buses and the SPI display.
 
 Each function signature is copied from its header. `tools/check_docs.py` fails the build when a header declares a function that neither this page nor a topic file lists, or when one of them lists a function that no header declares.
 
@@ -11,6 +11,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | [Input](./api/input.md) | `input.h`, `uart_mini.h` |
 | [Audio](./api/audio.md) | `audio.h` |
 | [Buses, clock and configuration](./api/buses.md) | `i2c.h`, `rtc.h`, `datetime.h`, `spi.h`, `ini.h` |
+| [SPI display](./api/display.md) | `tft.h` |
 | [User mode](./api/umode.md) | `umode.h` |
 | [GPIO expanders](./api/gpiox.md) | `gpiox.h` |
 
@@ -49,6 +50,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | `datetime.h` | [Date and time](./api/buses.md#date-and-time-datetimeh) |
 | `spi.h` | [SPI master](./api/buses.md#spi-master-spih) |
 | `ini.h` | [Configuration files](./api/buses.md#configuration-files-inih) |
+| `tft.h` | [TFT panel](./api/display.md#tft-panel-tfth) |
 | `umode.h` | [User-mode tasks](./api/umode.md#user-mode-tasks-umodeh) |
 | `gpiox.h` | [PCA9554 expanders](./api/gpiox.md#pca9554-expanders-gpioxh) |
 | `crc32.h` | [CRC-32](#crc-32-crc32h) |

@@ -130,13 +130,27 @@ The Zero is told apart from the board revision: a new-style code with type `0x09
 
 It avoids the pins above, GPIO 0 and 1 (ID EEPROM), GPIO 12 and 13 and GPIO 18 to 21.
 
-### SD card pin routing
+### SPI display
 
-On boards with WiFi (Pi 3, Zero W, Zero 2 W) the firmware routes the card to the SDHOST controller on GPIO 48 to 53 and the EMMC controller to the WiFi chip on GPIO 34 to 39. `sd_init()` drives the card through EMMC. It sets GPIO 34 to 39 to input when any of them is at ALT3, and GPIO 48 to 53 to ALT3 when any of them is not. WiFi stops working after this. The routing is pending hardware validation on the Pi 3 and the Zero 2 W.
+`TFT_CONFIG_DEFAULT` in `tft.h` wires an ILI9341 panel this way. It is a default that any `tft_config_t` can change. It is not validated on hardware. The default SPI clock is 10 MHz, the fastest write clock in the ILI9341 data sheet. The divider rounds it down to 9.62 MHz with a 250 MHz core clock. Faster rates up to 64 MHz are accepted but are outside the data sheet and not validated.
+
+| Panel pin | Pin |
+|---|---|
+| SCK, SDI, SDO | GPIO 11, 10, 9: SPI0 at ALT0 |
+| CS | GPIO 8, CE0 |
+| D/C | GPIO 25 |
+| RESET | GPIO 4 |
+| LED | 3.3 V. No backlight GPIO by default. |
+
+GPIO 24, the usual reset pin in panel guides, is Dial B in the input mapping above. GPIO 4 and 25 are the only header pins that the tables above leave free, so they take DC and reset. CE1, GPIO 7, stays free for a second SPI device.
 
 ### I2C GPIO expanders
 
 `gpiox.h` drives PCA9554 chips at `0x20` to `0x27` and PCA9554A chips at `0x38` to `0x3F`, up to four at once. They share the I2C bus on GPIO 2 and 3 with the clock chip. Each adds eight pins. The driver is tested only against QEMU's model, not on hardware.
+
+### SD card pin routing
+
+On boards with WiFi (Pi 3, Zero W, Zero 2 W) the firmware routes the card to the SDHOST controller on GPIO 48 to 53 and the EMMC controller to the WiFi chip on GPIO 34 to 39. `sd_init()` drives the card through EMMC. It sets GPIO 34 to 39 to input when any of them is at ALT3, and GPIO 48 to 53 to ALT3 when any of them is not. WiFi stops working after this. The routing is pending hardware validation on the Pi 3 and the Zero 2 W.
 
 ## config.txt
 

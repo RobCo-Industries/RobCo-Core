@@ -1,6 +1,6 @@
 """Boot examples/gpiox on every board: PCA9554 expanders at 0x20 and 0x21.
 
-QEMU's pca9554 model is canary V16. The test observes output pins with
+QEMU's pca9554 model is canary V17. The test observes output pins with
 QMP qom-get of pinN, which gives the configuration bit OR the output bit,
 and drives input pins through qtest set_irq_in while the guest runs. A driven level of 1 releases a
 line.
@@ -18,7 +18,7 @@ DEVICES = []
 for i, a in enumerate(ADDRS):
     DEVICES += ["-device", f"pca9554,bus=i2c-bus.1,address={a:#x},id=gx{i}"]
 # Inputs get the next pattern. The model ANDs an outside level with the
-# chip's own drive (canary V16), so the last input pattern of a phase is
+# chip's own drive (canary V17), so the last input pattern of a phase is
 # 0xF: it releases every line before the pins change direction.
 PATTERNS = (0xF, 0x0, 0x5, 0xA)
 STEPS = len(PATTERNS)
