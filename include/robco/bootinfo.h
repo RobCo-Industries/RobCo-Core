@@ -171,8 +171,8 @@ int bootinfo_fb_info(const robco_bootinfo_t *bi, fb_info_t *out);
  *   initialised the mini UART.
  * - ROBCO_CAP_SD (BOOTINFO_OWN_SD): this stage, if it initialised the
  *   SD card.
- * - fb_*, ROBCO_CAP_FB (BOOTINFO_OWN_FB): this stage, if it called
- *   fb_init(). A new framebuffer without a new console clears con_cols,
+ * - fb_*, ROBCO_CAP_FB (BOOTINFO_OWN_FB): this stage, if it has a
+ *   framebuffer from fb_init() or fb_adopt(). A new framebuffer without a new console clears con_cols,
  *   con_rows, con_cx and con_cy, since the old console drew on the old
  *   framebuffer. con_scheme stays.
  * - con_* (BOOTINFO_OWN_CON): this stage, if its console is active.

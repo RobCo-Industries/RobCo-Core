@@ -95,7 +95,9 @@ path = /ROBCO/DIAG.SYS
 | Entry name | 1 to 15 characters, each a letter, a digit, `_` or `-` |
 | `path` | 63 characters, so it fits `boot_path` with its NUL. At most 8 components, each 8.3. |
 | `cmdline` | 127 characters, so it fits `cmdline` with its NUL. The INI reader caps a value at 127 bytes, so a longer line makes the whole file bad. |
-| FiRules:
+| File size | 4096 bytes. A longer file is a read error. |
+
+Rules:
 
 - A reader uses `ini_parse_sections()`, not `ini_parse()`. `ini_parse()` calls its handler only for keys, so it cannot see a section with no keys. Then `[entry UOS]` with no keys, followed by a second `[entry UOS]` with a path, would look like one section. `ini_parse_sections()` reports every section header in file order, empty ones and repeats included, before the keys under it.
 - The handlers run for each line before the parse reaches a bad line. So the reader acts on the sections and keys only after the call returns `0`.
@@ -109,7 +111,7 @@ path = /ROBCO/DIAG.SYS
   4. The 8 slots are full: the section counts as `ignored`.
   5. Otherwise the entry takes the next slot. The menu lists the slots in file order.
 - The `entries` key of the `config` marker is the number of filled slots. `dup` counts only step 2. `bad` counts steps 1 and 3, plus a bad `timeout`. The keys of a dropped or ignored section count nowhere else.
-ounts as `bad`. A bad `path` value counts as `bad` too.
+- An entry with no usable `path` is dropped and counts as `bad`. A bad `path` value counts as `bad` too.
 - The rules below apply to the value after INI decoding, so a `\n` escape in a quoted value is a newline byte.
 - A usable `path` follows the [boot partition name rule](./IMAGE_FORMAT.md#files-on-the-sd-card): `/`, then 1 to 8 components separated by `/`, 63 characters at most. Each component is a name of 1 to 8 characters, then optionally a dot and an extension of 1 to 3 characters. Each character is an ASCII letter, a digit, `_`, `-` or `~`. FAT allows more characters, such as `$` and `!`. This set is a deliberate subset. An empty component, a `/` at the end, `.` or `..` breaks the rule. A path that breaks the rule makes the entry dropped, counted as `bad`.
 - Letters may be written in either case. FAT names are case-insensitive, so the stage upper-cases the path, then compares and stores it in that form. `boot_path` in the boot info and the `path` key of the markers hold the upper-case path. `path = /robco/uos.sys` loads `/ROBCO/UOS.SYS`.
