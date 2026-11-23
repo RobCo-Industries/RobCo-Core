@@ -5,9 +5,10 @@
 #include <stdint.h>
 
 /*
- * Square-wave audio: tones, note sequences and short tunes. Playback runs
- * from a tick callback. Two backends: "pwm" drives the PWM block, "trace"
- * prints one marker per change for tests and for boards without PWM.
+ * Audio: square-wave tones, note sequences, short tunes and 8-bit PCM.
+ * Tones run from a tick callback. PCM runs from system timer compare
+ * channel 3, one IRQ per sample. Two backends: "pwm" drives the PWM block,
+ * "trace" prints one marker per change for tests and for boards without PWM.
  */
 
 /* Error codes. */
@@ -27,6 +28,16 @@
 /* Audible range. A step with hz 0 is a rest. */
 #define AUDIO_HZ_MIN        20u
 #define AUDIO_HZ_MAX        20000u
+
+/* PCM sample rates accepted by audio_play_pcm(). */
+#define AUDIO_PCM_RATE_MIN  4000u
+#define AUDIO_PCM_RATE_MAX  22050u
+
+/* Longest PCM buffer, in bytes. */
+#define AUDIO_PCM_LEN_MAX   0x7fffffffu
+
+/* PWM range in PCM mode: 9.6 MHz / 256 gives a 37.5 kHz carrier. */
+#define AUDIO_PCM_PWM_RANGE 256u
 
 /* audio_play() flags. */
 #define AUDIO_LOOP          1u      /* restart at the first step after the last */
@@ -98,10 +109,16 @@ const char *audio_probe_name(int result);
 /* Plays one tone, non-blocking. Replaces what plays now. hz 0 is a rest. */
 int audio_tone(uint32_t hz, uint32_t ms);
 
-/* Stops at the next tick. */
+/*
+ * Stops. PCM output stops before the call returns. Tones stop at the next
+ * tick, which also prints the trace stop line.
+ */
 void audio_stop(void);
 
-/* Non-zero while a tone, rest or sequence plays or waits to start. */
+/*
+ * Non-zero while a tone, rest, sequence or PCM buffer plays, or a request
+ * waits for the tick. After audio_stop() it turns 0 at the next tick.
+ */
 int audio_busy(void);
 
 /* Duty-cycle volume, 0 to 100. Applies from the next note. */
@@ -112,6 +129,25 @@ void audio_set_volume(unsigned percent);
  * flags: AUDIO_LOOP, AUDIO_PRIORITY. Returns 0 or an AUDIO_ERR_* code.
  */
 int audio_play(const audio_note_t *seq, size_t count, unsigned flags);
+
+/*
+ * Plays 8-bit unsigned mono PCM in the background. The library does not
+ * copy: `data` must stay valid until playback ends, or until audio_stop()
+ * or a call that replaces the sound returns. Such a call stops reading the
+ * buffer before it returns. The new sound starts at the next tick.
+ * flags: AUDIO_LOOP, AUDIO_PRIORITY, as for audio_play().
+ * Returns 0 or AUDIO_ERR_* (NO_INIT, ARG for NULL, len 0, len above
+ * AUDIO_PCM_LEN_MAX or unknown flags, RANGE for the rate, BUSY when
+ * something plays and AUDIO_PRIORITY is not set, NO_IRQ when another
+ * handler holds the timer channel 3 IRQ).
+ */
+int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned flags);
+
+/*
+ * Samples output since audio_init(). If `play` is not NULL, it gets the
+ * samples output by the current or last PCM play. For tests.
+ */
+uint32_t audio_pcm_samples(uint32_t *play);
 
 /* Parses an RTTTL tune into an internal buffer and plays it. */
 int audio_play_rtttl(const char *text, unsigned flags);
@@ -177,5 +213,52 @@ typedef struct {
  * clock source of `src_hz`. Returns 0, AUDIO_ERR_ARG or AUDIO_ERR_RANGE.
  */
 int audio_pwm_calc(uint32_t src_hz, uint32_t hz, unsigned vol, audio_pwm_cfg_t *out);
+
+/* PCM playback state. Treat the fields as private. */
+typedef struct {
+    const uint8_t *data;
+    uint32_t len;
+    uint32_t rate;
+    unsigned flags;
+    uint32_t mul;           /* floor(rate * 2^32 / 1000000) */
+    uint32_t inv;           /* ceil(1000000 * 2^24 / rate) */
+    uint32_t unit_us;       /* 1000000 / gcd(rate, 1000000) */
+    uint32_t unit_n;        /* samples in unit_us */
+    uint32_t origin_us;     /* time of sample origin_pos */
+    uint32_t origin_pos;    /* sample index at origin_us, below len */
+    uint32_t next_q;        /* samples after the origin of the next sample due */
+    uint32_t last;          /* last index output */
+    uint32_t n;             /* samples output */
+    int active;
+} audio_pcm_t;
+
+/* audio_pcm_poll() results. */
+#define AUDIO_PCM_NONE      0       /* nothing new is due */
+#define AUDIO_PCM_SAMPLE    1       /* output the sample at *pos */
+#define AUDIO_PCM_END       2       /* the last sample has played */
+
+/* Checks audio_play_pcm() arguments. Returns 0, AUDIO_ERR_ARG or AUDIO_ERR_RANGE. */
+int audio_pcm_check(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned flags);
+
+/* Starts playback with sample 0 at `now_us`. Arguments must pass audio_pcm_check(). */
+void audio_pcm_start(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t rate_hz,
+                     unsigned flags, uint32_t now_us);
+
+/*
+ * Position from the clock: sample floor(elapsed_us * rate / 1000000).
+ * Returns AUDIO_PCM_SAMPLE with *pos when a sample not yet output is due,
+ * AUDIO_PCM_NONE before that, AUDIO_PCM_END once a non-looped buffer has
+ * played to its end. Samples between two calls are skipped. Wraps at 2^32 us.
+ */
+int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos);
+
+/* Time in us, wrapping, when the next sample is due. */
+uint32_t audio_pcm_next_us(const audio_pcm_t *p);
+
+/* Volume around the midpoint: 128 + (s - 128) * vol / 100, vol capped at 100. */
+uint8_t audio_pcm_scale(uint8_t s, unsigned vol);
+
+/* PWM data value for sample `s` at range `rng`: s * rng / 256. */
+uint32_t audio_pcm_duty(uint8_t s, uint32_t rng);
 
 #endif

@@ -63,6 +63,7 @@ Use the audio jack on a Pi 1, 2 or 3. On a Pi Zero, add a filter or a piezo on G
 | Component | Boards | Run | Look for |
 |---|---|---|---|
 | PWM sound | All | `examples/audio` | The beep, the arpeggio, the tune at 60% volume, the looped alarm for about 700 ms, and the 440 Hz tone cut by 880 Hz. Keys `b`, `s`, `t`, `l`, `i` and `a` replay each case. |
+| PCM sound | All | `examples/audio` | After the tones, rising chirps: 100 ms at 8000 Hz, 100 ms at 22050 Hz and half volume, one cut at 200 ms, a 440 Hz tone cut by a chirp cut by 880 Hz, a 25 ms chirp looped for 300 ms, and one second at 22050 Hz. No pitch wobble. Key `p` replays the first chirp. Not yet validated on any board. |
 | Forced PWM | A board where the probe says `ignored` | `examples/audio` variant `build/pwm` | The sound still plays |
 
 ## RTC module

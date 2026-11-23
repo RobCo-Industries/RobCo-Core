@@ -1,4 +1,4 @@
-# Audio demo: tones, sequences and a tune on the PWM or trace backend.
+# Audio demo: tones, sequences, a tune and PCM on the PWM or trace backend.
 
 ROBCO_CORE ?= ../..
 IMAGE      := audio
