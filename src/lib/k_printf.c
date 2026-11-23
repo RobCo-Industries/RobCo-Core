@@ -69,6 +69,17 @@ static void k_out_field(k_out_t *o, char sign, int zeros, const char *s, int len
 }
 
 /*
+ * Longest digit string k_out_uint() builds. The sign and the precision zeros
+ * go out separately, so only the digits count. Decimal only formats an
+ * unsigned int (%d after negation, %u): ceil(bits * log10(2)) digits, which
+ * 5 * bytes / 2 bounds (10 for 32 bits). Hex formats an unsigned int or a
+ * uintptr_t (%p): 2 digits per byte. The target needs 10, a 64-bit host 16.
+ */
+#define K_DEC_DIGITS ((sizeof(unsigned int) * 5 + 1) / 2)
+#define K_HEX_DIGITS (2 * sizeof(uintptr_t))
+#define K_DIGITS_MAX (K_DEC_DIGITS > K_HEX_DIGITS ? K_DEC_DIGITS : K_HEX_DIGITS)
+
+/*
  * uintptr_t so %p prints full pointers on a 64-bit host. 32 bits on the target.
  * `prec` is the minimum digit count, or -1 for none. Precision 0 prints no
  * digits for the value 0.
@@ -77,7 +88,8 @@ static void k_out_uint(k_out_t *o, uintptr_t value, unsigned radix, int upper,
                        char sign, int prec, int width, int left, char pad)
 {
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    char tmp[3 * sizeof(uintptr_t)];    /* 10 decimal digits per 4 bytes */
+    char tmp[3 * sizeof(uintptr_t)];
+    _Static_assert(sizeof(tmp) >= K_DIGITS_MAX, "tmp must hold the longest digit string");
     int len = 0;
 
     while (value != 0 || (len == 0 && prec != 0)) {

@@ -22,6 +22,37 @@ static const char *mode_name(uint32_t mode)
     }
 }
 
+#if defined(HELLO_PRINTF) && HELLO_PRINTF
+/*
+ * Extreme values for each integer conversion, with width, '-', '0' and a
+ * precision above the digit count. tests/target/test_hello.py compares each
+ * line. A digit buffer too small for the target shows up here.
+ */
+static void printf_extremes(void)
+{
+    k_printf("@RC stage=hello ev=printf_begin\n");
+    k_printf("[%u] [%12u] [%-12u] [%012u] [%.12u]\n",
+             4294967295u, 4294967295u, 4294967295u, 4294967295u, 4294967295u);
+    k_printf("[%d] [%13d] [%-13d] [%013d] [%.12d]\n", (int)(-2147483647 - 1),
+             (int)(-2147483647 - 1), (int)(-2147483647 - 1), (int)(-2147483647 - 1),
+             (int)(-2147483647 - 1));
+    k_printf("[%d] [%12d] [%-12d] [%012d] [%.12d]\n",
+             2147483647, 2147483647, 2147483647, 2147483647, 2147483647);
+    k_printf("[%x] [%10x] [%-10x] [%010x] [%.10x]\n",
+             0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu);
+    k_printf("[%X] [%10X] [%-10X] [%010X] [%.10X]\n",
+             0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu);
+    /* k_printf ignores flags, width and precision for %p; check that too. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat"
+    k_printf("[%p] [%12p] [%-12p] [%012p] [%.10p]\n", (void *)0xFFFFFFFCu,
+             (void *)0xFFFFFFFCu, (void *)0xFFFFFFFCu, (void *)0xFFFFFFFCu,
+             (void *)0xFFFFFFFCu);
+#pragma GCC diagnostic pop
+    k_printf("@RC stage=hello ev=printf_end\n");
+}
+#endif
+
 void robco_main(void)
 {
     const robco_board_t *b = board_get();
@@ -48,6 +79,9 @@ void robco_main(void)
     k_printf("@RC stage=hello ev=probe pwm=%s gpio=%s\n",
              pwm ? "abort" : "ok", gpio ? "abort" : "ok");
 
+#if defined(HELLO_PRINTF) && HELLO_PRINTF
+    printf_extremes();
+#endif
     k_printf("@RC stage=hello ev=ready\n");
 
 #if defined(HELLO_FAULT) && HELLO_FAULT
