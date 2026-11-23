@@ -24,11 +24,15 @@ static const uint8_t patterns[STEPS] = { 0x0f, 0x00, 0x05, 0x0a };
 static void errors(void)
 {
     int level;
+    int index_rc = gpiox_attach(GPIOX_MAX_CHIPS, 0x20);
+    int addr_rc = gpiox_attach(3, 0x40);
+    int absent_rc = gpiox_attach(3, 0x22);
+    int detached_rc = gpiox_read(3, 0, &level);
+    int name_rc = gpiox_pin_name(0, 8, NULL, 0);
 
+    /* One call per statement: argument order is unspecified in C. */
     k_printf("@RC stage=gpiox ev=errors index=%d addr=%d absent=%d detached=%d name=%d\n",
-             gpiox_attach(GPIOX_MAX_CHIPS, 0x20), gpiox_attach(3, 0x40),
-             gpiox_attach(3, 0x22), gpiox_read(3, 0, &level),
-             gpiox_pin_name(0, 8, NULL, 0));
+             index_rc, addr_rc, absent_rc, detached_rc, name_rc);
 }
 
 /* Output mask of `chip` in `phase`. */
@@ -108,6 +112,8 @@ void robco_main(void)
     unsigned phase;
     unsigned k;
     int attached = 0;
+    int present;
+    int wrc;
     int rc;
 
     uart_init(115200);
@@ -135,8 +141,10 @@ void robco_main(void)
                 step(phase, k);
             }
         }
-        k_printf("@RC stage=gpiox ev=detach rc=%d present=%d write=%d\n", gpiox_detach(1),
-                 gpiox_present(1), gpiox_write(1, 0, 1));
+        rc = gpiox_detach(1);
+        present = gpiox_present(1);
+        wrc = gpiox_write(1, 0, 1);
+        k_printf("@RC stage=gpiox ev=detach rc=%d present=%d write=%d\n", rc, present, wrc);
     }
     k_printf("@RC stage=gpiox ev=done\n");
     for (;;) {
