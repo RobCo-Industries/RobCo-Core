@@ -25,6 +25,20 @@ def call_min(ms):
     """
     return ms - TICK_MS - STAMP_MS
 
+
+# An allowance for late interrupt delivery by a loaded QEMU host. It is not a
+# guarantee of the driver. call_min() assumes the tick IRQ runs within 1 ms of
+# its boundary, which holds on hardware and on an idle host. A loaded host can
+# deliver a tick late, so a start is stamped late and the gap reads short.
+# Seen: a 1 ms miss under four parallel QEMU jobs. If a bound fails by more
+# than this under heavy load, rerun the test alone before changing the number.
+HOST_LATE_MS = 5
+
+
+def call_floor(ms):
+    """call_min(ms) less HOST_LATE_MS: the bound the tests assert."""
+    return call_min(ms) - HOST_LATE_MS
+
 # QEMU models no PWM: reads abort on the BCM2835 models, the others ignore writes.
 PROBE = {"raspi0": "abort", "raspi1ap": "abort", "raspi2b": "ignored", "raspi3b": "ignored"}
 
@@ -125,7 +139,7 @@ def check_pcm(vm, c):
     assert [m["op"] for m in marks] == ["pcm", "stop"], marks
     check_pcm_start(marks[0], 8000, 8000, 100)
     took = int(marks[1]["t_ms"]) - int(marks[0]["t_ms"])
-    assert call_min(200) <= took < 1000, took
+    assert call_floor(200) <= took < 1000, took
     assert events(vm, "pcm_stop")[-1]["busy"] == "0", vm.serial
 
     # Tone, replaced by PCM, replaced by a tone, all with AUDIO_PRIORITY.
@@ -150,7 +164,7 @@ def check_pcm(vm, c):
     marks = c["pcm_loop"]
     assert [m["op"] for m in marks] == ["pcm", "stop"], marks
     check_pcm_start(marks[0], 8000, 200, 100)
-    assert int(marks[1]["t_ms"]) - int(marks[0]["t_ms"]) >= call_min(300), marks
+    assert int(marks[1]["t_ms"]) - int(marks[0]["t_ms"]) >= call_floor(300), marks
     assert events(vm, "pcm_loop")[-1]["busy"] == "1", vm.serial
 
     # One second at 22050 Hz: the tick keeps counting and running its callbacks.
@@ -317,14 +331,14 @@ def check_trace(vm):
         assert h == pattern[i % len(pattern)], got
     check_durations(got[:-1], LOOP * (len(body) // len(LOOP) + 1))
     # The example stops after 700 ms of guest time.
-    assert got[-1][1] - got[0][1] >= call_min(700), got
+    assert got[-1][1] - got[0][1] >= call_floor(700), got
 
     # Interrupt: 440 Hz for 3 s is cut short by 880 Hz with AUDIO_PRIORITY.
     marks = c["interrupt"]
     check_ops(marks)
     got = tones(marks)
     assert [h for h, _ in got] == [440, 880, 0], got
-    assert got[1][1] - got[0][1] >= call_min(200), got
+    assert got[1][1] - got[0][1] >= call_floor(200), got
     assert got[1][1] - got[0][1] < 3000, got
     # The sequencer ends the 880 Hz note: its stop stamp is the start stamp + 300.
     assert got[2][1] - got[1][1] >= 300, got
