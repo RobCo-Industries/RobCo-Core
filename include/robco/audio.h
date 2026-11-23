@@ -144,8 +144,29 @@ int audio_play(const audio_note_t *seq, size_t count, unsigned flags);
 int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned flags);
 
 /*
+ * Queues the next PCM buffer behind the one that plays. It starts with no
+ * gap when the current buffer ends, at the same rate. One buffer can wait.
+ * The library does not copy: `data` must stay valid until that buffer has
+ * finished playing, or until audio_stop() or a call that replaces the sound
+ * returns.
+ * Returns 0, or AUDIO_ERR_NO_INIT, AUDIO_ERR_ARG (NULL, len 0, len above
+ * AUDIO_PCM_LEN_MAX), AUDIO_ERR_STATE when no PCM is playing or pending
+ * (start with audio_play_pcm()), AUDIO_ERR_BUSY when a buffer already waits,
+ * AUDIO_ERR_STATE when the playing PCM loops (AUDIO_LOOP never ends).
+ */
+int audio_pcm_queue(const uint8_t *data, size_t len);
+
+/*
+ * 1 when audio_pcm_queue() would accept a buffer now: PCM plays and no
+ * buffer waits. When this turns 1 again after a queue call, the buffer
+ * that was playing at the time of that call has finished and is free.
+ */
+int audio_pcm_can_queue(void);
+
+/*
  * Samples output since audio_init(). If `play` is not NULL, it gets the
- * samples output by the current or last PCM play. For tests.
+ * samples output by the current or last PCM play, counted from
+ * audio_play_pcm() over every queued buffer that followed. For tests.
  */
 uint32_t audio_pcm_samples(uint32_t *play);
 
