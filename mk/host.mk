@@ -182,6 +182,9 @@ $(HOST_RIMG_DIR)/boot.img: $(HOST_RIMG_PAYLOAD) tools/rimg.py
 	$(PYTHON) tools/rimg.py verify $@ >/dev/null
 
 $(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
+
+# These tests include the ILI9341 driver through tests/host/tft_fake.h.
+$(HOST_BUILD)/test_tft_bus $(HOST_BUILD)/test_tft_panel: src/drv/tft_ili9341.c
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the
