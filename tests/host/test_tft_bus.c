@@ -551,35 +551,45 @@ static void op_start(int op)
     fake_clear();
 }
 
+/* Whether the transcript holds command byte `cmd`. */
+static int sent(uint8_t cmd)
+{
+    size_t i;
+
+    for (i = 0; i < fake_n; i++) {
+        if (fake_ev[i].kind == EV_CMD && fake_ev[i].a == cmd) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /*
- * Each operation with each of its SPI and pin writes failing in turn.
- * After the failure the driver acts as if the call had not happened: a
- * probe call shows the old state, a retry sends the full transcript, and
- * a later tft_display(1) leaves the backlight right.
+ * Each operation with each of its SPI and pin writes failing in turn. The
+ * panel state follows the panel command: it changes only when the command
+ * went out. Each case then checks the next call: a probe sends its own
+ * command and leaves the backlight at the level the panel state needs, a
+ * retry sends the full transcript, and a later tft_display(1) leaves the
+ * backlight right.
  */
-TEST(failed_power_step_keeps_the_old_state)
+TEST(failed_power_step_state_follows_the_panel)
 {
     static const ev_t sleep_in[] = { PIN(BL, 0), CSL, C(0x10), CSH, MS(120) };
     static const ev_t sleep_out[] = { CSL, C(0x11), CSH, MS(120), PIN(BL, 1) };
     static const ev_t hide[] = { PIN(BL, 0), CSL, C(0x28), CSH };
     static const ev_t show[] = { CSL, C(0x29), CSH, PIN(BL, 1) };
-    /* Probe, then the backlight level the probe must leave. */
-    static const struct {
-        int sleep;      /* 1: probe with tft_sleep(0), 0: with tft_display(1) */
-        int bl;
-    } probe[OP_COUNT] = {
-        { 0, 1 },       /* SLPIN failed: still awake and shown */
-        { 0, 0 },       /* SLPOUT failed: still asleep */
-        { 1, 1 },       /* DISPOFF failed: still shown */
-        { 1, 0 },       /* DISPON failed: still hidden */
-    };
+    static const uint8_t cmd[OP_COUNT] = { 0x10, 0x11, 0x28, 0x29 };
+    /* Panel state before the call: asleep, shown. */
+    static const int before[OP_COUNT][2] = { { 0, 1 }, { 1, 1 }, { 0, 1 }, { 0, 0 } };
+    static const int after[OP_COUNT][2] = { { 1, 1 }, { 0, 1 }, { 0, 0 }, { 0, 1 } };
     const ev_t *want[OP_COUNT] = { sleep_in, sleep_out, hide, show };
     const size_t want_n[OP_COUNT] = { 5, 5, 4, 4 };
-    int op, pin;
+    int op, pin, went, asleep, shown, probe_sleep, bl;
     unsigned n, fails;
     int rc;
 
     for (op = 0; op < OP_COUNT; op++) {
+        probe_sleep = op == OP_HIDE || op == OP_SHOW;
         for (pin = 0; pin < 2; pin++) {
             fails = 0;
             for (n = 1; n < 20; n++) {
@@ -593,13 +603,25 @@ TEST(failed_power_step_keeps_the_old_state)
                 fails++;
                 CHECK_EQ(rc, TFT_ERR_BUS);
                 CHECK_EQ(fake_open, -1);
+                /* The command went out when only a pin write failed after it. */
+                went = pin && sent(cmd[op]);
+                asleep = went ? after[op][0] : before[op][0];
+                shown = went ? after[op][1] : before[op][1];
+                /*
+                 * The failed call leaves the backlight at the panel state's
+                 * level. When the command went out, the failed write was the
+                 * only backlight write, so the pin was not driven at all.
+                 */
+                CHECK_EQ(last_bl(), went ? -1 : (shown && !asleep));
                 fake_clear();
-                CHECK_EQ(probe[op].sleep ? tft_sleep(0) : tft_display(1), 0);
-                if (last_bl() != probe[op].bl) {
-                    printf("  op %d, %s write %u: probe backlight %d\n", op,
-                           pin ? "pin" : "SPI", n, last_bl());
+                CHECK_EQ(probe_sleep ? tft_sleep(0) : tft_display(1), 0);
+                CHECK(sent(probe_sleep ? 0x11 : 0x29));
+                bl = probe_sleep ? shown : !asleep;
+                if (last_bl() != bl) {
+                    printf("  op %d, %s write %u: probe backlight %d, want %d\n", op,
+                           pin ? "pin" : "SPI", n, last_bl(), bl);
                 }
-                CHECK_EQ(last_bl(), probe[op].bl);
+                CHECK_EQ(last_bl(), bl);
 
                 op_start(op);
                 arm(pin, n);
@@ -616,6 +638,53 @@ TEST(failed_power_step_keeps_the_old_state)
             CHECK(n < 20);
         }
     }
+}
+
+/*
+ * Starts `op` and fails its pin writes in turn until one fails after the
+ * panel command went out: the backlight write. Returns 0 when found.
+ */
+static int fail_backlight_after_command(int op, uint8_t cmd)
+{
+    unsigned n;
+    int rc;
+
+    for (n = 1; n < 20; n++) {
+        op_start(op);
+        arm(1, n);
+        rc = op_run(op);
+        disarm();
+        if (rc == TFT_ERR_BUS && sent(cmd)) {
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/*
+ * The review case: SLPOUT goes out, the backlight write after it fails.
+ * The panel is awake, so the driver says so, and the next tft_display(1)
+ * turns the backlight on.
+ */
+TEST(sleep_out_with_failed_backlight_marks_the_panel_awake)
+{
+    static const ev_t show[] = { CSL, C(0x29), CSH, PIN(BL, 1) };
+
+    CHECK_EQ(fail_backlight_after_command(OP_SLEEP_OUT, 0x11), 0);
+    fake_clear();
+    CHECK_EQ(tft_display(1), 0);
+    EXPECT(show);
+}
+
+/* The same for DISPON: the panel shows, and the next tft_sleep(0) lights it. */
+TEST(show_with_failed_backlight_marks_the_panel_shown)
+{
+    static const ev_t wake[] = { CSL, C(0x11), CSH, MS(120), PIN(BL, 1) };
+
+    CHECK_EQ(fail_backlight_after_command(OP_SHOW, 0x29), 0);
+    fake_clear();
+    CHECK_EQ(tft_sleep(0), 0);
+    EXPECT(wake);
 }
 
 /* A stopped timer stops tft_sleep() before anything reaches the panel. */

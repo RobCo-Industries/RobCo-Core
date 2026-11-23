@@ -180,9 +180,11 @@ static int backlight(int on)
 }
 
 /*
- * Driver state (asleep, shown, size, ready) changes only after every bus
- * and pin call of a step succeeds. On a failure the state keeps the last
- * step that succeeded, and the backlight goes back to match it.
+ * asleep and shown follow the last panel command that succeeded. A failed
+ * panel command leaves them as they were. The backlight is derived from
+ * them: on only when shown and awake. A failed backlight write returns an
+ * error but does not change the panel state; the next tft_sleep() or
+ * tft_display() call writes the backlight again.
  */
 static int light_follows(void)
 {
@@ -431,19 +433,19 @@ int tft_sleep(int on)
         timer_delay_ms(SLEEP_WAIT_MS);
         if (rc == 0) {
             asleep = 1;
+        } else {
+            (void)light_follows();
         }
     } else {
         rc = command(CMD_SLPOUT, NULL, 0);
         timer_delay_ms(SLEEP_WAIT_MS);
         if (rc == 0) {
-            rc = backlight(shown);
-        }
-        if (rc == 0) {
+            /* The panel is awake: record it before the backlight write. */
             asleep = 0;
+            rc = light_follows();
+        } else {
+            (void)light_follows();
         }
-    }
-    if (rc < 0) {
-        (void)light_follows();
     }
     return rc;
 }
@@ -459,18 +461,22 @@ int tft_display(int on)
     if (on) {
         rc = command(CMD_DISPON, NULL, 0);
         if (rc == 0) {
-            rc = backlight(!asleep);
+            /* The panel shows its memory: record it before the backlight write. */
+            shown = 1;
+            rc = light_follows();
+        } else {
+            (void)light_follows();
         }
     } else {
         rc = backlight(0);
         if (rc == 0) {
             rc = command(CMD_DISPOFF, NULL, 0);
         }
-    }
-    if (rc == 0) {
-        shown = on;
-    } else {
-        (void)light_follows();
+        if (rc == 0) {
+            shown = 0;
+        } else {
+            (void)light_follows();
+        }
     }
     return rc;
 }
