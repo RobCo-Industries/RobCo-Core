@@ -204,7 +204,7 @@ Every call clips to the clip rectangle and to the surface. Coordinates outside a
 | `clear` | Fills the whole surface with the colour argument. Ignores the clip rectangle. |
 | `rect` | `fill` 0 draws the outline, 1 fills. Foreground colour. The outline is the first and last row and column, so a rectangle 1 or 2 pixels wide or high is filled. A zero width or height draws nothing. |
 | `polyline` | `xy` holds `count` pairs of `int16 x, y`. `count` is 2 to 256. `closed` 0 leaves it open, 1 joins the last point to the first. Foreground colour. Checks the limits, then copies the points in. |
-| `arc` | See `pip_arc_t`. Foreground colour. Checks the limits, then copies the struct in. |
+| `arc` | See `pip_arc_t`. Foreground colour. Copies the struct in, then checks the limits. |
 | `blit_1bpp` | See `pip_blit_t`. Rows are packed most significant bit first. Set bits draw in `color`. Clear bits draw nothing. |
 | `blit_rgb` | See `pip_blit_t`. Each pixel is a `uint32` `0x00RRGGBB`. `color` is ignored. |
 | `set_clip` | `wh = 0` resets the clip to the whole surface. A non-zero `wh` with a zero width or height returns `-PIP_EINVAL`. The rectangle is cut to the surface. A rectangle entirely outside leaves an empty clip, and nothing draws until the next `set_clip`. |
@@ -275,11 +275,11 @@ There is one voice. `tone`, `sample` and `play_seq` return at once and the sound
 | `tone` | `freq_hz` 20 to 20000. `duration_ms` 1 to 60000. |
 | `sample` | 8-bit unsigned mono at 8000 Hz. 128 is silence. 1 to 65536 bytes, so length 0 returns `-PIP_EINVAL`. Pip-OS checks the length before the pointer. It copies the data before it returns. |
 | `play_seq` | `count` is 1 to 256. Pip-OS checks every note before anything plays. One bad note refuses the whole sequence. It copies the notes before it returns. |
-| `volume` | 0 to 100. Returns the previous level. The start value comes from `PIPOS.CFG`, 100 without one. A new level applies from the next note or sample. At 0 sounds still play silently and `audio_status` reports them. |
+| `volume` | 0 to 100. Returns the previous level. The start value comes from `PIPOS.CFG`, 100 without one. A new level applies to a playing `sample` at once, and to a tone or sequence from its next note. At 0 sounds still play silently and `audio_status` reports them. |
 | `audio_status` | 1 while a sound the image started plays. The power-on beep does not count. |
 | `audio_stop` | Stops the sound. Returns 0 also when nothing plays. |
 
-A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call that fails plays nothing and leaves the current sound playing.
+A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call refused for its arguments plays nothing and leaves the current sound playing.
 
 The volume belongs to the device, not to the image. A level set by a ROM or a holotape stays after it ends, until the next power-on. Pip-OS stops the sound an image started when the image starts and when it ends.
 
@@ -301,9 +301,9 @@ The clock counts on the 1 MHz system timer, so periods with interrupts off do no
 | `power` `op` | Effect |
 |---|---|
 | 0 | Resets the board. The ROM loads again. |
-| 1 | Stops the sound, then halts with interrupts masked. Only a power cycle wakes it. |
+| 1 | Stops the sound, shows a halt line on the console, then halts with interrupts masked. Only a power cycle wakes it. |
 | 2 | Turns the screen black. Drawing and `present` keep working on the back buffer. |
-| 3 | Shows the last presented frame again. |
+| 3 | Turns the screen back on. It shows the back buffer as it is now, or the console when the image has not called `present` yet. |
 
 Any other `op` returns `-PIP_EINVAL`.
 
