@@ -162,6 +162,13 @@ int input_ansi_feed(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_
  */
 int input_ansi_poll(input_ansi_t *p, uint32_t now_ms, input_event_t *out);
 
+/*
+ * Restarts the ESC timeout of a pending ESC or sequence at `now_ms`. A
+ * reader that left bytes waiting calls it when it reads again, so the
+ * wait does not time the sequence out. Does nothing in the ground state.
+ */
+void input_ansi_resume(input_ansi_t *p, uint32_t now_ms);
+
 /* ---- Pure held-key state, src/lib/input_hold.c ---- */
 
 #define INPUT_HOLD_SOURCES  4   /* sources 0 to 3 are tracked, others ignored */
@@ -218,6 +225,13 @@ int input_core_push(input_core_t *c, const input_event_t *ev, int *pressed);
 /* Running sum of the steps of `dial`, wrapping at 32 bits. 0 for dial >= INPUT_DIAL_COUNT. */
 int32_t input_core_dial_total(const input_core_t *c, unsigned dial);
 
+/*
+ * Non-zero when `n` more events fit without a loss: always under
+ * INPUT_DROP_OLDEST, which asked for losses, and when `n` slots are free
+ * under INPUT_DROP_NEWEST.
+ */
+int input_core_room(const input_core_t *c, unsigned n);
+
 /* ---- Queue and key state, src/drv/input.c ---- */
 
 /*
@@ -244,6 +258,11 @@ int input_poll(input_event_t *ev);
 /*
  * Like input_poll(), but waits up to `timeout_ms` for an event. Sleeps in
  * wfi between checks when CPU IRQs are on and the tick runs. Main context.
+ *
+ * The timeout needs a running system timer. When the timer does not
+ * advance, a finite timeout never expires: the call returns only when an
+ * event comes. Check the timer first, or use input_poll() in a loop with
+ * your own bound.
  */
 int input_wait(input_event_t *ev, uint32_t timeout_ms);
 
@@ -268,6 +287,9 @@ void input_set_overflow(int policy);
 
 /* Events dropped since input_init(), under either policy. Any context. */
 unsigned input_dropped(void);
+
+/* input_core_room() on the queue: non-zero when `n` more events fit without a loss. Any context. */
+int input_room(unsigned n);
 
 /*
  * Auto-repeat for a held key: the first repeat after `delay_ms`, then one
@@ -323,6 +345,8 @@ const char *input_gpio_status_name(int status);
 #define INPUT_SERIAL_MAIN   0   /* read from input_poll() */
 #define INPUT_SERIAL_TICK   1   /* read from a tick callback */
 #define INPUT_SERIAL_ESC_MS 100
+/* Most events one console byte can queue: two parser events, each key a press and a release. */
+#define INPUT_SERIAL_BYTE_EVENTS (2 * INPUT_ANSI_OUT_MAX)
 
 /* Starts reading the console UART through the ANSI parser. Call uart_init() first. */
 int input_serial_start(int mode);

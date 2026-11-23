@@ -8,6 +8,36 @@ from harness.boot import boot
 DONE = re.compile(r"@RC stage=audio ev=done\n")
 REPLAYED = re.compile(r"ev=done\n(?:.*\n)*?.*ev=case_end name=seq .*\n")
 TICK_MS = 10  # the example runs a 100 Hz tick
+# A trace stamp is the audio clock in whole ms, truncated, so it reads at
+# most 1 ms less than the true time and never more.
+STAMP_MS = 1
+
+
+def call_min(ms):
+    """Least stamp gap between a sound start and the stop a call makes ms later.
+
+    The main context asks at c0 and stops at c1 >= c0 + ms. Each takes
+    effect at the next tick run, so the start stamp's true time is at most
+    TICK_MS after c0, plus the tick IRQ latency, and the stop's is after c1.
+    The true gap is then more than ms - TICK_MS - latency. Truncation makes
+    the stamp gap more than the true gap minus STAMP_MS. With a latency up
+    to 1 ms, the integer stamp gap is at least ms - TICK_MS - STAMP_MS.
+    """
+    return ms - TICK_MS - STAMP_MS
+
+
+# An allowance for late interrupt delivery by a loaded QEMU host. It is not a
+# guarantee of the driver. call_min() assumes the tick IRQ runs within 1 ms of
+# its boundary, which holds on hardware and on an idle host. A loaded host can
+# deliver a tick late, so a start is stamped late and the gap reads short.
+# Seen: a 1 ms miss under four parallel QEMU jobs. If a bound fails by more
+# than this under heavy load, rerun the test alone before changing the number.
+HOST_LATE_MS = 5
+
+
+def call_floor(ms):
+    """call_min(ms) less HOST_LATE_MS: the bound the tests assert."""
+    return call_min(ms) - HOST_LATE_MS
 
 # QEMU models no PWM: reads abort on the BCM2835 models, the others ignore writes.
 PROBE = {"raspi0": "abort", "raspi1ap": "abort", "raspi2b": "ignored", "raspi3b": "ignored"}
@@ -109,7 +139,7 @@ def check_pcm(vm, c):
     assert [m["op"] for m in marks] == ["pcm", "stop"], marks
     check_pcm_start(marks[0], 8000, 8000, 100)
     took = int(marks[1]["t_ms"]) - int(marks[0]["t_ms"])
-    assert 200 - TICK_MS <= took < 1000, took
+    assert call_floor(200) <= took < 1000, took
     assert events(vm, "pcm_stop")[-1]["busy"] == "0", vm.serial
 
     # Tone, replaced by PCM, replaced by a tone, all with AUDIO_PRIORITY.
@@ -134,7 +164,7 @@ def check_pcm(vm, c):
     marks = c["pcm_loop"]
     assert [m["op"] for m in marks] == ["pcm", "stop"], marks
     check_pcm_start(marks[0], 8000, 200, 100)
-    assert int(marks[1]["t_ms"]) - int(marks[0]["t_ms"]) >= 300 - TICK_MS, marks
+    assert int(marks[1]["t_ms"]) - int(marks[0]["t_ms"]) >= call_floor(300), marks
     assert events(vm, "pcm_loop")[-1]["busy"] == "1", vm.serial
 
     # One second at 22050 Hz: the tick keeps counting and running its callbacks.
@@ -259,9 +289,14 @@ def check_ops(marks):
 
 
 def check_durations(got, expected):
-    """Each step lasts at least its nominal time by the guest clock, minus one tick."""
+    """Each step lasts at least its nominal time by the guest clock.
+
+    The sequencer stamps a step's end with its due time, start stamp plus
+    length, from the same audio clock, so neither tick latency nor
+    truncation shortens a step. A late tick only makes a stamp later.
+    """
     for (hz, t), (_, t_next), (_, nominal) in zip(got, got[1:], expected):
-        assert t_next - t >= nominal - TICK_MS, (hz, t, t_next, nominal)
+        assert t_next - t >= nominal, (hz, t, t_next, nominal)
 
 
 def check_exact(marks, expected):
@@ -296,16 +331,17 @@ def check_trace(vm):
         assert h == pattern[i % len(pattern)], got
     check_durations(got[:-1], LOOP * (len(body) // len(LOOP) + 1))
     # The example stops after 700 ms of guest time.
-    assert got[-1][1] - got[0][1] >= 700 - TICK_MS, got
+    assert got[-1][1] - got[0][1] >= call_floor(700), got
 
     # Interrupt: 440 Hz for 3 s is cut short by 880 Hz with AUDIO_PRIORITY.
     marks = c["interrupt"]
     check_ops(marks)
     got = tones(marks)
     assert [h for h, _ in got] == [440, 880, 0], got
-    assert got[1][1] - got[0][1] >= 200 - TICK_MS, got
+    assert got[1][1] - got[0][1] >= call_floor(200), got
     assert got[1][1] - got[0][1] < 3000, got
-    assert got[2][1] - got[1][1] >= 300 - TICK_MS, got
+    # The sequencer ends the 880 Hz note: its stop stamp is the start stamp + 300.
+    assert got[2][1] - got[1][1] >= 300, got
     inter = events(vm, "interrupt")[-1]
     assert inter["busy"] == "-8" and inter["prio"] == "0", vm.serial
 

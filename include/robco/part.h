@@ -54,4 +54,58 @@ int part_open(blk_dev_t *dev, const part_info_t *p, blk_dev_t *out);
  */
 blk_dev_t *part_parent_of(const blk_dev_t *dev, uint64_t *start_lba);
 
+/*
+ * The boot volume rule. fs_mount_boot() in fs.h runs it on a card. The
+ * functions below hold its decisions and touch no hardware.
+ */
+
+/* Results of fs_mount_boot(), and names from part_boot_strerror(). */
+#define PART_BOOT_OK         0  /* "ok" */
+#define PART_BOOT_ERR_DEVICE 1  /* "nodev": no device, or block 0 does not read */
+#define PART_BOOT_ERR_NOFAT  2  /* "nofat": no FAT entry, and no other entry mounts */
+#define PART_BOOT_ERR_GPT    3  /* "gpt": a GPT card, not supported */
+#define PART_BOOT_ERR_MOUNT  4  /* "mount": FAT entries, none mounts */
+#define PART_BOOT_ERR_ARG    5  /* "arg": bad argument */
+#define PART_BOOT_ERR_BUSY   6  /* "busy": the volume name, or the result's device, is mounted */
+#define PART_BOOT_ERR_RELEASE 7 /* "release": a probed volume did not unmount, still mounted */
+
+/* part_boot_class() results. */
+#define PART_BOOT_NEVER 0  /* extended or GPT protective entry: never mounted */
+#define PART_BOOT_FAT   1  /* a FAT type byte, or a card with no table */
+#define PART_BOOT_OTHER 2  /* any other type: tried after every FAT entry */
+
+int part_boot_class(const part_info_t *p);
+
+/*
+ * Stores in order[] the indexes into parts[] in the order to try them:
+ * PART_BOOT_FAT entries in slot order, then PART_BOOT_OTHER entries in
+ * slot order. n is at most PART_MAX. Returns how many it stored.
+ */
+unsigned part_boot_order(const part_info_t *parts, unsigned n, uint8_t order[PART_MAX]);
+
+/* What fs_mount_boot() found on one entry it tried. */
+#define PART_PROBE_NOMOUNT 0  /* did not mount */
+#define PART_PROBE_MOUNTED 1  /* mounted, holds no marker */
+#define PART_PROBE_MARKER  2  /* mounted and holds a marker */
+
+/*
+ * The entry to use, given the probe results of n entries in try order:
+ * the first PART_PROBE_MARKER, else the first PART_PROBE_MOUNTED.
+ * Returns its position in probe[], or -1 when none mounted.
+ */
+int part_boot_pick(const uint8_t *probe, unsigned n);
+
+/*
+ * Why no volume was chosen. scan is the part_scan() result and parts[]
+ * its entries. Returns PART_BOOT_ERR_DEVICE for a negative scan, then
+ * PART_BOOT_ERR_MOUNT when a PART_BOOT_FAT entry exists, then
+ * PART_BOOT_ERR_GPT when a GPT protective entry exists, else
+ * PART_BOOT_ERR_NOFAT.
+ */
+int part_boot_failure(int scan, const part_info_t *parts);
+
+/* "ok", "nodev", "nofat", "gpt", "mount", "arg", "busy", "release",
+ * or "unknown". */
+const char *part_boot_strerror(int rc);
+
 #endif

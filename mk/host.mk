@@ -29,6 +29,13 @@
 # cc), HOST_BUILD (default $(BUILD)/host, or build/host), HOST_SANITIZE=0
 # turns sanitizers off, HOST_SANITIZE=require fails when the compiler
 # cannot use them.
+#
+# test-host-gccwarn, run by test-host, compiles every host test and every
+# source they link with the cross GCC and the host headers, to catch the
+# GCC-only warnings CI reports when HOST_CC is clang. It skips, with one
+# line, when HOST_CC is GCC, the cross GCC is missing or no host headers
+# are found. HOST_GCCWARN_CC (default $(CROSS)gcc) and HOST_GCCWARN_INC
+# (default: the macOS SDK's usr/include) override the tools.
 
 ROBCO_CORE    ?= .
 PYTHON        ?= python3
@@ -106,7 +113,7 @@ HOST_ALL += $(HOST_BUILD)/fs_tool $(HOST_BUILD)/test_fs_readonly $(HOST_RO_IMG) 
 HOST_RUN += $(HOST_BUILD)/test_fs_readonly
 endif
 
-.PHONY: test-host host-tests
+.PHONY: test-host host-tests test-host-gccwarn
 
 # Keep the objects: only pattern rules name them in a project build.
 .SECONDARY: $(filter %.o,$(HOST_FS_OBJS) $(HOST_FATFS_OBJS) $(HOST_RO_FS_OBJS))
@@ -177,8 +184,47 @@ $(HOST_RIMG_DIR)/boot.img: $(HOST_RIMG_PAYLOAD) tools/rimg.py
 $(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
 endif
 
+# GCC warnings without a host GCC: compile only, never link, with the
+# host build's flags plus -O2, which some GCC warnings need. The cross GCC
+# targets 32-bit ARM, so pointer and integer casts of different sizes are
+# not checked: on a 64-bit host they are the same size, and clang checks
+# them there.
+HOST_GCCWARN_CC ?= $(or $(CROSS),arm-none-eabi-)gcc
+HOST_GCCWARN_INC ?=
+HOST_GW = $(HOST_GCCWARN_CC) -c -o /dev/null $(filter-out $(HOST_SAN_FLAGS) -g -O1,$(HOST_CFLAGS)) \
+          -O2 -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -idirafter "$$inc"
+HOST_GW_SRCS := $(HOST_TEST_SRCS) $(filter %.c,$(HOST_LIB_SRCS) $(HOST_SRCS)) \
+                $(if $(filter fs,$(HOST_CORE_SETS)),$(ROBCO_HOST_P)tests/host/blk_file.c) \
+                $(if $(ROBCO_HOST_SELF),tests/host/fs_tool.c $(HOST_RO_TEST))
+HOST_GW_FS_SRCS := $(if $(filter fs,$(HOST_CORE_SETS)),$(sort $(wildcard $(ROBCO_HOST_P)src/fs/*.c)))
+HOST_GW_FATFS_SRCS := $(if $(filter fatfs,$(HOST_CORE_SETS)),\
+                        $(ROBCO_HOST_P)third_party/fatfs/ff.c $(ROBCO_HOST_P)third_party/fatfs/ffunicode.c)
+
+test-host-gccwarn: $(HOST_ALL)
+	@set -u; \
+	skip() { echo "test-host-gccwarn: skipped, $$1"; exit 0; }; \
+	defs=$$($(HOST_CC) -dM -E -x c /dev/null 2>/dev/null); \
+	case "$$defs" in *__clang__*) ;; *__GNUC__*) skip "$(HOST_CC) is GCC";; esac; \
+	command -v $(HOST_GCCWARN_CC) >/dev/null 2>&1 || skip "no $(HOST_GCCWARN_CC)"; \
+	inc="$(HOST_GCCWARN_INC)"; \
+	if [ -z "$$inc" ] && command -v xcrun >/dev/null 2>&1; then \
+	  inc="$$(xcrun --show-sdk-path 2>/dev/null)/usr/include"; \
+	fi; \
+	[ -n "$$inc" ] && [ -f "$$inc/stdio.h" ] || skip "no host headers, set HOST_GCCWARN_INC"; \
+	bad=""; \
+	for f in $(HOST_GW_SRCS); do $(HOST_GW) $$f || bad="$$bad $$f"; done; \
+	for f in $(HOST_GW_FS_SRCS); do $(HOST_GW) $(HOST_FS_CFLAGS) $$f || bad="$$bad $$f"; done; \
+	for f in $(HOST_GW_FATFS_SRCS); do \
+	  $(HOST_GW) $(HOST_FS_CFLAGS) $(HOST_FATFS_CFLAGS) $$f || bad="$$bad $$f"; \
+	done; \
+	$(if $(ROBCO_HOST_SELF),for f in $(HOST_GW_FS_SRCS) $(HOST_GW_FATFS_SRCS); do \
+	  $(HOST_GW) -DROBCO_FS_READONLY=1 $(HOST_FS_CFLAGS) $(HOST_FATFS_CFLAGS) $$f || bad="$$bad ro:$$f"; \
+	done;) \
+	if [ -n "$$bad" ]; then echo "test-host-gccwarn: FAILED:$$bad" >&2; exit 1; fi; \
+	echo "test-host-gccwarn: $(HOST_GCCWARN_CC) found no warning"
+
 # Runs every binary, then fails if any failed.
-test-host: $(HOST_ALL)
+test-host: test-host-gccwarn $(HOST_ALL)
 	@set -u; failed=""; \
 	echo "test-host: sanitizers $(if $(filter 1,$(HOST_SAN_OK)),on,off)"; \
 	for t in $(HOST_RUN); do \

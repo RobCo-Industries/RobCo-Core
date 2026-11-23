@@ -236,6 +236,15 @@ void input_set_overflow(int policy)
     irq_restore(s);
 }
 
+int input_room(unsigned n)
+{
+    uint32_t s = irq_save();
+    int ok = input_core_room(&core, n);
+
+    irq_restore(s);
+    return ok;
+}
+
 unsigned input_dropped(void)
 {
     uint32_t s = irq_save();

@@ -37,7 +37,10 @@ int gpio_set_function(unsigned pin, unsigned fn);
 /* Returns the pin's GPIO_FN_* code. */
 int gpio_get_function(unsigned pin);
 
-/* Sets the pull. Returns GPIO_ERR_BOARD on BCM2711. */
+/*
+ * Sets the pull. Returns GPIO_ERR_BOARD on BCM2711. Waits by counting loop
+ * iterations, not on the system timer, so it works when the timer is stopped.
+ */
 int gpio_set_pull(unsigned pin, unsigned pull);
 
 /* Drives the output latch: 0 low, anything else high. */

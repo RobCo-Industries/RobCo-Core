@@ -219,3 +219,30 @@ TEST(core_init_resets)
     fill(&c, 1, 32, 0);
     fill(&c, 33, 33, INPUT_ERR_FULL);
 }
+
+TEST(core_room_drop_newest)
+{
+    input_core_t c;
+
+    input_core_init(&c);
+    CHECK(input_core_room(&c, INPUT_QUEUE_LEN));
+    CHECK(!input_core_room(&c, INPUT_QUEUE_LEN + 1));
+    fill(&c, 1, INPUT_QUEUE_LEN - 4, 0);
+    CHECK(input_core_room(&c, 4));
+    CHECK(!input_core_room(&c, 5));
+    fill(&c, INPUT_QUEUE_LEN - 3, INPUT_QUEUE_LEN, 0);
+    CHECK(input_core_room(&c, 0));
+    CHECK(!input_core_room(&c, 1));
+    CHECK_EQ(c.queue.dropped, 0);
+}
+
+TEST(core_room_drop_oldest)
+{
+    input_core_t c;
+
+    input_core_init(&c);
+    c.policy = INPUT_DROP_OLDEST;
+    fill(&c, 1, INPUT_QUEUE_LEN, 0);
+    /* The caller asked for losses: a full queue still takes bytes. */
+    CHECK(input_core_room(&c, INPUT_SERIAL_BYTE_EVENTS));
+}

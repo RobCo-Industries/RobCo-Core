@@ -52,6 +52,8 @@ def test_host_tests_run_outside_the_tree(project):
     r = make(project, "test-host")
     assert "test-host: all passed" in r.stdout
     assert "test_greet: 2 tests, 2 passed" in r.stdout
+    # The GCC warning check runs or says why it skipped, never fails here.
+    assert "test-host-gccwarn: " in r.stdout
     assert (project / "build" / "host" / "test_greet").exists()
     # The core's own tests and tools stay out of a project build.
     assert not (project / "build" / "host" / "fs_tool").exists()

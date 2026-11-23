@@ -153,14 +153,71 @@ blk_dev_t *part_parent_of(const blk_dev_t *dev, uint64_t *start_lba);
 
 When `dev` came from `part_open()`, returns the parent device and stores the partition's first block on it in `*start_lba`. Returns NULL for any other device. `start_lba` may be NULL. `fs_mount()` uses it to refuse overlapping partitions.
 
-```c
-part_info_t parts[PART_MAX];
-blk_dev_t vol;
+To mount the card a stage boots from, use `fs_mount_boot()` below rather than the first entry of `part_scan()`. The first entry is not always the FAT volume.
 
-if (part_scan(sd, parts, PART_MAX) > 0 && part_open(sd, &parts[0], &vol) == 0) {
-    fs_mount("sd", &vol);
+### Boot volume
+
+`fs_mount_boot()` finds the boot volume with the rule every RobCo stage shares, from [BOOT_PROTOCOL.md](../../spec/BOOT_PROTOCOL.md#finding-loading-and-entering-the-next-stage):
+
+1. It reads the MBR. A card with no partition table and a FAT boot sector at block 0 is one volume, the whole card.
+2. It tries the entries with a FAT type byte (`0x01`, `0x04`, `0x06`, `0x0B`, `0x0C`, `0x0E`) in slot order, then the other entries in slot order. Extended and GPT protective entries are never mounted.
+3. With markers, it chooses the first volume that mounts and holds one marker as a regular file of at least one byte. A folder or an empty file of that name does not count. If no volume holds a marker, it chooses the first one that mounts. Without markers, it chooses the first one that mounts.
+
+The second pass of step 2 finds a FAT volume behind a wrong type byte, which some tools write. It runs only after every FAT-typed entry failed to mount or held no marker, and `fs_mount()` checks the boot sector, so a volume that is not FAT never mounts. Mounting only reads.
+
+| Constant | Value | Name | Meaning |
+|---|---|---|---|
+| `PART_BOOT_OK` | `0` | `ok` | A volume is mounted |
+| `PART_BOOT_ERR_DEVICE` | `1` | `nodev` | No device, or block 0 does not read |
+| `PART_BOOT_ERR_NOFAT` | `2` | `nofat` | No FAT entry, and no other entry mounts. Also a card with no table and no FAT boot sector. |
+| `PART_BOOT_ERR_GPT` | `3` | `gpt` | A GPT card. GPT is not supported. |
+| `PART_BOOT_ERR_MOUNT` | `4` | `mount` | FAT entries, none mounts |
+| `PART_BOOT_ERR_ARG` | `5` | `arg` | NULL `volume` or `out`, or NULL `markers` with a count |
+| `PART_BOOT_ERR_BUSY` | `6` | `busy` | `volume` is mounted, or `out` holds a mounted device |
+| `PART_BOOT_ERR_RELEASE` | `7` | `release` | A probed volume did not unmount because the device failed to flush. It stays mounted as `volume` and `out` describes it. |
+| `FS_BOOT_WHOLE` | `0xffu` | | `slot` of a card with no partition table |
+
+```c
+typedef struct {
+    uint8_t slot;          /* MBR slot 0 to 3, or FS_BOOT_WHOLE */
+    uint8_t type;          /* MBR type byte; 0 for FS_BOOT_WHOLE */
+    uint8_t marker;        /* 1: holds one of the markers */
+    uint8_t by_type;       /* 1: a FAT type byte or no table; 0: found in the second pass */
+    uint64_t start_lba;    /* first block on the card; 0 for FS_BOOT_WHOLE */
+    uint64_t block_count;
+    int last_err;          /* last part_scan() or fs_mount() error, 0 if none */
+    part_info_t part;      /* private */
+    blk_dev_t dev;         /* private: the mounted partition device */
+} fs_boot_t;
+
+int fs_mount_boot(const char *volume, blk_dev_t *dev, const char *const *markers,
+                  unsigned n_markers, fs_boot_t *out);
+```
+
+Runs the rule on `dev` and mounts the chosen volume as `volume`. Marker paths have no volume prefix, such as `/ROBCO/MFBOOT.SYS`. Returns `PART_BOOT_OK` with the volume mounted. `PART_BOOT_ERR_RELEASE` stops the search with one volume still mounted as `volume`, and `out` describes it, so the caller can use it or retry `fs_unmount(volume)`. Any other error leaves nothing mounted. `out` holds the device of the mounted volume, so it must stay valid and unchanged until `fs_unmount(volume)`. `start_lba` is what a loader writes to `boot_part_lba`. On `PART_BOOT_ERR_BUSY` it leaves `out` as it is.
+
+```c
+static const char *const markers[] = { "/ROBCO/MFBOOT.SYS", "/ROBCO/MFBOOT.BAK" };
+static fs_boot_t vol;
+
+int rc = fs_mount_boot("sd", sd_blkdev(), markers, 2, &vol);
+
+if (rc != PART_BOOT_OK) {
+    k_printf("@RC stage=" STAGE " ev=error code=io what=%s\n", part_boot_strerror(rc));
 }
 ```
+
+The decisions are pure functions in `part.h`, with host tests:
+
+```c
+int part_boot_class(const part_info_t *p);
+unsigned part_boot_order(const part_info_t *parts, unsigned n, uint8_t order[PART_MAX]);
+int part_boot_pick(const uint8_t *probe, unsigned n);
+int part_boot_failure(int scan, const part_info_t *parts);
+const char *part_boot_strerror(int rc);
+```
+
+`part_boot_class()` returns `PART_BOOT_FAT` for a FAT type byte or a superfloppy, `PART_BOOT_NEVER` for an empty, extended or GPT entry, and `PART_BOOT_OTHER` for any other type. `part_boot_order()` stores the indexes to try: FAT entries in slot order, then the others. `part_boot_pick()` takes one `PART_PROBE_NOMOUNT`, `PART_PROBE_MOUNTED` or `PART_PROBE_MARKER` per entry tried and returns the position of the first marker, else the first mounted one, else `-1`. `part_boot_failure()` names why nothing was chosen: `PART_BOOT_ERR_DEVICE` for a negative scan, then `PART_BOOT_ERR_MOUNT` when a FAT entry exists, then `PART_BOOT_ERR_GPT` when a GPT entry exists, else `PART_BOOT_ERR_NOFAT`. `part_boot_strerror()` returns the names in the table, or `unknown`.
 
 ## SD card (`sd.h`)
 
@@ -638,7 +695,7 @@ Pending hardware validation: the file system is tested on the host and with mtoo
 
 `loader.h` loads a `rimg` file from the FAT file system into a memory slot and validates it as [IMAGE_FORMAT.md](../../spec/IMAGE_FORMAT.md) says. A stage uses it to load the next one. It allocates nothing and prints nothing: the caller emits the `@RC` markers. Return codes are `rimg_err_t` values, and `rimg_strerror()` gives their `@RC` names.
 
-Init order: mount the card first with `sd_init()`, `part_scan()`, `part_open()`, then `fs_mount()`. A path without a volume uses the default volume.
+Init order: mount the card first with `sd_init()`, then `fs_mount_boot()`. A path without a volume uses the default volume.
 
 | Constant | Value | Meaning |
 |---|---|---|

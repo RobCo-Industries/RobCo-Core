@@ -345,3 +345,72 @@ TEST(ansi_late_byte_across_wrap)
     CHECK_KEY(log, 1, INPUT_KEY_BACK);
     CHECK_CHAR(log, 2, 'x');
 }
+
+TEST(ansi_resume_keeps_split_sequence)
+{
+    input_ansi_t p;
+    evlog_t log = { .n = 0 };
+
+    /* A reader stopped for room after ESC [; the rest waited 500 ms. */
+    input_ansi_init(&p, 100);
+    feed(&p, &log, "\x1b[", 0);
+    input_ansi_resume(&p, 500);
+    feed(&p, &log, "A", 500);
+    CHECK_EQ(log.n, 1);
+    CHECK_KEY(log, 0, INPUT_KEY_UP);
+    /* A lone ESC resumed late still waits a full timeout. */
+    feed(&p, &log, "\x1b", 600);
+    input_ansi_resume(&p, 900);
+    poll(&p, &log, 950);
+    CHECK_EQ(log.n, 1);
+    poll(&p, &log, 1000);
+    CHECK_EQ(log.n, 2);
+    CHECK_KEY(log, 1, INPUT_KEY_BACK);
+    /* In the ground state it does nothing. */
+    input_ansi_resume(&p, 5000);
+    feed(&p, &log, "x", 5000);
+    CHECK_CHAR(log, 2, 'x');
+}
+
+TEST(ansi_events_per_byte_bound)
+{
+    static const char *const prefixes[] = { "", "\x1b", "\x1b[", "\x1b[1", "\x1bO", "\r" };
+    input_ansi_t p;
+    input_event_t out[INPUT_ANSI_OUT_MAX];
+    unsigned i, b;
+    int k, keys, max = 0;
+
+    /* Every byte in every state: at most 2 parser events, so at most 4 queued. */
+    for (i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+        for (b = 0; b < 256; b++) {
+            const char *q;
+            int j;
+
+            input_ansi_init(&p, 100);
+            for (q = prefixes[i]; *q; q++) {
+                input_ansi_feed(&p, (uint8_t)*q, 0, out);
+            }
+            k = input_ansi_feed(&p, (uint8_t)b, 0, out);
+            keys = 0;
+            for (j = 0; j < k; j++) {
+                keys += out[j].type == INPUT_EV_KEY;
+            }
+            CHECK(k + keys <= INPUT_SERIAL_BYTE_EVENTS);
+            max = k + keys > max ? k + keys : max;
+            /* After the timeout: a BACK from the poll, then the byte. */
+            input_ansi_init(&p, 100);
+            for (q = prefixes[i]; *q; q++) {
+                input_ansi_feed(&p, (uint8_t)*q, 0, out);
+            }
+            k = input_ansi_feed(&p, (uint8_t)b, 1000, out);
+            keys = 0;
+            for (j = 0; j < k; j++) {
+                keys += out[j].type == INPUT_EV_KEY;
+            }
+            CHECK(k + keys <= INPUT_SERIAL_BYTE_EVENTS);
+            max = k + keys > max ? k + keys : max;
+        }
+    }
+    /* ESC then CR: BACK and SELECT, each a press and a release. */
+    CHECK_EQ(max, INPUT_SERIAL_BYTE_EVENTS);
+}

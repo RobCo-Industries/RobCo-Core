@@ -95,6 +95,67 @@ def make_sd_image(path, size_mib, files=None, label="ROBCO"):
     return size
 
 
+def mbr_card(path, slots, size_mib=16):
+    """A card with up to four MBR entries, for the boot volume rule.
+
+    `slots` has one item per MBR slot: None for an empty slot, or
+    (type, start_lba, sectors, files). With files a dict as in
+    make_sd_image(), the blocks hold a FAT volume made with mformat at
+    their offset; a name ending in "/" makes a folder. With files None,
+    the blocks are filled with 0xA5, which is no file system. A slots
+    value of "whole" with a files dict makes a card with no partition
+    table and one FAT volume over all of it.
+    """
+    size = _pow2_mib(size_mib) << 20
+    whole = isinstance(slots, tuple) and slots[0] == "whole"
+    entries = b""
+    if not whole:
+        for slot in list(slots) + [None] * (4 - len(slots)):
+            if slot is None:
+                entries += bytes(16)
+            else:
+                ptype, lba, sectors, _ = slot
+                entries += struct.pack("<B3sB3sII", 0, b"\xfe\xff\xff", ptype,
+                                       b"\xfe\xff\xff", lba, sectors)
+    with open(path, "wb") as f:
+        if not whole:
+            f.write(bytes(446) + entries + b"\x55\xaa")
+        f.truncate(size)
+    env = minimal_env(MTOOLS_SKIP_CHECK="1")
+
+    def mt(*args):
+        subprocess.run(list(args), check=True, env=env, capture_output=True)
+
+    vols = [(0, size // SECTOR, slots[1], 0)] if whole else [
+        (lba, sectors, files, i) for i, (_, lba, sectors, files) in
+        ((i, s) for i, s in enumerate(slots) if s is not None)]
+    for lba, sectors, files, i in vols:
+        if files is None:
+            with open(path, "r+b") as f:
+                f.seek(lba * SECTOR)
+                f.write(b"\xa5" * (sectors * SECTOR))
+            continue
+        img = f"{os.fspath(path)}@@{lba * SECTOR}"
+        mt("mformat", "-i", img, "-c", "1", "-v", f"VOL{i}", "-T", str(sectors), "-h", "64",
+           "-s", "32", "-H", str(lba), "::")
+        made = set()
+        with tempfile.TemporaryDirectory(prefix="mbrcard") as tmp:
+            for j, (name, data) in enumerate(sorted(files.items())):
+                parts = [p for p in name.split("/") if p]
+                dirs = parts if name.endswith("/") else parts[:-1]
+                for k in range(1, len(dirs) + 1):
+                    d = "/".join(dirs[:k])
+                    if d not in made:
+                        mt("mmd", "-i", img, "::" + d)
+                        made.add(d)
+                if name.endswith("/"):
+                    continue
+                src = Path(tmp) / f"f{j}"
+                src.write_bytes(data)
+                mt("mcopy", "-i", img, os.fspath(src), "::" + "/".join(parts))
+    return size
+
+
 def corrupt(path, offset, data):
     """Overwrite bytes at `offset` in the image, for fault tests."""
     with open(path, "r+b") as f:

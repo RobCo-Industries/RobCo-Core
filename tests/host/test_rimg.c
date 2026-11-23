@@ -192,6 +192,22 @@ TEST(crc)
     CHECK_EQ(check(NULL), RIMG_E_CRC);
 }
 
+TEST(crc_ignores_its_own_field)
+{
+    uint32_t sealed;
+
+    build();
+    sealed = hdr()->crc32;
+    CHECK_EQ(rimg_crc(img, IMG_SIZE), sealed);
+    /* The value in the crc32 field does not change the result. */
+    hdr()->crc32 = 0xdeadbeefu;
+    CHECK_EQ(rimg_crc(img, IMG_SIZE), sealed);
+    img[IMG_SIZE - 1] ^= 0x80;
+    CHECK(rimg_crc(img, IMG_SIZE) != sealed);
+    CHECK_EQ(rimg_crc(NULL, IMG_SIZE), 0);
+    CHECK_EQ(rimg_crc(img, 0x3f), 0);
+}
+
 TEST(order)
 {
     build();
@@ -213,4 +229,68 @@ TEST(strerror)
     CHECK_STR(rimg_strerror(RIMG_E_CRC), "crc");
     CHECK_STR(rimg_strerror(9), "unknown");
     CHECK_STR(rimg_strerror(-1), "unknown");
+}
+
+static int self_scan(uint32_t *n)
+{
+    return rimg_self_scan(hdr(), RIMG_MAGIC_BOOT, 0x8000, IMG_SIZE, n);
+}
+
+TEST(self_scan_ok)
+{
+    uint32_t n = 0;
+
+    build();
+    CHECK_EQ(self_scan(&n), RIMG_OK);
+    CHECK_EQ(n, IMG_SIZE);
+}
+
+TEST(self_scan_size)
+{
+    uint32_t n = 7;
+
+    build();
+    hdr()->file_size = IMG_SIZE + 4;
+    CHECK_EQ(self_scan(&n), RIMG_E_SIZE);
+    CHECK_EQ(n, 7);
+    hdr()->file_size = 0xfffffff0u;
+    CHECK_EQ(self_scan(&n), RIMG_E_SIZE);
+    hdr()->file_size = IMG_SIZE - 4;
+    CHECK_EQ(self_scan(&n), RIMG_E_SIZE);
+    hdr()->file_size = 0;
+    CHECK_EQ(self_scan(&n), RIMG_E_SIZE);
+    CHECK_EQ(n, 7);
+}
+
+TEST(self_scan_header_fields)
+{
+    build();
+    hdr()->magic[0] = 'X';
+    CHECK_EQ(self_scan(NULL), RIMG_E_MAGIC);
+    build();
+    hdr()->hdr_version = 2;
+    CHECK_EQ(self_scan(NULL), RIMG_E_VERSION);
+    build();
+    hdr()->hdr_size = 32;
+    CHECK_EQ(self_scan(NULL), RIMG_E_VERSION);
+    build();
+    hdr()->load_addr = 0x9000;
+    CHECK_EQ(self_scan(NULL), RIMG_E_BOUNDS);
+    CHECK_EQ(rimg_self_scan(NULL, RIMG_MAGIC_BOOT, 0x8000, IMG_SIZE, NULL), RIMG_E_MAGIC);
+}
+
+TEST(self_scan_order)
+{
+    build();
+    hdr()->load_addr = 0x9000;
+    hdr()->file_size = 0;
+    hdr()->hdr_version = 9;
+    hdr()->magic[0] = 'X';
+    CHECK_EQ(self_scan(NULL), RIMG_E_MAGIC);
+    memcpy(hdr()->magic, RIMG_MAGIC_BOOT, 8);
+    CHECK_EQ(self_scan(NULL), RIMG_E_VERSION);
+    hdr()->hdr_version = RIMG_HDR_VERSION;
+    CHECK_EQ(self_scan(NULL), RIMG_E_SIZE);
+    hdr()->file_size = IMG_SIZE;
+    CHECK_EQ(self_scan(NULL), RIMG_E_BOUNDS);
 }

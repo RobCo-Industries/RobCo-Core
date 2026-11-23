@@ -44,8 +44,8 @@
 static const char *const items[] = { "Diagnostics", "Event log", "Set clock", "Reboot" };
 #define ITEM_COUNT  ((int)(sizeof(items) / sizeof(items[0])))
 
-static part_info_t part;
-static blk_dev_t part_dev;
+static const char *const markers[] = { "/DEMO.INI" };
+static fs_boot_t vol;
 static char ini_text[1024];
 static char title[TITLE_MAX + 1] = "ROBCO INDUSTRIES TERMLINK";
 
@@ -69,9 +69,15 @@ static int read_config(void)
     size_t len = 0;
     int card = sd_init();
 
-    if (card == 0 && part_scan(sd_blkdev(), &part, 1) == 1 &&
-        part_open(sd_blkdev(), &part, &part_dev) == 0) {
-        mount = fs_mount("sd", &part_dev) == FS_OK ? "ok" : "error";
+    if (card == 0) {
+        /* The boot volume rule: the first FAT volume that holds DEMO.INI, else the first one. */
+        int rc = fs_mount_boot("sd", sd_blkdev(), markers, 1, &vol);
+
+        if (rc == PART_BOOT_OK) {
+            mount = "ok";
+        } else if (rc == PART_BOOT_ERR_MOUNT || rc == PART_BOOT_ERR_GPT || vol.last_err != 0) {
+            mount = "error";
+        }
     }
     if (mount[0] == 'o' && fs_read_file(CONFIG_PATH, ini_text, sizeof(ini_text), &len) == FS_OK) {
         ini = ini_get_int(ini_text, len, "menu", "start", 0, ITEM_COUNT - 1, &start) == 0 ?

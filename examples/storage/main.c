@@ -38,8 +38,7 @@
 
 static uint8_t buf[BUF_SIZE] __attribute__((aligned(8)));
 static part_info_t part;
-static blk_dev_t part_dev;
-static int have_part;
+static fs_boot_t vol;
 
 /*
  * Pattern for put and atomic: byte i of the file is
@@ -149,13 +148,23 @@ static uint32_t num(const char *s)
     return v;
 }
 
+/* Mounts the boot volume with the rule every stage uses. Returns an FS_ERR_* code. */
 static int mount(void)
 {
-    if (!have_part) {
-        /* A card without a partition table or FAT boot sector has no file system. */
-        return sd_blkdev() != NULL ? FS_ERR_NOFS : FS_ERR_NOTREADY;
+    int rc;
+
+    if (sd_blkdev() == NULL) {
+        return FS_ERR_NOTREADY;
     }
-    return fs_mount(VOL, &part_dev);
+    rc = fs_mount_boot(VOL, sd_blkdev(), NULL, 0, &vol);
+    if (rc == PART_BOOT_OK) {
+        return FS_OK;
+    }
+    if (rc == PART_BOOT_ERR_BUSY) {
+        return FS_ERR_BUSY;
+    }
+    /* The fs_mount() error of the last volume tried, else no file system. */
+    return rc != PART_BOOT_ERR_DEVICE && vol.last_err < 0 ? vol.last_err : FS_ERR_NOFS;
 }
 
 /* k_printf() has no 64-bit conversion. Writes v in decimal to out, 21 bytes. */
@@ -361,9 +370,6 @@ void robco_main(void)
         k_printf("@RC stage=" STAGE " ev=part rc=ok n=%d p0_type=0x%02x p0_lba=%u p0_blocks=%u\n",
                  n, n > 0 ? (unsigned)part.type : 0u, n > 0 ? (unsigned)part.start_lba : 0u,
                  n > 0 ? (unsigned)part.block_count : 0u);
-    }
-    if (n > 0 && part_open(sd_blkdev(), &part, &part_dev) == 0) {
-        have_part = 1;
     }
     print_df("mount", mount());
 

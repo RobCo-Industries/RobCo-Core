@@ -18,6 +18,15 @@ STATUS = re.compile(r"^\|uptime=(\d+)ms ticks=(\d+) used=(\d+) free=\d+ allocs=(
                     r"rng=0x[0-9a-f]{8} gpio5=([01])$")
 
 
+# The model board_model_name() gives for the revision code QEMU reports.
+MODEL = {
+    "raspi0": "Raspberry Pi Zero",
+    "raspi1ap": "Raspberry Pi 1 Model A+",
+    "raspi2b": "Raspberry Pi 2 Model B",
+    "raspi3b": "Raspberry Pi 3 Model B",
+}
+
+
 def events(vm, name):
     return [m for m in vm.markers() if m.get("stage") == "demo" and m.get("ev") == name]
 
@@ -33,6 +42,7 @@ def test_demo(board, example_image, variant):
         done = vm.wait_for(DONE, timeout=60)
         dump = vm.wait_for(SCREEN, timeout=30)
         assert len(events(vm, "boot")) == 1, vm.serial
+        assert "\nBoard: %s\n" % MODEL[board] in vm.serial.replace("\r", ""), vm.serial
         mmu = events(vm, "mmu")
         assert [m["on"] for m in mmu] == (["1"] if variant == "mmu" else []), vm.serial
         assert not events(vm, "error"), vm.serial

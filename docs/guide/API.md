@@ -114,7 +114,7 @@ You write this function. It runs in SVC mode with IRQ and FIQ masked. If it retu
 const robco_boot_args_t *robco_boot_args(void);
 ```
 
-Returns the registers and mode saved at entry. Do not write through the pointer.
+Returns the registers and mode saved at entry. Do not write through the pointer. `start.S` stores them in BSS right after it zeroes BSS, so they are not part of the file bytes the image CRC covers.
 
 ```c
 void robco_halt(void) __attribute__((noreturn));
@@ -200,7 +200,13 @@ const robco_board_t *board_get(void);
 
 Detects the board on the first call, then returns the cached result. The first call reads MIDR and asks the mailbox for the board revision and the ARM memory range. `robco_start()` makes that first call, so later calls only return a pointer and are safe from IRQ context. Do not write through the pointer.
 
-`mem_base` and `mem_size` are the ARM memory range from the mailbox, or `0` if it did not answer. The board name from the revision code is [specified](../spec/BOARD_SUPPORT.md#board-revision) but not implemented.
+`mem_base` and `mem_size` are the ARM memory range from the mailbox, or `0` if it did not answer.
+
+```c
+const char *board_model_name(uint32_t revision);
+```
+
+Returns the model name for a [board revision code](../spec/BOARD_SUPPORT.md#board-revision), such as `"Raspberry Pi Zero W"`. It reads new-style codes and the old-style codes of the Pi 1. It returns `BOARD_MODEL_UNKNOWN`, `"Raspberry Pi (unknown model)"`, for `0` and for any code it does not know. It reads no hardware, so the host tests run it.
 
 ```c
 const robco_board_t *b = board_get();
@@ -259,7 +265,7 @@ The pure rule `mbox_call()` applies with the data cache on. It returns `MBOX_PLA
 void uart_init(uint32_t baud);
 ```
 
-Asks the mailbox for the UART clock, sets GPIO14 and GPIO15 to ALT0 with no pulls, programs the divisor and enables the FIFO. It then calls `k_console_set_default(uart_putc)`, so `k_printf()` prints here unless a console hook was already set. It does nothing when `baud` is 0 or the board is unknown. Call it once, first, from main context.
+Asks the mailbox for the UART clock, sets GPIO14 and GPIO15 to ALT0 with no pulls, programs the divisor and enables the FIFO. It then calls `k_console_set_default(uart_putc)`, so `k_printf()` prints here unless a console hook was already set. It does nothing when `baud` is 0 or the board is unknown. Call it once, first, from main context. It does not use the system timer, so a stage can print even when the timer is stopped.
 
 ```c
 void uart_putc(char c);         /* '\n' goes out as "\r\n" */
@@ -376,6 +382,8 @@ void timer_delay_ms(uint32_t ms);
 ```
 
 Busy-wait at least the given time. Both are correct up to `UINT32_MAX`. They block, so keep them out of IRQ context unless the wait is short.
+
+Every wait and deadline on this counter needs it to run. When it does not advance, `timer_delay_us()`, `timer_delay_ms()` and any loop on `timer_expired()` wait forever. To check it, read `timer_now_lo()` a bounded number of times and see whether it changes. `uart_init()` and `gpio_set_pull()` do not use the timer. `tick_init()` returns 0 with a stopped timer, but no tick comes. `audio_init()` returns `AUDIO_ERR_TIMER`. A finite `input_wait()` timeout never expires.
 
 ```c
 int timer_expired(uint64_t deadline_us);
@@ -598,7 +606,7 @@ Set or read the pin's 3-bit GPFSEL code. `gpio_get_function()` returns the code 
 int gpio_set_pull(unsigned pin, unsigned pull);
 ```
 
-Runs the GPPUD and GPPUDCLK sequence with two 5 microsecond waits. Returns `GPIO_ERR_BOARD` on BCM2711.
+Runs the GPPUD and GPPUDCLK sequence with two waits of at least 5 microseconds. The waits count 7500 loop iterations instead of reading the system timer, so `uart_init()` works with a stopped timer. One iteration takes at least one CPU cycle, so each wait lasts 5 microseconds or more up to 1.5 GHz. Returns `GPIO_ERR_BOARD` on BCM2711.
 
 ```c
 int gpio_write(unsigned pin, int level);
@@ -999,6 +1007,25 @@ int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
 ```
 
 Runs [validation steps 1 to 6](../spec/IMAGE_FORMAT.md#validation) on an image in memory. `avail` is the number of readable bytes at `image`, and the image's `file_size` must not exceed it. Returns `RIMG_OK` and sets `*out` (if not NULL) to the header, or the code of the first failed step. Fewer than `0x60` bytes gives `RIMG_E_IO`. `expect` may be NULL. It touches no hardware and is safe from any context.
+
+```c
+uint32_t rimg_crc(const void *image, uint32_t file_size);
+```
+
+The image CRC from the [spec](../spec/IMAGE_FORMAT.md#crc): CRC-32 over `[0, file_size)` with the `crc32` field at `0x3C` read as zero. Returns `0` for a NULL `image` or a `file_size` below `0x40`. It touches no hardware.
+
+```c
+int rimg_self_check(void);
+```
+
+Checks the running image against its own sealed CRC, over the whole file. It first checks the header with `rimg_self_scan()` against the values the image was linked with. A header that does not match returns that check's code, and the CRC scan does not run. So a corrupt `file_size` gives `RIMG_E_SIZE` and no read past the image. Otherwise it returns `RIMG_OK` or `RIMG_E_CRC`. Call it early in `robco_main()`. The library keeps its startup state in BSS, but a `.data` variable that the image writes before the call changes the result. `examples/chain2` built with `CHAIN2_SELF_CHECK=1` calls it after its boot line.
+
+```c
+int rimg_self_scan(const rimg_header_t *h, const char magic[8], uint32_t load_addr,
+                   uint32_t file_size, uint32_t *scan);
+```
+
+The header checks of `rimg_self_check()`, in the order of the validation steps. `magic` must match (`RIMG_E_MAGIC`). `hdr_version` and `hdr_size` must be 1 and 64 (`RIMG_E_VERSION`). `file_size` must equal the linked size `__image_file_size` (`RIMG_E_SIZE`). `load_addr` must equal the linked start (`RIMG_E_BOUNDS`). On `RIMG_OK` it sets `*scan` to the bytes the CRC may cover. It touches no hardware.
 
 ```c
 const char *rimg_strerror(int code);

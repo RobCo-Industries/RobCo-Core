@@ -141,13 +141,25 @@ int rimg_check_header(const void *head, size_t avail, const rimg_expect_t *expec
     return check_header(head, avail, expect, &h);
 }
 
-int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
-                  const rimg_header_t **out)
+uint32_t rimg_crc(const void *image, uint32_t file_size)
 {
     static const uint8_t zero[4];
     const uint8_t *bytes = image;
-    const rimg_header_t *h;
     uint32_t crc;
+
+    if (image == NULL || file_size < RIMG_CRC_OFFSET + 4u) {
+        return 0;
+    }
+    crc = crc32_update(0, bytes, RIMG_CRC_OFFSET);
+    crc = crc32_update(crc, zero, sizeof(zero));
+    return crc32_update(crc, bytes + RIMG_CRC_OFFSET + 4, file_size - RIMG_CRC_OFFSET - 4);
+}
+
+int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
+                  const rimg_header_t **out)
+{
+    const uint8_t *bytes = image;
+    const rimg_header_t *h;
     int rc;
 
     if (image == NULL || avail < RIMG_HDR_END) {
@@ -159,15 +171,33 @@ int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
     }
 
     /* 6. CRC over [0, file_size) with the crc32 field read as zero. */
-    crc = crc32_update(0, bytes, RIMG_CRC_OFFSET);
-    crc = crc32_update(crc, zero, sizeof(zero));
-    crc = crc32_update(crc, bytes + RIMG_CRC_OFFSET + 4, h->file_size - RIMG_CRC_OFFSET - 4);
-    if (crc != h->crc32) {
+    if (rimg_crc(bytes, h->file_size) != h->crc32) {
         return RIMG_E_CRC;
     }
 
     if (out != NULL) {
         *out = h;
+    }
+    return RIMG_OK;
+}
+
+int rimg_self_scan(const rimg_header_t *h, const char magic[8], uint32_t load_addr,
+                   uint32_t file_size, uint32_t *scan)
+{
+    if (h == NULL || magic == NULL || memcmp(h->magic, magic, 8) != 0) {
+        return RIMG_E_MAGIC;
+    }
+    if (h->hdr_version != RIMG_HDR_VERSION || h->hdr_size != RIMG_HDR_SIZE) {
+        return RIMG_E_VERSION;
+    }
+    if (h->file_size != file_size || file_size < RIMG_HDR_END) {
+        return RIMG_E_SIZE;
+    }
+    if (h->load_addr != load_addr) {
+        return RIMG_E_BOUNDS;
+    }
+    if (scan != NULL) {
+        *scan = file_size;
     }
     return RIMG_OK;
 }

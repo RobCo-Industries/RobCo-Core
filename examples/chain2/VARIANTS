@@ -1,2 +1,3 @@
 # <build-dir> <extra cflags>
 build/tick -DCHAIN2_TICK=1
+build/selfcheck -DCHAIN2_SELF_CHECK=1

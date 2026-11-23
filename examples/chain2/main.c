@@ -5,6 +5,7 @@
 #include <robco/bootinfo.h>
 #include <robco/irq.h>
 #include <robco/klibc.h>
+#include <robco/rimg.h>
 #include <robco/tick.h>
 #include <robco/timer.h>
 #include <robco/uart.h>
@@ -53,6 +54,16 @@ void robco_main(void)
              (unsigned)b->midr, b->soc_name, (unsigned)b->periph_base,
              (unsigned)b->board_rev, (unsigned)b->mem_size,
              mode_name(robco_boot_args()->entry_mode));
+#if defined(CHAIN2_SELF_CHECK) && CHAIN2_SELF_CHECK
+    {
+        /* The whole file, no skipped range: the entry registers live in BSS. */
+        extern const rimg_header_t robco_rimg;
+
+        k_printf("@RC stage=" STAGE " ev=selfcheck rc=%s size=%u crc=0x%08x\n",
+                 rimg_strerror(rimg_self_check()), (unsigned)robco_rimg.file_size,
+                 (unsigned)robco_rimg.crc32);
+    }
+#endif
     {
         uint32_t sctlr;
 

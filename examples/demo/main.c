@@ -126,6 +126,7 @@ void robco_main(void)
     irq_cpu_enable();
 
     k_printf("RobCo-Core demo on %s\n", board_get()->soc_name);
+    k_printf("Board: %s\n", board_model_name(board_get()->board_rev));
     start_ms = timer_now_ms();
     next_us = timer_now_us();
     for (second = 1; second <= SECONDS; second++) {

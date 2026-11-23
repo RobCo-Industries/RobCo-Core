@@ -72,6 +72,13 @@ _Static_assert(ROBCO_AUDIO_PIN1 == AUDIO_PIN_NONE ||
 
 /* Longest wait for the first tick in audio_init(): one period at TICK_HZ_MIN plus margin. */
 #define TICK_WAIT_US            1100000u
+/*
+ * Reads in a row with no change before audio_init() calls the system
+ * timer stopped. A running 1 MHz counter changes every microsecond, and a
+ * read takes far more than a picosecond, so a million equal reads only
+ * happen when the counter does not run.
+ */
+#define TIMER_STALL_POLLS       1000000u
 
 /* Backends, in audio_pwm.c and audio_trace.c. */
 int audio_pwm_probe(void);
@@ -427,6 +434,8 @@ int audio_init(void)
     uint32_t s;
     uint32_t t0;
     uint32_t c0;
+    uint32_t last;
+    uint32_t same = 0;
     int ret = 0;
 
     if (backend >= 0) {
@@ -443,9 +452,18 @@ int audio_init(void)
     /* The tick must advance. At TICK_HZ_MIN this can take a second. */
     c0 = tick_count();
     t0 = timer_now_lo();
+    last = t0;
     while (tick_count() == c0) {
-        if (timer_now_lo() - t0 >= TICK_WAIT_US) {
+        uint32_t now = timer_now_lo();
+
+        if (now - t0 >= TICK_WAIT_US) {
             return AUDIO_ERR_NO_TICK;
+        }
+        if (now != last) {
+            last = now;
+            same = 0;
+        } else if (++same >= TIMER_STALL_POLLS) {
+            return AUDIO_ERR_TIMER;
         }
     }
     if (!registered) {

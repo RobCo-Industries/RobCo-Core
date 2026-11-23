@@ -40,3 +40,11 @@ int32_t input_core_dial_total(const input_core_t *c, unsigned dial)
 {
     return dial < INPUT_DIAL_COUNT ? (int32_t)c->dial_total[dial] : 0;
 }
+
+int input_core_room(const input_core_t *c, unsigned n)
+{
+    if (c->policy == INPUT_DROP_OLDEST) {
+        return 1;
+    }
+    return INPUT_QUEUE_LEN - input_queue_count(&c->queue) >= n;
+}

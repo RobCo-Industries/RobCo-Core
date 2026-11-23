@@ -3,7 +3,6 @@
 #include <robco/board.h>
 #include <robco/gpio.h>
 #include <robco/mmio.h>
-#include <robco/timer.h>
 
 #define GPIO_OFFSET     0x200000
 #define GPFSEL0         0x00
@@ -14,11 +13,23 @@
 #define GPPUDCLK0       0x98
 
 /*
- * Datasheet asks for at least 150 cycles between pull steps. A nop loop
- * shrinks as the CPU clock rises, so wait on the 1 MHz system timer.
- * 5 us covers 150 cycles of any clock above 30 MHz.
+ * Datasheet asks for at least 150 cycles between pull steps. 5 us covers
+ * 150 cycles of any clock above 30 MHz. uart_init() sets pulls before a
+ * stage can print, so the wait must not use the system timer: a stopped
+ * timer would hang it there. It counts loop iterations instead. One
+ * iteration ends in a taken branch, which takes at least one CPU cycle on
+ * every supported core, so PULL_DELAY_LOOPS iterations last at least 5 us
+ * up to 1.5 GHz, above the fastest supported clock (1.4 GHz, Pi 3B+). On
+ * a slower clock the wait only gets longer: about 11 us at 700 MHz.
  */
-#define PULL_DELAY_US   5
+#define PULL_DELAY_LOOPS 7500u
+
+static void pull_settle(void)
+{
+    uint32_t n = PULL_DELAY_LOOPS;
+
+    __asm__ volatile("1: subs %0, %0, #1\n\tbne 1b" : "+r"(n) : : "cc", "memory");
+}
 
 static uint32_t gpio_base(void)
 {
@@ -90,9 +101,9 @@ int gpio_set_pull(unsigned pin, unsigned pull)
     }
     clk = bank_reg(base, GPPUDCLK0, pin);
     mmio_write(base + GPPUD, pull);
-    timer_delay_us(PULL_DELAY_US);
+    pull_settle();
     mmio_write(clk, 1u << (pin % 32));
-    timer_delay_us(PULL_DELAY_US);
+    pull_settle();
     mmio_write(base + GPPUD, 0);
     mmio_write(clk, 0);
     return 0;

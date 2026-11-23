@@ -2,3 +2,4 @@
 build/fault -DHELLO_FAULT=1
 build/earlyfault -DHELLO_EARLY_FAULT=1
 build/printf -DHELLO_PRINTF=1
+build/deadtimer -DROBCO_FAULT_TIMER_STOPPED=1 -DHELLO_DEAD_TIMER=1

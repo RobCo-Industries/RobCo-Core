@@ -43,8 +43,8 @@ static void halt(void)
 #define PRIMARY "/ROBCO/MFBOOT.SYS"
 #define BACKUP  "/ROBCO/MFBOOT.BAK"
 
-static part_info_t part;
-static blk_dev_t part_dev;
+static const char *const markers[] = { PRIMARY, BACKUP };
+static fs_boot_t vol;
 static loader_result_t res;
 
 /* A failed card or mount is an I/O error. The BIOS then enters its shell; this example halts. */
@@ -55,30 +55,29 @@ static void fail(const char *code, const char *path, const char *what, int rc)
     halt();
 }
 
-/* Mounts the card and loads MFBootAgent. Returns the first LBA of the partition. */
+/*
+ * Mounts the boot volume with the rule every stage shares, fs_mount_boot(),
+ * and loads MFBootAgent. Returns the first LBA of the volume, 0 for a card
+ * with no partition table.
+ */
 static uint32_t load_from_card(void)
 {
     const loader_slot_t slot = { NEXT_ADDR, NEXT_SIZE, NULL };
     const rimg_expect_t expect = { .magic = RIMG_MAGIC_BOOT, .abi_major = 2 };
     int rc = sd_init();
-    int n;
 
     if (rc != 0) {
         fail("io", PRIMARY, "sd", rc);
     }
-    n = part_scan(sd_blkdev(), &part, 1);
-    if (n < 1) {
-        fail("io", PRIMARY, "part", n);
+    rc = fs_mount_boot("sd", sd_blkdev(), markers, 2, &vol);
+    if (rc != PART_BOOT_OK) {
+        /* "part": no entry to try. "mount": entries, none mounts. */
+        fail("io", PRIMARY, rc == PART_BOOT_ERR_MOUNT || rc == PART_BOOT_ERR_GPT ||
+             (rc == PART_BOOT_ERR_NOFAT && vol.last_err != 0) ? "mount" : "part",
+             vol.last_err);
     }
-    rc = part_open(sd_blkdev(), &part, &part_dev);
-    if (rc == 0) {
-        rc = fs_mount("sd", &part_dev);
-    }
-    if (rc != 0) {
-        fail("io", PRIMARY, "mount", rc);
-    }
-    k_printf("@RC stage=" STAGE " ev=mount lba=%u blocks=%u\n", (unsigned)part.start_lba,
-             (unsigned)part.block_count);
+    k_printf("@RC stage=" STAGE " ev=mount lba=%u blocks=%u\n", (unsigned)vol.start_lba,
+             (unsigned)vol.block_count);
 
     rc = loader_load_fallback(PRIMARY, BACKUP, &slot, &expect, &res);
     if (res.fallback) {
@@ -93,7 +92,7 @@ static uint32_t load_from_card(void)
         k_printf("@RC stage=" STAGE " ev=shell reason=%s\n", rimg_strerror(rc));
         halt();
     }
-    return (uint32_t)part.start_lba;
+    return (uint32_t)vol.start_lba;
 }
 #endif
 

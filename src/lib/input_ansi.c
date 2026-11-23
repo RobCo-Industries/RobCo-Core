@@ -204,3 +204,10 @@ int input_ansi_feed(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_
 
     return n + feed_byte(p, byte, now_ms, out + n);
 }
+
+void input_ansi_resume(input_ansi_t *p, uint32_t now_ms)
+{
+    if (p->state != ST_GROUND) {
+        p->esc_ms = now_ms;
+    }
+}

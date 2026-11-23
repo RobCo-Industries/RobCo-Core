@@ -48,7 +48,7 @@ Peripheral offsets used by RobCo-Core, relative to the base:
 
 ## Board revision
 
-The exact board comes from the property mailbox, channel 8, tag `0x00010002` "get board revision". RobCo-Core stores the raw value in `robco_bootinfo_t.board_rev`. It decodes new-style revision codes, where bit 23 is set, for the board name. Old-style codes map through a lookup table. Code never uses the revision to pick a peripheral base. MIDR decides that.
+The exact board comes from the property mailbox, channel 8, tag `0x00010002` "get board revision". RobCo-Core stores the raw value in `robco_bootinfo_t.board_rev`. `board_model_name()` decodes new-style revision codes, where bit 23 is set, for the board name. Old-style codes map through a lookup table. Bit 24, the warranty bit of old-style codes, is ignored. An unknown code gives `Raspberry Pi (unknown model)`. Code never uses the revision to pick a peripheral base. MIDR decides that.
 
 Other mailbox tags used at boot:
 
@@ -70,7 +70,7 @@ The PL011 is the console on every board.
 | FIFO | Enabled |
 | Clock | From mailbox tag `0x00030002`, clock id 2 |
 
-The driver muxes GPIO14/15 itself. It does not rely on the firmware. On BCM2835 to BCM2837 it also clears the pulls with the GPPUD and GPPUDCLK0 sequence.
+The driver muxes GPIO14/15 itself. It does not rely on the firmware. On BCM2835 to BCM2837 it also clears the pulls with the GPPUD and GPPUDCLK0 sequence. The waits in that sequence count loop iterations and do not read the system timer, so the console comes up even when the timer is stopped.
 
 The driver computes the divisor from the mailbox clock. It never hardcodes a clock. QEMU reports 3 MHz. Current firmware reports 48 MHz.
 
