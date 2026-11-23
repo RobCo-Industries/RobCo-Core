@@ -174,6 +174,7 @@ The second pass of step 2 finds a FAT volume behind a wrong type byte, which som
 | `PART_BOOT_ERR_MOUNT` | `4` | `mount` | FAT entries, none mounts |
 | `PART_BOOT_ERR_ARG` | `5` | `arg` | NULL `volume` or `out`, or NULL `markers` with a count |
 | `PART_BOOT_ERR_BUSY` | `6` | `busy` | `volume` is mounted, or `out` holds a mounted device |
+| `PART_BOOT_ERR_RELEASE` | `7` | `release` | A probed volume did not unmount because the device failed to flush. It stays mounted as `volume` and `out` describes it. |
 | `FS_BOOT_WHOLE` | `0xffu` | | `slot` of a card with no partition table |
 
 ```c
@@ -193,7 +194,7 @@ int fs_mount_boot(const char *volume, blk_dev_t *dev, const char *const *markers
                   unsigned n_markers, fs_boot_t *out);
 ```
 
-Runs the rule on `dev` and mounts the chosen volume as `volume`. Marker paths have no volume prefix, such as `/ROBCO/MFBOOT.SYS`. Returns `PART_BOOT_OK` with the volume mounted, or an error with nothing mounted. `out` holds the device of the mounted volume, so it must stay valid and unchanged until `fs_unmount(volume)`. `start_lba` is what a loader writes to `boot_part_lba`. On `PART_BOOT_ERR_BUSY` it leaves `out` as it is.
+Runs the rule on `dev` and mounts the chosen volume as `volume`. Marker paths have no volume prefix, such as `/ROBCO/MFBOOT.SYS`. Returns `PART_BOOT_OK` with the volume mounted. `PART_BOOT_ERR_RELEASE` stops the search with one volume still mounted as `volume`, and `out` describes it, so the caller can use it or retry `fs_unmount(volume)`. Any other error leaves nothing mounted. `out` holds the device of the mounted volume, so it must stay valid and unchanged until `fs_unmount(volume)`. `start_lba` is what a loader writes to `boot_part_lba`. On `PART_BOOT_ERR_BUSY` it leaves `out` as it is.
 
 ```c
 static const char *const markers[] = { "/ROBCO/MFBOOT.SYS", "/ROBCO/MFBOOT.BAK" };

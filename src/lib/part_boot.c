@@ -87,6 +87,7 @@ const char *part_boot_strerror(int rc)
     case PART_BOOT_ERR_MOUNT:  return "mount";
     case PART_BOOT_ERR_ARG:    return "arg";
     case PART_BOOT_ERR_BUSY:   return "busy";
+    case PART_BOOT_ERR_RELEASE: return "release";
     default:                   return "unknown";
     }
 }

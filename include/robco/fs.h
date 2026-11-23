@@ -205,11 +205,18 @@ typedef struct {
  *      volume that mounts and holds one of them as a regular file of at
  *      least one byte. If none holds one, choose the first that mounts.
  *      Without markers, choose the first that mounts.
- * Returns PART_BOOT_OK and leaves the volume mounted, or a PART_BOOT_ERR_*
- * code with nothing mounted. out must stay valid and unchanged while the
- * volume is mounted: the device lives in it. When `volume` is mounted, or
- * out holds a mounted device, returns PART_BOOT_ERR_BUSY and leaves out
- * as it is. Unmount with fs_unmount(volume).
+ * On every return, either exactly one volume is mounted as `volume` and
+ * out describes it, or this call left nothing mounted:
+ *   PART_BOOT_OK: the chosen volume is mounted.
+ *   PART_BOOT_ERR_RELEASE: a volume that held no marker did not unmount,
+ *     because the device failed to flush. The search stops there. That
+ *     volume stays mounted, out describes it and last_err holds the
+ *     fs_unmount() error. Retry fs_unmount(volume) or use it.
+ *   Any other PART_BOOT_ERR_* code: nothing is mounted.
+ * out must stay valid and unchanged while the volume is mounted: the
+ * device lives in it. When `volume` is mounted, or out holds a mounted
+ * device, returns PART_BOOT_ERR_BUSY and leaves out as it is. Unmount
+ * with fs_unmount(volume).
  */
 int fs_mount_boot(const char *volume, blk_dev_t *dev, const char *const *markers,
                   unsigned n_markers, fs_boot_t *out);

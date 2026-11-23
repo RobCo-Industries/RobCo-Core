@@ -15,6 +15,14 @@ static uint64_t disk_words[BLOCKS * BLK_SECTOR_SIZE / 8];
 static unsigned char *const disk = (unsigned char *)disk_words;
 static blk_dev_t card;
 
+static int sync_fails; /* nonzero: every sync of the card fails */
+
+static int card_sync(blk_dev_t *dev)
+{
+    (void)dev;
+    return sync_fails ? BLK_ERR_IO : 0;
+}
+
 static const char *const markers[] = { "/ROBCO/MFBOOT.SYS", "/ROBCO/MFBOOT.BAK" };
 
 static void put32(unsigned char *p, uint32_t v)
@@ -32,6 +40,8 @@ static void blank(void)
     disk[510] = 0x55;
     disk[511] = 0xAA;
     CHECK_EQ(blk_ram_init(&card, disk, sizeof(disk_words), 0), 0);
+    card.sync = card_sync;
+    sync_fails = 0;
 }
 
 static uint32_t slot_lba(unsigned slot)
@@ -76,6 +86,12 @@ static void fat(unsigned slot, int what)
     CHECK_EQ(fs_mkfs(&d, NULL), FS_OK);
     CHECK_EQ(fs_mount("mk", &d), FS_OK);
     CHECK_EQ(fs_mkdir("mk:/ROBCO"), FS_OK);
+    {
+        char tag[] = "mk:/SLOT0";
+
+        tag[8] = (char)('0' + slot); /* names the slot for check_mounted() */
+        file(tag, 0);
+    }
     if (what == 1) {
         file("mk:/ROBCO/MFBOOT.SYS", 16);
     } else if (what == 2) {
@@ -94,15 +110,34 @@ static void junk(unsigned slot)
     memset(disk + (size_t)slot_lba(slot) * BLK_SECTOR_SIZE, 0xA5, PART_LEN * BLK_SECTOR_SIZE);
 }
 
+/*
+ * The fs_mount_boot() invariant after rc: with PART_BOOT_OK or
+ * PART_BOOT_ERR_RELEASE, "boot" is mounted and is the volume b describes;
+ * with any other code nothing is mounted. Unmounts "boot" afterwards.
+ */
+static void check_mounted(int rc, const fs_boot_t *b)
+{
+    fs_stat_t st;
+    char tag[] = "boot:/SLOT0";
+
+    if (rc == PART_BOOT_OK || rc == PART_BOOT_ERR_RELEASE) {
+        CHECK_EQ(fs_stat("boot:/", &st), FS_OK);
+        if (b->slot != FS_BOOT_WHOLE) {
+            tag[10] = (char)('0' + b->slot);
+            CHECK_EQ(fs_stat(tag, &st), FS_OK);
+            CHECK_EQ(b->start_lba, slot_lba(b->slot));
+        }
+        sync_fails = 0;
+        CHECK_EQ(fs_unmount("boot"), FS_OK);
+    }
+    CHECK_EQ(fs_unmount("boot"), FS_ERR_NOVOL);
+}
+
 static int run(fs_boot_t *b, int with_markers)
 {
     int rc = fs_mount_boot("boot", &card, with_markers ? markers : NULL, with_markers ? 2 : 0, b);
 
-    if (rc == PART_BOOT_OK) {
-        CHECK_EQ(fs_unmount("boot"), FS_OK);
-    } else {
-        CHECK_EQ(fs_unmount("boot"), FS_ERR_NOVOL);
-    }
+    check_mounted(rc, b);
     return rc;
 }
 
@@ -167,6 +202,7 @@ TEST(failure_reasons)
     CHECK_STR(part_boot_strerror(PART_BOOT_ERR_MOUNT), "mount");
     CHECK_STR(part_boot_strerror(PART_BOOT_ERR_ARG), "arg");
     CHECK_STR(part_boot_strerror(PART_BOOT_ERR_BUSY), "busy");
+    CHECK_STR(part_boot_strerror(PART_BOOT_ERR_RELEASE), "release");
     CHECK_STR(part_boot_strerror(99), "unknown");
 }
 
@@ -403,14 +439,104 @@ TEST(bad_device_and_args)
 {
     fs_boot_t b;
     blk_dev_t odd;
+    int rc;
 
-    CHECK_EQ(fs_mount_boot("boot", NULL, NULL, 0, &b), PART_BOOT_ERR_DEVICE);
-    CHECK_EQ(fs_mount_boot("boot", &card, NULL, 0, NULL), PART_BOOT_ERR_ARG);
-    CHECK_EQ(fs_mount_boot(NULL, &card, NULL, 0, &b), PART_BOOT_ERR_ARG);
-    CHECK_EQ(fs_mount_boot("boot", &card, NULL, 1, &b), PART_BOOT_ERR_ARG);
+    CHECK_EQ(rc = fs_mount_boot("boot", NULL, NULL, 0, &b), PART_BOOT_ERR_DEVICE);
+    check_mounted(rc, &b);
+    CHECK_EQ(rc = fs_mount_boot("boot", &card, NULL, 0, NULL), PART_BOOT_ERR_ARG);
+    check_mounted(rc, &b);
+    CHECK_EQ(rc = fs_mount_boot(NULL, &card, NULL, 0, &b), PART_BOOT_ERR_ARG);
+    check_mounted(rc, &b);
+    CHECK_EQ(rc = fs_mount_boot("boot", &card, NULL, 1, &b), PART_BOOT_ERR_ARG);
+    check_mounted(rc, &b);
     blank();
     odd = card;
     odd.block_size = 4096;
-    CHECK_EQ(fs_mount_boot("boot", &odd, NULL, 0, &b), PART_BOOT_ERR_DEVICE);
+    CHECK_EQ(rc = fs_mount_boot("boot", &odd, NULL, 0, &b), PART_BOOT_ERR_DEVICE);
+    check_mounted(rc, &b);
     CHECK_EQ(b.last_err, BLK_ERR_PARAM);
+}
+
+/* Runs fs_mount_boot() with markers while every sync of the card fails. */
+static int run_sync_fails(fs_boot_t *b)
+{
+    int rc;
+
+    sync_fails = 1;
+    rc = fs_mount_boot("boot", &card, markers, 2, b);
+    sync_fails = 0;
+    return rc;
+}
+
+TEST(unmount_fails_on_first_of_two)
+{
+    fs_boot_t b;
+    int rc;
+
+    blank();
+    entry(0, PART_TYPE_FAT16);
+    fat(0, 0);
+    entry(1, PART_TYPE_FAT16);
+    fat(1, 1);
+    sync_fails = 1;
+    rc = fs_mount_boot("boot", &card, markers, 2, &b);
+    /* The probe stops on the volume that did not unmount. */
+    CHECK_EQ(rc, PART_BOOT_ERR_RELEASE);
+    CHECK_EQ(b.slot, 0);
+    CHECK_EQ(b.marker, 0);
+    CHECK_EQ(b.last_err, FS_ERR_IO);
+    /* Reads still go to slot 0 while the flush keeps failing. */
+    {
+        fs_stat_t st;
+
+        CHECK_EQ(fs_stat("boot:/SLOT0", &st), FS_OK);
+        CHECK_EQ(fs_stat("boot:/ROBCO/MFBOOT.SYS", &st), FS_ERR_NOENT);
+        CHECK_EQ(fs_unmount("boot"), FS_ERR_IO);
+    }
+    check_mounted(rc, &b);
+    /* With a working device the marker volume wins again. */
+    CHECK_EQ(run(&b, 1), PART_BOOT_OK);
+    CHECK_EQ(b.slot, 1);
+}
+
+TEST(unmount_fails_on_fallback_candidate)
+{
+    fs_boot_t b;
+    int rc;
+
+    /* Slot 0 does not mount, slot 1 is the fallback, slot 2 holds the marker. */
+    blank();
+    entry(0, PART_TYPE_FAT16);
+    junk(0);
+    entry(1, PART_TYPE_FAT16);
+    fat(1, 0);
+    entry(2, PART_TYPE_FAT16);
+    fat(2, 1);
+    rc = run_sync_fails(&b);
+    CHECK_EQ(rc, PART_BOOT_ERR_RELEASE);
+    CHECK_EQ(b.slot, 1);
+    CHECK_EQ(b.last_err, FS_ERR_IO);
+    check_mounted(rc, &b);
+    CHECK_EQ(run(&b, 1), PART_BOOT_OK);
+    CHECK_EQ(b.slot, 2);
+}
+
+TEST(sync_failure_without_a_probe_unmount)
+{
+    fs_boot_t b;
+    int rc;
+
+    /* The first volume holds the marker: no unmount, so no failure. */
+    blank();
+    entry(0, PART_TYPE_FAT16);
+    fat(0, 1);
+    rc = run_sync_fails(&b);
+    CHECK_EQ(rc, PART_BOOT_OK);
+    CHECK_EQ(b.slot, 0);
+    check_mounted(rc, &b);
+    /* Nothing mounts: nothing to release. */
+    junk(0);
+    rc = run_sync_fails(&b);
+    CHECK_EQ(rc, PART_BOOT_ERR_MOUNT);
+    check_mounted(rc, &b);
 }

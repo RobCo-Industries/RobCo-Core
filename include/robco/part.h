@@ -67,6 +67,7 @@ blk_dev_t *part_parent_of(const blk_dev_t *dev, uint64_t *start_lba);
 #define PART_BOOT_ERR_MOUNT  4  /* "mount": FAT entries, none mounts */
 #define PART_BOOT_ERR_ARG    5  /* "arg": bad argument */
 #define PART_BOOT_ERR_BUSY   6  /* "busy": the volume name, or the result's device, is mounted */
+#define PART_BOOT_ERR_RELEASE 7 /* "release": a probed volume did not unmount, still mounted */
 
 /* part_boot_class() results. */
 #define PART_BOOT_NEVER 0  /* extended or GPT protective entry: never mounted */
@@ -103,7 +104,8 @@ int part_boot_pick(const uint8_t *probe, unsigned n);
  */
 int part_boot_failure(int scan, const part_info_t *parts);
 
-/* "ok", "nodev", "nofat", "gpt", "mount", "arg", "busy", or "unknown". */
+/* "ok", "nodev", "nofat", "gpt", "mount", "arg", "busy", "release",
+ * or "unknown". */
 const char *part_boot_strerror(int rc);
 
 #endif

@@ -113,7 +113,13 @@ int fs_mount_boot(const char *volume, blk_dev_t *dev, const char *const *markers
             fill(out, probe[i]);
             return PART_BOOT_OK;
         }
-        fs_unmount(volume);
+        /* A failed flush keeps the volume mounted on out->dev: stop here. */
+        rc = fs_unmount(volume);
+        if (rc != FS_OK) {
+            out->last_err = rc;
+            fill(out, probe[i]);
+            return PART_BOOT_ERR_RELEASE;
+        }
     }
     /* No marker anywhere: mount the first volume that mounted again. */
     pick = part_boot_pick(probe, n);
