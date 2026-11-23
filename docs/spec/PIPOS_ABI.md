@@ -271,13 +271,15 @@ There is one voice. `tone`, `sample` and `play_seq` return at once and the sound
 | Call | Rules |
 |---|---|
 | `tone` | `freq_hz` 20 to 20000. `duration_ms` 1 to 60000. |
-| `sample` | 8-bit unsigned mono at 8000 Hz. At most 65536 bytes. Pip-OS copies the data before it returns. |
-| `play_seq` | `count` is 1 to 256. Pip-OS copies the notes before it returns. |
-| `volume` | 0 to 100. Returns the previous level. The start value comes from `PIPOS.CFG`. |
-| `audio_status` | 1 while a sound plays. |
-| `audio_stop` | Stops the sound. |
+| `sample` | 8-bit unsigned mono at 8000 Hz. 128 is silence. 1 to 65536 bytes, so length 0 returns `-PIP_EINVAL`. Pip-OS checks the length before the pointer. It copies the data before it returns. |
+| `play_seq` | `count` is 1 to 256. Pip-OS checks every note before anything plays. One bad note refuses the whole sequence. It copies the notes before it returns. |
+| `volume` | 0 to 100. Returns the previous level. The start value comes from `PIPOS.CFG`, 100 without one. A new level applies from the next note or sample. At 0 sounds still play silently and `audio_status` reports them. |
+| `audio_status` | 1 while a sound the image started plays. The power-on beep does not count. |
+| `audio_stop` | Stops the sound. Returns 0 also when nothing plays. |
 
-A value outside these limits returns `-PIP_EINVAL`.
+A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call that fails plays nothing and leaves the current sound playing.
+
+The volume belongs to the device, not to the image. A level set by a ROM or a holotape stays after it ends, until the next power-on. Pip-OS stops the sound an image started when the image starts and when it ends.
 
 ```c
 typedef struct __attribute__((packed)) pip_note {
@@ -288,11 +290,20 @@ typedef struct __attribute__((packed)) pip_note {
 
 ## Time, sensors and power
 
-Pip-OS keeps a software clock in Unix seconds. At boot it reads a real-time clock chip if one answers. `set_time` sets the software clock. It does not write the chip. With no chip and no `set_time`, the clock is not set and `get_time` returns `-PIP_ENODEV`.
+Pip-OS keeps a software clock in Unix seconds. At boot it reads a real-time clock chip if one answers. `set_time` sets the software clock. It does not write the chip, so the next boot starts again from the chip. With no chip and no `set_time`, the clock is not set and `get_time` returns `-PIP_ENODEV` and writes nothing.
 
-`read_sensor` with sensor 0 returns the same value as `get_time`. No other sensor exists on the current hardware, so sensors 1 to 6 return `-PIP_ENODEV`, and so does `get_battery`. `sensor_available` returns 1 only when `read_sensor` would succeed.
+The clock counts on the 1 MHz system timer, so periods with interrupts off do not slow it. It only goes back through `set_time`. `set_time` accepts any value. The clock stops at `0xFFFFFFFF` instead of wrapping.
 
-`power` with 2 turns the screen black until 3 turns it back on. Drawing and `present` keep working on the back buffer in between. Any other `op` above 3 returns `-PIP_EINVAL`.
+`read_sensor` with sensor 0 returns the same value and result as `get_time`. No other sensor exists on the current hardware, so sensors 1 to 6 return `-PIP_ENODEV`, and so does `get_battery`. `sensor_available` returns 1 only when `read_sensor` would succeed. A `sensor` above 6 returns `-PIP_EINVAL` from both calls. `read_sensor` and `get_time` check the pointer first, so a bad pointer returns `-PIP_EFAULT` even for a missing sensor.
+
+| `power` `op` | Effect |
+|---|---|
+| 0 | Resets the board. The ROM loads again. |
+| 1 | Stops the sound, then halts with interrupts masked. Only a power cycle wakes it. |
+| 2 | Turns the screen black. Drawing and `present` keep working on the back buffer. |
+| 3 | Shows the last presented frame again. |
+
+Any other `op` returns `-PIP_EINVAL`.
 
 ## System information
 
