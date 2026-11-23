@@ -278,6 +278,148 @@ static void play_pcm_tick(void)
     case_end("pcm_tick", ret);
 }
 
+/* Chunks of pcm_buf for the queue cases, at 8000 Hz. */
+#define CH_A_OFF    0u
+#define CH_A_LEN    800u
+#define CH_B_OFF    800u
+#define CH_B_LEN    600u
+#define CH_C_OFF    1400u
+#define CH_C_LEN    1000u
+
+/*
+ * Three chunks of 100, 75 and 125 ms played back to back with
+ * audio_pcm_queue(). Prints the queue results, audio_pcm_can_queue() at
+ * each step, and how often audio_busy() read 0 before the end.
+ */
+static void play_pcm_chain(void)
+{
+    int ret, can0, q1, can1, qbusy, can2, q2, can3, can4, under;
+    uint32_t idle = 0;
+
+    case_begin("pcm_chain");
+    pcm_fill(PCM_BUF);
+    ret = audio_play_pcm(pcm_buf + CH_A_OFF, CH_A_LEN, 8000, 0);
+    /* The play waits for the tick: queueing works already. */
+    can0 = audio_pcm_can_queue();
+    q1 = audio_pcm_queue(pcm_buf + CH_B_OFF, CH_B_LEN);
+    can1 = audio_pcm_can_queue();
+    qbusy = audio_pcm_queue(pcm_buf + CH_C_OFF, CH_C_LEN);
+    /* Turns 1 when B takes over: A is free then. */
+    while (!audio_pcm_can_queue()) {
+        if (!audio_busy()) {
+            idle++;
+            break;
+        }
+        audio_poll();
+    }
+    can2 = audio_pcm_can_queue();
+    q2 = audio_pcm_queue(pcm_buf + CH_C_OFF, CH_C_LEN);
+    can3 = audio_pcm_can_queue();
+    while (!audio_pcm_can_queue()) {
+        if (!audio_busy()) {
+            idle++;
+            break;
+        }
+        audio_poll();
+    }
+    audio_wait();
+    can4 = audio_pcm_can_queue();
+    /* The play has ended: nothing to queue behind. */
+    under = audio_pcm_queue(pcm_buf + CH_A_OFF, CH_A_LEN);
+    k_printf("@RC stage=audio ev=pcm_chain can0=%d q1=%d can1=%d qbusy=%d can2=%d q2=%d "
+             "can3=%d can4=%d under=%d idle=%u\n",
+             can0, q1, can1, qbusy, can2, q2, can3, can4, under, (unsigned)idle);
+    case_end("pcm_chain", ret);
+}
+
+/* audio_pcm_queue() errors: bad arguments, nothing playing, a looped play. */
+static void play_pcm_qerr(void)
+{
+    int idle, null, zero, loop, lcan, ret;
+
+    case_begin("pcm_qerr");
+    pcm_fill(200);
+    idle = audio_pcm_queue(pcm_buf, 100);
+    null = audio_pcm_queue(0, 100);
+    zero = audio_pcm_queue(pcm_buf, 0);
+    ret = audio_play_pcm(pcm_buf, 200, 8000, AUDIO_LOOP);
+    loop = audio_pcm_queue(pcm_buf, 100);
+    lcan = audio_pcm_can_queue();
+    sleep_ms(50);
+    audio_stop();
+    audio_wait();
+    k_printf("@RC stage=audio ev=pcm_qerr idle=%d null=%d zero=%d loop=%d lcan=%d\n",
+             idle, null, zero, loop, lcan);
+    case_end("pcm_qerr", ret);
+}
+
+/*
+ * Plays 0.25 s from the first quarter of the buffer with the second
+ * quarter queued, cuts after 50 ms with `kind`, then overwrites both
+ * quarters at once. Prints how many samples the play output before the
+ * cut, and how many either buffer gave after.
+ */
+static void pcm_qcut_one(int kind)
+{
+    static const char *const names[] = { "stop", "tone" };
+    uint8_t *a = pcm_buf;
+    uint8_t *b = pcm_buf + PCM_BUF / 4;
+    uint32_t b0, t0, t1;
+    uint32_t s;
+    int ret, q, cut, can;
+
+    pcm_fill(PCM_BUF);
+    ret = audio_play_pcm(a, PCM_BUF / 4, 22050, 0);
+    q = audio_pcm_queue(b, PCM_BUF / 4);
+    sleep_ms(50);
+    s = irq_save();
+    (void)audio_pcm_samples(&b0);
+    if (kind == 0) {
+        audio_stop();
+        cut = 0;
+    } else {
+        cut = audio_tone(440, 50);
+    }
+    t0 = audio_pcm_samples(0);
+    irq_restore(s);
+    k_memset(a, 0x5a, PCM_BUF / 2);
+    can = audio_pcm_can_queue();
+    /* Longer than A: a buffer that still waited would have taken over. */
+    sleep_ms(300);
+    t1 = audio_pcm_samples(0);
+    audio_stop();
+    audio_wait();
+    k_printf("@RC stage=audio ev=pcm_qcut kind=%s ret=%d q=%d cut=%d can=%d before=%u "
+             "after=%d\n",
+             names[kind], ret, q, cut, can, (unsigned)b0, (int)(t1 - t0));
+}
+
+/* A stop or a tone drops the waiting buffer and stops reading both. */
+static void play_pcm_qcut(void)
+{
+    case_begin("pcm_qcut");
+    pcm_qcut_one(0);
+    pcm_qcut_one(1);
+    case_end("pcm_qcut", 0);
+}
+
+/* Underrun: the play ends, a queue call fails, a new play works. */
+static void play_pcm_under(void)
+{
+    int ret, under, can, again;
+
+    case_begin("pcm_under");
+    pcm_fill(PCM_BUF);
+    ret = audio_play_pcm(pcm_buf, 80, 8000, 0);
+    audio_wait();
+    under = audio_pcm_queue(pcm_buf + 80, 80);
+    can = audio_pcm_can_queue();
+    again = audio_play_pcm(pcm_buf + 80, 80, 8000, 0);
+    audio_wait();
+    k_printf("@RC stage=audio ev=pcm_under under=%d can=%d again=%d\n", under, can, again);
+    case_end("pcm_under", ret);
+}
+
 /* Bad arguments return their codes and play nothing. */
 static void play_pcm_args(void)
 {
@@ -301,6 +443,10 @@ static void play_pcm_all(void)
     play_pcm_loop();
     play_pcm_tick();
     play_pcm_args();
+    play_pcm_chain();
+    play_pcm_qerr();
+    play_pcm_qcut();
+    play_pcm_under();
 }
 
 static void play_all(void)
@@ -347,7 +493,7 @@ void robco_main(void)
     k_printf("@RC stage=audio ev=done\n");
 
     /* Replay on request, for listening tests on real hardware. */
-    k_printf("@RC stage=audio ev=ready keys=b,s,t,l,i,p,a\n");
+    k_printf("@RC stage=audio ev=ready keys=b,s,t,l,i,p,c,a\n");
     for (;;) {
         audio_poll();
         c = uart_poll();
@@ -358,6 +504,7 @@ void robco_main(void)
         case 'l': play_loop(); break;
         case 'i': play_interrupt(); break;
         case 'p': play_pcm(); break;
+        case 'c': play_pcm_chain(); break;
         case 'a': play_all(); break;
         default: break;
         }
