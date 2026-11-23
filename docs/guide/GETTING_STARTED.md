@@ -509,7 +509,7 @@ Open the adapter at 115200 baud, 8N1, no flow control, then power the Pi. On a P
 
 Each capability below has an example under `examples/` and a section in the API reference. Each example is also a target test, so you can boot it with the harness as you did with `hello-pi`.
 
-Read a file from the SD card. Call `sd_init()`, find the FAT partition with `part_scan()` and `part_open()`, mount it with `fs_mount()`, then read with `fs_read_file()` or `fs_open()` and `fs_read()`. See [examples/storage](../../examples/storage/main.c), which lists, reads and writes files, and [the storage reference](./api/storage.md#fat-file-system-fsh). `tools/mksdimage.sh` builds a card image to test with.
+Read a file from the SD card. Call `sd_init()`, find and mount the boot volume with `fs_mount_boot()`, then read with `fs_read_file()` or `fs_open()` and `fs_read()`. See [examples/storage](../../examples/storage/main.c), which lists, reads and writes files, and [the storage reference](./api/storage.md#fat-file-system-fsh). `tools/mksdimage.sh` builds a card image to test with.
 
 Turn on the caches. Call `mmu_init()` and then `mmu_enable()` early in `robco_main()`. Software drawing runs faster with the data cache on, and every library component keeps working. See [examples/mmu](../../examples/mmu/main.c) and [the MMU reference](./api/memory.md#mmu-mmuh).
 

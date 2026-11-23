@@ -20,7 +20,7 @@ The chains are separate. MFBootAgent never loads Pip-OS. Every stage also boots 
 
 Each loader:
 
-1. Mounts the FAT partition on the SD card through FatFs.
+1. Mounts the boot volume on the SD card through FatFs, by the rule in [Boot volume](#boot-volume).
 2. Opens the file, reads it into the slot and validates it as described in [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). A failed attempt emits `ev=error` with the code and the path. A switch to the backup file emits `ev=fallback`. Once an image has loaded and passed every check, the stage emits `ev=load` with its path, size and CRC.
 3. Updates the boot info, as described below.
 4. Prepares the CPU for the jump.
@@ -51,6 +51,14 @@ CPU state at the jump between terminal stages:
 The caller may call `robco_handoff()` with the MMU and caches on or off when it turned them on with `mmu.h`. The next stage then starts with them off and every dirty line in memory. An image that turned the caches on by its own code, without linking `mmu.h` or `cache.h`, must clean them first on ARMv7 and later. The caller drains the UART with `uart_flush()`. The cache behaviour of the handoff is pending hardware validation.
 
 Pip-OS enters ROMs and holotapes differently, in USR mode. See [PIPOS_ABI.md](./PIPOS_ABI.md).
+
+### Boot volume
+
+Every stage picks the same FAT volume with `fs_mount_boot()`. A card with no partition table and a FAT boot sector at block 0 is one volume, the whole card. Otherwise the stage reads the four primary MBR entries. It tries the entries with a FAT type byte in slot order, then the other entries in slot order, since some tools write a wrong type byte. Extended entries and a GPT protective entry are never mounted, and a GPT card is not supported. A stage passes the files it loads as markers, such as `/ROBCO/MFBOOT.SYS` and `/ROBCO/MFBOOT.BAK` for RETROS-BIOS. It uses the first volume that mounts and holds a marker as a regular file of at least one byte. When no volume holds one, it uses the first volume that mounts, and the load reports the missing file. When nothing mounts, the stage fails with `code=io`.
+
+`boot_part_lba` is the first block of the chosen volume, or 0 for a card with no partition table.
+
+The Pi firmware has its own rule, and it runs before any RobCo code. It loads the first-stage image from a FAT volume it chooses itself, in practice the first partition. This is not verified on hardware here. So put the first-stage image on the first partition. The rule above only decides where the later stages look.
 
 ### BOOT.CFG
 
@@ -199,7 +207,7 @@ _Static_assert(sizeof(robco_bootinfo_t) == 320, "robco_bootinfo_t must be 320 by
 | `0x06E` | 2 | `con_cy` | Cursor row |
 | `0x070` | 4 | `con_scheme` | Colour scheme: 0 green, 1 amber, 2 blue, 3 white |
 | `0x074` | 4 | `boot_dev` | 0 unknown, 1 SD on EMMC, 2 SD on SDHOST |
-| `0x078` | 4 | `boot_part_lba` | First LBA of the FAT boot partition |
+| `0x078` | 4 | `boot_part_lba` | First LBA of the boot volume. 0 for a card with no partition table. |
 | `0x07C` | 4 | `boot_flags` | Boot flag bits. See below. |
 | `0x080` | 64 | `boot_path` | Path of the image loaded last, for example `/ROBCO/UOS.SYS` |
 | `0x0C0` | 128 | `cmdline` | Command line from `BOOT.CFG`, may be empty |
@@ -323,7 +331,7 @@ A marker may carry more keys than the table below lists, and a stage may print e
 |---|---|---|
 | `boot` | `midr soc base board_rev mem entry_mode` | First marker of every image. `entry_mode` is the CPU mode at entry, such as `svc` or `hyp`. |
 | `handoff` | `trusted=0\|1` | Result of the trust rule. Not printed by first stages. |
-| `mount` | `lba blocks` | The stage mounted the FAT partition that holds the next image |
+| `mount` | `lba blocks` | The stage mounted the boot volume that holds the next image. `lba` is 0 for a card with no partition table. |
 | `load` | `path size crc addr name` | An image loaded and passed every validation step. `size` is `file_size`, `crc` the header CRC, `addr` the load address, `name` the header name. Without `path`, the image was already in its slot and the stage only validated it. |
 | `fallback` | `path from to reason` | The loader moves to the backup file `path`, the same as `to`. `from` is the primary file and `reason` the code it failed with. |
 | `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md), or `io` when the card or the mount failed. `path` names the file the attempt was for. Other failures use their own `code`, such as `mmu`, with no `path`. On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |

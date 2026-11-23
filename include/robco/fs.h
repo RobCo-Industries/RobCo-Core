@@ -6,6 +6,7 @@
 
 #include <robco/blk.h>
 #include <robco/datetime.h>
+#include <robco/part.h>
 
 /*
  * FAT12, FAT16 and FAT32 over a blk_dev_t. Paths are "vol:/DIR/NAME.EXT".
@@ -175,6 +176,43 @@ int fs_atomic_recover(const char *path);
  * changes nothing and reads whichever file holds the content.
  */
 int fs_read_file_atomic(const char *path, void *buf, size_t max, size_t *out_len);
+
+/* fs_boot_t.slot for a card with no partition table. */
+#define FS_BOOT_WHOLE 0xffu
+
+/* The volume fs_mount_boot() chose. */
+typedef struct {
+    uint8_t slot;          /* MBR slot 0 to 3, or FS_BOOT_WHOLE */
+    uint8_t type;          /* MBR type byte; 0 for FS_BOOT_WHOLE */
+    uint8_t marker;        /* 1: holds one of the markers */
+    uint8_t by_type;       /* 1: a FAT type byte or no table; 0: found in the second pass */
+    uint64_t start_lba;    /* first block on the card; 0 for FS_BOOT_WHOLE */
+    uint64_t block_count;
+    int last_err;          /* last part_scan() or fs_mount() error, 0 if none */
+    part_info_t part;      /* private */
+    blk_dev_t dev;         /* private: the mounted partition device */
+} fs_boot_t;
+
+/*
+ * Finds the boot volume on dev and mounts it as `volume`. Every RobCo
+ * stage uses this rule, so they all pick the same volume:
+ *   1. Read the MBR. A card with no table and a FAT boot sector at block 0
+ *      is one volume, the whole card.
+ *   2. Try the entries with a FAT type byte in slot order, then the other
+ *      entries in slot order, because some tools write a wrong type byte.
+ *      Extended and GPT protective entries are never mounted.
+ *   3. With markers, paths such as "/ROBCO/MFBOOT.SYS", choose the first
+ *      volume that mounts and holds one of them as a regular file of at
+ *      least one byte. If none holds one, choose the first that mounts.
+ *      Without markers, choose the first that mounts.
+ * Returns PART_BOOT_OK and leaves the volume mounted, or a PART_BOOT_ERR_*
+ * code with nothing mounted. out must stay valid and unchanged while the
+ * volume is mounted: the device lives in it. When `volume` is mounted, or
+ * out holds a mounted device, returns PART_BOOT_ERR_BUSY and leaves out
+ * as it is. Unmount with fs_unmount(volume).
+ */
+int fs_mount_boot(const char *volume, blk_dev_t *dev, const char *const *markers,
+                  unsigned n_markers, fs_boot_t *out);
 
 /*
  * Timestamp source, FAT format: date << 16 | time. The weak default uses
