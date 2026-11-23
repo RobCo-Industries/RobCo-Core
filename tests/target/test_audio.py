@@ -28,6 +28,9 @@ ERR_NO_INIT, ERR_RANGE, ERR_ARG, ERR_BUSY = -1, -6, -7, -8
 
 # A late end is fine under load; this only catches a play that never ends on time.
 PCM_END_SLACK_MS = 1000
+# A late IRQ skips samples, and the host can stall the guest for some ms near the end.
+# Under load the last sample landed 3 to 4 ms before the end.
+PCM_LAST_SLACK_MS = 20
 
 
 def pcm_data(n):
@@ -86,8 +89,8 @@ def check_pcm_play(marks, rate, n, vol):
     # The library does not promise an IRQ per sample: QEMU may deliver far fewer.
     # At least one IRQ per 2 ms proves it fired through the whole play.
     assert nominal // 2 <= got <= n, (end, nominal)
-    # The last sample output lies in the final 2 ms of the buffer.
-    assert n - 1 - rate * 2 // 1000 <= last <= n - 1, end
+    # The last sample output lies in the final PCM_LAST_SLACK_MS of the buffer.
+    assert max(0, n - 1 - rate * PCM_LAST_SLACK_MS // 1000) <= last <= n - 1, end
 
 
 def check_pcm(vm, c):
