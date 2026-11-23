@@ -729,10 +729,12 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t colou
 void fb_blit_1bpp(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                   const uint8_t *bits, uint32_t fg, uint32_t bg);
 void fb_scroll_up(uint32_t pixels, uint32_t bg);
+void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t pixels,
+                    uint32_t bg);
 void fb_clear(uint32_t colour);
 ```
 
-Drawing clips to the screen and does nothing before `fb_init()`. `fb_blit_1bpp()` takes rows MSB-left, each padded to a whole byte. `fb_scroll_up()` moves the screen up by `pixels` rows and fills the freed rows with `bg`. There is no double buffering and no vsync. None of these lock: draw from one context only.
+Drawing clips to the screen and does nothing before `fb_init()`. `fb_blit_1bpp()` takes rows MSB-left, each padded to a whole byte. `fb_scroll_up()` moves the screen up by `pixels` rows and fills the freed rows with `bg`. `fb_scroll_rect()` does the same for the rectangle `x`,`y`,`w`,`h` only. It clips the rectangle to the screen and writes no pixel outside it. A `pixels` value of `h` or more fills the whole rectangle. There is no double buffering and no vsync. None of these lock: draw from one context only.
 
 ```c
 rc = fb_init(640, 480, 32);
@@ -798,7 +800,7 @@ Returns the colours and name (`green`, `amber`, `blue`, `white`) of a scheme, or
 int console_init(unsigned scheme);
 ```
 
-Sizes the grid from the framebuffer, loads the scheme, clears the screen and puts the cursor at 0,0 with attribute normal and the cursor hidden. Returns `0` or a `CONSOLE_ERR_*`. Call it again after every successful `fb_init()`: until then the console is stale and every drawing call does nothing.
+Sizes the grid from the framebuffer, loads the scheme, clears the grid and puts the cursor at 0,0 with attribute normal and the cursor hidden. Returns `0` or a `CONSOLE_ERR_*`. Call it again after every successful `fb_init()`: until then the console is stale and every drawing call does nothing.
 
 ```c
 int console_adopt(unsigned cols, unsigned rows, unsigned cx, unsigned cy, unsigned scheme);
@@ -810,6 +812,7 @@ The console does not know the characters already on screen. Each adopted cell is
 
 - `console_dump()` prints an unknown cell as `#`, the value of `CONSOLE_DUMP_UNKNOWN`.
 - Scrolling moves pixels, so adopted text moves up intact. The cell buffer moves with it.
+- The console owns only its grid. A grid smaller than the screen leaves the pixels right of it and below it alone, when it scrolls too.
 - `console_set_scheme()` repaints the known cells and leaves the pixels of unknown cells as they are.
 - The block cursor does not show on an unknown cell.
 - `console_clear()` makes every cell known and blank.
@@ -851,7 +854,7 @@ void console_set_scheme(unsigned scheme);
 unsigned console_scheme(void);
 ```
 
-`console_set_attr()` applies to characters written after the call. It accepts a brightness, optionally ORed with `CONSOLE_ATTR_INVERSE`. It ignores any other value, such as a brightness of `3` or an unknown bit, and keeps the current attribute. `console_set_scheme()` redraws the whole screen in the new colours and ignores unknown ids. After `console_adopt()`, cells still unknown keep their pixels. `console_scheme()` returns the active id, `CONSOLE_SCHEME_GREEN` before `console_init()`.
+`console_set_attr()` applies to characters written after the call. It accepts a brightness, optionally ORed with `CONSOLE_ATTR_INVERSE`. It ignores any other value, such as a brightness of `3` or an unknown bit, and keeps the current attribute. `console_set_scheme()` redraws the whole grid in the new colours and ignores unknown ids. After `console_adopt()`, cells still unknown keep their pixels. `console_scheme()` returns the active id, `CONSOLE_SCHEME_GREEN` before `console_init()`.
 
 ```c
 void console_dump(void (*out)(char));

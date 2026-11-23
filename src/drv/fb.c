@@ -223,25 +223,41 @@ void fb_blit_1bpp(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     }
 }
 
-void fb_scroll_up(uint32_t pixels, uint32_t bg)
+void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t pixels,
+                    uint32_t bg)
 {
-    uint32_t h = fb_state.height;
-    uint32_t y;
+    uint32_t j;
 
-    if (!fb_ready) {
+    if (!fb_ready || x >= fb_state.width || y >= fb_state.height || w == 0 || h == 0) {
         return;
     }
+    if (w > fb_state.width - x) {
+        w = fb_state.width - x;
+    }
+    if (h > fb_state.height - y) {
+        h = fb_state.height - y;
+    }
     if (pixels >= h) {
-        fb_fill_rect(0, 0, fb_state.width, h, bg);
+        fb_fill_rect(x, y, w, h, bg);
         return;
     }
     if (pixels == 0) {
         return;
     }
-    for (y = 0; y + pixels < h; y++) {
-        k_memcpy(row_ptr(y), row_ptr(y + pixels), fb_state.width * 4);
+    /*
+     * Upward: each destination row lies above its source row, so copying
+     * top to bottom never reads a row already overwritten. Within one copy
+     * the rows are distinct, since pitch >= width * 4.
+     */
+    for (j = 0; j + pixels < h; j++) {
+        k_memcpy(row_ptr(y + j) + x, row_ptr(y + j + pixels) + x, w * 4);
     }
-    fb_fill_rect(0, h - pixels, fb_state.width, pixels, bg);
+    fb_fill_rect(x, y + h - pixels, w, pixels, bg);
+}
+
+void fb_scroll_up(uint32_t pixels, uint32_t bg)
+{
+    fb_scroll_rect(0, 0, fb_state.width, fb_state.height, pixels, bg);
 }
 
 void fb_clear(uint32_t colour)

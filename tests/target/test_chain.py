@@ -501,6 +501,39 @@ def test_chain_adopts_screen(board, example_image, tmp_path):
         assert not events(vm, "chain2", "error"), vm.serial
 
 
+def test_chain_adopt_small_grid_scrolls_inside(board, example_image, tmp_path):
+    """A 12 x 6 grid scrolls its own pixels only: the rest keeps chain1's screen."""
+    gw, gh = 12 * FW, 6 * FH
+    nxt = example_image("chain2", "smallgrid", "-DCHAIN2_VIDEO_WAIT=1 -DCHAIN2_SMALL_GRID=1")
+    with boot(fbtext_chain1(example_image), board, extra_args=chain_args(nxt)) as vm:
+        wait_n(vm, 1)
+        v = one(vm, "chain2", "video")
+        assert (v["path"], v["fb_rc"], v["con_rc"]) == ("adopt", "0", "0"), vm.serial
+        before = shot(vm, tmp_path, "adopted")
+        assert before.tobytes() == render(CHAIN1_TEXT).tobytes(), vm.serial
+        vm.send("a")
+        wait_n(vm, 2)
+        vm.send("b")
+        vm.wait_for(READY, timeout=60)
+        after = shot(vm, tmp_path, "scrolled")
+    # Outside the grid: chain1's pixels, the text right of column 12 included.
+    mask = Image.new("1", (W, H), 1)
+    mask.paste(0, (0, 0, gw, gh))
+    blank = Image.new("RGB", (W, H))
+    outside = Image.composite(after, blank, mask).tobytes()
+    assert outside == Image.composite(before, blank, mask).tobytes(), tmp_path
+    assert outside != Image.composite(render([]), blank, mask).tobytes()
+    # Inside: "chain2 line " fills a row, so each line takes two rows. The
+    # last newline leaves the bottom row blank.
+    rows = []
+    for t in chain2_lines(27):
+        rows += [t[:12], t[12:]]
+    rows = (rows + [""])[-6:]
+    want = render(rows).crop((0, 0, gw, gh))
+    assert after.crop((0, 0, gw, gh)).tobytes() == want.tobytes(), tmp_path
+    assert dump_rows(vm) == [r.rstrip() for r in rows], vm.serial
+
+
 @pytest.mark.parametrize("variant,flag,fb_rc,con_rc", [
     ("badpitch", "-DCHAIN2_BAD_PITCH=1", "-4", "0"),
     ("badcursor", "-DCHAIN2_BAD_CURSOR=1", "0", "-4"),

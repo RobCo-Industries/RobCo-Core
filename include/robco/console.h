@@ -46,7 +46,7 @@ typedef struct {
 const console_scheme_t *console_scheme_info(unsigned scheme);
 
 /*
- * Needs fb_init first. Clears the screen and resets the grid, cursor and
+ * Needs fb_init first. Clears the grid and resets the grid, cursor and
  * attribute. Call it again after every successful fb_init(): until then
  * the console draws nothing and console_cols() returns 0.
  */
@@ -63,7 +63,8 @@ int console_init(unsigned scheme);
  *
  * The characters already on screen are unknown: console_dump() shows
  * them as CONSOLE_DUMP_UNKNOWN until they are written over. Scrolling
- * moves pixels, so they move up intact. console_set_scheme() repaints
+ * moves pixels, so they move up intact. The console draws, clears and
+ * scrolls only inside its grid: pixels right of it and below it stay. console_set_scheme() repaints
  * only known cells, and the block cursor does not show on an unknown
  * cell.
  */
@@ -96,7 +97,7 @@ void console_cursor_show(int on);
  */
 void console_set_attr(unsigned attr);
 /*
- * Redraws the whole screen from the cell buffer. After console_adopt(),
+ * Redraws the whole grid from the cell buffer. After console_adopt(),
  * cells still unknown keep their pixels. Unknown ids are ignored.
  */
 void console_set_scheme(unsigned scheme);

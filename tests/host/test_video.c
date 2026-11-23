@@ -458,3 +458,194 @@ TEST(scheme_change_and_cursor_leave_unknown_cells_alone)
     console_cursor_show(1);
     CHECK_MEM(screen, before, BYTES);
 }
+
+/*
+ * A screen larger than the grid in both directions: 100 x 70 pixels, so
+ * console_init() makes a 12 x 4 grid of 96 x 64 with a margin right and
+ * below. Every word starts as a distinct pattern value.
+ */
+#define BW      100u
+#define BH      70u
+#define BPITCH  (BW * 4u + 16u)
+#define BWORDS  (BPITCH / 4u * BH)
+
+static uint32_t big_words[BWORDS];
+static uint32_t big_before[BWORDS];
+
+static fb_info_t big_info(void)
+{
+    fb_info_t i = { (uint8_t *)big_words, BPITCH * BH, BW, BH, BPITCH, 32, FB_ORDER_RGB };
+
+    return i;
+}
+
+static void big_pattern(void)
+{
+    uint32_t n;
+
+    for (n = 0; n < BWORDS; n++) {
+        big_words[n] = 0x80000000u | (n * 2654435761u >> 1);
+    }
+}
+
+static uint32_t big_px(const uint32_t *w, uint32_t x, uint32_t y)
+{
+    return w[y * (BPITCH / 4u) + x];
+}
+
+/*
+ * After `k` scrolls of a gw x gh grid at 0,0: outside the grid, every word
+ * (row padding included) equals big_before; inside, row y holds
+ * big_before's row y + k * FONT_H, and the bottom k cell rows are `bg`.
+ */
+static int big_check(uint32_t gw, uint32_t gh, uint32_t k, uint32_t bg)
+{
+    uint32_t x, y, got, want;
+
+    for (y = 0; y < BH; y++) {
+        for (x = 0; x < BPITCH / 4u; x++) {
+            got = big_px(big_words, x, y);
+            if (x >= gw || y >= gh) {
+                want = big_px(big_before, x, y);
+            } else if (y + k * FONT_H < gh) {
+                want = big_px(big_before, x, y + k * FONT_H);
+            } else {
+                want = bg;
+            }
+            if (got != want) {
+                RC_FAIL("scroll %u: pixel %u,%u is %08x, want %08x", (unsigned)k, (unsigned)x,
+                        (unsigned)y, (unsigned)got, (unsigned)want);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static uint32_t amber_bg(void)
+{
+    const console_scheme_t *s = console_scheme_info(CONSOLE_SCHEME_AMBER);
+
+    return fb_rgb(s->bg.r, s->bg.g, s->bg.b);
+}
+
+TEST(scroll_of_an_adopted_small_grid_moves_only_the_grid)
+{
+    fb_info_t i = big_info();
+    uint32_t k;
+
+    reset();
+    big_pattern();
+    CHECK_EQ(fb_adopt(&i), 0);
+    /* 9 x 3 cells: 72 x 48 pixels of the 100 x 70 screen. */
+    CHECK_EQ(console_adopt(9, 3, 0, 2, CONSOLE_SCHEME_AMBER), 0);
+    memcpy(big_before, big_words, sizeof(big_words));
+    for (k = 1; k <= 4; k++) {
+        console_puts("\n");
+        if (!big_check(9 * FONT_W, 3 * FONT_H, k, amber_bg())) {
+            return;
+        }
+    }
+}
+
+TEST(scroll_of_an_initialised_small_grid_moves_only_the_grid)
+{
+    fb_info_t i = big_info();
+    uint32_t k, x, y;
+
+    reset();
+    big_pattern();
+    CHECK_EQ(fb_adopt(&i), 0);
+    memcpy(big_before, big_words, sizeof(big_words));
+    CHECK_EQ(console_init(CONSOLE_SCHEME_AMBER), 0);
+    CHECK_EQ(console_cols(), 12);
+    CHECK_EQ(console_rows(), 4);
+    /* console_init() clears the grid and nothing else. */
+    if (!big_check(96, 64, 4, amber_bg())) {
+        return;
+    }
+    /* Pattern the grid again, so each scroll shows where its rows went. */
+    for (y = 0; y < 64; y++) {
+        for (x = 0; x < 96; x++) {
+            big_words[y * (BPITCH / 4u) + x] = big_px(big_before, x, y);
+        }
+    }
+    memcpy(big_before, big_words, sizeof(big_words));
+    console_set_cursor(0, 3);
+    for (k = 1; k <= 3; k++) {
+        console_puts("\n");
+        if (!big_check(96, 64, k, amber_bg())) {
+            return;
+        }
+    }
+}
+
+TEST(clear_scheme_and_cursor_stay_inside_a_small_grid)
+{
+    fb_info_t i = big_info();
+
+    reset();
+    big_pattern();
+    CHECK_EQ(fb_adopt(&i), 0);
+    CHECK_EQ(console_adopt(9, 3, 0, 2, CONSOLE_SCHEME_AMBER), 0);
+    memcpy(big_before, big_words, sizeof(big_words));
+    console_cursor_show(1);
+    console_puts("abcdefghij");
+    console_set_cursor(8, 2);
+    console_set_scheme(CONSOLE_SCHEME_BLUE);
+    console_set_scheme(CONSOLE_SCHEME_AMBER);
+    console_clear();
+    console_cursor_show(0);
+    /* k = 3 scrolls of a 3-row grid: the whole grid is background. */
+    big_check(9 * FONT_W, 3 * FONT_H, 3, amber_bg());
+}
+
+/* Copies big_before's rect x,y,w,h moved up by `p` into big_before, filling the rest with bg. */
+static void model_scroll(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t p, uint32_t bg)
+{
+    uint32_t i, j;
+
+    for (j = 0; j < h; j++) {
+        for (i = 0; i < w; i++) {
+            big_before[(y + j) * (BPITCH / 4u) + x + i] =
+                j + p < h ? big_before[(y + j + p) * (BPITCH / 4u) + x + i] : bg;
+        }
+    }
+}
+
+TEST(fb_scroll_rect_moves_the_clipped_rectangle_only)
+{
+    fb_info_t i = big_info();
+
+    reset();
+    big_pattern();
+    memcpy(big_before, big_words, sizeof(big_words));
+    /* No framebuffer: nothing. */
+    fb_scroll_rect(0, 0, BW, BH, 1, 7);
+    CHECK_MEM(big_words, big_before, sizeof(big_words));
+
+    CHECK_EQ(fb_adopt(&i), 0);
+    fb_scroll_rect(3, 5, 20, 11, 4, 7);
+    model_scroll(3, 5, 20, 11, 4, 7);
+    CHECK_MEM(big_words, big_before, sizeof(big_words));
+
+    /* Clipped right and below: the row padding stays. */
+    fb_scroll_rect(90, 60, 50, 50, 3, 9);
+    model_scroll(90, 60, BW - 90, BH - 60, 3, 9);
+    CHECK_MEM(big_words, big_before, sizeof(big_words));
+
+    /* pixels >= h fills the rectangle; 0 pixels, empty or off-screen rectangles do nothing. */
+    fb_scroll_rect(10, 10, 5, 4, 4, 11);
+    model_scroll(10, 10, 5, 4, 4, 11);
+    fb_scroll_rect(20, 20, 5, 4, 0, 12);
+    fb_scroll_rect(20, 20, 0, 4, 1, 12);
+    fb_scroll_rect(20, 20, 5, 0, 1, 12);
+    fb_scroll_rect(BW, 0, 5, 4, 1, 12);
+    fb_scroll_rect(0, BH, 5, 4, 1, 12);
+    CHECK_MEM(big_words, big_before, sizeof(big_words));
+
+    /* fb_scroll_up() is the whole screen. */
+    fb_scroll_up(17, 13);
+    model_scroll(0, 0, BW, BH, 17, 13);
+    CHECK_MEM(big_words, big_before, sizeof(big_words));
+}

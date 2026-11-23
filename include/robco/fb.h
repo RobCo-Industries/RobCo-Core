@@ -54,6 +54,13 @@ void fb_blit_1bpp(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                   const uint8_t *bits, uint32_t fg, uint32_t bg);
 /* Moves the screen up and fills the freed rows with `bg`. */
 void fb_scroll_up(uint32_t pixels, uint32_t bg);
+/*
+ * Moves the rectangle x,y,w,h up by `pixels` rows and fills its freed
+ * bottom rows with `bg`. Clips to the screen. Writes no pixel outside the
+ * clipped rectangle. `pixels` >= h fills the whole rectangle.
+ */
+void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t pixels,
+                    uint32_t bg);
 void fb_clear(uint32_t colour);
 
 #endif

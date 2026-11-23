@@ -71,11 +71,18 @@ static int video_start(const robco_bootinfo_t *bi, int inherited)
         rc_fb = fb_adopt(&info);
     }
     if (rc_fb == 0) {
+        unsigned cols = bi->con_cols, rows = bi->con_rows;
+
         cy = bi->con_cy;
 #if defined(CHAIN2_BAD_CURSOR) && CHAIN2_BAD_CURSOR
         cy = bi->con_rows;
 #endif
-        rc_con = console_adopt(bi->con_cols, bi->con_rows, bi->con_cx, cy, bi->con_scheme);
+#if defined(CHAIN2_SMALL_GRID) && CHAIN2_SMALL_GRID
+        /* A grid smaller than the screen: the rest keeps the earlier stage's pixels. */
+        cols = 12;
+        rows = 6;
+#endif
+        rc_con = console_adopt(cols, rows, bi->con_cx, cy, bi->con_scheme);
     }
     if (rc_fb != 0 || rc_con != 0) {
         path = "init";

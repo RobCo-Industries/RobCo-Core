@@ -99,6 +99,12 @@ static void cursor_draw_raw(void)
     }
 }
 
+/* Fills the grid rectangle. Pixels right of or below the grid are not the console's. */
+static void clear_grid(void)
+{
+    fb_fill_rect(0, 0, cols * FONT_W, rows * FONT_H, px_bg);
+}
+
 static void clear_cells(void)
 {
     unsigned r, c;
@@ -138,7 +144,7 @@ static void redraw_all(void)
         }
         return;
     }
-    fb_clear(px_bg);
+    clear_grid();
     for (r = 0; r < rows; r++) {
         for (c = 0; c < cols; c++) {
             if (cells[r][c].ch != ' ' || cells[r][c].attr != CONSOLE_ATTR_NORMAL) {
@@ -158,11 +164,10 @@ static void scroll(void)
         cells[rows - 1][c].attr = CONSOLE_ATTR_NORMAL;
     }
     /*
-     * Pixels move, not cells: adopted text moves up intact. An adopted
-     * grid may end above the screen bottom, so blank the new row itself.
+     * Pixels move, not cells: adopted text moves up intact. Only the grid
+     * rectangle moves: a grid may end left of or above the screen edge.
      */
-    fb_scroll_up(FONT_H, px_bg);
-    fb_fill_rect(0, (rows - 1) * FONT_H, cols * FONT_W, FONT_H, px_bg);
+    fb_scroll_rect(0, 0, cols * FONT_W, rows * FONT_H, FONT_H, px_bg);
 }
 
 static void newline(void)
@@ -245,7 +250,7 @@ int console_init(unsigned scheme)
     cursor_on = 0;
     load_scheme(scheme);
     clear_cells();
-    fb_clear(px_bg);
+    clear_grid();
     grid_fb = fb->addr;
     grid_w = fb->width;
     grid_h = fb->height;
@@ -329,7 +334,7 @@ void console_clear(void)
     clear_cells();
     cx = cy = 0;
     wrap_pending = 0;
-    fb_clear(px_bg);
+    clear_grid();
     cursor_draw_raw();
 }
 
