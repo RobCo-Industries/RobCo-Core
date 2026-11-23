@@ -139,8 +139,8 @@ class PiGpio:
                 now = time.perf_counter() - t0
                 if now >= t:
                     break
-                if t - now > 0.002:
-                    time.sleep(t - now - 0.001)
+                if t - now > 0.003:
+                    time.sleep(t - now - 0.002)  # then spin: sleep overshoots
             late = max(late, now - t)
             if pin is not None:
                 self.set(pin, level)

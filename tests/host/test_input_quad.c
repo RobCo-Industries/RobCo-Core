@@ -129,25 +129,199 @@ TEST(quad_fast_rotation)
     CHECK_EQ(q.invalid, 0);
 }
 
-TEST(quad_illegal_double_transition)
+/* Feeds Gray position pos (0..3 in cw[]) and returns the step. */
+static int feed_pos(input_quad_t *q, int pos)
+{
+    int s = cw[((pos % 4) + 4) % 4];
+
+    return input_quad_feed(q, (s >> 1) & 1, s & 1);
+}
+
+TEST(quad_every_transition)
+{
+    input_quad_t q;
+    int from, to, dir;
+
+    /* From each state to each state, with no direction known yet, then after +1 and -1. */
+    for (dir = -1; dir <= 1; dir++) {
+        for (from = 0; from < 4; from++) {
+            for (to = 0; to < 4; to++) {
+                int d = (to - from + 4) % 4;
+                int before;
+
+                /* Rest at position 2, far from the moves, so no rounding happens. */
+                input_quad_init(&q, 4, 0, 0, 1);    /* cw[1] = 01 is the rest state */
+                q.rest = (uint8_t)cw[(from + 2) % 4];
+                q.prev = (uint8_t)cw[from];
+                q.dir = (int8_t)dir;
+                before = q.acc;
+                if (q.rest == cw[to]) {
+                    continue;
+                }
+                CHECK_EQ(feed_pos(&q, to), 0);
+                if (d == 0) {
+                    CHECK_EQ(q.acc, before);
+                    CHECK_EQ(q.invalid, 0);
+                } else if (d == 1 || d == 3) {
+                    CHECK_EQ(q.acc, before + (d == 1 ? 1 : -1));
+                    CHECK_EQ(q.dir, d == 1 ? 1 : -1);
+                    CHECK_EQ(q.invalid, 0);
+                } else {
+                    /* Both lines changed: two steps the last way, or nothing. */
+                    CHECK_EQ(q.acc, before + 2 * dir);
+                    CHECK_EQ(q.dir, dir);
+                    CHECK_EQ(q.invalid, 1);
+                }
+            }
+        }
+    }
+}
+
+TEST(quad_double_transition_before_any_direction)
 {
     input_quad_t q;
 
     input_quad_init(&q, 4, 0, 0, 0);
-    /* 00 -> 11 skips a state: rejected, counted, no step. */
+    /* 00 -> 11 skips a state with no direction known: counted, no step. */
     CHECK_EQ(input_quad_feed(&q, 1, 1), 0);
     CHECK_EQ(q.invalid, 1);
     CHECK_EQ(q.acc, 0);
-    /* 11 -> 00 too. */
-    CHECK_EQ(run(&q, "0"), 0);
-    CHECK_EQ(q.invalid, 2);
-    /* 00 -> 01 is legal (+1), then 01 <-> 10 three times is not. */
-    CHECK_EQ(run(&q, "1212"), 0);
-    CHECK_EQ(q.invalid, 5);
-    CHECK_EQ(q.acc, 1);
-    /* Decoding goes on from the new state: 10 00 01 11 10 is one detent clockwise. */
-    CHECK_EQ(run(&q, "0132"), 1);
-    CHECK_EQ(q.acc, 1);
+    /* 11 -> 10 -> 00: the rest state rounds +2 to one detent. */
+    CHECK_EQ(run(&q, "2"), 0);
+    CHECK_EQ(run(&q, "0"), 1);
+    CHECK_EQ(q.acc, 0);
+}
+
+TEST(quad_missed_state_is_inferred)
+{
+    input_quad_t q;
+
+    input_quad_init(&q, 4, 0, 0, 0);
+    /* 00 01 [11 missed] 10 00: still one detent. */
+    CHECK_EQ(run(&q, "12"), 0);
+    CHECK_EQ(q.invalid, 1);
+    CHECK_EQ(run(&q, "0"), 1);
+    /* Counter-clockwise with a gap: 00 10 [11] 01 00. */
+    CHECK_EQ(run(&q, "21"), 0);
+    CHECK_EQ(run(&q, "0"), -1);
+    /* The gap across the rest state: 00 01 11 10 [00] 01 11 10 00 is two detents. */
+    CHECK_EQ(run(&q, "1321"), 1);
+    CHECK_EQ(run(&q, "320"), 1);
+    CHECK_EQ(q.acc, 0);
+}
+
+TEST(quad_phase_recovers_at_rest)
+{
+    input_quad_t q;
+    int pos = 0;
+
+    input_quad_init(&q, 4, 0, 0, 0);
+    /* A reversal hidden in a gap: +1, then 01 -> 10 guessed as +2 but it was -2. */
+    CHECK_EQ(run(&q, "1"), 0);
+    CHECK_EQ(run(&q, "2"), 0);      /* acc 3, really -1 */
+    CHECK_EQ(run(&q, "0"), 1);      /* the rest state rounds 4: one wrong step at most */
+    CHECK_EQ(q.acc, 0);
+    /* After that every detent is exact again, both ways. */
+    pos = 0;
+    CHECK_EQ(turn(&q, &pos, 40), 10);
+    CHECK_EQ(turn(&q, &pos, -40), -10);
+    /* Two transitions forward and back at rest: nothing, the phase is right. */
+    CHECK_EQ(turn(&q, &pos, 2), 0);
+    CHECK_EQ(turn(&q, &pos, -2), 0);
+}
+
+TEST(quad_noise_between_rests_is_bounded)
+{
+    input_quad_t q;
+    int i;
+
+    input_quad_init(&q, 4, 0, 0, 0);
+    CHECK_EQ(run(&q, "1"), 0);
+    /* 01 <-> 10 over and over: both lines flip each sample. */
+    for (i = 0; i < 100; i++) {
+        CHECK(input_quad_feed(&q, i & 1, !(i & 1)) >= -1);
+    }
+    CHECK(q.acc <= 8 && q.acc >= -8);
+    /* The next rest state ends it with one step at most. */
+    {
+        int r = run(&q, "0");
+
+        CHECK(r >= -1 && r <= 1);
+    }
+    CHECK_EQ(q.acc, 0);
+}
+
+TEST(quad_two_per_detent_rests)
+{
+    input_quad_t q;
+
+    /* Rest 11 and its complement 00. 11 10 00: one detent. */
+    input_quad_init(&q, 2, 0, 1, 1);
+    CHECK_EQ(run(&q, "20"), 1);
+    CHECK_EQ(run(&q, "13"), 1);
+    /* A missed state in the middle: 11 [10] 00 with the last direction +. */
+    CHECK_EQ(run(&q, "0"), 1);
+    CHECK_EQ(q.invalid, 1);
+}
+
+/* xorshift32, fixed seed: the same sequences every run. */
+static uint32_t rnd_state = 0x1234567u;
+
+static uint32_t rnd(void)
+{
+    rnd_state ^= rnd_state << 13;
+    rnd_state ^= rnd_state >> 17;
+    rnd_state ^= rnd_state << 5;
+    return rnd_state;
+}
+
+TEST(quad_long_sequences_match_a_reference)
+{
+    input_quad_t q;
+    int run_i;
+
+    /*
+     * The reference is the true position. Runs of one direction, sampled
+     * with gaps of at most one missed state, back to rest at the end of
+     * each run: the decoder must count exactly the true detents. The
+     * first transition of a run is seen, so the direction is known.
+     */
+    for (run_i = 0; run_i < 200; run_i++) {
+        int pos = 0, sum = 0, want, dir, n, k;
+
+        input_quad_init(&q, 4, (int)(run_i & 1), 1, 1);
+        rnd_state += (uint32_t)run_i;
+        for (k = 0; k < 20; k++) {
+            int start = pos;
+
+            dir = (rnd() & 1) ? 1 : -1;
+            n = 1 + (int)(rnd() % 6);           /* detents this run */
+            while (pos != start + dir * 4 * n) {
+                int adv = (rnd() % 3 == 0 && pos != start) ? 2 : 1;
+
+                if ((start + dir * 4 * n - pos) * dir < adv) {
+                    adv = 1;
+                }
+                pos += dir * adv;
+                sum += feed_pos(&q, pos + 2);   /* cw[2] = 11 is the start */
+            }
+        }
+        want = pos / 4;
+        CHECK_EQ(sum, (run_i & 1) ? -want : want);
+        CHECK_EQ(q.acc, 0);
+    }
+}
+
+TEST(quad_bounce_at_rest_counts_once)
+{
+    input_quad_t q;
+
+    input_quad_init(&q, 4, 0, 0, 0);
+    /* Arrive at rest, then A chatters 00 <-> 10 a few times: one detent only. */
+    CHECK_EQ(run(&q, "132"), 0);
+    CHECK_EQ(run(&q, "0"), 1);
+    CHECK_EQ(run(&q, "202020"), 0);
+    CHECK_EQ(q.invalid, 0);
 }
 
 TEST(quad_initial_state)

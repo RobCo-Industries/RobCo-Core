@@ -118,16 +118,28 @@ unsigned input_debounce_samples(unsigned ms, unsigned hz);
 
 typedef struct {
     uint8_t prev;       /* last A/B state, (A << 1) | B */
-    int8_t acc;         /* transitions not yet turned into a detent */
+    int8_t acc;         /* transitions since the last detent */
     uint8_t per_detent; /* transitions per detent: 1, 2 or 4 */
     uint8_t reverse;
-    uint32_t invalid;   /* rejected double transitions */
+    uint8_t rest;       /* the state at init, taken as a detent position */
+    int8_t dir;         /* direction of the last single transition, 0 before one */
+    uint32_t invalid;   /* double transitions: a state was missed */
 } input_quad_t;
 
-/* `per_detent` 1, 2 or 4 (other values become 4). a, b: initial levels. */
+/*
+ * `per_detent` 1, 2 or 4 (other values become 4). a, b: initial levels.
+ * The dial must rest at a detent at init: that state is the rest state.
+ * With 2 per detent its complement is a rest state too.
+ */
 void input_quad_init(input_quad_t *q, unsigned per_detent, int reverse, int a, int b);
 
-/* Feeds one A/B sample. Returns the detent steps completed: -1, 0 or 1. */
+/*
+ * Feeds one A/B sample. Returns the detent steps completed: -1, 0 or 1.
+ * A double transition means a state was missed: it counts as two steps
+ * in the last direction, or nothing before the first single step. On a
+ * rest state the decoder rounds to the nearest detent and starts again,
+ * so a missed state costs at most one step and never shifts the phase.
+ */
 int input_quad_feed(input_quad_t *q, int a, int b);
 
 /* ---- Pure ANSI/VT input parser, src/lib/input_ansi.c ---- */
