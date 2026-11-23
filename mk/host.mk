@@ -185,6 +185,8 @@ $(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
 
 # test_video builds the framebuffer and console drivers in with #include.
 $(HOST_BUILD)/test_video: src/drv/fb.c src/gfx/console.c src/gfx/schemes.c src/gfx/font8x16_fixedsys.c
+# test_audio_stop builds the audio driver and its trace backend in the same way.
+$(HOST_BUILD)/test_audio_stop: src/drv/audio.c src/drv/audio_trace.c
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the

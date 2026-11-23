@@ -51,6 +51,9 @@ TUNE = [(523, 150), (784, 150), (659, 150), (0, 150), (1047, 300), (880, 150), (
 LOOP = [(660, 60), (0, 40), (990, 60)]
 
 TONE_CASES = ["beep", "seq", "tune", "loop", "interrupt"]
+# The trace rule cases, each run RULE_RUNS times in a row.
+RULE_RUNS = 5
+RULE_CASES = ["stop_pcm"] * RULE_RUNS + ["stop_rest"] * RULE_RUNS
 PCM_CASES = ["pcm", "pcm_fast", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick", "pcm_args",
              "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under"]
 
@@ -143,11 +146,13 @@ def check_pcm(vm, c):
     assert events(vm, "pcm_stop")[-1]["busy"] == "0", vm.serial
 
     # Tone, replaced by PCM, replaced by a tone, all with AUDIO_PRIORITY.
+    # Each replacement prints a stop line first.
     marks = c["pcm_swap"]
-    assert [m["op"] for m in marks] == ["tone", "pcm", "stop", "tone", "stop"], marks
-    assert (marks[0]["hz"], marks[3]["hz"]) == ("440", "880"), marks
-    check_pcm_start(marks[1], 8000, 8000, 100)
-    assert int(marks[3]["t_ms"]) - int(marks[1]["t_ms"]) < 1000, marks
+    assert [m["op"] for m in marks] == ["tone", "stop", "pcm", "stop", "tone", "stop"], marks
+    assert (marks[0]["hz"], marks[4]["hz"]) == ("440", "880"), marks
+    assert marks[1]["t_ms"] == marks[2]["t_ms"], marks
+    check_pcm_start(marks[2], 8000, 8000, 100)
+    assert int(marks[4]["t_ms"]) - int(marks[2]["t_ms"]) < 1000, marks
     swap = events(vm, "pcm_swap")[-1]
     assert (int(swap["busy"]), int(swap["prio"])) == (ERR_BUSY, 0), swap
     assert (int(swap["tbusy"]), int(swap["tprio"])) == (ERR_BUSY, 0), swap
@@ -308,7 +313,7 @@ def check_exact(marks, expected):
 
 def check_trace(vm):
     c = cases(vm)
-    assert set(c) == set(TONE_CASES + PCM_CASES), vm.serial
+    assert set(c) == set(TONE_CASES + PCM_CASES + RULE_CASES), vm.serial
     for m in events(vm, "case_end"):
         assert m["ret"] == "0", vm.serial
 
@@ -334,19 +339,65 @@ def check_trace(vm):
     assert got[-1][1] - got[0][1] >= call_floor(700), got
 
     # Interrupt: 440 Hz for 3 s is cut short by 880 Hz with AUDIO_PRIORITY.
+    # The cut prints a stop line on the same tick as the new start.
     marks = c["interrupt"]
     check_ops(marks)
     got = tones(marks)
-    assert [h for h, _ in got] == [440, 880, 0], got
-    assert got[1][1] - got[0][1] >= call_floor(200), got
-    assert got[1][1] - got[0][1] < 3000, got
+    assert [h for h, _ in got] == [440, 0, 880, 0], got
+    assert got[1][1] == got[2][1], got
+    assert got[2][1] - got[0][1] >= call_floor(200), got
+    assert got[2][1] - got[0][1] < 3000, got
     # The sequencer ends the 880 Hz note: its stop stamp is the start stamp + 300.
-    assert got[2][1] - got[1][1] >= 300, got
+    assert got[3][1] - got[2][1] >= 300, got
     inter = events(vm, "interrupt")[-1]
     assert inter["busy"] == "-8" and inter["prio"] == "0", vm.serial
 
     check_pcm(vm, c)
+    check_rule(vm)
     assert not events(vm, "audio_drop"), vm.serial
+
+
+def runs(vm, name):
+    """The audio markers of every run of case `name`, in order."""
+    out = []
+    cur = None
+    for m in vm.markers():
+        if m.get("stage") != "audio":
+            continue
+        if m.get("ev") == "case":
+            cur = [] if m["name"] == name else None
+        elif m.get("ev") == "case_end" and cur is not None:
+            out.append(cur)
+            cur = None
+        elif m.get("ev") == "audio" and cur is not None:
+            cur.append(m)
+    return out
+
+
+def shape(marks):
+    """A trace without its time stamps and counts: what the rule fixes."""
+    keep = ("op", "hz", "rate", "len", "crc")
+    return [tuple((k, m[k]) for k in keep if k in m) for m in marks]
+
+
+def check_rule(vm):
+    """Stop then PCM in one tick, and a stop in a rest: one stop line, the same every run."""
+    got = runs(vm, "stop_pcm")
+    assert len(got) == RULE_RUNS, vm.serial
+    for marks in got:
+        assert [m["op"] for m in marks] == ["tone", "stop", "pcm", "pcm_end"], marks
+        assert marks[0]["hz"] == "440", marks
+        check_pcm_start(marks[2], 8000, 800, 100)
+    assert all(shape(m) == shape(got[0]) for m in got), got
+
+    got = runs(vm, "stop_rest")
+    assert len(got) == RULE_RUNS, vm.serial
+    for marks in got:
+        # The tone, the rest, then the stop the call made in the rest.
+        assert [(m["op"], m["hz"]) for m in marks] == \
+            [("tone", "440"), ("stop", "0"), ("stop", "0")], marks
+        assert int(marks[2]["t_ms"]) - int(marks[1]["t_ms"]) < 500, marks
+    assert all(shape(m) == shape(got[0]) for m in got), got
 
 
 def check_common(vm):
@@ -396,7 +447,7 @@ def test_audio_forced_pwm(board, example_image):
             assert (backend["name"], backend["err"]) == ("pwm", "0"), vm.serial
             assert not events(vm, "audio"), vm.serial
             ends = events(vm, "case_end")
-            assert [m["name"] for m in ends] == TONE_CASES + PCM_CASES, vm.serial
+            assert [m["name"] for m in ends] == TONE_CASES + PCM_CASES + RULE_CASES, vm.serial
             assert all(m["ret"] == "0" for m in ends), vm.serial
             # The PCM engine runs on PWM too: stop, swap, loop and arguments behave the same.
             assert events(vm, "pcm_stop")[-1]["busy"] == "0", vm.serial
