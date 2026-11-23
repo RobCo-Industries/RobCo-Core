@@ -182,6 +182,9 @@ $(HOST_RIMG_DIR)/boot.img: $(HOST_RIMG_PAYLOAD) tools/rimg.py
 	$(PYTHON) tools/rimg.py verify $@ >/dev/null
 
 $(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
+
+# test_gpiox.c includes the driver source to run it on a fake bus.
+$(HOST_BUILD)/test_gpiox: src/drv/gpiox_pca9554.c
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the
