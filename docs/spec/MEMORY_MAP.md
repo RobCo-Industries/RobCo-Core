@@ -18,7 +18,7 @@ Memory attributes when an image turns the MMU on with `mmu_init()` and `mmu_enab
 | `mem_base` to `mem_base + mem_size`, ARM RAM from the mailbox | Normal, write-back write-allocate | Yes |
 | Peripheral base to base + `0x00FFFFFF` | Shareable device | Never |
 | `0x40000000`-`0x400FFFFF` on BCM2836 and BCM2837, the local peripherals | Shareable device | Never |
-| The framebuffer, once `fb_init()` succeeded | Normal, non-cacheable | Never |
+| The framebuffer, once `fb_init()` or `fb_adopt()` succeeded | Normal, non-cacheable | Never |
 | Every other address | Unmapped. Any access faults. | No |
 
 Address `0` is RAM, so a NULL read does not fault. The framebuffer type is pending hardware validation. See [the MMU section](../guide/api/memory.md#mmu-mmuh).

@@ -62,7 +62,7 @@ The Pi firmware has its own rule, and it runs before any RobCo code. It loads th
 
 ### BOOT.CFG
 
-`/ROBCO/BOOT.CFG` is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), which parses this example as it stands, section names with a space included. `tests/host/test_ini.c` reads the example from this file. This format is a draft.
+`/ROBCO/BOOT.CFG` is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), which parses this example as it stands, section names with a space included. `tests/host/test_ini.c` reads the example from this file. MFBootAgent reads `[boot]` and the `[entry NAME]` sections. RETROS-BIOS reads `[bios]`.
 
 ```
 [boot]
@@ -80,7 +80,79 @@ path = /ROBCO/MAINT.SYS
 path = /ROBCO/DIAG.SYS
 ```
 
-`timeout` is in seconds. If the file is missing or does not parse, MFBootAgent shows the menu with one entry, `/ROBCO/UOS.SYS`, and no timeout.
+#### The `[boot]` and `[entry NAME]` sections
+
+| Section | Key | Value | Default |
+|---|---|---|---|
+| `[boot]` | `default` | The name of an entry | The first entry |
+| `[boot]` | `timeout` | Seconds, 0 to 99 | None: the menu waits for a key |
+| `[entry NAME]` | `path` | Absolute 8.3 path of the image, as the rules below state | None: the entry is dropped |
+| `[entry NAME]` | `cmdline` | Up to 127 printable ASCII characters, copied to `cmdline` in the boot info | Empty |
+
+| Limit | Value |
+|---|---|
+| Entries | 8 usable entries. A dropped section does not take a slot. |
+| Entry name | 1 to 15 characters, each a letter, a digit, `_` or `-` |
+| `path` | 63 characters, so it fits `boot_path` with its NUL. At most 8 components, each 8.3. |
+| `cmdline` | 127 characters, so it fits `cmdline` with its NUL. The INI reader caps a value at 127 bytes, so a longer line makes the whole file bad. |
+| FiRules:
+
+- A reader uses `ini_parse_sections()`, not `ini_parse()`. `ini_parse()` calls its handler only for keys, so it cannot see a section with no keys. Then `[entry UOS]` with no keys, followed by a second `[entry UOS]` with a path, would look like one section. `ini_parse_sections()` reports every section header in file order, empty ones and repeats included, before the keys under it.
+- The handlers run for each line before the parse reaches a bad line. So the reader acts on the sections and keys only after the call returns `0`.
+- Section names, key names and entry names are case-insensitive. The menu shows an entry name as written. Values keep their case.
+- An entry header is `entry`, one or more spaces or tabs, then the name. `ini.h` trims the spaces around the whole header.
+- Within one section, a key given twice takes its last value. `[boot]` given twice acts as one section.
+- The reader takes each `[entry ...]` header in file order and gives it exactly one result, in this order of tests:
+  1. `[entry]` with no name, or a name that breaks the limit: the section is dropped and counts as `bad`.
+  2. A name that an earlier entry header used: the section is dropped and counts as `dup`. The earlier header keeps the name, even when it was dropped for a bad name rule or a missing or bad value. So the first of two headers with the same name always wins.
+  3. No `path` key, or a `path` or `cmdline` that breaks the rules below: the section is dropped and counts as `bad`.
+  4. The 8 slots are full: the section counts as `ignored`.
+  5. Otherwise the entry takes the next slot. The menu lists the slots in file order.
+- The `entries` key of the `config` marker is the number of filled slots. `dup` counts only step 2. `bad` counts steps 1 and 3, plus a bad `timeout`. The keys of a dropped or ignored section count nowhere else.
+ounts as `bad`. A bad `path` value counts as `bad` too.
+- The rules below apply to the value after INI decoding, so a `\n` escape in a quoted value is a newline byte.
+- A usable `path` follows the [boot partition name rule](./IMAGE_FORMAT.md#files-on-the-sd-card): `/`, then 1 to 8 components separated by `/`, 63 characters at most. Each component is a name of 1 to 8 characters, then optionally a dot and an extension of 1 to 3 characters. Each character is an ASCII letter, a digit, `_`, `-` or `~`. FAT allows more characters, such as `$` and `!`. This set is a deliberate subset. An empty component, a `/` at the end, `.` or `..` breaks the rule. A path that breaks the rule makes the entry dropped, counted as `bad`.
+- Letters may be written in either case. FAT names are case-insensitive, so the stage upper-cases the path, then compares and stores it in that form. `boot_path` in the boot info and the `path` key of the markers hold the upper-case path. `path = /robco/uos.sys` loads `/ROBCO/UOS.SYS`.
+- A usable `cmdline` holds only printable ASCII, 0x20 to 0x7E. A control byte, a byte above 0x7E or a newline from a `\n` escape makes it bad. The whole entry is then dropped and counts as `bad`. The stage does not boot the entry with an empty command line, because an operating image must not start with a changed command line.
+- `timeout` follows the number rule of `delay_ms`: one or more ASCII digits and nothing else. A value above 99 becomes 99 and counts as `clamped`. A bad value counts as `bad`, and the menu waits as with no key.
+- `timeout = 0` shows the menu, then boots the default entry at once. With no `timeout` key the menu waits for a key.
+- A `default` that names no entry in a slot, or no `default` key, means the first slot. A `default` that names a dropped or ignored section counts the same way.
+- Unknown keys, keys before the first section and keys in unknown sections count as `unknown`. MFBootAgent skips `[bios]` without a count.
+- A line that does not parse makes the whole file bad. A file that parses but leaves no entry with a usable path is bad too, also an empty file.
+- A missing file, a read error or a bad file gives the menu with one entry, `UOS` at `/ROBCO/UOS.SYS`, and no timeout. The `config` marker reports each case.
+
+#### Examples
+
+An empty section takes its name first:
+
+```
+[entry UOS]
+
+[entry UOS]
+path = /ROBCO/UOS.SYS
+
+[entry MAINT]
+path = /ROBCO/MAINT.SYS
+```
+
+The first `[entry UOS]` has no `path`. It counts as `bad` and keeps the name `UOS`. The second counts as `dup`, although it has a path. The menu shows one entry, `MAINT`. The `config` marker has `entries=1 dup=1 bad=1`.
+
+Dropped sections do not take slots:
+
+```
+[entry E1]
+[entry E2]
+[entry E3]
+[entry E4]
+[entry E5]
+[entry E6]
+[entry E7]
+[entry E8]
+[entry E9]
+path = /ROBCO/UOS.SYS
+```
+
+`E1` to `E8` have no `path`. Each counts as `bad` and takes no slot. `E9` takes the first slot. The menu shows one entry, `E9`. The `config` marker has `entries=1 ignored=0 bad=8`.
 
 #### The `[bios]` section
 
@@ -299,7 +371,7 @@ A stage passes on the state it did not set up itself. Hardware such as a framebu
 | `uart_type`, `uart_clock`, `uart_baud`, caps bit 1 | The stage configured the PL011 |
 | caps bit 2 | The stage initialised the mini UART |
 | caps bit 3 | The stage initialised the SD card |
-| `fb_*`, caps bit 0 | The stage called `fb_init()` |
+| `fb_*`, caps bit 0 | The stage called `fb_init()` or `fb_adopt()` with success |
 | `con_cols`, `con_rows`, `con_cx`, `con_cy`, `con_scheme` | The stage's console is active |
 | `boot_dev`, `boot_part_lba`, `boot_flags`, `boot_path`, `cmdline` | Cold boot only |
 | Other caps bits | Never. They are reserved and 0. |
@@ -354,15 +426,16 @@ A marker may carry more keys than the table below lists, and a stage may print e
 
 | Event | Keys | Meaning |
 |---|---|---|
-| `boot` | `midr soc base board_rev mem entry_mode` | First marker of every image. `entry_mode` is the CPU mode at entry, such as `svc` or `hyp`. |
+| `boot` | `midr soc base board_rev mem entry_mode` | First marker of every image. `entry_mode` is the CPU mode at entry, such as `svc` or `hyp`. RETROS-BIOS and MFBootAgent add `version`, their own version. |
 | `handoff` | `trusted=0\|1` | Result of the trust rule. Not printed by first stages. |
-| `mount` | `lba blocks` | The stage mounted the boot volume that holds the next image. `lba` is 0 for a card with no partition table. |
+| `mount` | `lba blocks` | The stage mounted the boot volume that holds the next image. `lba` is 0 for a card with no partition table. RETROS-BIOS and Pip-OS add `part`, the MBR slot 0 to 3 or `whole` for a card with no partition table. |
+| `card` | `rc`, then `sd`, `part` or `fs why` | Pip-OS: the result of the card mount. `rc` is `ok`, `nocard`, `nopart` or `nomount`. |
 | `load` | `path size crc addr name` | An image loaded and passed every validation step. `size` is `file_size`, `crc` the header CRC, `addr` the load address, `name` the header name. Without `path`, the image was already in its slot and the stage only validated it. |
 | `fallback` | `path from to reason` | The loader moves to the backup file `path`, the same as `to`. `from` is the primary file and `reason` the code it failed with. |
 | `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md), or `io` when the card or the mount failed. `path` names the file the attempt was for. Other failures use their own `code`, such as `mmu`, with no `path`. On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |
 | `jump` | `entry` | Last line before entering the next stage at `entry` |
 | `ready` | | Stage reached its main screen or prompt |
-| `shell` | `reason` | Stage entered its emergency shell. `reason` is the `code` of the error that caused it. |
+| `shell` | `reason` | Stage entered its emergency shell. `reason` is the `code` of the error that caused it, or why the shell was asked for. A first stage adds `available`: `1` when the shell opens, `0` when it cannot run. See [First-stage emergency shell](#first-stage-emergency-shell). |
 | `halt` | | The stage stops on purpose |
 | `exception` | `type pc lr spsr dfsr dfar` | CPU exception. `type` is `undef`, `svc`, `prefetch_abort`, `data_abort`, `irq`, `fiq` or `reset`. The stage halts after it. |
 | `panic` | `msg` | Fatal software error. `msg` uses `_` for spaces. |
@@ -382,20 +455,33 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `shell_request` | `source` | First stage: a key came in the key window, from `console` or `maint` |
 | `key_window_end` | `key` | First stage: the key window ended. `key=1` when a key came. |
 | `bootinfo` | `flags caps dev part_lba fdt_size` | First stage: the boot info as handed over, right before `jump` |
-| `idle` | | First stage: the boot stopped and the stage waits in its idle loop |
-| `reboot` | | First stage: the maintenance port asked for a reboot |
+| `idle` | | First and second stage: the boot stopped and the stage waits in its idle loop |
+| `reboot` | | First stage: the maintenance port or the shell's reboot command asked for a reboot |
+| `shell_cmd` | `name rc` | First stage: one shell line ended. `name` is the command in lower case, or `unknown`. `rc` is `0`, or a word that says why the command failed. |
+| `diag` | `name result`, then test keys | First stage: one diagnostic ran. `result` is `ok`, `fail`, `absent` or `skipped`. |
+| `diag_done` | `ok fail absent skipped` | First stage: the run of every diagnostic ended, with the count of each result |
+| `video_pattern` | `width height` | First stage: the video diagnostic drew its test pattern |
+| `fault_hook` | `name` | First stage, test builds only: the image carries a fault hook for tests. A shipped image never prints it. |
+| `screen` | `fb console kept unknown scheme` | Second stage: the screen set-up. `kept=1` when the text of the previous stage stays on screen. |
+| `selfcheck` | `rc size` | Second stage: the result of `rimg_self_check()`. Information only. |
+| `entries` | `count default timeout` | Second stage: the menu in use. `timeout` is `none` when the menu waits for a key. |
+| `countdown` | `state`, then `seconds` | Second stage: `state=start` with `seconds` when the menu shows with a timeout above 0, `state=stopped` when a key stops it |
+| `select` | `index name` | Second stage: the selection moved. `index` counts from 1. |
+| `choose` | `index name path via` | Second stage: an entry is to boot. `via` is `key` or `timeout`. |
 
 | Stage | Must emit |
 |---|---|
-| `bios` | `boot`, `init`, `input`, `post`, `post_done`, `mount`, `config`, `settings`, `beep`, `key_window`, `key_window_end`, `load`, `fallback`, `error`, `bootinfo`, `jump`, `shell`, `idle` |
-| `bootagent` | `boot`, `handoff`, `ready` when the menu shows, `load`, `error`, `jump` |
+| `bios` | `boot`, `init`, `input`, `post`, `post_done`, `mount`, `config`, `settings`, `beep`, `key_window`, `key_window_end`, `load`, `fallback`, `error`, `bootinfo`, `jump`, `shell`, `shell_cmd`, `diag`, `diag_done`, `idle` |
+| `bootagent` | `boot`, `handoff`, `input`, `screen`, `selfcheck`, `mount`, `config`, `entries`, `ready` when the menu shows, `choose`, `load`, `error`, `bootinfo`, `jump`, `idle` |
 | `uos`, `maint`, `diag` | `boot`, `handoff`, `ready` |
 | `pipos` | `boot`, `load`, `error`, `jump` for the ROM, `rom_exit`, `rom_kill`, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
 | `deitrix` | `boot`, `ready` |
 
 All stages emit `exception` and `panic` when those happen. Deitrix runs in USR mode, so it prints through the `log` syscall.
 
-The first-stage events, from `init` to `reboot` in the table, are RETROS-BIOS's. Their keys are a draft.
+The first-stage events, from `init` to `fault_hook` in the table, are RETROS-BIOS's. Their keys are a draft.
+
+The second stage also prints `input`, `config`, `bootinfo` and `reboot`. `input` has the keys of the first stage. `config` has `result path`, then `entries ignored dup unknown bad clamped default_found`, or `why`. `why` is `read` with `rc`, `syntax` with `line`, or `empty`, a file with no usable entry. `bootinfo` adds `path cmdline_len scheme cx cy` to the first-stage keys. `reboot` has `source`, `key` or `maint`. `error` adds `name`, the entry name, to a load error, and `what` with `rc` to `code=io`.
 
 `key_window` is always followed by `key_window_end`, also with `delay_ms = 0`. `shell_request` comes between them when a key came. `post` comes once per probe, in probe order, on every path, and `post_done` follows the last one.
 
@@ -414,7 +500,7 @@ RETROS-BIOS runs eight probes in this order. This order is a draft.
 
 | Probe | Passes when | `absent` when | Stops the boot |
 |---|---|---|---|
-| `memory` | The memory test of 256 KiB at `0x00400000` finds no fault | Never | Yes, and no later probe runs |
+| `memory` | The memory test of 256 KiB at `0x00400000` finds no fault | Never | Yes. Only the `timer` probe still runs. |
 | `video` | The framebuffer and the console start | Never | No |
 | `timer` | The system timer changes within a million reads | Never | Yes, and no later probe runs |
 | `sd` | `sd_init()` succeeds and block 0 reads | No card answers | Yes, also when absent |
@@ -423,7 +509,7 @@ RETROS-BIOS runs eight probes in this order. This order is a draft.
 | `rtc` | A DS1307 or DS3231 answers and its time reads | No chip answers | No |
 | `audio` | `audio_init()` returns 0 | `audio_init()` returns `AUDIO_ERR_NO_PWM` or `AUDIO_ERR_PIN` | No |
 
-Memory runs first because everything after it needs memory. Video runs before the timer because the framebuffer and the mailbox do not wait on the timer. The timer runs before every probe that waits on it. After a failed memory test or a stopped timer, every later probe is `skipped`. A failed memory test gives `code=memtest`, a stopped timer `code=timer`, and a failed `sd` or `fat` probe `code=io` with `what=sd` or `what=fat`.
+Memory runs first because everything after it needs memory. Video runs before the timer because the framebuffer and the mailbox do not wait on the timer. The timer runs before every probe that waits on it. After a stopped timer, every later probe is `skipped` with `after=timer`. After a failed memory test, every later probe but `timer` is `skipped` with `after=memory`. The timer probe still runs, because the shell may open after a failed memory test and the shell waits on the timer. A failed memory test gives `code=memtest`, a stopped timer `code=timer`, and a failed `sd` or `fat` probe `code=io` with `what=sd` or `what=fat`.
 
 ## Failure behaviour
 
@@ -432,9 +518,11 @@ Memory runs first because everything after it needs memory. Video runs before th
 | RETROS-BIOS | `MFBOOT.SYS` fails any step | `ev=error`, `ev=fallback`, then try `MFBOOT.BAK` |
 | RETROS-BIOS | `MFBOOT.BAK` also fails | `ev=error`, then the emergency shell |
 | RETROS-BIOS | SD card or FAT mount fails | `ev=error code=io`, then the emergency shell |
-| RETROS-BIOS | The memory test fails or the timer does not advance | `ev=error code=memtest` or `code=timer`, then the halted state |
-| MFBootAgent | The chosen entry fails | `ev=error`. Shows the error in the menu and stays in the menu. |
-| MFBootAgent | `BOOT.CFG` missing or bad | Menu with the default entry only |
+| RETROS-BIOS | The memory test fails and the timer passed | `ev=error code=memtest`, a warning, then the emergency shell |
+| RETROS-BIOS | The timer does not advance | `ev=error code=timer` or `code=memtest`, then the halted state |
+| MFBootAgent | The chosen entry fails | `ev=error`. Shows the error under the menu and stays in the menu. The countdown does not start again. |
+| MFBootAgent | `BOOT.CFG` missing, bad or with no usable entry | Menu with the default entry only |
+| MFBootAgent | No card answers or no volume mounts | `ev=error code=io` with `what=sd` or `what=fat`, `BOOT HALTED` on screen, then `ev=idle`. The maintenance port keeps answering. |
 | UOS | Boot info not trusted | Cold-boots and runs |
 | Pip-OS | `ROM1.ROM` fails any step | `ev=error`, then the emergency shell |
 | Pip-OS | A holotape fails any step | `ev=error`. The `launch` syscall returns an error to Deitrix. |
@@ -442,8 +530,113 @@ Memory runs first because everything after it needs memory. Video runs before th
 | Pip-OS | A holotape crashes | `ev=holo_kill`. Control returns to Deitrix. |
 | Any | CPU exception in a stage | `ev=exception`, then halt |
 
-Until RETROS-BIOS has its emergency shell, every stop puts it in the halted state. It shows the error and `BOOT HALTED`, prints `ev=shell` with `available=0` and then `ev=idle`, and waits. It never jumps and never reboots by itself, so there is no reboot loop. The maintenance port keeps answering, and its `reboot` command restarts the board through the watchdog. In QEMU the maintenance port is the mini UART on the second serial port. On hardware the mini UART reaches no pin. This state is a draft.
-
-The emergency shell runs on the PL011 and on the screen console. It accepts at least `help`, `info` and `reboot`. `info` prints the boot info fields. `reboot` uses the watchdog.
+After any of these stops RETROS-BIOS never jumps and never reboots by itself, so there is no reboot loop. [First-stage emergency shell](#first-stage-emergency-shell) says what it does instead.
 
 Each real stage provides its own emergency shell. RobCo-Core has none: `loader_load_fallback()` returns the result and prints nothing, and the stage decides what to print and where to go. `examples/chain1`, built with `CHAIN1_SD`, follows the RETROS-BIOS rows above for its markers. Where RETROS-BIOS would enter its shell, it prints `ev=shell` with the reason, then `ev=halt`, and halts.
+
+## First-stage emergency shell
+
+RETROS-BIOS has an emergency shell on the PL011 and on the screen console. This section fixes when it opens, its markers and the maintenance port. The command set, such as `HELP`, `INFO`, `POST`, `DIR`, `BOOT`, `CONTINUE`, `DIAG` and `REBOOT`, is the BIOS's own business: see the RETROS-BIOS user manual. This section is a draft.
+
+### When it opens
+
+| Cause | `shell reason=` | Result |
+|---|---|---|
+| A key in the key window, on the console or the maintenance port | `key` | The shell opens. The boot waits in it. |
+| `shell` on the maintenance port before the key window ends | `maint` | The shell opens at the end of the window, also with `delay_ms = 0` |
+| A load error, or `code=io` from the `sd` or `fat` probe | The error `code` | The shell opens under the error lines |
+| A failed memory test with a timer that passed | `memtest` | The stage shows a warning that results may be wrong, then opens the shell |
+| A stopped timer | `timer` | No shell. The halted state. |
+| A failed memory test and a stopped timer | `memtest` | No shell. The halted state. |
+
+The shell needs the system timer: input waits, the SD card, the audio and most diagnostics wait on it. So the shell opens only when the `timer` probe passed. The marker carries `available=1` when the shell opens and `available=0` when it cannot.
+
+In the halted state the stage shows the first error and `BOOT HALTED`, prints `shell available=0` and then `idle`, and waits. Its idle loop polls the maintenance port without waiting on the timer. The `reboot` command restarts the board through the watchdog.
+
+### Leaving it
+
+- `CONTINUE` goes on with the normal boot. It works only when a key or the maintenance port opened the shell. After a boot error there is nothing to continue, and it is refused.
+- `CONTINUE` follows the rule of the power-on boot. When the last self test had a fatal result, a failed `memory`, `timer`, `sd` or `fat` probe, `CONTINUE` is refused and the shell stays open. This also holds after a `POST` run from the shell.
+- `BOOT` loads and starts the second stage. It is the operator's choice, so it stays allowed after a fatal self test and after a boot error. After a failed memory test it shows the warning first. It uses the same load and handoff steps and markers as the boot. `BOOT` with a path loads only that file, so no `fallback` comes.
+- `REBOOT` restarts the board through the watchdog.
+
+A `POST` run from the shell applies the same rule as the boot. A stopped timer closes the shell and enters the halted state. A failed memory test with a timer that passed shows the warning, and the shell stays open.
+
+### Shell markers
+
+- The shell prints `shell` once, when it opens.
+- Every line that is not blank ends with one `shell_cmd`. A `BOOT` that starts a second stage ends with `jump` instead. `REBOOT` prints its `shell_cmd`, then `reboot`.
+- Markers a command prints, such as `post`, `diag`, `error` or `load`, come before its `shell_cmd`.
+- `rc` in `shell_cmd` is `0`, or one of `usage`, `unknown`, `nofile`, `isdir`, `notdir`, `novol`, `io`, `outside`, `device`, `abort`, `refused`, `fail`, or the load error code for `BOOT`, or the self test error code for a refused `CONTINUE`.
+- The diagnostics print one `diag` per test. `name` is `mem`, `sd`, `video`, `audio`, `timer`, `rng`, `rtc` or `input`. A run of every test ends with `diag_done`. The other keys of each test are the BIOS's own.
+
+### Maintenance port
+
+The maintenance port answers in every phase, also in the halted state. In QEMU it is the mini UART on the second serial port. On hardware the mini UART reaches no pin. Each line gets `ok` or `err <reason>`. The library's built-in script commands, such as `key` and `char`, work too.
+
+| Command | Effect |
+|---|---|
+| `state` | One line: `phase=<init\|post\|keys\|load\|halted\|shell> error=<code\|none> shell_requested=<0\|1> post=<ok\|fail>` |
+| `dump` | The screen text. `err no screen` without a framebuffer. |
+| `shell` | Asks for the shell at the end of the key window. Refused when the shell is open, past the key window, and in the halted state. |
+| `paging on`, `paging off` | Turns the shell's pager on or off. It is on at boot. Tests turn it off. |
+| `reboot` | Prints `reboot` and restarts the board through the watchdog |
+
+The shell reads its lines from the PL011 console only. A script drives it by writing the command line to the console.
+
+## Second stage
+
+MFBootAgent is the second stage of the terminal chain. This section fixes what it does besides the menu.
+
+### Screen
+
+MFBootAgent keeps the screen of the previous stage, as [Boot info](#boot-info) states. It passes the inherited fields to `fb_adopt()`, through `bootinfo_fb_info()`, and to `console_adopt()`. It does not call `fb_init()` first. It calls `fb_init()` and `console_init()` only when the block is not trusted, has caps bit 0 clear, or either adopt call fails. The `screen` marker reports `kept=1` when both adopt calls succeed.
+
+### Boot volume markers
+
+MFBootAgent passes `/ROBCO/BOOT.CFG` and `/ROBCO/UOS.SYS` to `fs_mount_boot()`. The first volume that holds either file is the boot volume. It does not use `boot_part_lba` from the boot info to choose: every stage applies the [boot volume](#boot-volume) rule itself.
+
+### Loading an entry
+
+MFBootAgent loads the chosen entry into the slot at `0x00400000` and expects magic `BOOT` with ABI major 2. It loads only operating images: subtype 0 UOS, 2 maintenance or 3 diagnostics.
+
+MFBootAgent checks the subtype itself. It runs this check at step 4, the bounds step of [IMAGE_FORMAT.md](./IMAGE_FORMAT.md), after the header checks of steps 1 to 3 and before the ABI and CRC steps. It trusts nothing else in the image before this check passes. Any subtype other than 0, 2 or 3 fails with `code=bounds`, a boot agent included. The code is `bounds` because the image is not allowed in this slot. The screen says it is not an operating image.
+
+The library's `loader_load()` does not make this check for the caller. With a caller slot it checks only that the subtype has some slot, then checks the bounds against the caller's slot. So a `BOOT` image with subtype 4 to 7, linked at `0x00400000`, passes `loader_load()`. A second stage that only calls `loader_load()` does not meet this rule.
+
+A failed load prints `error` and shows the error under the menu. The menu stays, so the user can pick another entry or reboot. The stage never jumps to an image that failed a step and never reboots by itself.
+
+### Boot info
+
+Before the jump MFBootAgent unmounts the volume and calls `bootinfo_build()` with stage id 2. Then it writes:
+
+| Field | Value |
+|---|---|
+| `boot_dev` | 1, SD on EMMC |
+| `boot_part_lba` | First block of its boot volume |
+| `boot_path` | `path` of the chosen entry |
+| `cmdline` | `cmdline` of the chosen entry, or empty |
+| `boot_flags` | Bit 0 cleared, since it loaded no fallback file. The other bits stay as received. |
+
+It then calls `bootinfo_seal()` and jumps with r2 set to the firmware blob copy, or 0 when there is none.
+
+## Third-stage markers
+
+UOS prints its markers as `stage=uos`. Its design reserves these events. They are being implemented, so their keys may still change.
+
+| Event | Keys | Meaning |
+|---|---|---|
+| `boot` | As in [Events](#events) | First marker |
+| `handoff` | `trusted` | Result of the trust rule |
+| `mount` | As in [Events](#events) | The boot volume mounted |
+| `config` | | UOS read its configuration |
+| `uaf` | | UOS read its user file |
+| `login` | `user result` | A login attempt ended |
+| `lockout` | | Too many failed logins locked the terminal |
+| `cmd` | `verb rc` | A command ended. One after every command. |
+| `tui` | `menu sel` | The menu screen changed |
+| `hack` | Event details | A step of the hacking minigame |
+| `dev` | `name state` | A device changed state |
+| `holo` | | A holotape event |
+| `panic` | `msg` | As in [Events](#events) |
+| `halt` | | UOS stops on purpose |
