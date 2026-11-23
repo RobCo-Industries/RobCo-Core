@@ -22,6 +22,7 @@ Init order: after step 10 of the [initialisation order](../API.md#initialisation
 | `AUDIO_ERR_FULL` | `-10` | The tune has more notes than the buffer |
 | `AUDIO_ERR_STATE` | `-11` | The call is only allowed before `audio_init()` |
 | `AUDIO_ERR_PIN` | `-12` | `audio_init()` could not switch a pin to its PWM function |
+| `AUDIO_ERR_TIMER` | `-13` | The system timer does not advance |
 | `AUDIO_HZ_MIN`, `AUDIO_HZ_MAX` | `20u`, `20000u` | Accepted tone range. `0` is a rest. |
 | `AUDIO_PCM_RATE_MIN`, `AUDIO_PCM_RATE_MAX` | `4000u`, `22050u` | Accepted PCM sample rate |
 | `AUDIO_PCM_LEN_MAX` | `0x7fffffffu` | Longest PCM buffer in bytes |
@@ -92,6 +93,7 @@ Checks the order, registers the tick callback and picks a backend. Returns `0` o
 | `irq_init()` has run | `AUDIO_ERR_NO_IRQ` |
 | CPU IRQs are enabled | `AUDIO_ERR_NO_TICK` |
 | `tick_count()` moves within 1.1 s of the system timer | `AUDIO_ERR_NO_TICK`. At `TICK_HZ_MIN` the wait can take a second. |
+| The system timer changes within a million reads during that wait | `AUDIO_ERR_TIMER`. Without this bound a stopped timer would hang the wait. |
 | A tick slot is free | `AUDIO_ERR_TICK_FULL` |
 
 A failed check changes nothing, so you can retry. A call after a backend is installed returns `0`. `audio_init()` also registers the `IRQ_TIMER3` handler for PCM. If another handler holds it, `audio_init()` still succeeds and `audio_play_pcm()` returns `AUDIO_ERR_NO_IRQ`.

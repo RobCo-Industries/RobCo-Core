@@ -70,7 +70,7 @@ The PL011 is the console on every board.
 | FIFO | Enabled |
 | Clock | From mailbox tag `0x00030002`, clock id 2 |
 
-The driver muxes GPIO14/15 itself. It does not rely on the firmware. On BCM2835 to BCM2837 it also clears the pulls with the GPPUD and GPPUDCLK0 sequence.
+The driver muxes GPIO14/15 itself. It does not rely on the firmware. On BCM2835 to BCM2837 it also clears the pulls with the GPPUD and GPPUDCLK0 sequence. The waits in that sequence count loop iterations and do not read the system timer, so the console comes up even when the timer is stopped.
 
 The driver computes the divisor from the mailbox clock. It never hardcodes a clock. QEMU reports 3 MHz. Current firmware reports 48 MHz.
 

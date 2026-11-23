@@ -15,6 +15,27 @@ static uint32_t st_base(void)
     return board_get()->periph_base + ST_OFFSET;
 }
 
+#if defined(ROBCO_FAULT_TIMER_STOPPED) && ROBCO_FAULT_TIMER_STOPPED
+/*
+ * Test builds only: CLO and CHI read this constant from the start, as a
+ * counter that never runs. The shipped library has no such symbol;
+ * tests/target/test_timer_stopped.py checks that with nm.
+ */
+/* Far from the real counter, so a compare channel set from it never matches in a test. */
+volatile const uint32_t robco_fault_timer_stopped = 0xc0000000u;
+
+static uint32_t st_count(uint32_t reg)
+{
+    (void)mmio_read(reg);
+    return reg == st_base() + ST_CHI ? 0u : robco_fault_timer_stopped;
+}
+#else
+static inline uint32_t st_count(uint32_t reg)
+{
+    return mmio_read(reg);
+}
+#endif
+
 uint64_t timer_now_us(void)
 {
     uint32_t base = st_base();
@@ -23,9 +44,9 @@ uint64_t timer_now_us(void)
 
     /* CLO can wrap between the two reads: retry until CHI is stable. */
     do {
-        hi = mmio_read(base + ST_CHI);
-        lo = mmio_read(base + ST_CLO);
-    } while (mmio_read(base + ST_CHI) != hi);
+        hi = st_count(base + ST_CHI);
+        lo = st_count(base + ST_CLO);
+    } while (st_count(base + ST_CHI) != hi);
     return ((uint64_t)hi << 32) | lo;
 }
 
@@ -36,7 +57,7 @@ uint32_t timer_now_ms(void)
 
 uint32_t timer_now_lo(void)
 {
-    return mmio_read(st_base() + ST_CLO);
+    return st_count(st_base() + ST_CLO);
 }
 
 /*

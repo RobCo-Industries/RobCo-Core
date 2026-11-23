@@ -22,6 +22,37 @@ static const char *mode_name(uint32_t mode)
     }
 }
 
+#if defined(HELLO_DEAD_TIMER) && HELLO_DEAD_TIMER
+#include <robco/audio.h>
+#include <robco/irq.h>
+#include <robco/tick.h>
+#include <robco/timer.h>
+
+/* Reads of the system timer with no change before it counts as stopped. */
+#define TIMER_POLLS 1000000u
+
+/*
+ * Built with ROBCO_FAULT_TIMER_STOPPED, the library reads a counter that
+ * never moves. The image must still print, find the timer stopped, get an
+ * error from audio_init() instead of hanging, and reach ev=ready.
+ */
+static void dead_timer(void)
+{
+    uint32_t t0 = timer_now_lo();
+    uint32_t i;
+    int tick;
+
+    k_printf("@RC stage=hello ev=fault_hook name=timer_stopped\n");
+    for (i = 0; i < TIMER_POLLS && timer_now_lo() == t0; i++) {
+    }
+    k_printf("@RC stage=hello ev=timer running=%d\n", i < TIMER_POLLS);
+    irq_init();
+    tick = tick_init(100);
+    irq_cpu_enable();
+    k_printf("@RC stage=hello ev=audio tick=%d rc=%d\n", tick, audio_init());
+}
+#endif
+
 #if defined(HELLO_PRINTF) && HELLO_PRINTF
 /*
  * Extreme values for each integer conversion, with width, '-', '0' and a
@@ -72,6 +103,9 @@ void robco_main(void)
              (unsigned)b->midr, b->soc_name, (unsigned)b->periph_base,
              (unsigned)b->board_rev, (unsigned)b->mem_size,
              mode_name(robco_boot_args()->entry_mode));
+#if defined(HELLO_DEAD_TIMER) && HELLO_DEAD_TIMER
+    dead_timer();
+#endif
 
     /* PWM aborts on QEMU raspi0/1ap; GPFSEL0 exists everywhere. */
     pwm = mmio_probe(b->periph_base + 0x20c000, &value);

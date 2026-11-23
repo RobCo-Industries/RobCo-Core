@@ -24,6 +24,7 @@
 #define AUDIO_ERR_FULL      (-10)   /* tune has more notes than the buffer */
 #define AUDIO_ERR_STATE     (-11)   /* call not allowed after audio_init() */
 #define AUDIO_ERR_PIN       (-12)   /* a PWM pin did not take its function; trace runs instead */
+#define AUDIO_ERR_TIMER     (-13)   /* the system timer does not advance */
 
 /* Audible range. A step with hz 0 is a rest. */
 #define AUDIO_HZ_MIN        20u
@@ -94,6 +95,11 @@ void audio_get_pins(int *pin0, unsigned *fn0, int *pin1, unsigned *fn1);
  * returns AUDIO_ERR_NO_PWM. When a pin cannot be switched to its PWM
  * function, it returns AUDIO_ERR_PIN. Both still install the trace backend.
  * A forced PWM whose registers ignore writes is used anyway and returns 0.
+ *
+ * Needs a running system timer. When the timer does not advance it
+ * returns AUDIO_ERR_TIMER after a million reads that see no change,
+ * instead of waiting forever. Tones and PCM need the timer too: without
+ * it the tick and the PCM compare never fire, so nothing plays.
  */
 int audio_init(void);
 

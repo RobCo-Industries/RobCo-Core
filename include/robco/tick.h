@@ -24,6 +24,10 @@
  * Returns 0 or a TICK_ERR_* code. A failed call changes nothing, so it
  * can be retried, for example after irq_init(). A call while the tick runs
  * returns 0 for the same rate and TICK_ERR_RUNNING for another one.
+ *
+ * Needs a running system timer. When the timer does not advance it still
+ * returns 0 at once, but no tick ever comes: tick_count() stays 0 and
+ * tick callbacks never run.
  */
 int tick_init(uint32_t hz);
 

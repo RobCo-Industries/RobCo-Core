@@ -265,7 +265,7 @@ The pure rule `mbox_call()` applies with the data cache on. It returns `MBOX_PLA
 void uart_init(uint32_t baud);
 ```
 
-Asks the mailbox for the UART clock, sets GPIO14 and GPIO15 to ALT0 with no pulls, programs the divisor and enables the FIFO. It then calls `k_console_set_default(uart_putc)`, so `k_printf()` prints here unless a console hook was already set. It does nothing when `baud` is 0 or the board is unknown. Call it once, first, from main context.
+Asks the mailbox for the UART clock, sets GPIO14 and GPIO15 to ALT0 with no pulls, programs the divisor and enables the FIFO. It then calls `k_console_set_default(uart_putc)`, so `k_printf()` prints here unless a console hook was already set. It does nothing when `baud` is 0 or the board is unknown. Call it once, first, from main context. It does not use the system timer, so a stage can print even when the timer is stopped.
 
 ```c
 void uart_putc(char c);         /* '\n' goes out as "\r\n" */
@@ -382,6 +382,8 @@ void timer_delay_ms(uint32_t ms);
 ```
 
 Busy-wait at least the given time. Both are correct up to `UINT32_MAX`. They block, so keep them out of IRQ context unless the wait is short.
+
+Every wait and deadline on this counter needs it to run. When it does not advance, `timer_delay_us()`, `timer_delay_ms()` and any loop on `timer_expired()` wait forever. To check it, read `timer_now_lo()` a bounded number of times and see whether it changes. `uart_init()` and `gpio_set_pull()` do not use the timer. `tick_init()` returns 0 with a stopped timer, but no tick comes. `audio_init()` returns `AUDIO_ERR_TIMER`. A finite `input_wait()` timeout never expires.
 
 ```c
 int timer_expired(uint64_t deadline_us);
@@ -604,7 +606,7 @@ Set or read the pin's 3-bit GPFSEL code. `gpio_get_function()` returns the code 
 int gpio_set_pull(unsigned pin, unsigned pull);
 ```
 
-Runs the GPPUD and GPPUDCLK sequence with two 5 microsecond waits. Returns `GPIO_ERR_BOARD` on BCM2711.
+Runs the GPPUD and GPPUDCLK sequence with two waits of at least 5 microseconds. The waits count 7500 loop iterations instead of reading the system timer, so `uart_init()` works with a stopped timer. One iteration takes at least one CPU cycle, so each wait lasts 5 microseconds or more up to 1.5 GHz. Returns `GPIO_ERR_BOARD` on BCM2711.
 
 ```c
 int gpio_write(unsigned pin, int level);

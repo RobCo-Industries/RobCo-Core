@@ -244,6 +244,11 @@ int input_poll(input_event_t *ev);
 /*
  * Like input_poll(), but waits up to `timeout_ms` for an event. Sleeps in
  * wfi between checks when CPU IRQs are on and the tick runs. Main context.
+ *
+ * The timeout needs a running system timer. When the timer does not
+ * advance, a finite timeout never expires: the call returns only when an
+ * event comes. Check the timer first, or use input_poll() in a loop with
+ * your own bound.
  */
 int input_wait(input_event_t *ev, uint32_t timeout_ms);
 

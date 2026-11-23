@@ -5,7 +5,11 @@
 
 #define UART_FALLBACK_CLOCK 48000000u
 
-/* PL011 on GPIO14/15, 8N1. Also becomes the k_printf console if none is set. */
+/*
+ * PL011 on GPIO14/15, 8N1. Also becomes the k_printf console if none is
+ * set. Does not use the system timer, so it works when the timer is
+ * stopped: the pin setup waits by counting loop iterations.
+ */
 void uart_init(uint32_t baud);
 
 void uart_putc(char c);         /* '\n' goes out as "\r\n" */

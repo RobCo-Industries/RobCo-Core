@@ -18,6 +18,14 @@ uint32_t timer_now_ms(void);
 /* Low 32 bits of the counter (CLO). Wraps after about 71 minutes. */
 uint32_t timer_now_lo(void);
 
+/*
+ * Every wait and deadline below needs the counter to run. When it does
+ * not advance, timer_delay_us(), timer_delay_ms() and any loop on
+ * timer_expired() wait forever. To check it, read timer_now_lo() a
+ * bounded number of times and see whether it changes, as audio_init()
+ * does. uart_init() and gpio_set_pull() do not use the timer.
+ */
+
 /* Busy-waits at least `us` microseconds. Correct up to UINT32_MAX. */
 void timer_delay_us(uint32_t us);
 
