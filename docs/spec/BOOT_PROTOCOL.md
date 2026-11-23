@@ -565,3 +565,24 @@ Before the jump MFBootAgent unmounts the volume and calls `bootinfo_build()` wit
 | `boot_flags` | Bit 0 cleared, since it loaded no fallback file. The other bits stay as received. |
 
 It then calls `bootinfo_seal()` and jumps with r2 set to the firmware blob copy, or 0 when there is none.
+
+## Third-stage markers
+
+UOS prints its markers as `stage=uos`. Its design reserves these events. They are being implemented, so their keys may still change.
+
+| Event | Keys | Meaning |
+|---|---|---|
+| `boot` | As in [Events](#events) | First marker |
+| `handoff` | `trusted` | Result of the trust rule |
+| `mount` | As in [Events](#events) | The boot volume mounted |
+| `config` | | UOS read its configuration |
+| `uaf` | | UOS read its user file |
+| `login` | `user result` | A login attempt ended |
+| `lockout` | | Too many failed logins locked the terminal |
+| `cmd` | `verb rc` | A command ended. One after every command. |
+| `tui` | `menu sel` | The menu screen changed |
+| `hack` | Event details | A step of the hacking minigame |
+| `dev` | `name state` | A device changed state |
+| `holo` | | A holotape event |
+| `panic` | `msg` | As in [Events](#events) |
+| `halt` | | UOS stops on purpose |
