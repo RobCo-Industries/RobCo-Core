@@ -202,6 +202,8 @@ def test_chain_keeps_framebuffer(board, example_image, chain2, mmu):
         assert rb["cy"] == "1"
         assert rb["scheme"] == "1"
         assert rb["fdt"] == "0x00101000"
+        v = one(vm, "chain2", "video")
+        assert (v["path"], v["fb"], v["bi_fb"]) == ("adopt", fb, fb), vm.serial
         check_mmu_handoff(vm, mmu)
 
 
@@ -403,3 +405,113 @@ def test_chain_sd_no_card(board, example_image):
         assert (err["code"], err["what"]) == ("io", "sd"), vm.serial
         assert one(vm, "chain1", "shell")["reason"] == "io"
         assert not events(vm, "chain1", "jump"), vm.serial
+
+
+# A later stage adopts the screen the first stage left on. chain1 built
+# with CHAIN1_FB_TEXT leaves four amber lines; chain2 adopts them with
+# fb_adopt() and console_adopt(), or falls back to fb_init().
+from PIL import Image  # noqa: E402
+
+from test_console import COLS, FH, FW, H, ROWS, SCHEMES, W, load_font  # noqa: E402
+
+CHAIN1_TEXT = ["chain1", "first stage text 1", "first stage text 2", "first stage text 3"]
+
+
+def fbtext_chain1(example_image):
+    return example_image("chain1", "fbtext", "-DCHAIN1_FB=1 -DCHAIN1_FB_TEXT=1")
+
+
+def chain2_lines(n):
+    return [f"chain2 line {i:02d}" for i in range(1, n + 1)]
+
+
+def on_screen(lines):
+    """The rows after printing each line and a newline: the bottom row stays blank."""
+    return lines[max(0, len(lines) - (ROWS - 1)):]
+
+
+def render(rows):
+    """The expected screen: each row's text in amber normal on the amber background."""
+    _, bg, _dim, normal, _bright = SCHEMES["2"]
+    font = load_font()
+    img = Image.new("RGB", (W, H), bg)
+    px = img.load()
+    for r, text in enumerate(rows):
+        for c, ch in enumerate(text):
+            glyph = font[ord(ch)]
+            for y in range(FH):
+                for x in range(FW):
+                    if glyph[y] & (0x80 >> x):
+                        px[c * FW + x, r * FH + y] = normal
+    return img
+
+
+def shot(vm, tmp_path, name):
+    path = tmp_path / f"{name}.ppm"
+    vm.screendump(path)
+    with Image.open(path) as img:
+        return img.convert("RGB")
+
+
+def check_screen(vm, tmp_path, name, rows):
+    img = shot(vm, tmp_path, name)
+    want = render(rows)
+    if img.tobytes() != want.tobytes():
+        img.save(tmp_path / f"{name}.png")
+        want.save(tmp_path / f"{name}.want.png")
+        raise AssertionError(f"{name}: screen differs, see {tmp_path}:\n{vm.serial}")
+
+
+def wait_n(vm, n):
+    vm.wait_for(f"@RC stage=chain2 ev=wait n={n}\n", timeout=60)
+
+
+def dump_rows(vm):
+    m = re.search(r"@RC stage=chain2 ev=screen (.*)\n((?:\|.*\n)*)@RC stage=chain2 ev=screen_end\n",
+                  vm.serial)
+    assert m, vm.serial
+    return [line[1:] for line in m.group(2).splitlines()]
+
+
+def test_chain_adopts_screen(board, example_image, tmp_path):
+    """No clear, no gap: chain2 writes below chain1's lines, then scrolls them up as pixels."""
+    nxt = example_image("chain2", "vwait", "-DCHAIN2_VIDEO_WAIT=1")
+    with boot(fbtext_chain1(example_image), board, extra_args=chain_args(nxt)) as vm:
+        wait_n(vm, 1)
+        fb = one(vm, "chain1", "fb")["addr"]
+        v = one(vm, "chain2", "video")
+        assert (v["path"], v["fb_rc"], v["con_rc"]) == ("adopt", "0", "0"), vm.serial
+        assert v["fb"] == v["bi_fb"] == fb, vm.serial
+        rb = one(vm, "chain2", "rebuild")
+        assert (rb["fb"], rb["cols"], rb["rows"], rb["cy"], rb["scheme"]) == \
+            (fb, "80", "30", "4", "1"), vm.serial
+        # Adopted and nothing written yet: exactly chain1's screen.
+        check_screen(vm, tmp_path, "adopted", CHAIN1_TEXT)
+        vm.send("a")
+        wait_n(vm, 2)
+        check_screen(vm, tmp_path, "below", CHAIN1_TEXT + chain2_lines(3))
+        vm.send("b")
+        vm.wait_for(READY, timeout=60)
+        lines = CHAIN1_TEXT + chain2_lines(27)
+        check_screen(vm, tmp_path, "scrolled", on_screen(lines))
+        # Cells chain2 never wrote stay unknown and dump as '#'. Line 27 went
+        # on the blank row the first scroll made, so its row is all known.
+        pad = [t + "#" * (COLS - len(t)) for t in chain2_lines(26)]
+        assert dump_rows(vm) == ["#" * COLS] * 2 + pad + chain2_lines(27)[26:] + [""], vm.serial
+        assert not events(vm, "chain2", "error"), vm.serial
+
+
+@pytest.mark.parametrize("variant,flag,fb_rc,con_rc", [
+    ("badpitch", "-DCHAIN2_BAD_PITCH=1", "-4", "0"),
+    ("badcursor", "-DCHAIN2_BAD_CURSOR=1", "0", "-4"),
+])
+def test_chain_adopt_falls_back(board, example_image, tmp_path, variant, flag, fb_rc, con_rc):
+    """A description that fails validation: fb_init() and console_init(), a clear screen."""
+    nxt = example_image("chain2", variant, flag)
+    with boot(fbtext_chain1(example_image), board, extra_args=chain_args(nxt)) as vm:
+        vm.wait_for(READY, timeout=60)
+        v = one(vm, "chain2", "video")
+        assert (v["path"], v["fb_rc"], v["con_rc"]) == ("init", fb_rc, con_rc), vm.serial
+        assert int(v["bi_fb"], 16) != 0, vm.serial
+        check_screen(vm, tmp_path, "fallback", chain2_lines(3))
+        assert not events(vm, "chain2", "error"), vm.serial

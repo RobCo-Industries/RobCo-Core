@@ -1,3 +1,6 @@
 # <build-dir> <extra cflags>
 build/tick -DCHAIN2_TICK=1
 build/selfcheck -DCHAIN2_SELF_CHECK=1
+build/vwait -DCHAIN2_VIDEO_WAIT=1
+build/badpitch -DCHAIN2_BAD_PITCH=1
+build/badcursor -DCHAIN2_BAD_CURSOR=1

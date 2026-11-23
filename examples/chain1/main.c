@@ -151,6 +151,10 @@ void robco_main(void)
         halt();
     }
     console_puts("chain1\n");
+#if defined(CHAIN1_FB_TEXT) && CHAIN1_FB_TEXT
+    /* More lines, so the next stage can scroll some of them and keep the rest. */
+    console_puts("first stage text 1\nfirst stage text 2\nfirst stage text 3\n");
+#endif
 #endif
 
 #if defined(CHAIN1_SD) && CHAIN1_SD

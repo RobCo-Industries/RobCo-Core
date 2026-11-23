@@ -236,6 +236,8 @@ _Static_assert(sizeof(robco_bootinfo_t) == 320, "robco_bootinfo_t must be 320 by
 | `0x0C0` | 128 | `cmdline` | Command line from `BOOT.CFG`, may be empty |
 | | 320 | | Total, `0x140` |
 
+A later stage keeps the screen the earlier stage left on. It passes the `fb_*` fields to `fb_adopt()` and the `con_*` fields to `console_adopt()`, and does not call `fb_init()` again. If either call rejects the description, it falls back to `fb_init()` and `console_init()`. This behaviour is pending hardware validation.
+
 ### Stage ids
 
 | Value | Stage | `@RC` name |

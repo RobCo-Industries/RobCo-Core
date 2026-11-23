@@ -111,6 +111,42 @@ int fb_init(uint32_t width, uint32_t height, uint32_t depth)
     return 0;
 }
 
+int fb_adopt(const fb_info_t *info)
+{
+    uintptr_t a;
+
+    if (info == NULL || info->addr == NULL) {
+        return FB_ERR_ADDR;
+    }
+    a = (uintptr_t)info->addr;
+    if ((a & 3u) != 0 || (info->size != 0 && a + (info->size - 1u) < a)) {
+        return FB_ERR_ADDR;
+    }
+    if (info->width == 0 || info->height == 0) {
+        return FB_ERR_SIZE;
+    }
+    if (info->depth != 32) {
+        return FB_ERR_DEPTH;
+    }
+    /* Divisions, not products: a huge width or height must not overflow. */
+    if ((info->pitch & 3u) != 0 || info->pitch / 4u < info->width ||
+        info->size / info->pitch < info->height) {
+        return FB_ERR_BUFFER;
+    }
+    if (info->order != FB_ORDER_BGR && info->order != FB_ORDER_RGB) {
+        return FB_ERR_ORDER;
+    }
+
+    /* The same mapping as fb_init(): the buffer is in GPU memory. */
+    if (mmu_map) {
+        mmu_map((uint32_t)a, info->size, MMU_ATTR_FB);
+    }
+
+    fb_state = *info;
+    fb_ready = 1;
+    return 0;
+}
+
 const fb_info_t *fb_get(void)
 {
     return fb_ready ? &fb_state : NULL;

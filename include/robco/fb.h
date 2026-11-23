@@ -10,6 +10,9 @@
 #define FB_ERR_DEPTH    (-2)    /* depth other than 32 asked for */
 #define FB_ERR_MISMATCH (-3)    /* firmware gave another size or depth */
 #define FB_ERR_BUFFER   (-4)    /* no buffer, or pitch or size too small */
+#define FB_ERR_ADDR     (-5)    /* fb_adopt: NULL, misaligned or wrapping address */
+#define FB_ERR_SIZE     (-6)    /* fb_adopt: width or height is 0 */
+#define FB_ERR_ORDER    (-7)    /* fb_adopt: unknown pixel order */
 
 typedef struct {
     uint8_t *addr;
@@ -24,7 +27,20 @@ typedef struct {
  */
 int fb_init(uint32_t width, uint32_t height, uint32_t depth);
 
-/* NULL until fb_init succeeds. */
+/*
+ * Takes over a framebuffer an earlier stage left on, as `info` describes
+ * it. Sends no mailbox message and writes no pixel. Checks, in order:
+ * address (FB_ERR_ADDR: NULL info or addr, addr not 4-byte aligned, or
+ * addr + size wraps), width and height (FB_ERR_SIZE), depth 32
+ * (FB_ERR_DEPTH), pitch at least width * 4 and a multiple of 4, size at
+ * least pitch * height (FB_ERR_BUFFER), order (FB_ERR_ORDER). On an error
+ * the previous state stays. After 0, every fb_* call works as after
+ * fb_init(), and the console is stale until console_init() or
+ * console_adopt().
+ */
+int fb_adopt(const fb_info_t *info);
+
+/* NULL until fb_init or fb_adopt succeeds. */
 const fb_info_t *fb_get(void);
 
 /* Pixel word for the active pixel order. */

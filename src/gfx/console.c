@@ -10,6 +10,11 @@
 
 #define TAB_WIDTH   8
 #define ATTR_LEVEL  3u
+/*
+ * A cell console_adopt() found on screen: its character is unknown. Byte 0
+ * is never stored otherwise, since control characters are not drawn.
+ */
+#define CELL_UNKNOWN 0u
 
 typedef struct {
     uint8_t ch;
@@ -65,6 +70,10 @@ static void draw_cell(unsigned col, unsigned row, int invert)
     unsigned level = c->attr & ATTR_LEVEL;
     uint32_t fg, bg, t;
 
+    /* Only the pixels know an adopted cell: leave them alone. */
+    if (c->ch == CELL_UNKNOWN) {
+        return;
+    }
     fg = px_level[level < 3 ? level : CONSOLE_ATTR_NORMAL];
     bg = px_bg;
     if (((c->attr & CONSOLE_ATTR_INVERSE) != 0) != (invert != 0)) {
@@ -102,10 +111,33 @@ static void clear_cells(void)
     }
 }
 
+static int any_unknown(void)
+{
+    unsigned r, c;
+
+    for (r = 0; r < rows; r++) {
+        for (c = 0; c < cols; c++) {
+            if (cells[r][c].ch == CELL_UNKNOWN) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static void redraw_all(void)
 {
     unsigned r, c;
 
+    if (any_unknown()) {
+        /* No clear: unknown cells keep their pixels, draw_cell() skips them. */
+        for (r = 0; r < rows; r++) {
+            for (c = 0; c < cols; c++) {
+                draw_cell(c, r, 0);
+            }
+        }
+        return;
+    }
     fb_clear(px_bg);
     for (r = 0; r < rows; r++) {
         for (c = 0; c < cols; c++) {
@@ -125,8 +157,12 @@ static void scroll(void)
         cells[rows - 1][c].ch = ' ';
         cells[rows - 1][c].attr = CONSOLE_ATTR_NORMAL;
     }
+    /*
+     * Pixels move, not cells: adopted text moves up intact. An adopted
+     * grid may end above the screen bottom, so blank the new row itself.
+     */
     fb_scroll_up(FONT_H, px_bg);
-    /* Rows below rows * FONT_H, if any, stay background. */
+    fb_fill_rect(0, (rows - 1) * FONT_H, cols * FONT_W, FONT_H, px_bg);
 }
 
 static void newline(void)
@@ -210,6 +246,45 @@ int console_init(unsigned scheme)
     load_scheme(scheme);
     clear_cells();
     fb_clear(px_bg);
+    grid_fb = fb->addr;
+    grid_w = fb->width;
+    grid_h = fb->height;
+    ready = 1;
+    return 0;
+}
+
+int console_adopt(unsigned c, unsigned r, unsigned x, unsigned y, unsigned scheme)
+{
+    const fb_info_t *fb = fb_get();
+    unsigned i, j;
+
+    if (fb == NULL) {
+        return CONSOLE_ERR_NO_FB;
+    }
+    if (console_scheme_info(scheme) == NULL) {
+        return CONSOLE_ERR_SCHEME;
+    }
+    if (c == 0 || r == 0 || c > ROBCO_CONSOLE_MAX_COLS || r > ROBCO_CONSOLE_MAX_ROWS ||
+        c > fb->width / FONT_W || r > fb->height / FONT_H) {
+        return CONSOLE_ERR_TOO_BIG;
+    }
+    if (x >= c || y >= r) {
+        return CONSOLE_ERR_CURSOR;
+    }
+    cols = c;
+    rows = r;
+    cx = x;
+    cy = y;
+    wrap_pending = 0;
+    cur_attr = CONSOLE_ATTR_NORMAL;
+    cursor_on = 0;
+    load_scheme(scheme);
+    for (j = 0; j < rows; j++) {
+        for (i = 0; i < cols; i++) {
+            cells[j][i].ch = CELL_UNKNOWN;
+            cells[j][i].attr = CONSOLE_ATTR_NORMAL;
+        }
+    }
     grid_fb = fb->addr;
     grid_w = fb->width;
     grid_h = fb->height;

@@ -692,7 +692,10 @@ Stores one random word in `*out`. Returns `0`, or a negative error as `rng_read(
 | `FB_ERR_MBOX` | `-1` | Mailbox call or a tag failed |
 | `FB_ERR_DEPTH` | `-2` | Depth other than 32 asked for |
 | `FB_ERR_MISMATCH` | `-3` | Firmware gave another size or depth, or a size of 0 was asked for |
-| `FB_ERR_BUFFER` | `-4` | No buffer, or pitch or size too small |
+| `FB_ERR_BUFFER` | `-4` | No buffer, or pitch or size too small. For `fb_adopt()`, also a pitch that is not a multiple of 4. |
+| `FB_ERR_ADDR` | `-5` | `fb_adopt()`: NULL description or address, an address not 4-byte aligned, or a range that wraps |
+| `FB_ERR_SIZE` | `-6` | `fb_adopt()`: width or height is 0 |
+| `FB_ERR_ORDER` | `-7` | `fb_adopt()`: pixel order other than 0 or 1 |
 
 ```c
 typedef struct {
@@ -708,11 +711,17 @@ int fb_init(uint32_t width, uint32_t height, uint32_t depth);
 Sends one property message that sets the size and depth, asks for RGB order, allocates the buffer and reads the pitch and the actual order. Only `depth == 32` works. Returns `0`, or a negative `FB_ERR_*` and keeps the previous state. A second successful call replaces the buffer. The console then draws nothing and `console_cols()` returns `0` until you call `console_init()` again, which sizes the grid for the new mode.
 
 ```c
+int fb_adopt(const fb_info_t *info);
+```
+
+Takes over a framebuffer an earlier stage left on. It sends no mailbox message and writes no pixel. It checks the description in this order: the address, width and height, depth 32, a pitch of at least `width * 4` and a multiple of 4, a size of at least `pitch * height`, the pixel order. It returns the first `FB_ERR_*` it finds and keeps the previous state. After `0`, every `fb_*` call works as after `fb_init()`. With the MMU linked, it maps the buffer as `fb_init()` does. The console is then stale until `console_init()` or `console_adopt()`. See [Adopting the screen](#adopting-the-screen).
+
+```c
 const fb_info_t *fb_get(void);
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 ```
 
-`fb_get()` returns the active state, or NULL until `fb_init()` succeeds. `fb_rgb()` builds a pixel word for the active pixel order. The firmware may ignore the RGB request, so always build colours with `fb_rgb()`.
+`fb_get()` returns the active state, or NULL until `fb_init()` or `fb_adopt()` succeeds. `fb_rgb()` builds a pixel word for the active pixel order. The firmware may ignore the RGB request, so always build colours with `fb_rgb()`.
 
 ```c
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t colour);
@@ -766,6 +775,7 @@ The grid is `width / 8` by `height / 16` cells. 640x480 gives 80x30. A mode larg
 | `CONSOLE_ERR_NO_FB` | `-1` | `fb_init()` has not succeeded |
 | `CONSOLE_ERR_TOO_BIG` | `-2` | The grid is empty or larger than the buffer |
 | `CONSOLE_ERR_SCHEME` | `-3` | Unknown scheme id |
+| `CONSOLE_ERR_CURSOR` | `-4` | `console_adopt()`: the cursor is outside the grid |
 
 ```c
 typedef struct {
@@ -789,6 +799,20 @@ int console_init(unsigned scheme);
 ```
 
 Sizes the grid from the framebuffer, loads the scheme, clears the screen and puts the cursor at 0,0 with attribute normal and the cursor hidden. Returns `0` or a `CONSOLE_ERR_*`. Call it again after every successful `fb_init()`: until then the console is stale and every drawing call does nothing.
+
+```c
+int console_adopt(unsigned cols, unsigned rows, unsigned cx, unsigned cy, unsigned scheme);
+```
+
+Starts the console on the framebuffer from `fb_adopt()` without clearing it. The grid is `cols` by `rows`, the cursor at `cx`,`cy`, hidden, with attribute normal. It checks, in order: a framebuffer, the scheme, a grid that is not empty and fits both the screen and the cell buffer, and the cursor inside the grid. On an error it returns a `CONSOLE_ERR_*` and changes nothing, on screen or in the console.
+
+The console does not know the characters already on screen. Each adopted cell is unknown until something writes over it:
+
+- `console_dump()` prints an unknown cell as `#`, the value of `CONSOLE_DUMP_UNKNOWN`.
+- Scrolling moves pixels, so adopted text moves up intact. The cell buffer moves with it.
+- `console_set_scheme()` repaints the known cells and leaves the pixels of unknown cells as they are.
+- The block cursor does not show on an unknown cell.
+- `console_clear()` makes every cell known and blank.
 
 ```c
 void console_putc(char c);
@@ -827,13 +851,13 @@ void console_set_scheme(unsigned scheme);
 unsigned console_scheme(void);
 ```
 
-`console_set_attr()` applies to characters written after the call. It accepts a brightness, optionally ORed with `CONSOLE_ATTR_INVERSE`. It ignores any other value, such as a brightness of `3` or an unknown bit, and keeps the current attribute. `console_set_scheme()` redraws the whole screen in the new colours and ignores unknown ids. `console_scheme()` returns the active id, `CONSOLE_SCHEME_GREEN` before `console_init()`.
+`console_set_attr()` applies to characters written after the call. It accepts a brightness, optionally ORed with `CONSOLE_ATTR_INVERSE`. It ignores any other value, such as a brightness of `3` or an unknown bit, and keeps the current attribute. `console_set_scheme()` redraws the whole screen in the new colours and ignores unknown ids. After `console_adopt()`, cells still unknown keep their pixels. `console_scheme()` returns the active id, `CONSOLE_SCHEME_GREEN` before `console_init()`.
 
 ```c
 void console_dump(void (*out)(char));
 ```
 
-Test hook. Writes `@RC stage=<name> ev=screen cols=.. rows=.. cx=.. cy=.. scheme=..`, then one line per row starting with `|` with trailing spaces trimmed, then `@RC stage=<name> ev=screen_end`. Cells outside printable ASCII print as `#`. Pass `uart_putc`.
+Test hook. Writes `@RC stage=<name> ev=screen cols=.. rows=.. cx=.. cy=.. scheme=..`, then one line per row starting with `|` with trailing spaces trimmed, then `@RC stage=<name> ev=screen_end`. Cells outside printable ASCII, and unknown cells after `console_adopt()`, print as `#`. Pass `uart_putc`.
 
 ```c
 void console_attach_printf(int also_uart);
@@ -859,6 +883,29 @@ console_set_attr(CONSOLE_ATTR_BRIGHT);
 console_puts("RobCo-Core demo\n");
 console_set_attr(CONSOLE_ATTR_NORMAL);
 ```
+
+### Adopting the screen
+
+A later stage keeps the screen the earlier stage left on. Trust the boot info, then call `fb_adopt()` and `console_adopt()`. If either fails, fall back to `fb_init()` and `console_init()`. Based on `examples/chain2/main.c`:
+
+```c
+const robco_bootinfo_t *bi = bootinfo_get();
+fb_info_t info;
+int rc = -1;
+
+if (bootinfo_inherited() && bootinfo_fb_info(bi, &info) == BOOTINFO_OK &&
+    fb_adopt(&info) == 0) {
+    rc = console_adopt(bi->con_cols, bi->con_rows, bi->con_cx, bi->con_cy, bi->con_scheme);
+}
+if (rc != 0) {
+    rc = fb_init(640, 480, 32);
+    if (rc == 0) {
+        rc = console_init(CONSOLE_SCHEME_GREEN);
+    }
+}
+```
+
+This is pending hardware validation. QEMU keeps the buffer the first stage allocated, and the tests cover only that.
 
 ## Console font (`font.h`)
 
@@ -1081,7 +1128,7 @@ To load an image from the SD card with these checks and the fallback rule, use t
 | `boot_dev` | `ROBCO_BOOT_DEV_UNKNOWN` 0, `ROBCO_BOOT_DEV_EMMC` 1, `ROBCO_BOOT_DEV_SDHOST` 2 |
 | Firmware blob tags | `ROBCO_FDT_MAGIC` `0xD00DFEEDu`, `ROBCO_ATAG_CORE` `0x54410001u`, `ROBCO_ATAG_NONE` `0x00000000u` |
 | `bootinfo_merge()` groups | `BOOTINFO_OWN_FW_REGS` bit 0, `BOOTINFO_OWN_FW_BLOB` bit 1, `BOOTINFO_OWN_UART` bit 2, `BOOTINFO_OWN_FB` bit 3, `BOOTINFO_OWN_CON` bit 4, `BOOTINFO_OWN_BOOT_DEV` bit 5, `BOOTINFO_OWN_MINIUART` bit 6, `BOOTINFO_OWN_SD` bit 7 |
-| Validation results | `BOOTINFO_OK` 0, `BOOTINFO_E_MAGIC` -1, `BOOTINFO_E_VERSION` -2, `BOOTINFO_E_SIZE` -3, `BOOTINFO_E_CRC` -4 |
+| Validation results | `BOOTINFO_OK` 0, `BOOTINFO_E_MAGIC` -1, `BOOTINFO_E_VERSION` -2, `BOOTINFO_E_SIZE` -3, `BOOTINFO_E_CRC` -4, `BOOTINFO_E_NO_FB` -5 (from `bootinfo_fb_info()`) |
 
 | Config macro | Default | Meaning |
 |---|---|---|
@@ -1100,6 +1147,12 @@ uint32_t bootinfo_fw_blob_size(const void *blob, uint32_t max);
 ```
 
 Pure functions in `src/lib/bootinfo.c`. `bootinfo_seal()` sets magic, version and size and computes the CRC. Call it again after you change a field. `bootinfo_validate()` checks magic, version, size and CRC in that order and returns `BOOTINFO_OK` or a `BOOTINFO_E_*`. `bootinfo_fw_blob_size()` returns the size of the FDT or ATAGS list at `blob`, or `0` if there is none or it is larger than `max`.
+
+```c
+int bootinfo_fb_info(const robco_bootinfo_t *bi, fb_info_t *out);
+```
+
+Fills `out` from the `fb_*` fields for `fb_adopt()`. Returns `BOOTINFO_OK`, or `BOOTINFO_E_NO_FB` (`-5`) when `bi` is NULL, `ROBCO_CAP_FB` is clear or `fb_addr` is 0. It checks nothing else: `fb_adopt()` does. Pure, in `src/lib/bootinfo.c`.
 
 ```c
 const robco_bootinfo_t *bootinfo_get(void);

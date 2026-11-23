@@ -182,6 +182,9 @@ $(HOST_RIMG_DIR)/boot.img: $(HOST_RIMG_PAYLOAD) tools/rimg.py
 	$(PYTHON) tools/rimg.py verify $@ >/dev/null
 
 $(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
+
+# test_video builds the framebuffer and console drivers in with #include.
+$(HOST_BUILD)/test_video: src/drv/fb.c src/gfx/console.c src/gfx/schemes.c src/gfx/font8x16_fixedsys.c
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the
