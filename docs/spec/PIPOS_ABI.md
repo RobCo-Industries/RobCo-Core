@@ -124,7 +124,7 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 | `0x31` | `sensor_available` | `uint32 sensor` | 1 or 0 | stable |
 | `0x40` | `get_time` | `uint32 *unix_seconds` | 0, or `-PIP_ENODEV` when no clock is set | stable |
 | `0x41` | `get_battery` | none | Percent, 0 to 100, or `-PIP_ENODEV` | stable |
-| `0x42` | `ticks_ms` | none | Milliseconds since boot, wraps at 2^31 | draft |
+| `0x42` | `ticks_ms` | none | Milliseconds since boot, wraps at 2^31, about 24.9 days. Measure the time from `a` to `b` as `(b - a) & 0x7FFFFFFF`. Plain unsigned subtraction is wrong across the wrap. | draft |
 | `0x43` | `sleep_ms` | `uint32 ms` | 0, or `-PIP_ERANGE` above `0x7FFFFFFF` | draft |
 | `0x44` | `exit` | `int32 status` | Does not return. The exit status is the low 8 bits. | draft |
 | `0x45` | `sys_info` | `pip_sys_info_t *out`: board, ABI, Pip-OS version | 0 | draft |
@@ -260,7 +260,7 @@ typedef struct __attribute__((packed)) pip_event {
 | 1 | `PIP_EV_BUTTON` | Button number, the bit position from `read_buttons` | 1 press, 0 release, 2 repeat while held |
 | 2 | `PIP_EV_DIAL` | 0 | Signed detents. Positive is clockwise. |
 
-`time_ms` is the `ticks_ms` time when Pip-OS registered the event. GPIO buttons and the dial are sampled every 10 ms, so their stamp comes within about 10 ms of the change, after the 20 ms button debounce. Input from the serial console or the script channel is stamped when Pip-OS reads it, which can be later than the key press. It is never later than the `ticks_ms` value an image reads after it gets the event. Stamps of successive events never go backwards.
+`time_ms` is the `ticks_ms` time when Pip-OS registered the event. GPIO buttons and the dial are sampled every 10 ms, so their stamp comes within about 10 ms of the change, after the 20 ms button debounce. Input from the serial console or the script channel is stamped when Pip-OS reads it, which can be later than the key press. It is never later than the `ticks_ms` value an image reads after it gets the event. Stamps follow `ticks_ms`, so they wrap when it wraps. Between wraps, stamps of successive events never go backwards. Compare stamps the way the `ticks_ms` row of the syscall table says to compare `ticks_ms` values.
 
 A held button repeats. The first event with `value` 2 comes 500 ms after the press, then one every 100 ms until the release. Only the last button pressed repeats. Repeats follow a fixed schedule from the press. After a stall the schedule restarts from the current time instead of sending a burst. Repeat events count toward the 32.
 
