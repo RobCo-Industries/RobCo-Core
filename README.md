@@ -20,7 +20,7 @@ Two boot chains will use it:
 - An identity-mapped MMU with data and instruction caches, and cache maintenance for buffers shared with the GPU.
 - Storage: a block device interface, an SD card driver on the EMMC controller, a RAM disk, MBR partitions, a FAT12/16/32 file system over FatFs and a stage loader that loads the next image from the card with a fallback file.
 - Input from GPIO buttons, a rotary dial and serial lines, as one event queue.
-- Square-wave audio on PWM, with tones, note sequences and RTTTL tunes, and a trace backend for tests.
+- Audio on PWM: square-wave tones, note sequences, RTTTL tunes and 8-bit PCM samples, and a trace backend for tests.
 - An I2C master, a DS1307, DS1338 or DS3231 real-time clock with a software clock, an SPI master, date and time functions and an INI parser.
 - A screen console with four colour schemes and two built-in 8x16 fonts, Fixedsys Excelsior by default and Spleen. See [FONTS.md](./docs/FONTS.md).
 - Hardware-independent code: klibc, `k_printf`, CRC-32, a heap, `rimg` image validation and the boot info block.

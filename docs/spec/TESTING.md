@@ -6,7 +6,7 @@ Every repo in the suite tests with the same harness from RobCo-Core. QEMU 10.1.2
 
 | Layer | What runs | Where |
 |---|---|---|
-| 1. Host tests | C unit tests built for the host from the real sources: klibc, CRC, `rimg`, boot info, tick maths, allocator, partitions, FatFs over a file, input queue and decoders, audio notes and sequencer, date and time, INI. 18 files, about 180 tests. Later: game logic, UI layout. | `tests/host/` |
+| 1. Host tests | C unit tests built for the host from the real sources: klibc, CRC, `rimg`, boot info, tick maths, allocator, partitions, FatFs over a file, input queue and decoders, audio notes, sequencer and PCM engine, date and time, INI. 18 files, about 180 tests. Later: game logic, UI layout. | `tests/host/` |
 | 2. Tool tests | pytest for the host tools, the Makefile, the docs checker, and the file system against mtools | `tests/tools/` |
 | 3. Serial tests | Boot an image in QEMU and assert on `@RC` markers and text. 17 files, each run on every board. | `tests/target/` |
 | 4. Screen tests | Console cell grid dumped over the UART, plus QMP `screendump` compared with golden images | `tests/target/`, `tests/golden/` |
@@ -129,7 +129,7 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 | Gap | Fact | Coverage |
 |---|---|---|
 | GPIO input | GPLEV0/1 read 0, input cannot be injected (V12) | The input logic runs on the host and through the serial and script backends in layer 5. The GPIO backend's stuck-line guard turns it off in QEMU. Buttons and dials run on the hardware checklist. |
-| PWM audio | Not modelled. Reading PWM data-aborts on `raspi0` and `raspi1ap` (V7). On `raspi2b` and `raspi3b` writes are dropped. | Host tests for the notes and the sequencer. The audio driver probes PWM and falls back to the trace backend, which the target test checks. Sound runs on the hardware checklist. |
+| PWM audio | Not modelled. Reading PWM data-aborts on `raspi0` and `raspi1ap` (V7). On `raspi2b` and `raspi3b` writes are dropped. | Host tests for the notes, the sequencer and the PCM engine. The audio driver probes PWM and falls back to the trace backend, which the target test checks. PCM on the trace backend runs the real timer channel 3 IRQ. Sound runs on the hardware checklist. |
 | Real SPI signalling | QEMU ignores the rate, the mode and chip select. | `test_spi.py` checks the data path with the flash model. Rates, modes and chip select levels run on the hardware checklist. |
 | SPI TFT | No model | The display interface is the same for HDMI and TFT, so HDMI goldens cover drawing. The TFT runs on the hardware checklist. |
 | I2C timing | Every transfer finishes at once. No clock stretching. | The bus rate, timeouts and clock stretching run on the hardware checklist. |
