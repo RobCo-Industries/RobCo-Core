@@ -11,6 +11,11 @@
 
 #define SPI0_CS 0x204000u
 
+/* Hardware checks build other rotations with EXTRA_CFLAGS=-DTFT_EXAMPLE_ROTATION=<degrees>. */
+#ifndef TFT_EXAMPLE_ROTATION
+#define TFT_EXAMPLE_ROTATION 90
+#endif
+
 void robco_main(void)
 {
     tft_config_t cfg = TFT_CONFIG_DEFAULT;
@@ -30,6 +35,7 @@ void robco_main(void)
         }
     }
 
+    cfg.rotation = TFT_EXAMPLE_ROTATION;
     rc = picture_init(&cfg);
     k_printf("@RC stage=tft ev=init rc=%d hz=%u w=%u h=%u\n", rc, (unsigned)tft_get_hz(),
              tft_width(), tft_height());
