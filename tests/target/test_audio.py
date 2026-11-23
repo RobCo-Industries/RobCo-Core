@@ -31,6 +31,8 @@ PCM_END_SLACK_MS = 1000
 # A late IRQ skips samples, and the host can stall the guest for some ms near the end.
 # Under load the last sample landed 3 to 4 ms before the end.
 PCM_LAST_SLACK_MS = 20
+# A busy call with a 16 MB buffer: a CRC over it took 89 to 119 ms in QEMU.
+BUSY_BIG_MAX_US = 30000
 
 
 def pcm_data(n):
@@ -114,6 +116,7 @@ def check_pcm(vm, c):
     swap = events(vm, "pcm_swap")[-1]
     assert (int(swap["busy"]), int(swap["prio"])) == (ERR_BUSY, 0), swap
     assert (int(swap["tbusy"]), int(swap["tprio"])) == (ERR_BUSY, 0), swap
+    check_busy_big(swap)
 
     # Each cut prints its stop line at the tick; the replacements then start.
     marks = c["pcm_cut"]
@@ -138,6 +141,13 @@ def check_pcm(vm, c):
 
     assert c["pcm_args"] == [], c["pcm_args"]
     check_pcm_args(vm)
+
+
+def check_busy_big(swap):
+    """A busy audio_play_pcm() returns before it scans its 16 MB buffer."""
+    assert int(swap["big"]) == ERR_BUSY, swap
+    # The busy check alone takes microseconds; the margin absorbs a host stall.
+    assert int(swap["big_us"]) < BUSY_BIG_MAX_US, swap
 
 
 def check_pcm_cut(vm):
@@ -273,6 +283,7 @@ def test_audio_forced_pwm(board, example_image):
             swap = events(vm, "pcm_swap")[-1]
             assert [int(swap[k]) for k in ("busy", "prio", "tbusy", "tprio")] == \
                 [ERR_BUSY, 0, ERR_BUSY, 0], swap
+            check_busy_big(swap)
             assert events(vm, "pcm_loop")[-1]["busy"] == "1", vm.serial
             check_pcm_cut(vm)
             tick = events(vm, "pcm_tick")[-1]

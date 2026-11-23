@@ -25,6 +25,9 @@ static const char jingle[] = "terminal:d=8,o=5,b=200:c,g,e,p,4c6,a,4g.";
 #define PCM_BUF     22050
 static uint8_t pcm_buf[PCM_BUF];
 
+/* Length of a busy call that must not scan its buffer. */
+#define BUSY_BIG_LEN    (16u << 20)
+
 /* Tick callback runs, to check the tick keeps its rhythm during PCM. */
 static volatile uint32_t tick_runs;
 
@@ -160,19 +163,28 @@ static void play_pcm_stop(void)
 /* PCM and tones replace each other only with AUDIO_PRIORITY. */
 static void play_pcm_swap(void)
 {
-    int busy, prio, tbusy, tprio;
+    int busy, prio, tbusy, tprio, big;
+    uint64_t t0;
+    uint32_t big_us;
 
     case_begin("pcm_swap");
     pcm_fill(8000);
     audio_tone(440, 3000);
     sleep_ms(100);
     busy = audio_play_pcm(pcm_buf, 8000, 8000, 0);
+    /*
+     * A busy call returns before it reads the buffer. 16 MB runs past
+     * pcm_buf into RAM; a CRC over it would take far longer than this.
+     */
+    t0 = timer_now_us();
+    big = audio_play_pcm(pcm_buf, BUSY_BIG_LEN, 8000, 0);
+    big_us = (uint32_t)(timer_now_us() - t0);
     prio = audio_play_pcm(pcm_buf, 8000, 8000, AUDIO_PRIORITY);
     sleep_ms(100);
     tbusy = audio_play(&high, 1, 0);
     tprio = audio_play(&high, 1, AUDIO_PRIORITY);
-    k_printf("@RC stage=audio ev=pcm_swap busy=%d prio=%d tbusy=%d tprio=%d\n",
-             busy, prio, tbusy, tprio);
+    k_printf("@RC stage=audio ev=pcm_swap busy=%d prio=%d tbusy=%d tprio=%d big=%d big_us=%u\n",
+             busy, prio, tbusy, tprio, big, (unsigned)big_us);
     case_end("pcm_swap", tprio);
 }
 

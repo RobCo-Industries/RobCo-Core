@@ -647,6 +647,18 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
     if (!pcm_irq) {
         return AUDIO_ERR_NO_IRQ;
     }
+    /*
+     * Fail fast when busy, before the CRC scans the whole buffer. The
+     * check repeats with IRQs masked below: a sound can start in between.
+     */
+    if (!(flags & AUDIO_PRIORITY)) {
+        s = irq_save();
+        ret = sound_pending_locked();
+        irq_restore(s);
+        if (ret) {
+            return AUDIO_ERR_BUSY;
+        }
+    }
     /* The 64-bit divides of the start run here, not in an IRQ handler. */
     audio_pcm_start(&p, data, len, rate_hz, flags, 0);
     if (backend == AUDIO_BACKEND_TRACE) {
