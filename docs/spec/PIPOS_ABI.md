@@ -238,9 +238,11 @@ A row of `blit_1bpp` is `(w + 7) / 8` bytes. A row of `blit_rgb` is `4 * w` byte
 
 ## Input
 
-`read_buttons` returns the buttons that are down now. `read_dial` returns the dial position in degrees, 0 to 359. One detent of the dial is 15 degrees.
+`read_buttons` returns the buttons that are down now. It stays right after a queue overflow.
 
-Events come from a queue of 32. When the queue is full, the oldest event is dropped. The queue is emptied when an image starts.
+`read_dial` returns the dial position in degrees, 0 to 359. One detent of the dial is 15 degrees. The position comes from a running total of detents since boot, so it does not depend on the event queue. It counts turns whose events were dropped and turns made while no image runs. An image start or end does not reset it.
+
+Events come from a queue of 32. When the queue is full, the oldest event is dropped. The queue is emptied when an image starts and when it ends. Every input call takes new input first, so an image that only polls still sees events.
 
 ```c
 typedef struct __attribute__((packed)) pip_event {
@@ -256,7 +258,11 @@ typedef struct __attribute__((packed)) pip_event {
 | 1 | `PIP_EV_BUTTON` | Button number, the bit position from `read_buttons` | 1 press, 0 release, 2 repeat while held |
 | 2 | `PIP_EV_DIAL` | 0 | Signed detents. Positive is clockwise. |
 
-`wait_event` blocks until an event arrives or `timeout_ms` passes. A timeout of 0 does not block. `0xFFFFFFFF` waits forever. Any other value above `0x7FFFFFFF` returns `-PIP_ERANGE`.
+`time_ms` is in `ticks_ms` units. It is never later than the `ticks_ms` value an image reads after it gets the event. Stamps of successive events never go backwards.
+
+A held button repeats. The first event with `value` 2 comes 500 ms after the press, then one every 100 ms until the release. Only the last button pressed repeats. Repeats follow a fixed schedule from the press. After a stall the schedule restarts from the current time instead of sending a burst. Repeat events count toward the 32.
+
+`wait_event` blocks until an event arrives or `timeout_ms` passes. A timeout of 0 does not block. `0xFFFFFFFF` waits forever. Any other value above `0x7FFFFFFF` returns `-PIP_ERANGE`. It checks `timeout_ms`, then `out`, before it waits. It returns `-PIP_ETIMEDOUT` only when the queue is empty at the deadline, and then writes nothing. An event that arrives just after the deadline is returned.
 
 ## Audio
 
