@@ -323,23 +323,30 @@ typedef struct __attribute__((packed)) pip_mem_info {
 
 ## Save files
 
-- Path: `/PIPBOY/SAVE/<NAME>.SAV`. `NAME` is 1 to 8 characters from `A-Z`, `0-9` and `_`. Pip-OS upper-cases it. Anything else returns `-PIP_EINVAL`.
-- A save is at most 64 KiB.
-- `write_save` replaces the file with RobCo-Core's atomic write. A power cut leaves the old save or the new one. A larger `size` returns `-PIP_ERANGE`.
-- The atomic write keeps work files named `~<NAME>.SAV` and `#<NAME>.SAV` in the folder. Pip-OS recovers from them before it reads a save. The developer guide in RobCo-Core describes the steps.
-- `read_save` copies at most `size` bytes and returns the count. A missing save returns `-PIP_ENOENT`.
-- `save_info` stores the save's size. `save_delete` removes the save and its work files.
+- Path: `/PIPBOY/SAVE/<NAME>.SAV`. `NAME` is 1 to 8 characters from `A-Z`, `0-9` and `_`, and ends with a NUL within 9 bytes. Pip-OS upper-cases it. Anything else returns `-PIP_EINVAL`.
+- A save is at most 64 KiB. A file on the card larger than that is not a valid save: `read_save` and `save_info` return `-PIP_ERANGE` and write nothing. `save_delete` removes it and `write_save` replaces it.
+- `write_save` takes 0 to 65536 bytes and returns `size`. It replaces the file with RobCo-Core's atomic write. A power cut leaves the old save or the new one. A larger `size` returns `-PIP_ERANGE`. It creates `/PIPBOY/SAVE` when the folder is missing.
+- The atomic write keeps work files named `~<NAME>.SAV` and `#<NAME>.SAV` in the folder. `read_save`, `save_info` and `save_delete` recover from them first. The [storage guide](../guide/api/storage.md#whole-files) describes the steps.
+- `read_save` checks the whole `size` bytes of `buf`, then copies at most `size` bytes and returns the count. A missing save returns `-PIP_ENOENT`. `size` 0 needs no buffer.
+- `save_info` stores the save's size. `save_delete` removes the save and both work files.
 - ROMs and holotapes share the save folder. A holotape should use its own name prefix.
+
+On a read-only card, `read_save` and `save_info` read the file the recovery steps choose and change nothing. `save_delete` and `write_save` return `-PIP_EIO` and change nothing.
 
 ## Files
 
 File calls are read only.
 
-- A path is absolute, uses `/`, and is at most 127 bytes. Names follow the 8.3 rule. Pip-OS upper-cases the path.
-- A path in `/PIPBOY/SAVE` returns `-PIP_EPERM`.
-- An image can hold 8 open files. Handles are 0 to 7. `file_open` returns `-PIP_ENOMEM` when all are in use. Pip-OS closes an image's files when it ends.
-- `file_read` returns the bytes read, and 0 at the end of the file.
-- `dir_list` writes at most `max` entries, starting at entry number `start`, and returns how many it wrote. It returns 0 past the end. `max` is 1 to 64.
+- A path is absolute, uses `/`, and is at most 127 bytes before the NUL. Pip-OS upper-cases the path.
+- Each component is an 8.3 name: 1 to 8 characters, then an optional dot and 1 to 3 characters. The characters are `A-Z`, `0-9` and ``! # $ % & ' ( ) - @ ^ _ ` { } ~``.
+- These return `-PIP_EINVAL`: a relative path, `//`, `.` or `..`, a trailing `/` or dot, a space, `\`, `:`, or any byte outside the set above. Only `dir_list` accepts `/` alone.
+- A path in `/PIPBOY/SAVE` returns `-PIP_EPERM`, in any case and also through an 8.3 alias of `PIPBOY` or `SAVE`.
+- An image can hold 8 open files. Handles are 0 to 7. `file_open` takes the lowest free handle and returns `-PIP_ENOMEM` when all are in use. A directory returns `-PIP_EINVAL`. Pip-OS closes an image's files when it ends.
+- `file_read` checks the whole buffer first. It returns the bytes read, and 0 at the end of the file. `size` 0 returns 0. A refused read does not move the file position.
+- `dir_list` checks the whole `out` range for `max` entries first. It writes at most `max` entries in directory order, starting at entry number `start`, and returns how many it wrote. It returns 0 past the end. `max` is 1 to 64. A file path returns `-PIP_EINVAL`.
+- `dir_list` gives the 8.3 name, never the long name. An entry whose long name does not fit 8.3 shows its alias, such as `LONGFO~1`, and the file calls accept that name. Work files and hidden entries are listed too.
+
+A missing card, a failed card or a file system error returns `-PIP_EIO`. A full card returns `-PIP_ENOSPC`. These apply to save and file calls alike.
 
 ```c
 typedef struct __attribute__((packed)) pip_dirent {
