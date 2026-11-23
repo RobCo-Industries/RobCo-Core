@@ -82,6 +82,29 @@ path = /ROBCO/DIAG.SYS
 
 `timeout` is in seconds. If the file is missing or does not parse, MFBootAgent shows the menu with one entry, `/ROBCO/UOS.SYS`, and no timeout.
 
+#### The `[bios]` section
+
+RETROS-BIOS reads only the `[bios]` section and ignores every other section. MFBootAgent ignores `[bios]`. This section is a draft.
+
+```
+[bios]
+delay_ms = 1000
+beep = on
+scheme = green
+```
+
+| Key | Values | Default |
+|---|---|---|
+| `delay_ms` | Length of the key window in milliseconds, 0 to 10000 | `1000` |
+| `beep` | `on`, `off`, `yes`, `no`, `true`, `false`, `1`, `0` | `on` |
+| `scheme` | Screen colours: `green`, `amber`, `blue`, `white` | `green` |
+
+Key names and the words of `beep` and `scheme` are case-insensitive.
+
+A `delay_ms` value is one or more ASCII digits and nothing else. Leading zeros are fine. A sign, a space inside the number, a unit such as `ms` or any other character makes the value bad. A run of digits past 4294967295 saturates there. A value above 10000 is then clamped to 10000. So `delay_ms = 1000000000` gives 10000, and `delay_ms = 10ms` is bad. With `delay_ms = 0` there is no key window.
+
+A bad value or an unknown key in `[bios]` is skipped and counted, and the key keeps its default. A line that does not parse as INI makes the whole file bad: every key takes its default. A missing file means the defaults too. The `config` marker reports each case.
+
 ## Registers at entry
 
 | Register | Value |
@@ -346,16 +369,59 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `holo_launch` | `path` | Pip-OS starts a holotape |
 | `holo_exit` | `status` | Holotape returned |
 | `holo_kill` | `reason pc` | Pip-OS killed a holotape after a fault. `reason` and `pc` work as in `rom_kill`. |
+| `init` | `fb console tick hz` | First stage: return codes of the hardware set-up, and the tick rate |
+| `input` | `serial mini script` | First stage: return codes of the input back ends |
+| `post` | `name result`, then probe keys | First stage: one self-test probe. `result` is `ok`, `fail`, `absent` or `skipped`. A skipped probe has `after`, the probe that stopped the self test. See [First-stage self test](#first-stage-self-test). |
+| `post_done` | `result ok fail absent skipped us` | First stage: the self-test summary. `result` is `fail` when the self test stops the boot, else `ok`. |
+| `config` | `result path`, then `applied clamped bad unknown`, or `why` | First stage: reading `BOOT.CFG`. `result` is `ok`, `missing` or `bad`. With `bad`, `why` is `read`, with `rc`, or `syntax`, with `line`. |
+| `settings` | `delay_ms beep scheme` | First stage: the `[bios]` settings in use |
+| `beep` | `state` | First stage: the power-on beep. `state` is `played` or `failed`, with `rc`, `off`, or `skipped`, with `reason`, the result of the audio probe. |
+| `key_window` | `ms` | First stage: the key window starts |
+| `shell_request` | `source` | First stage: a key came in the key window, from `console` or `maint` |
+| `key_window_end` | `key` | First stage: the key window ended. `key=1` when a key came. |
+| `bootinfo` | `flags caps dev part_lba fdt_size` | First stage: the boot info as handed over, right before `jump` |
+| `idle` | | First stage: the boot stopped and the stage waits in its idle loop |
+| `reboot` | | First stage: the maintenance port asked for a reboot |
 
 | Stage | Must emit |
 |---|---|
-| `bios` | `boot`, `load`, `fallback`, `error`, `jump`, `shell` |
+| `bios` | `boot`, `init`, `input`, `post`, `post_done`, `mount`, `config`, `settings`, `beep`, `key_window`, `key_window_end`, `load`, `fallback`, `error`, `bootinfo`, `jump`, `shell`, `idle` |
 | `bootagent` | `boot`, `handoff`, `ready` when the menu shows, `load`, `error`, `jump` |
 | `uos`, `maint`, `diag` | `boot`, `handoff`, `ready` |
 | `pipos` | `boot`, `load`, `error`, `jump` for the ROM, `rom_exit`, `rom_kill`, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
 | `deitrix` | `boot`, `ready` |
 
 All stages emit `exception` and `panic` when those happen. Deitrix runs in USR mode, so it prints through the `log` syscall.
+
+The first-stage events, from `init` to `reboot` in the table, are RETROS-BIOS's. Their keys are a draft.
+
+`key_window` is always followed by `key_window_end`, also with `delay_ms = 0`. `shell_request` comes between them when a key came. `post` comes once per probe, in probe order, on every path, and `post_done` follows the last one.
+
+### First-stage error codes
+
+Besides the loader codes from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md) and `io`, RETROS-BIOS uses two `error` codes of its own, with no `path`:
+
+| `code=` | Screen | Cause |
+|---|---|---|
+| `memtest` | `E16` | The memory test found a fault |
+| `timer` | `E17` | The system timer does not advance |
+
+### First-stage self test
+
+RETROS-BIOS runs eight probes in this order. This order is a draft.
+
+| Probe | Passes when | `absent` when | Stops the boot |
+|---|---|---|---|
+| `memory` | The memory test of 256 KiB at `0x00400000` finds no fault | Never | Yes, and no later probe runs |
+| `video` | The framebuffer and the console start | Never | No |
+| `timer` | The system timer changes within a million reads | Never | Yes, and no later probe runs |
+| `sd` | `sd_init()` succeeds and block 0 reads | No card answers | Yes, also when absent |
+| `fat` | A volume mounts by the [boot volume](#boot-volume) rule | The `sd` probe did not pass | Yes, also when absent |
+| `rng` | The hardware RNG gives a value | No peripheral base | No |
+| `rtc` | A DS1307 or DS3231 answers and its time reads | No chip answers | No |
+| `audio` | `audio_init()` returns 0 | `audio_init()` returns `AUDIO_ERR_NO_PWM` or `AUDIO_ERR_PIN` | No |
+
+Memory runs first because everything after it needs memory. Video runs before the timer because the framebuffer and the mailbox do not wait on the timer. The timer runs before every probe that waits on it. After a failed memory test or a stopped timer, every later probe is `skipped`. A failed memory test gives `code=memtest`, a stopped timer `code=timer`, and a failed `sd` or `fat` probe `code=io` with `what=sd` or `what=fat`.
 
 ## Failure behaviour
 
@@ -364,6 +430,7 @@ All stages emit `exception` and `panic` when those happen. Deitrix runs in USR m
 | RETROS-BIOS | `MFBOOT.SYS` fails any step | `ev=error`, `ev=fallback`, then try `MFBOOT.BAK` |
 | RETROS-BIOS | `MFBOOT.BAK` also fails | `ev=error`, then the emergency shell |
 | RETROS-BIOS | SD card or FAT mount fails | `ev=error code=io`, then the emergency shell |
+| RETROS-BIOS | The memory test fails or the timer does not advance | `ev=error code=memtest` or `code=timer`, then the halted state |
 | MFBootAgent | The chosen entry fails | `ev=error`. Shows the error in the menu and stays in the menu. |
 | MFBootAgent | `BOOT.CFG` missing or bad | Menu with the default entry only |
 | UOS | Boot info not trusted | Cold-boots and runs |
@@ -372,6 +439,8 @@ All stages emit `exception` and `panic` when those happen. Deitrix runs in USR m
 | Pip-OS | The ROM crashes | `ev=rom_kill`. Pip-OS shows the fault on screen and stops running the ROM. |
 | Pip-OS | A holotape crashes | `ev=holo_kill`. Control returns to Deitrix. |
 | Any | CPU exception in a stage | `ev=exception`, then halt |
+
+Until RETROS-BIOS has its emergency shell, every stop puts it in the halted state. It shows the error and `BOOT HALTED`, prints `ev=shell` with `available=0` and then `ev=idle`, and waits. It never jumps and never reboots by itself, so there is no reboot loop. The maintenance port keeps answering, and its `reboot` command restarts the board through the watchdog. In QEMU the maintenance port is the mini UART on the second serial port. On hardware the mini UART reaches no pin. This state is a draft.
 
 The emergency shell runs on the PL011 and on the screen console. It accepts at least `help`, `info` and `reboot`. `info` prints the boot info fields. `reboot` uses the watchdog.
 
