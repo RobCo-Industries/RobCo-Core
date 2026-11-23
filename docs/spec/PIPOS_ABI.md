@@ -1,8 +1,8 @@
 # Pip-OS ABI
 
-This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.2, `abi_version = 0x00010002` in the image header.
+This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.3, `abi_version = 0x00010003` in the image header.
 
-Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.2 also runs on a 1.0 or 1.1 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back.
+Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.3 also runs on a 1.0, 1.1 or 1.2 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back. Version 1.3 adds `hw_flags` to `sys_info`. A Pip-OS before 1.3 writes 0 there, so an image that reads `hw_flags` first checks that `abi_version` in `sys_info` or in `pipos_startup_t` is at least `0x00010003`.
 
 Rows marked "draft" in a status column may change before 1.0 is frozen. Rows marked "stable" will not change within major version 1.
 
@@ -130,7 +130,7 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 | `0x42` | `ticks_ms` | none | Milliseconds since boot, wraps at 2^31, about 24.9 days. Measure the time from `a` to `b` as `(b - a) & 0x7FFFFFFF`. Plain unsigned subtraction is wrong across the wrap. | draft |
 | `0x43` | `sleep_ms` | `uint32 ms` | 0, or `-PIP_ERANGE` above `0x7FFFFFFF` | draft |
 | `0x44` | `exit` | `int32 status` | Does not return. The exit status is the low 8 bits. | draft |
-| `0x45` | `sys_info` | `pip_sys_info_t *out`: board, ABI, Pip-OS version | 0 | draft |
+| `0x45` | `sys_info` | `pip_sys_info_t *out`: board, ABI, Pip-OS version, hardware flags | 0 | draft |
 | `0x46` | `mem_info` | `pip_mem_info_t *out`: heap base, size | 0 | draft |
 | `0x47` | `power` | `uint32 op`: 0 reboot, 1 halt, 2 screen off, 3 screen on | 0, does not return, or `-PIP_EINVAL` | draft |
 | `0x48` | `log` | `const char *text` | 0. Prints on the PL011. | draft |
@@ -285,6 +285,18 @@ There is one voice. `tone`, `sample` and `play_seq` return at once and the sound
 
 A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample`, `sample_queue` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call refused for its arguments plays nothing and leaves the current sound playing.
 
+When several errors apply, a call returns the first one in this order:
+
+1. A number out of its limits: `-PIP_EINVAL`. These are the frequency and duration of `tone`, the length of `sample` and `sample_queue`, the count of `play_seq` and the level of `volume`.
+2. A bad pointer: `-PIP_EFAULT`.
+3. A bad note in `play_seq`: `-PIP_EINVAL`.
+4. A sample already waiting, for `sample_queue`: `-PIP_EBUSY`.
+5. The audio driver refuses the sound: `-PIP_EIO`.
+
+So `sample_queue` with a bad length or pointer returns that error even when a sample already waits.
+
+A refused call changes nothing. It stops no sound, so the audio trace prints no `op=stop` line for it. `audio_stop` with nothing playing returns 0 and prints no line either. A call that replaces a playing sound prints `op=stop` once, then its start line, as the stop rule in the [audio guide](../guide/api/audio.md) states.
+
 The volume belongs to the device, not to the image. A level set by a ROM or a holotape stays after it ends, until the next power-on. Pip-OS stops the sound an image started, and a waiting sample, when the image starts and when it ends.
 
 `tone`, `sample`, `play_seq` and `audio_stop` drop the waiting sample as well as the playing one.
@@ -300,7 +312,7 @@ typedef struct __attribute__((packed)) pip_note {
 
 ## Time, sensors and power
 
-Pip-OS keeps a software clock in Unix seconds. At boot it reads a real-time clock chip if one answers. `set_time` sets the software clock. When a real-time clock chip answers, Pip-OS also writes the time to the chip, so it survives a reboot. If the chip write fails, `set_time` returns `-PIP_EIO`. The software clock keeps the new value. With no chip, `set_time` returns 0 and the time is lost at power-off. The chips hold years 2000 to 2099, Unix seconds 946684800 to 4102444799. For a time outside that range, the software clock takes it, the chip is not written, and `set_time` returns 0. With no chip and no `set_time`, the clock is not set and `get_time` returns `-PIP_ENODEV` and writes nothing.
+Pip-OS keeps a software clock in Unix seconds. At boot it reads a real-time clock chip if one answers. `set_time` sets the software clock. When a real-time clock chip answered at boot and the time is inside the chip's range, Pip-OS also writes the time to the chip, so it survives power-off. If the chip write fails, `set_time` returns `-PIP_EIO`. The software clock keeps the new value. With no chip, `set_time` returns 0 and the time is lost at power-off. The chips hold years 2000 to 2099, Unix seconds 946684800 to 4102444799. For a time outside that range, the software clock takes it, the chip is not written, `set_time` returns 0, and the time is lost at power-off. With no chip and no `set_time`, the clock is not set and `get_time` returns `-PIP_ENODEV` and writes nothing.
 
 The clock counts on the 1 MHz system timer, so periods with interrupts off do not slow it. It only goes back through `set_time`. `set_time` accepts any value. The clock stops at `0xFFFFFFFF` instead of wrapping.
 
@@ -325,8 +337,12 @@ typedef struct __attribute__((packed)) pip_sys_info {
     uint32_t board_rev;      /* firmware board revision code */
     uint32_t soc;            /* value from BOARD_SUPPORT.md */
     uint32_t mem_size;       /* RAM in bytes */
-    uint32_t reserved[2];    /* 0 */
+    uint32_t hw_flags;       /* PIP_HW_*, since ABI 1.3. 0 before. */
+    uint32_t reserved;       /* 0 */
 } pip_sys_info_t;            /* 32 bytes */
+
+#define PIP_HW_RTC    (1u << 0)  /* a clock chip answered at boot */
+#define PIP_HW_AUDIO  (1u << 2)  /* the audio driver started */
 
 typedef struct __attribute__((packed)) pip_mem_info {
     uint32_t heap_base;
@@ -335,6 +351,29 @@ typedef struct __attribute__((packed)) pip_mem_info {
     uint32_t stack_size;     /* 0x00010000 */
 } pip_mem_info_t;            /* 16 bytes */
 ```
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| `0x00` | 4 | `size` | `32` |
+| `0x04` | 4 | `abi_version` | ABI Pip-OS implements, as in `pipos_startup_t` |
+| `0x08` | 4 | `pipos_version` | `(major << 16) \| (minor << 8) \| patch` |
+| `0x0C` | 4 | `board_rev` | Firmware board revision code |
+| `0x10` | 4 | `soc` | SoC value from [BOARD_SUPPORT.md](./BOARD_SUPPORT.md) |
+| `0x14` | 4 | `mem_size` | RAM in bytes |
+| `0x18` | 4 | `hw_flags` | Hardware flags, added in ABI 1.3. See below. |
+| `0x1C` | 4 | `reserved` | 0 |
+| | 32 | | Total |
+
+| `hw_flags` bit | Name | Set when |
+|---|---|---|
+| 0 | `PIP_HW_RTC` | A real-time clock chip answered at boot. It says nothing about a later write. See below. |
+| 1 | | Reserved, 0. `gfx_info` already reports the display backend. |
+| 2 | `PIP_HW_AUDIO` | The audio driver started at boot, so the sound calls can play |
+| 3 to 31 | | Reserved, 0 |
+
+What a ROM can tell its user: a set time lasts past power-off only when `PIP_HW_RTC` is set, the time lies in 946684800 to 4102444799, and `set_time` returns 0. With the bit set and a time outside that range, the time lasts until power-off. With `-PIP_EIO` the chip write failed and the time lasts until power-off. With the bit clear the time is always lost at power-off.
+
+The struct keeps its size of 32 bytes. `hw_flags` takes the place of the first reserved word, which every Pip-OS before 1.3 writes as 0. So a ROM cannot tell "no clock chip" from "an older Pip-OS" by `hw_flags` alone: it checks `abi_version` first. A ROM built for 1.3 that runs on an older Pip-OS treats the flags as unknown.
 
 `log` takes at most 255 bytes of text. With no NUL in the first 256 bytes it returns `-PIP_EINVAL`. Bytes other than printable ASCII, newline and tab print as `?`.
 
@@ -470,3 +509,11 @@ include $(PIPOS_SDK)/pipos-app.mk
 ```
 
 `pipos-app.mk` sets magic and subtype from `KIND`, builds with the RobCo-Core flags, links with `rom.ld` or `holotape.ld`, and calls `tools/rimg.py seal`. ROM and holotape code must not include RobCo-Core driver headers. It talks to hardware only through syscalls.
+
+## Changes
+
+| Version | Change |
+|---|---|
+| 1.1 | `sample_queue` |
+| 1.2 | Button 6, Back |
+| 1.3 | `hw_flags` in `sys_info`. Pip-OS implements it in its own repository later. Until then it reports ABI 1.2 and writes 0. |
