@@ -91,28 +91,67 @@ path = /ROBCO/DIAG.SYS
 
 | Limit | Value |
 |---|---|
-| Entries | 8 |
+| Entries | 8 usable entries. A dropped section does not take a slot. |
 | Entry name | 1 to 15 characters, each a letter, a digit, `_` or `-` |
 | `path` | 63 characters, so it fits `boot_path` with its NUL |
 | `cmdline` | 127 characters, so it fits `cmdline` with its NUL. The INI reader caps a value at 127 bytes, so a longer line makes the whole file bad. |
-| File size | 4096 bytes. A longer file is a read error. |
+| FiRules:
 
-Rules:
-
+- A reader uses `ini_parse_sections()`, not `ini_parse()`. `ini_parse()` calls its handler only for keys, so it cannot see a section with no keys. Then `[entry UOS]` with no keys, followed by a second `[entry UOS]` with a path, would look like one section. `ini_parse_sections()` reports every section header in file order, empty ones and repeats included, before the keys under it.
+- The handlers run for each line before the parse reaches a bad line. So the reader acts on the sections and keys only after the call returns `0`.
 - Section names, key names and entry names are case-insensitive. The menu shows an entry name as written. Values keep their case.
-- Entries keep the file order. The first 8 sections with a valid name that no earlier section used take the slots. Later ones are counted as `ignored`.
-- `[entry]` with no name, or a name that breaks the limit, drops the section and counts as `bad`.
-- When two sections have the same name, the first wins, also when it has no usable path. The others count as `dup`.
-- An entry with no usable `path` is dropped and counts as `bad`. A bad `path` value counts as `bad` too.
+- An entry header is `entry`, one or more spaces or tabs, then the name. `ini.h` trims the spaces around the whole header.
+- Within one section, a key given twice takes its last value. `[boot]` given twice acts as one section.
+- The reader takes each `[entry ...]` header in file order and gives it exactly one result, in this order of tests:
+  1. `[entry]` with no name, or a name that breaks the limit: the section is dropped and counts as `bad`.
+  2. A name that an earlier entry header used: the section is dropped and counts as `dup`. The earlier header keeps the name, even when it was dropped for a bad name rule or a missing or bad value. So the first of two headers with the same name always wins.
+  3. No `path` key, or a `path` or `cmdline` that breaks the rules below: the section is dropped and counts as `bad`.
+  4. The 8 slots are full: the section counts as `ignored`.
+  5. Otherwise the entry takes the next slot. The menu lists the slots in file order.
+- The `entries` key of the `config` marker is the number of filled slots. `dup` counts only step 2. `bad` counts steps 1 and 3, plus a bad `timeout`. The keys of a dropped or ignored section count nowhere else.
+ounts as `bad`. A bad `path` value counts as `bad` too.
 - The rules below apply to the value after INI decoding, so a `\n` escape in a quoted value is a newline byte.
 - A usable `path` starts with `/`. Every byte is an ASCII letter, a digit, `/`, `.`, `_`, `-` or `~`. These are the FAT 8.3 name characters the stages need, and all of them lie in 0x21 to 0x7E. Any other byte makes the path bad, so the entry is dropped and counts as `bad`.
 - A usable `cmdline` holds only printable ASCII, 0x20 to 0x7E. A control byte, a byte above 0x7E or a newline from a `\n` escape makes it bad. The whole entry is then dropped and counts as `bad`. The stage does not boot the entry with an empty command line, because an operating image must not start with a changed command line.
 - `timeout` follows the number rule of `delay_ms`: one or more ASCII digits and nothing else. A value above 99 becomes 99 and counts as `clamped`. A bad value counts as `bad`, and the menu waits as with no key.
 - `timeout = 0` shows the menu, then boots the default entry at once. With no `timeout` key the menu waits for a key.
-- A `default` that names no entry, or no `default` key, means the first entry.
+- A `default` that names no entry in a slot, or no `default` key, means the first slot. A `default` that names a dropped or ignored section counts the same way.
 - Unknown keys, keys before the first section and keys in unknown sections count as `unknown`. MFBootAgent skips `[bios]` without a count.
 - A line that does not parse makes the whole file bad. A file that parses but leaves no entry with a usable path is bad too, also an empty file.
 - A missing file, a read error or a bad file gives the menu with one entry, `UOS` at `/ROBCO/UOS.SYS`, and no timeout. The `config` marker reports each case.
+
+#### Examples
+
+An empty section takes its name first:
+
+```
+[entry UOS]
+
+[entry UOS]
+path = /ROBCO/UOS.SYS
+
+[entry MAINT]
+path = /ROBCO/MAINT.SYS
+```
+
+The first `[entry UOS]` has no `path`. It counts as `bad` and keeps the name `UOS`. The second counts as `dup`, although it has a path. The menu shows one entry, `MAINT`. The `config` marker has `entries=1 dup=1 bad=1`.
+
+Dropped sections do not take slots:
+
+```
+[entry E1]
+[entry E2]
+[entry E3]
+[entry E4]
+[entry E5]
+[entry E6]
+[entry E7]
+[entry E8]
+[entry E9]
+path = /ROBCO/UOS.SYS
+```
+
+`E1` to `E8` have no `path`. Each counts as `bad` and takes no slot. `E9` takes the first slot. The menu shows one entry, `E9`. The `config` marker has `entries=1 ignored=0 bad=8`.
 
 #### The `[bios]` section
 
