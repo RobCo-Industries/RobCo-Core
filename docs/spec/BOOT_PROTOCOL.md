@@ -549,7 +549,11 @@ MFBootAgent passes `/ROBCO/BOOT.CFG` and `/ROBCO/UOS.SYS` to `fs_mount_boot()`. 
 
 ### Loading an entry
 
-MFBootAgent loads the chosen entry into the slot at `0x00400000` and expects magic `BOOT` with ABI major 2. It loads only operating images: subtype 0 UOS, 2 maintenance or 3 diagnostics. Any other subtype, a boot agent included, fails at the bounds step of [IMAGE_FORMAT.md](./IMAGE_FORMAT.md) with `code=bounds`. The screen says it is not an operating image.
+MFBootAgent loads the chosen entry into the slot at `0x00400000` and expects magic `BOOT` with ABI major 2. It loads only operating images: subtype 0 UOS, 2 maintenance or 3 diagnostics.
+
+MFBootAgent checks the subtype itself. It runs this check at step 4, the bounds step of [IMAGE_FORMAT.md](./IMAGE_FORMAT.md), after the header checks of steps 1 to 3 and before the ABI and CRC steps. It trusts nothing else in the image before this check passes. Any subtype other than 0, 2 or 3 fails with `code=bounds`, a boot agent included. The code is `bounds` because the image is not allowed in this slot. The screen says it is not an operating image.
+
+The library's `loader_load()` does not make this check for the caller. With a caller slot it checks only that the subtype has some slot, then checks the bounds against the caller's slot. So a `BOOT` image with subtype 4 to 7, linked at `0x00400000`, passes `loader_load()`. A second stage that only calls `loader_load()` does not meet this rule.
 
 A failed load prints `error` and shows the error under the menu. The menu stays, so the user can pick another entry or reboot. The stage never jumps to an image that failed a step and never reboots by itself.
 
