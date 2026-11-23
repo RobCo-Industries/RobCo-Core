@@ -12,6 +12,8 @@ import subprocess
 
 import pytest
 
+from harness.env import minimal_env
+
 from test_rimg_tool import sealed
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -27,7 +29,7 @@ needs_sha256 = pytest.mark.skipif(shutil.which("sha256sum") is None and shutil.w
 
 def run(*args, env=None):
     return subprocess.run(["bash", *map(str, args)], capture_output=True, text=True,
-                          env={**os.environ, **(env or {})})
+                          env=minimal_env(**(env or {})))
 
 
 def spec_config(kernel):

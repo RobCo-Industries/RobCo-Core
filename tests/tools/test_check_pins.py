@@ -11,6 +11,8 @@ import subprocess
 
 import pytest
 
+from harness.env import minimal_env, prepend_path
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "check_pins.sh"
 FIXTURES = ROOT / "tests" / "fixtures" / "check-pins"
@@ -53,7 +55,7 @@ def no_git(tmp_path):
     git = stub / "git"
     git.write_text("#!/bin/sh\necho 'fatal: detected dubious ownership' >&2\nexit 128\n")
     git.chmod(0o755)
-    return dict(os.environ, PATH=f"{stub}{os.pathsep}{os.environ['PATH']}")
+    return minimal_env(PATH=prepend_path(stub))
 
 
 def run(proj, fixture, env=None):
@@ -147,7 +149,7 @@ def test_unresolved_ref_and_missing_files(tmp_path, no_git):
 def test_git_cross_check_warns(tmp_path):
     """When git works, a checkout that differs from the recorded commit warns."""
     proj = make_project(tmp_path)
-    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", HOME=str(tmp_path))
+    env = minimal_env(GIT_CONFIG_NOSYSTEM="1", HOME=tmp_path)
     git = ["git", "-C", str(proj)]
     subprocess.run(git + ["init", "-q"], check=True, env=env)
     r = subprocess.run(git + ["update-index", "--add", "--cacheinfo",

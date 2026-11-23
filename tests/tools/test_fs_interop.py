@@ -16,9 +16,10 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from harness.sdimage import PART_LBA, SECTOR, _mbr, have_mtools, make_sd_image  # noqa: E402
+from harness.env import minimal_env  # noqa: E402
 
 TOOL = os.path.join(ROOT, "build", "host", "fs_tool")
-ENV = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+ENV = minimal_env(MTOOLS_SKIP_CHECK="1")
 
 pytestmark = pytest.mark.skipif(not have_mtools() or not shutil.which("mdir"),
                                 reason="mtools not installed")

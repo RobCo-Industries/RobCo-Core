@@ -19,6 +19,7 @@ SAMPLE = os.path.join(ROOT, "tests", "fixtures", "sample-project")
 sys.path.insert(0, TESTS)
 
 from harness.qemu import have_machine  # noqa: E402
+from harness.env import minimal_env  # noqa: E402
 
 need_target = pytest.mark.skipif(
     shutil.which("arm-none-eabi-gcc") is None or not have_machine("qemu-system-arm", "raspi0"),
@@ -33,7 +34,7 @@ def project(tmp_path_factory):
 
 
 def pytest_in(project, *args):
-    env = dict(os.environ, ROBCO_CORE=ROOT)
+    env = minimal_env(ROBCO_CORE=ROOT)
     return subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
                            str(project / "tests"), *args],
                           cwd=project, env=env, capture_output=True, text=True)
@@ -94,7 +95,7 @@ def test_runner_boots_and_quits():
     subprocess.run(["make", "-s", "-C", os.path.join(ROOT, "examples", "hello"), "CI=1"],
                    check=True, stdout=subprocess.DEVNULL)
     image = os.path.join(ROOT, "examples", "hello", "build", "hello.img")
-    env = dict(os.environ, PYTHONPATH=TESTS)
+    env = minimal_env(PYTHONPATH=TESTS)
     p = subprocess.Popen([sys.executable, "-m", "harness.run", image, "--board", "raspi0"],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          env=env)
@@ -118,7 +119,7 @@ def test_runner_boots_and_quits():
 
 
 def test_runner_usage():
-    env = dict(os.environ, PYTHONPATH=TESTS)
+    env = minimal_env(PYTHONPATH=TESTS)
     r = subprocess.run([sys.executable, "-m", "harness.run", "x.img", "--board", "raspi0",
                         "--serial2", "udp:1"], env=env, capture_output=True, text=True)
     assert r.returncode == 2 and "--serial2 takes none, pty or tcp:PORT" in r.stderr

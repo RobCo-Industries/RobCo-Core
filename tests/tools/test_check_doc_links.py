@@ -10,6 +10,8 @@ import subprocess
 
 import pytest
 
+from harness.env import minimal_env, prepend_path
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "check_doc_links.sh"
 COMMIT = "1" * 40
@@ -51,7 +53,7 @@ def no_git(tmp_path):
     git = stub / "git"
     git.write_text("#!/bin/sh\necho 'fatal: detected dubious ownership' >&2\nexit 128\n")
     git.chmod(0o755)
-    return dict(os.environ, PATH=f"{stub}{os.pathsep}{os.environ['PATH']}")
+    return minimal_env(PATH=prepend_path(stub))
 
 
 def run(proj, env, *args, sub=SUB):

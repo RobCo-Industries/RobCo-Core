@@ -8,10 +8,12 @@ import subprocess
 
 import pytest
 
+from harness.env import minimal_env
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MKSD = ROOT / "tools/mksdimage.sh"
 PART_OFF = 2048 * 512
-ENV = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+ENV = minimal_env(MTOOLS_SKIP_CHECK="1")
 
 pytestmark = pytest.mark.skipif(
     not all(shutil.which(t) for t in ("mformat", "mcopy", "mdir", "mtype")),
