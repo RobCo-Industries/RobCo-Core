@@ -10,7 +10,12 @@
 # a .. part in the submodule or an exclude is a usage error.
 # It reads every github.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/<ref>
 # URL, on any line, code blocks and reference definitions included. The ref
-# ends at /, ), #, ?, whitespace, a quote, < or >. A ref of exactly 40 hex
+# ends at /, ), #, ?, whitespace, a quote, < or >, and at the characters that
+# can follow a URL in Markdown or prose: ` ] } , ; : * | and \. Git forbids
+# : * and \ in a ref name; a name with one of the others is not supported
+# and is read only up to that character. A ref of 40 hex digits followed
+# only by . or _ is that hash at a sentence end or inside _emphasis_. Any
+# other . or _ is part of a branch or tag name, such as v1.0 or my_branch. A ref of exactly 40 hex
 # digits is a pin and must equal the submodule commit; case does not matter.
 # A ref of 7 to 39 hex digits is an abbreviated commit and is an error: use
 # the full hash. Any other ref is a branch or tag name and is ignored.
@@ -124,12 +129,17 @@ for x in ${excludes[@]+"${excludes[@]}"}; do
     prune+=(-o -path "./$x")
 done
 
+# A bracket expression: ] comes first to be literal, \ is literal inside.
+ref_chars='[^]/)#?[:space:]"'"'"'<>`},;:*|\]*'
 status=0
 while IFS= read -r -d '' f; do
     case "${f##*/}" in
     CHANGELOG.md | CLAUDE.md | AGENTS.md) continue ;;
     esac
     while IFS=: read -r n seg; do
+        if [[ $seg =~ ^([0-9a-fA-F]{40})[._]+$ ]]; then
+            seg=${BASH_REMATCH[1]}
+        fi
         hash=$(printf '%s' "$seg" | tr 'A-F' 'a-f')
         case "$hash" in
         '' | *[!0-9a-f]*) continue ;;
@@ -143,7 +153,7 @@ while IFS= read -r -d '' f; do
             echo "check-doc-links: ${f#./}:$n links RobCo-Core at abbreviated commit $seg, use the full hash $commit" >&2
             status=1
         fi
-    done < <(grep -noE "github\.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/[^/)#?[:space:]\"'<>]*" "$f" |
+    done < <(grep -noE "github\.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/$ref_chars" "$f" |
         sed -E 's#^([0-9]+):.*/(blob|tree|commit)/#\1:#')
 done < <(find . \( "${prune[@]}" \) -prune -o -name '*.md' -type f -print0)
 

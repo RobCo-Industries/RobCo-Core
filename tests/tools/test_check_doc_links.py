@@ -264,3 +264,39 @@ def test_code_blocks_are_checked_too(tmp_path, no_git):
     r = run(proj, no_git)
     assert r.returncode == 1
     assert "a.md:2" in r.stderr
+
+
+# Characters that can follow a URL in Markdown or prose. Each ends the ref.
+# "." and "_" end it only after a full 40-hex hash: a branch name can hold them.
+FOLLOWERS = ["`", "]", "}", ",", ";", ":", ".", "*", "_", "|", "\\", "'"]
+
+
+@pytest.mark.parametrize("c", FOLLOWERS)
+def test_hash_ends_at_markdown_followers(tmp_path, no_git, c):
+    proj = make_project(tmp_path)
+    base = "https://github.com/RobCo-Industries/RobCo-Core/blob/"
+    write(proj, "a.md", f"see {base}{OLD}{c} now\n")
+    r = run(proj, no_git)
+    assert r.returncode == 1, r.stderr
+    assert f"a.md:1 links RobCo-Core at {OLD}," in r.stderr
+    write(proj, "a.md", f"see {base}{COMMIT}{c} now\n{base}{COMMIT}{c}\n")
+    r = run(proj, no_git)
+    assert r.returncode == 0, r.stderr
+    write(proj, "a.md", f"see {base}main{c} now\n{base}release-1{c}\n")
+    r = run(proj, no_git)
+    assert r.returncode == 0, r.stderr
+
+
+def test_inline_code_pin(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"Pinned at `{link(OLD, path='')}` and `https://github.com/RobCo-Industries/RobCo-Core/blob/{OLD}`.\n")
+    r = run(proj, no_git)
+    assert r.returncode == 1
+    assert r.stderr.count("links RobCo-Core") == 2, r.stderr
+
+
+def test_dotted_and_underscored_branch_names_are_ignored(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    base = "https://github.com/RobCo-Industries/RobCo-Core/tree/"
+    write(proj, "a.md", f"{base}v1.0.2 {base}my_branch {base}{OLD[:20]}_x {base}{OLD}.x\n")
+    assert run(proj, no_git).returncode == 0
