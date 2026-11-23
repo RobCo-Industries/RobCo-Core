@@ -86,14 +86,14 @@ path = /ROBCO/DIAG.SYS
 |---|---|---|---|
 | `[boot]` | `default` | The name of an entry | The first entry |
 | `[boot]` | `timeout` | Seconds, 0 to 99 | None: the menu waits for a key |
-| `[entry NAME]` | `path` | Absolute path of the image, 2 to 63 characters from the path set in the rules below | None: the entry is dropped |
+| `[entry NAME]` | `path` | Absolute 8.3 path of the image, as the rules below state | None: the entry is dropped |
 | `[entry NAME]` | `cmdline` | Up to 127 printable ASCII characters, copied to `cmdline` in the boot info | Empty |
 
 | Limit | Value |
 |---|---|
 | Entries | 8 usable entries. A dropped section does not take a slot. |
 | Entry name | 1 to 15 characters, each a letter, a digit, `_` or `-` |
-| `path` | 63 characters, so it fits `boot_path` with its NUL |
+| `path` | 63 characters, so it fits `boot_path` with its NUL. At most 8 components, each 8.3. |
 | `cmdline` | 127 characters, so it fits `cmdline` with its NUL. The INI reader caps a value at 127 bytes, so a longer line makes the whole file bad. |
 | FiRules:
 
@@ -111,7 +111,8 @@ path = /ROBCO/DIAG.SYS
 - The `entries` key of the `config` marker is the number of filled slots. `dup` counts only step 2. `bad` counts steps 1 and 3, plus a bad `timeout`. The keys of a dropped or ignored section count nowhere else.
 ounts as `bad`. A bad `path` value counts as `bad` too.
 - The rules below apply to the value after INI decoding, so a `\n` escape in a quoted value is a newline byte.
-- A usable `path` starts with `/`. Every byte is an ASCII letter, a digit, `/`, `.`, `_`, `-` or `~`. These are the FAT 8.3 name characters the stages need, and all of them lie in 0x21 to 0x7E. Any other byte makes the path bad, so the entry is dropped and counts as `bad`.
+- A usable `path` follows the [boot partition name rule](./IMAGE_FORMAT.md#files-on-the-sd-card): `/`, then 1 to 8 components separated by `/`, 63 characters at most. Each component is a name of 1 to 8 characters, then optionally a dot and an extension of 1 to 3 characters. Each character is an ASCII letter, a digit, `_`, `-` or `~`. FAT allows more characters, such as `$` and `!`. This set is a deliberate subset. An empty component, a `/` at the end, `.` or `..` breaks the rule. A path that breaks the rule makes the entry dropped, counted as `bad`.
+- Letters may be written in either case. FAT names are case-insensitive, so the stage upper-cases the path, then compares and stores it in that form. `boot_path` in the boot info and the `path` key of the markers hold the upper-case path. `path = /robco/uos.sys` loads `/ROBCO/UOS.SYS`.
 - A usable `cmdline` holds only printable ASCII, 0x20 to 0x7E. A control byte, a byte above 0x7E or a newline from a `\n` escape makes it bad. The whole entry is then dropped and counts as `bad`. The stage does not boot the entry with an empty command line, because an operating image must not start with a changed command line.
 - `timeout` follows the number rule of `delay_ms`: one or more ASCII digits and nothing else. A value above 99 becomes 99 and counts as `clamped`. A bad value counts as `bad`, and the menu waits as with no key.
 - `timeout = 0` shows the menu, then boots the default entry at once. With no `timeout` key the menu waits for a key.

@@ -183,7 +183,7 @@ An image can check its own CRC after start with `rimg_self_check()`. The CRC the
 
 ## Files on the SD card
 
-The boot partition is FAT32. Names are 8.3 and upper case.
+The boot partition is FAT32. Names are 8.3 and upper case. Each name is 1 to 8 characters, then optionally a dot and 1 to 3 characters. The characters are `A-Z`, `0-9`, `_`, `-` and `~`, a deliberate subset of what FAT allows. A path has at most 8 components and 63 characters. The `path` rule of [BOOT.CFG](./BOOT_PROTOCOL.md#bootcfg) uses the same rule and accepts lower case letters, which it upper-cases.
 
 | Chain | Path | Kind |
 |---|---|---|
