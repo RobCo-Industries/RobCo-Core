@@ -1,3 +1,4 @@
 # <build-dir> <extra cflags>
 build/fault -DHELLO_FAULT=1
 build/earlyfault -DHELLO_EARLY_FAULT=1
+build/printf -DHELLO_PRINTF=1

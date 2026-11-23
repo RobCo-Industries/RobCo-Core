@@ -19,12 +19,13 @@ import pytest
 from harness.boot import boot
 from harness.qemu import QemuError
 from harness.sdimage import PART_LBA, SECTOR, corrupt, make_sd_image
+from harness.env import minimal_env
 
 STAGE = "storage"
 CMD_TIMEOUT = 60
 PART_OFF = PART_LBA * SECTOR
 RTC_DEVICE = ["-device", "ds1338,bus=i2c-bus.1,address=0x68"]
-MT_ENV = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+MT_ENV = minimal_env(MTOOLS_SKIP_CHECK="1")
 
 
 def pattern(size, seed):

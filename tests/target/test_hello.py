@@ -70,3 +70,26 @@ def test_hello_fault_before_uart_init(board, example_image):
         assert not events(vm, "boot"), vm.serial
         exc = events(vm, "exception")
         assert len(exc) == 1 and exc[0]["type"] == "undef", vm.serial
+
+
+PRINTF_LINES = [
+    "[4294967295] [  4294967295] [4294967295  ] [004294967295] [004294967295]",
+    "[-2147483648] [  -2147483648] [-2147483648  ] [-002147483648] [-002147483648]",
+    "[2147483647] [  2147483647] [2147483647  ] [002147483647] [002147483647]",
+    "[ffffffff] [  ffffffff] [ffffffff  ] [00ffffffff] [00ffffffff]",
+    "[FFFFFFFF] [  FFFFFFFF] [FFFFFFFF  ] [00FFFFFFFF] [00FFFFFFFF]",
+    "[0xfffffffc] [0xfffffffc] [0xfffffffc] [0xfffffffc] [0xfffffffc]",
+]
+PRINTF_END = re.compile(r"@RC stage=hello ev=printf_end\n")
+
+
+def test_hello_printf_extremes(board, example_image):
+    """k_printf on the target, so a digit buffer sized for 64-bit hosts only shows."""
+    img = example_image("hello", "printf", "-DHELLO_PRINTF=1")
+    with boot(img, board) as vm:
+        vm.wait_for(PRINTF_END, timeout=30)
+        text = vm.serial.replace("\r", "")
+        begin = text.index("@RC stage=hello ev=printf_begin\n")
+        end = text.index("@RC stage=hello ev=printf_end\n")
+        lines = text[begin:end].split("\n")[1:-1]
+        assert lines == PRINTF_LINES, vm.serial

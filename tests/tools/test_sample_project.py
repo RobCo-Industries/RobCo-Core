@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SAMPLE = os.path.join(ROOT, "tests", "fixtures", "sample-project")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import rimg  # noqa: E402
+from harness.env import minimal_env  # noqa: E402
 
 need_cross = pytest.mark.skipif(shutil.which("arm-none-eabi-gcc") is None,
                                 reason="arm-none-eabi-gcc not installed")
@@ -84,7 +85,7 @@ PART_OFF = 2048 * 512
 
 
 def mt(*args):
-    env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+    env = minimal_env(MTOOLS_SKIP_CHECK="1")
     return subprocess.run(list(args), check=True, env=env, capture_output=True).stdout
 
 

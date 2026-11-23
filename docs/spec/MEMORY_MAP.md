@@ -69,9 +69,9 @@ The slots and regions are whole megabytes, so each can be one or more 1 MiB MMU 
 
 ## Lore vs real
 
-The games show numbers that do not fit real hardware. The firmware always loads the kernel at `0x8000`, so a ROM cannot live at `0x10000`. We keep the in-game numbers on screen as presentation only. The boot screen shows `real >> 6`, the real address divided by 64. No code uses the lore numbers.
+The games show numbers that do not fit real hardware. The firmware always loads the kernel at `0x8000`, so a ROM cannot live at `0x10000`. The table maps each lore number to its real counterpart for documentation. Each lore number is the real address shifted right by 6. No stage prints computed lore addresses today. The Pip-OS boot screen prints fixed text, such as `64K RAM SYSTEM`, and no address. If a stage shows such numbers, they are presentation only. No code uses the lore numbers.
 
-| Shown on screen | Real value | Rule |
+| Lore number | Real value | Rule |
 |---|---|---|
 | 64K RAM | 4 MiB, the Pip-OS region `0x00000000`-`0x003FFFFF` | `0x00400000 >> 6 = 0x10000` bytes = 64 KiB |
 | ROM at `0x10000` | ROM slot `0x00400000` | `0x00400000 >> 6` |

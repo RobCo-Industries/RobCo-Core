@@ -14,6 +14,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .env import minimal_env
+
 SECTOR = 512
 PART_LBA = 2048
 FAT32_MIN_MIB = 64  # below this, FAT16
@@ -58,7 +60,7 @@ def make_sd_image(path, size_mib, files=None, label="ROBCO"):
         f.write(_mbr(0x0C if fat32 else 0x0E, PART_LBA, sectors))
         f.truncate(size)
 
-    env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+    env = minimal_env(MTOOLS_SKIP_CHECK="1")
     img = f"{os.fspath(path)}@@{PART_LBA * SECTOR}"
 
     def mt(*args):

@@ -20,7 +20,10 @@ void *memmove(void *dst, const void *src, size_t n);
 int memcmp(const void *a, const void *b, size_t n);
 
 /*
- * Formats %s %c %d %u %x %X %p %% with a '0' flag and a field width.
+ * Formats %s %c %d %u %x %X %p %% with the '-' and '0' flags, a field width
+ * and a precision, each as in C. '*' reads the width or precision from an int
+ * argument. Integer precision is the minimum digit count. %p ignores flags,
+ * width and precision. An unknown conversion prints as written.
  * k_printf writes to the console hook and drops output while none is set.
  */
 void k_console_set(void (*putc)(char));
