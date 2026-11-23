@@ -200,7 +200,13 @@ const robco_board_t *board_get(void);
 
 Detects the board on the first call, then returns the cached result. The first call reads MIDR and asks the mailbox for the board revision and the ARM memory range. `robco_start()` makes that first call, so later calls only return a pointer and are safe from IRQ context. Do not write through the pointer.
 
-`mem_base` and `mem_size` are the ARM memory range from the mailbox, or `0` if it did not answer. The board name from the revision code is [specified](../spec/BOARD_SUPPORT.md#board-revision) but not implemented.
+`mem_base` and `mem_size` are the ARM memory range from the mailbox, or `0` if it did not answer.
+
+```c
+const char *board_model_name(uint32_t revision);
+```
+
+Returns the model name for a [board revision code](../spec/BOARD_SUPPORT.md#board-revision), such as `"Raspberry Pi Zero W"`. It reads new-style codes and the old-style codes of the Pi 1. It returns `BOARD_MODEL_UNKNOWN`, `"Raspberry Pi (unknown model)"`, for `0` and for any code it does not know. It reads no hardware, so the host tests run it.
 
 ```c
 const robco_board_t *b = board_get();
