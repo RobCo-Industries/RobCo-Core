@@ -42,6 +42,21 @@ int bootinfo_validate(const robco_bootinfo_t *bi)
     return BOOTINFO_OK;
 }
 
+int bootinfo_fb_info(const robco_bootinfo_t *bi, fb_info_t *out)
+{
+    if (bi == NULL || (bi->caps & ROBCO_CAP_FB) == 0 || bi->fb_addr == 0) {
+        return BOOTINFO_E_NO_FB;
+    }
+    out->addr = (uint8_t *)(uintptr_t)bi->fb_addr;
+    out->size = bi->fb_size;
+    out->width = bi->fb_width;
+    out->height = bi->fb_height;
+    out->pitch = bi->fb_pitch;
+    out->depth = bi->fb_depth;
+    out->order = bi->fb_order;
+    return BOOTINFO_OK;
+}
+
 static uint32_t be32(const uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];

@@ -496,3 +496,106 @@ TEST(boot_protocol_example)
     CHECK_EQ(ini_get(start, (size_t)(end - start), "entry DIAG", "path", val, sizeof(val)), 0);
     CHECK_STR(val, "/ROBCO/DIAG.SYS");
 }
+
+/* Section headers and keys in one list, as "[name]@line" and "section|key|value". */
+static int record_section(const char *section, unsigned line, void *ctx)
+{
+    seen_t *s = ctx;
+
+    if (s->count < MAX_SEEN) {
+        snprintf(s->text[s->count], sizeof(s->text[0]), "[%s]@%u", section, line);
+        s->line[s->count] = line;
+    }
+    s->count++;
+    return s->stop_at != 0 && s->count == s->stop_at;
+}
+
+static int parse_both(const char *text, seen_t *s, unsigned *line)
+{
+    memset(s, 0, sizeof(*s));
+    return ini_parse_sections(text, strlen(text), record, record_section, s, line);
+}
+
+TEST(sections_in_file_order_with_keys)
+{
+    seen_t s;
+
+    CHECK_EQ(parse_both("top = 1\n[a]\nx = 2\n\n[ b ]  # note\n[a]\ny = 3\n", &s, NULL), 0);
+    CHECK_EQ(s.count, 6);
+    CHECK_STR(s.text[0], "|top|1");
+    CHECK_STR(s.text[1], "[a]@2");
+    CHECK_STR(s.text[2], "a|x|2");
+    /* Empty, and a repeated name: each header is reported. */
+    CHECK_STR(s.text[3], "[b]@5");
+    CHECK_STR(s.text[4], "[a]@6");
+    CHECK_STR(s.text[5], "a|y|3");
+}
+
+TEST(sections_only_and_stop)
+{
+    seen_t s;
+    unsigned line = 99;
+
+    memset(&s, 0, sizeof(s));
+    CHECK_EQ(ini_parse_sections("[a]\nk=v\n[b]\n[c]\n", 16, NULL, record_section, &s, &line), 0);
+    CHECK_EQ(line, 0);
+    CHECK_EQ(s.count, 3);
+    CHECK_STR(s.text[2], "[c]@4");
+
+    memset(&s, 0, sizeof(s));
+    s.stop_at = 2;
+    CHECK_EQ(ini_parse_sections("[a]\n[b]\n[c]\n", 12, NULL, record_section, &s, NULL),
+             INI_STOPPED);
+    CHECK_EQ(s.count, 2);
+
+    CHECK_EQ(ini_parse_sections("[a]\n", 4, NULL, NULL, &s, &line), INI_ERR_ARG);
+    CHECK_EQ(line, 0);
+    CHECK_EQ(ini_parse_sections(rc_launder(NULL), 3, record, record_section, &s, NULL),
+             INI_ERR_ARG);
+    CHECK_EQ(ini_parse_sections(NULL, 0, NULL, record_section, &s, NULL), 0);
+
+    /* Headers before a bad line are reported; the error still comes back. */
+    CHECK_EQ(parse_both("[a]\n[b\n", &s, &line), INI_ERR_SYNTAX);
+    CHECK_EQ(line, 2);
+    CHECK_EQ(s.count, 1);
+}
+
+/* The BOOT.CFG example from docs/spec/BOOT_PROTOCOL.md: the entry headers, in order. */
+TEST(boot_protocol_example_sections)
+{
+    static char doc[65536];
+    FILE *f = fopen("docs/spec/BOOT_PROTOCOL.md", "rb");
+    const char *start;
+    const char *end;
+    size_t n;
+    seen_t s;
+    int i, k = 0;
+    static const char *const want[] = { "[boot]", "[entry UOS]", "[entry MAINT]",
+                                        "[entry DIAG]" };
+
+    CHECK(f != NULL);
+    if (f == NULL) {
+        return;
+    }
+    n = fread(doc, 1, sizeof(doc) - 1, f);
+    fclose(f);
+    doc[n] = '\0';
+    start = strstr(doc, "### BOOT.CFG");
+    start = start != NULL ? strstr(start, "```\n") : NULL;
+    end = start != NULL ? strstr(start + 4, "```") : NULL;
+    CHECK(end != NULL);
+    if (end == NULL) {
+        return;
+    }
+    start += 4;
+    memset(&s, 0, sizeof(s));
+    CHECK_EQ(ini_parse_sections(start, (size_t)(end - start), NULL, record_section, &s, NULL), 0);
+    CHECK_EQ(s.count, 4);
+    for (i = 0; i < s.count && i < 4; i++) {
+        /* "[name]@line": compare the name part. */
+        CHECK(strncmp(s.text[i], want[i], strlen(want[i])) == 0);
+        CHECK_EQ(s.text[i][strlen(want[i])], '@');
+        k++;
+    }
+    CHECK_EQ(k, 4);
+}

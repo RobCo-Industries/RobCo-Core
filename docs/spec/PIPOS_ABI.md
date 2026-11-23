@@ -295,6 +295,8 @@ When several errors apply, a call returns the first one in this order:
 
 So `sample_queue` with a bad length or pointer returns that error even when a sample already waits.
 
+A refused call changes nothing. It stops no sound, so the audio trace prints no `op=stop` line for it. `audio_stop` with nothing playing returns 0 and prints no line either. A call that replaces a playing sound prints `op=stop` once, then its start line, as the stop rule in the [audio guide](../guide/api/audio.md) states.
+
 The volume belongs to the device, not to the image. A level set by a ROM or a holotape stays after it ends, until the next power-on. Pip-OS stops the sound an image started, and a waiting sample, when the image starts and when it ends.
 
 `tone`, `sample`, `play_seq` and `audio_stop` drop the waiting sample as well as the playing one.

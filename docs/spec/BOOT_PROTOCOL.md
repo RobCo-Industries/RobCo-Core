@@ -268,6 +268,8 @@ _Static_assert(sizeof(robco_bootinfo_t) == 320, "robco_bootinfo_t must be 320 by
 | `0x0C0` | 128 | `cmdline` | Command line from `BOOT.CFG`, may be empty |
 | | 320 | | Total, `0x140` |
 
+A later stage keeps the screen the earlier stage left on. It passes the `fb_*` fields to `fb_adopt()` and the `con_*` fields to `console_adopt()`, and does not call `fb_init()` again. If either call rejects the description, it falls back to `fb_init()` and `console_init()`. This behaviour is pending hardware validation.
+
 ### Stage ids
 
 | Value | Stage | `@RC` name |
@@ -329,7 +331,7 @@ A stage passes on the state it did not set up itself. Hardware such as a framebu
 | `uart_type`, `uart_clock`, `uart_baud`, caps bit 1 | The stage configured the PL011 |
 | caps bit 2 | The stage initialised the mini UART |
 | caps bit 3 | The stage initialised the SD card |
-| `fb_*`, caps bit 0 | The stage called `fb_init()` |
+| `fb_*`, caps bit 0 | The stage called `fb_init()` or `fb_adopt()` with success |
 | `con_cols`, `con_rows`, `con_cx`, `con_cy`, `con_scheme` | The stage's console is active |
 | `boot_dev`, `boot_part_lba`, `boot_flags`, `boot_path`, `cmdline` | Cold boot only |
 | Other caps bits | Never. They are reserved and 0. |
@@ -545,6 +547,10 @@ The shell reads its lines from the PL011 console only. A script drives it by wri
 ## Second stage
 
 MFBootAgent is the second stage of the terminal chain. This section fixes what it does besides the menu.
+
+### Screen
+
+MFBootAgent keeps the screen of the previous stage, as [Boot info](#boot-info) states. It passes the inherited fields to `fb_adopt()`, through `bootinfo_fb_info()`, and to `console_adopt()`. It does not call `fb_init()` first. It calls `fb_init()` and `console_init()` only when the block is not trusted, has caps bit 0 clear, or either adopt call fails. The `screen` marker reports `kept=1` when both adopt calls succeed.
 
 ### Boot volume markers
 
