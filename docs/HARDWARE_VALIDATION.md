@@ -82,6 +82,15 @@ Use a DS1338, a DS3231, or a DS1307 module with 3.3 V pull-ups. A logic analyser
 | New chip | Any | `examples/rtc` on a chip never set | `RTC_ERR_HALTED` until `rtc_set()` runs |
 | Drift and battery | Any | `examples/rtc` over hours, with a power cut | The software clock stays near the RTC, and the RTC keeps time through the cut |
 
+## GPIO expander
+
+Use a PCA9554 at `0x20` and another at `0x21`, with LEDs on outputs and switches to ground on inputs. A logic analyser helps.
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| PCA9554 pins | All | `examples/gpiox`, press a key at each `ev=wait` | `ev=attach ... rc=0` for both chips, `ev=absent ... rc=-32`, the LED patterns of each step, and `ev=in` bits that match the switches |
+| No glitch at attach | All | `examples/gpiox` reset while outputs drive LEDs | A logic analyser shows only reads during `gpiox_attach()`, and the LEDs do not flicker |
+
 ## SPI device
 
 Use a W25Qxx flash, a logic analyser, or both.

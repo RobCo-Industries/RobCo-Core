@@ -275,3 +275,100 @@ def test_v16_spi0_transfer_completes(binary, machine):
         assert q.readl(cs) & (1 << 17) == 0        # RX FIFO empty again
         q.writel(cs, 0x30)
         assert q.readl(cs) & 0x80 == 0
+
+
+# V17: QEMU's pca9554 model. BSC1 registers, driven through qtest.
+BSC1 = {"raspi0": 0x20804000, "raspi1ap": 0x20804000, "raspi2b": 0x3F804000,
+        "raspi3b": 0x3F804000}
+PCA_MACHINES = [(ARM, m) for m in ARM_MACHINES] + [(A64, "raspi3b")]
+BSC_C_GO, BSC_C_READ, BSC_C_CLEAR = 0x8080, 0x0001, 0x0010
+BSC_S_CLEAR, BSC_S_ERR = 0x0302, 0x0100
+
+
+class Bsc1:
+    """Polled BSC1 transfers through qtest. QEMU finishes each at once."""
+
+    def __init__(self, q, machine):
+        self.q, self.base = q, BSC1[machine]
+
+    def _go(self, addr, n, read, data=()):
+        # The model sends FIFO bytes as they are written, so DLEN and A come first.
+        self.q.writel(self.base + 0x04, BSC_S_CLEAR)
+        self.q.writel(self.base + 0x0C, addr)
+        self.q.writel(self.base + 0x08, n)
+        self.q.writel(self.base, 0x8000 | BSC_C_CLEAR)
+        for b in data:
+            self.q.writel(self.base + 0x10, b)
+        self.q.writel(self.base, BSC_C_GO | (BSC_C_READ if read else 0))
+        return not self.q.readl(self.base + 0x04) & BSC_S_ERR
+
+    def write(self, addr, data):
+        return self._go(addr, len(data), False, data)
+
+    def read(self, addr, reg, n=1):
+        assert self.write(addr, [reg])
+        assert self._go(addr, n, True)
+        return [self.q.readl(self.base + 0x10) & 0xFF for _ in range(n)]
+
+    def regs(self, addr):
+        return [self.read(addr, r)[0] for r in range(4)]
+
+
+def pca_pins(q, path):
+    return sum((q.execute("qom-get", path=path, property=f"pin{p}") == "high") << p
+               for p in range(8))
+
+
+PCA_ARGS = ["-device", "pca9554,bus=i2c-bus.1,address=0x20,id=x0",
+            "-device", "pca9554,bus=i2c-bus.1,address=0x27,id=x1",
+            "-device", "pca9554,bus=i2c-bus.1,address=0x38,id=x2",
+            "-device", "pca9554,bus=i2c-bus.1,address=0x3f,id=x3"]
+
+
+@pytest.mark.parametrize("binary,machine", PCA_MACHINES, ids=[m for _, m in PCA_MACHINES])
+def test_v17_pca9554_registers(binary, machine):
+    """V17a: pca9554 sits on i2c-bus.1 at both address ranges; data sheet power-on values."""
+    need(binary, machine)
+    with Qemu(binary, machine, PCA_ARGS, qtest=True) as q:
+        bus = Bsc1(q, machine)
+        for addr in (0x20, 0x27, 0x38, 0x3F):
+            # input, output, polarity, configuration: all inputs, pulled high.
+            assert bus.regs(addr) == [0xFF, 0xFF, 0x00, 0xFF], hex(addr)
+        assert not bus.write(0x22, [0])  # nothing there: NACK
+        # Pointer bits 1:0 only; a multi-byte read repeats the register.
+        assert bus.write(0x20, [1, 0x5A])
+        assert bus.read(0x20, 5) == [0x5A]
+        assert bus.read(0x20, 1, 3) == [0x5A, 0x5A, 0x5A]
+        # An output pin reads back its output bit in the input register.
+        assert bus.write(0x20, [3, 0xF0])
+        assert bus.read(0x20, 0) == [0xFA]
+        # The polarity register inverts the input register.
+        assert bus.write(0x20, [2, 0xFF])
+        assert bus.read(0x20, 0) == [0x05]
+
+
+@pytest.mark.parametrize("binary,machine", PCA_MACHINES, ids=[m for _, m in PCA_MACHINES])
+def test_v17_pca9554_pins_from_outside(binary, machine):
+    """V17b: qom-get pinN shows config|output; set_irq_in ANDs with the pin; qom-set rewrites registers."""
+    need(binary, machine)
+    path = "/machine/peripheral/x0"
+    with Qemu(binary, machine, PCA_ARGS, qtest=True) as q:
+        bus = Bsc1(q, machine)
+        assert pca_pins(q, path) == 0xFF
+        assert bus.write(0x20, [1, 0x5A]) and bus.write(0x20, [3, 0xF0])
+        assert pca_pins(q, path) == 0xFA  # outputs show their level, inputs show 1
+        # The GPIO inputs drive input pins and leave the registers alone.
+        q.set_irq_in(path, 4, 0)
+        q.set_irq_in(path, 1, 1)  # an output: no effect
+        assert bus.regs(0x20) == [0xEA, 0x5A, 0x00, 0xF0]
+        assert pca_pins(q, path) == 0xFA  # qom-get does not show driven inputs
+        q.set_irq_in(path, 4, 1)
+        assert bus.read(0x20, 0) == [0xFA]
+        # A low on an output driven high wins: the pin reads 0, a wired AND.
+        q.set_irq_in(path, 1, 0)
+        assert bus.read(0x20, 0) == [0xF8]
+        q.set_irq_in(path, 1, 1)
+        assert bus.read(0x20, 0) == [0xFA]
+        # qom-set makes the pin an output at that level: not an outside drive.
+        q.execute("qom-set", path=path, property="pin7", value="low")
+        assert bus.regs(0x20) == [0x7A, 0x5A, 0x00, 0x70]

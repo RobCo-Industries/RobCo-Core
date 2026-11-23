@@ -196,6 +196,9 @@ $(HOST_BUILD)/test_tft_bus $(HOST_BUILD)/test_tft_panel: src/drv/tft_ili9341.c
 $(HOST_BUILD)/tft_tool: tests/host/tft_tool.c src/drv/tft_ili9341.c examples/tft/picture.h $(HOST_LINK) $(HOST_HDRS)
 	@mkdir -p $(HOST_BUILD)
 	$(HOST_CC) $(HOST_CFLAGS) -o $@ $< $(HOST_LINK)
+
+# test_gpiox.c includes the driver source to run it on a fake bus.
+$(HOST_BUILD)/test_gpiox: src/drv/gpiox_pca9554.c
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the

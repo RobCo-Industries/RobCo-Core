@@ -144,6 +144,10 @@ It avoids the pins above, GPIO 0 and 1 (ID EEPROM), GPIO 12 and 13 and GPIO 18 t
 
 GPIO 24, the usual reset pin in panel guides, is Dial B in the input mapping above. GPIO 4 and 25 are the only header pins that the tables above leave free, so they take DC and reset. CE1, GPIO 7, stays free for a second SPI device.
 
+### I2C GPIO expanders
+
+`gpiox.h` drives PCA9554 chips at `0x20` to `0x27` and PCA9554A chips at `0x38` to `0x3F`, up to four at once. They share the I2C bus on GPIO 2 and 3 with the clock chip. Each adds eight pins. The driver is tested only against QEMU's model, not on hardware.
+
 ### SD card pin routing
 
 On boards with WiFi (Pi 3, Zero W, Zero 2 W) the firmware routes the card to the SDHOST controller on GPIO 48 to 53 and the EMMC controller to the WiFi chip on GPIO 34 to 39. `sd_init()` drives the card through EMMC. It sets GPIO 34 to 39 to input when any of them is at ALT3, and GPIO 48 to 53 to ALT3 when any of them is not. WiFi stops working after this. The routing is pending hardware validation on the Pi 3 and the Zero 2 W.

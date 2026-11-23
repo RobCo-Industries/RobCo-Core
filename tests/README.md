@@ -135,6 +135,7 @@ temporary directory outside the repository and builds it there.
   `test_storage.py` also boots the read-only build of `storage`. `test_input.py` drives the
   serial and script backends, the second over the mini UART.
   `test_rtc.py` attaches QEMU's `ds1338` model at I2C address `0x68`.
+  `test_gpiox.py` attaches two `pca9554` models at `0x20` and `0x21`.
   `test_spi.py` attaches a `w25q32` SPI flash. `demo` and `chain1` also
   run with the MMU and caches on. The `demo` menu variant drives a
   screen menu with arrow keys on raspi0 and raspi2b, with and without
@@ -177,6 +178,7 @@ temporary directory outside the repository and builds it there.
 | V14 | raspi0, 1ap, 2b | PM_WDOG then PM_RSTC full reset emits a QMP `RESET` event. | Reboot and watchdog tests. |
 | V15 | raspi0, 1ap, 2b | First `-serial` is the PL011, second is the mini UART. | Serial capture order in tests. |
 | V16 | raspi0, 1ap, 2b, 3b | SPI0 is modelled. With nothing attached a byte completes at once and reads 0. | SPI and TFT panel tests run on every board. |
+| V17 | raspi0, 1ap, 2b, 3b | `-device pca9554,bus=i2c-bus.1` answers at 0x20 to 0x27 and 0x38 to 0x3F with the data sheet power-on values. The register pointer keeps 2 bits and a multi-byte read repeats one register. QMP `qom-get` of `pinN` gives the config bit OR the output bit, so it shows outputs and reads inputs as high. qtest `set_irq_in <path> unnamed-gpio-in N level` sets an outside level that the input register ANDs with the chip's own drive, so 1 releases a line and 0 also pulls an output driven high to 0. `qom-set pinN` makes the pin an output at that level. | `test_gpiox.py` observes outputs with `qom-get` and drives inputs with qtest, never with `qom-set`, and releases every line before pins change direction. |
 
 V4 and V8 are not checked here.
 
@@ -220,6 +222,8 @@ def test_my_fault(board, example_image):
 SD image, `serial2=True` adds the mini UART, `extra_args=[...]` goes
 straight to QEMU. `vm.qmp` is the `Qemu` object from `harness/qemu.py`.
 QEMU is killed when the `with` block ends, even on failure.
+`qtest=True` adds a qtest socket while the guest runs, so
+`vm.qmp.set_irq_in(path, n, level)` can drive a device's GPIO inputs.
 
 The guest may still be printing when a test reads its output.
 `vm.serial` and `vm.serial2` return everything received so far.

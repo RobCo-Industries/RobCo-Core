@@ -56,12 +56,15 @@ def loader_words(addr, words, entry=None):
 
 class Qemu:
     def __init__(self, binary, machine, args=(), qmp=True, qtest=False,
-                 serial_count=0, timeout=20.0, null_serial=True):
+                 serial_count=0, timeout=20.0, null_serial=True, qtest_accel="qtest"):
         self.binary = binary
         self.machine = machine
         self.extra = list(args)
         self.use_qmp = qmp
         self.use_qtest = qtest
+        # None keeps the default accelerator, so the guest runs and qtest
+        # only drives device inputs (set_irq_in).
+        self.qtest_accel = qtest_accel
         self.serial_count = serial_count
         self.null_serial = null_serial  # False when the caller adds its own -serial
         self.timeout = timeout
@@ -104,7 +107,9 @@ class Qemu:
         if self.use_qmp:
             cmd += ["-qmp", f"unix:{self._sock('qmp')},server=on,wait=off"]
         if self.use_qtest:
-            cmd += ["-qtest", f"unix:{self._sock('qtest')}", "-accel", "qtest"]
+            cmd += ["-qtest", f"unix:{self._sock('qtest')}"]
+            if self.qtest_accel:
+                cmd += ["-accel", self.qtest_accel]
         return cmd + self.extra
 
     def _sock(self, name):
@@ -470,6 +475,10 @@ class Qemu:
 
     def writel(self, addr, value):
         self.qtest(f"writel {addr:#x} {value:#x}")
+
+    def set_irq_in(self, path, num, level, name="unnamed-gpio-in"):
+        """Drive GPIO input `num` of the device at QOM `path` to `level`."""
+        self.qtest(f"set_irq_in {path} {name} {num} {int(level)}")
 
     def clock_step(self, ns=None):
         return int(self.qtest("clock_step" + (f" {ns}" if ns else "")))
