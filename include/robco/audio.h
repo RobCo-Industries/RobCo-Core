@@ -225,10 +225,13 @@ typedef struct {
     uint32_t unit_us;       /* 1000000 / gcd(rate, 1000000) */
     uint32_t unit_n;        /* samples in unit_us */
     uint32_t origin_us;     /* time of sample origin_pos */
-    uint32_t origin_pos;    /* sample index at origin_us, below len */
+    uint32_t origin_pos;    /* sample index at origin_us, signed after a switch */
     uint32_t next_q;        /* samples after the origin of the next sample due */
-    uint32_t last;          /* last index output */
-    uint32_t n;             /* samples output */
+    uint32_t last;          /* last index output, in the current buffer */
+    uint32_t n;             /* samples output, over every chained buffer */
+    const uint8_t *next;    /* buffer that waits, or NULL */
+    uint32_t next_len;
+    uint32_t switches;      /* times a waiting buffer took over */
     int active;
 } audio_pcm_t;
 
@@ -251,6 +254,15 @@ void audio_pcm_start(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t r
  * played to its end. Samples between two calls are skipped. Wraps at 2^32 us.
  */
 int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos);
+
+/*
+ * Chains `data` behind the current buffer: when the position passes the
+ * end, it continues at pos - len in `data`, on the same clock grid. One
+ * buffer can wait. Returns 0, or AUDIO_ERR_STATE when the play is not
+ * active or loops, AUDIO_ERR_BUSY when a buffer already waits. Arguments
+ * must pass audio_pcm_check().
+ */
+int audio_pcm_chain(audio_pcm_t *p, const uint8_t *data, size_t len);
 
 /* Time in us, wrapping, when the next sample is due. */
 uint32_t audio_pcm_next_us(const audio_pcm_t *p);

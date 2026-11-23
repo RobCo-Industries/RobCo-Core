@@ -6,7 +6,7 @@
  * Cost: one IRQ calls audio_pcm_poll() and audio_pcm_next_us(). Both use
  * 32x32 to 64-bit multiplies. A looped buffer adds a 32-bit modulo per
  * sample after its first pass, and a rebase adds a 32-bit divide every
- * 2^26 us at most. The 64-bit divides run in audio_pcm_start() only.
+ * 2^26 us at most. A switch to a chained buffer is a few subtractions. The 64-bit divides run in audio_pcm_start() only.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -59,6 +59,9 @@ void audio_pcm_start(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t r
     p->next_q = 0;
     p->last = 0;
     p->n = 0;
+    p->next = 0;
+    p->next_len = 0;
+    p->switches = 0;
     p->active = 1;
 }
 
@@ -88,7 +91,11 @@ static uint32_t time_of(const audio_pcm_t *p, uint32_t m)
     return t;
 }
 
-/* Moves the origin forward by whole units, where time and samples are both exact. */
+/*
+ * Moves the origin forward by whole units, where time and samples are both
+ * exact. After a switch, origin_pos can be below 0 as a signed value: the
+ * origin lies in the previous buffer. len is at most 2^31 - 1, so it fits.
+ */
 static void rebase(audio_pcm_t *p, uint32_t elapsed)
 {
     uint32_t k = elapsed / p->unit_us;
@@ -99,10 +106,23 @@ static void rebase(audio_pcm_t *p, uint32_t elapsed)
     p->next_q = p->next_q > dn ? p->next_q - dn : 0;
     if (p->flags & AUDIO_LOOP) {
         pos %= p->len;
-    } else if (pos > p->len) {
+    } else if ((int64_t)(int32_t)p->origin_pos + dn > (int64_t)p->len) {
         pos = p->len;
     }
     p->origin_pos = pos;
+}
+
+int audio_pcm_chain(audio_pcm_t *p, const uint8_t *data, size_t len)
+{
+    if (!p->active || (p->flags & AUDIO_LOOP)) {
+        return AUDIO_ERR_STATE;
+    }
+    if (p->next) {
+        return AUDIO_ERR_BUSY;
+    }
+    p->next_len = (uint32_t)len;
+    p->next = data;
+    return 0;
 }
 
 int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
@@ -121,11 +141,25 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
     }
     q = samples_at(p, elapsed);
     abs = p->origin_pos + q;
-    if (abs >= p->len) {
-        if (!(p->flags & AUDIO_LOOP)) {
+    /*
+     * Past the end of a one-shot buffer: the waiting buffer takes over at
+     * pos - len. The origin time does not move, so the grid stays exact.
+     * origin_pos is signed after a switch, and its sum with q can pass
+     * 2^31, so the compare runs on 64 bits. It adds and compares only.
+     */
+    while (!(p->flags & AUDIO_LOOP) &&
+           (int64_t)(int32_t)p->origin_pos + q >= (int64_t)p->len) {
+        if (!p->next) {
             p->active = 0;
             return AUDIO_PCM_END;
         }
+        abs -= p->len;
+        p->origin_pos -= p->len;
+        p->data = p->next;
+        p->len = p->next_len;
+        p->next = 0;
+        p->next_len = 0;
+        p->switches++;
     }
     if (q < p->next_q) {
         return AUDIO_PCM_NONE;
