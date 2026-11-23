@@ -2,28 +2,82 @@
 
 #include <robco/klibc.h>
 
+#include <stdint.h>
+
 /*
- * Byte loops on purpose: the library is built with
- * -mno-unaligned-access and these are not hot paths yet.
+ * Word loops where both pointers can be word aligned, byte loops
+ * otherwise. The library is built with -mno-unaligned-access, so a word
+ * access is only made at an aligned address. word_t may alias any object.
  */
+typedef uint32_t __attribute__((may_alias)) word_t;
+
+#define WORD_MASK ((uintptr_t)(sizeof(word_t) - 1u))
+
 void *k_memset(void *dst, int value, size_t n)
 {
     unsigned char *d = dst;
+    word_t w = (unsigned char)value;
 
+    while (n != 0 && ((uintptr_t)d & WORD_MASK) != 0) {
+        *d++ = (unsigned char)value;
+        n--;
+    }
+    w |= w << 8;
+    w |= w << 16;
+    while (n >= sizeof(word_t)) {
+        *(word_t *)(void *)d = w;
+        d += sizeof(word_t);
+        n -= sizeof(word_t);
+    }
     while (n--) {
         *d++ = (unsigned char)value;
     }
     return dst;
 }
 
-void *k_memcpy(void *dst, const void *src, size_t n)
+/* Forward copy. Words when both pointers share their misalignment. */
+static void copy_up(unsigned char *d, const unsigned char *s, size_t n)
 {
-    unsigned char *d = dst;
-    const unsigned char *s = src;
-
+    if ((((uintptr_t)d ^ (uintptr_t)s) & WORD_MASK) == 0) {
+        while (n != 0 && ((uintptr_t)d & WORD_MASK) != 0) {
+            *d++ = *s++;
+            n--;
+        }
+        while (n >= sizeof(word_t)) {
+            *(word_t *)(void *)d = *(const word_t *)(const void *)s;
+            d += sizeof(word_t);
+            s += sizeof(word_t);
+            n -= sizeof(word_t);
+        }
+    }
     while (n--) {
         *d++ = *s++;
     }
+}
+
+/* Backward copy from the ends `d` and `s`, for an overlap with d above s. */
+static void copy_down(unsigned char *d, const unsigned char *s, size_t n)
+{
+    if ((((uintptr_t)d ^ (uintptr_t)s) & WORD_MASK) == 0) {
+        while (n != 0 && ((uintptr_t)d & WORD_MASK) != 0) {
+            *--d = *--s;
+            n--;
+        }
+        while (n >= sizeof(word_t)) {
+            d -= sizeof(word_t);
+            s -= sizeof(word_t);
+            *(word_t *)(void *)d = *(const word_t *)(const void *)s;
+            n -= sizeof(word_t);
+        }
+    }
+    while (n--) {
+        *--d = *--s;
+    }
+}
+
+void *k_memcpy(void *dst, const void *src, size_t n)
+{
+    copy_up(dst, src, n);
     return dst;
 }
 
@@ -36,15 +90,9 @@ void *k_memmove(void *dst, const void *src, size_t n)
         return dst;
     }
     if (d < s) {
-        while (n--) {
-            *d++ = *s++;
-        }
+        copy_up(d, s, n);
     } else {
-        d += n;
-        s += n;
-        while (n--) {
-            *--d = *--s;
-        }
+        copy_down(d + n, s + n, n);
     }
     return dst;
 }
