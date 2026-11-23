@@ -109,10 +109,16 @@ const char *audio_probe_name(int result);
 /* Plays one tone, non-blocking. Replaces what plays now. hz 0 is a rest. */
 int audio_tone(uint32_t hz, uint32_t ms);
 
-/* Stops at the next tick. */
+/*
+ * Stops. PCM output stops before the call returns. Tones stop at the next
+ * tick, which also prints the trace stop line.
+ */
 void audio_stop(void);
 
-/* Non-zero while a tone, rest or sequence plays or waits to start. */
+/*
+ * Non-zero while a tone, rest, sequence or PCM buffer plays, or a request
+ * waits for the tick. After audio_stop() it turns 0 at the next tick.
+ */
 int audio_busy(void);
 
 /* Duty-cycle volume, 0 to 100. Applies from the next note. */
@@ -126,7 +132,9 @@ int audio_play(const audio_note_t *seq, size_t count, unsigned flags);
 
 /*
  * Plays 8-bit unsigned mono PCM in the background. The library does not
- * copy: `data` must stay valid until playback ends or audio_stop().
+ * copy: `data` must stay valid until playback ends, or until audio_stop()
+ * or a call that replaces the sound returns. Such a call stops reading the
+ * buffer before it returns. The new sound starts at the next tick.
  * flags: AUDIO_LOOP, AUDIO_PRIORITY, as for audio_play().
  * Returns 0 or AUDIO_ERR_* (NO_INIT, ARG for NULL, len 0, len above
  * AUDIO_PCM_LEN_MAX or unknown flags, RANGE for the rate, BUSY when
@@ -134,6 +142,12 @@ int audio_play(const audio_note_t *seq, size_t count, unsigned flags);
  * handler holds the timer channel 3 IRQ).
  */
 int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned flags);
+
+/*
+ * Samples output since audio_init(). If `play` is not NULL, it gets the
+ * samples output by the current or last PCM play. For tests.
+ */
+uint32_t audio_pcm_samples(uint32_t *play);
 
 /* Parses an RTTTL tune into an internal buffer and plays it. */
 int audio_play_rtttl(const char *text, unsigned flags);

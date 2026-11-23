@@ -7,9 +7,11 @@
  * backend, and applies `req` at its next run. So every change, a new tone
  * included, starts on a tick and is timed by the same clock that ends it.
  *
- * PCM: the tick starts or halts it. In between, the system timer compare
- * channel 3 IRQ outputs one sample per period and ends it. IRQ handlers do
- * not nest, so the tick and the PCM IRQ never run at the same time.
+ * PCM: the tick starts it. In between, the system timer compare channel 3
+ * IRQ outputs one sample per period and ends it. IRQ handlers do not nest,
+ * so the tick and the PCM IRQ never run at the same time. A stop or a
+ * replacement cuts PCM at once, with IRQs masked, so the caller owns its
+ * buffer again when the call returns. The tick still prints the stop line.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -115,6 +117,8 @@ static uint32_t sounding;
 static audio_pcm_t pcm;
 static uint32_t pcm_t0_ms;
 static uint64_t pcm_t0_us;
+static int pcm_cut;                 /* cut by a call: the tick still halts it */
+static uint32_t pcm_total;          /* samples output since audio_init() */
 
 static audio_note_t tune[ROBCO_AUDIO_TUNE_MAX];
 static const audio_note_t beep = { ROBCO_AUDIO_BEEP_HZ, ROBCO_AUDIO_BEEP_MS };
@@ -179,6 +183,7 @@ static void output(uint32_t t_ms)
 /* IRQ context. One sample at the current volume. */
 static void pcm_out(uint32_t pos)
 {
+    pcm_total++;
     if (backend == AUDIO_BACKEND_PWM) {
         audio_pwm_sample(audio_pcm_duty(audio_pcm_scale(pcm.data[pos], volume),
                                         AUDIO_PCM_PWM_RANGE));
@@ -264,10 +269,31 @@ static void pcm_begin(void)
     pcm_run(pcm.origin_us);
 }
 
+/*
+ * Any context, IRQs masked. Stops reading the PCM buffer now: no more
+ * samples, silence on PWM. A compare that matched while IRQs were masked
+ * is cleared here, and pcm_isr() ignores one that still fires. The tick
+ * prints the stop record later through pcm_halt().
+ */
+static void pcm_cut_locked(void)
+{
+    if (!pcm.active) {
+        return;
+    }
+    pcm.active = 0;
+    pcm_cut = 1;
+    irq_disable(IRQ_TIMER3);
+    timer_compare_clear(PCM_CHANNEL);
+    if (backend == AUDIO_BACKEND_PWM) {
+        audio_pwm_out(0, 0);
+    }
+}
+
 /* Tick context. Stops PCM mid-play: silence, a stop record, no more IRQs. */
 static void pcm_halt(void)
 {
     pcm.active = 0;
+    pcm_cut = 0;
     irq_disable(IRQ_TIMER3);
     timer_compare_clear(PCM_CHANNEL);
     if (backend == AUDIO_BACKEND_PWM) {
@@ -294,7 +320,7 @@ static void audio_tick(void)
         return;
     }
     if (req.valid) {
-        if (pcm.active) {
+        if (pcm.active || pcm_cut) {
             pcm_halt();
         }
         if (req.stop) {
@@ -502,6 +528,7 @@ static int submit(const audio_note_t *notes, size_t count, unsigned flags,
         irq_restore(s);
         return AUDIO_ERR_BUSY;
     }
+    pcm_cut_locked();
     req.stop = 0;
     req.pcm = 0;
     req.notes = notes;
@@ -543,9 +570,24 @@ void audio_stop(void)
         return;
     }
     s = irq_save();
+    pcm_cut_locked();
     req.stop = 1;
     req.valid = 1;
     irq_restore(s);
+}
+
+uint32_t audio_pcm_samples(uint32_t *play)
+{
+    uint32_t s;
+    uint32_t total;
+
+    s = irq_save();
+    total = pcm_total;
+    if (play) {
+        *play = pcm.n;
+    }
+    irq_restore(s);
+    return total;
 }
 
 int audio_busy(void)
@@ -615,6 +657,7 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
         irq_restore(s);
         return AUDIO_ERR_BUSY;
     }
+    pcm_cut_locked();
     pcm_req = p;
     pcm_req_crc = crc;
     req.stop = 0;
@@ -652,6 +695,7 @@ int audio_play_rtttl(const char *text, unsigned flags)
         irq_restore(s);
         return AUDIO_ERR_BUSY;
     }
+    pcm_cut_locked();
     for (i = 0; i < (size_t)n; i++) {
         tune[i] = tmp[i];
     }
