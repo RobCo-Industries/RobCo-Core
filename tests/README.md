@@ -227,6 +227,16 @@ def test_board_command(board, example_image):
         assert status == "ok" and lines[0].startswith("soc=")
 ```
 
+## Subprocess environments
+
+Never copy the host environment into a test value. pytest prints the
+arguments and locals of a failing test, so a copy of `os.environ` puts every
+host secret in the terminal and in CI logs. Build the `env=` of a subprocess
+with `minimal_env(**extra)` from `tests/harness/env.py`. It keeps an
+allowlist of host variables and hides values in its repr. A child that
+needs no change can simply inherit: leave out `env=`.
+`tests/tools/test_env_hygiene.py` fails on a full copy.
+
 ## When a wait times out
 
 A `vm.wait_for()` or `vm.script()` that times out raises `QemuError`
