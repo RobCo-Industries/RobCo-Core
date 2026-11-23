@@ -141,7 +141,7 @@ Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`seq` `NULL
 int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned flags);
 ```
 
-Plays `len` bytes of 8-bit unsigned mono PCM at `rate_hz` in the background. 128 is silence. The library does not copy: `data` must stay valid until playback ends or `audio_stop()`. Flags are those of `audio_play()`. With `AUDIO_LOOP` the buffer repeats until `audio_stop()` or a replacement. PCM and tones are one voice: each replaces the other under the same `AUDIO_PRIORITY` rule, and `audio_busy()`, `audio_stop()`, `audio_wait()` and `audio_poll()` work the same. Playback starts at the next tick, like a tone.
+Plays `len` bytes of 8-bit unsigned mono PCM at `rate_hz` in the background. 128 is silence. The library does not copy: `data` must stay valid until playback ends, or until `audio_stop()` or a call that replaces the sound returns. Such a call stops reading the buffer and silences the PCM before it returns, so the buffer is yours again. The new sound still starts at the next tick. Flags are those of `audio_play()`. With `AUDIO_LOOP` the buffer repeats until `audio_stop()` or a replacement. PCM and tones are one voice: each replaces the other under the same `AUDIO_PRIORITY` rule, and `audio_busy()`, `audio_stop()`, `audio_wait()` and `audio_poll()` work the same. Playback starts at the next tick, like a tone.
 
 Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`data` `NULL`, `len` `0` or above `AUDIO_PCM_LEN_MAX`, or unknown flags), `AUDIO_ERR_RANGE` (`rate_hz` outside `AUDIO_PCM_RATE_MIN` to `AUDIO_PCM_RATE_MAX`), `AUDIO_ERR_NO_IRQ` (another handler holds `IRQ_TIMER3`) or `AUDIO_ERR_BUSY`.
 
@@ -152,6 +152,12 @@ Each sample is scaled by the volume around the midpoint: `128 + (s - 128) * vol 
 CPU cost: one IRQ per sample, up to 22050 a second. The handler does 64-bit multiplies but no 64-bit divide. A looped buffer adds a 32-bit modulo per sample after its first pass. On the trace backend the call also computes the CRC-32 of `data` in the caller's context. The handler cost on a real ARM1176 is not measured.
 
 Not done: no mixing, no DMA, no FIFO, 8-bit mono only.
+
+```c
+uint32_t audio_pcm_samples(uint32_t *play);
+```
+
+Returns the samples output since `audio_init()`, the same IRQs that `n=` counts. If `play` is not `NULL`, it gets the samples output by the current or last play. A new play starts that count at `0` on its tick. Tests use it to check that no sample is read after a stop. Main or IRQ context.
 
 ```c
 int audio_play_rtttl(const char *text, unsigned flags);
@@ -165,7 +171,7 @@ int audio_busy(void);
 void audio_set_volume(unsigned percent);
 ```
 
-`audio_stop()` silences at the next tick. Before `audio_init()` it does nothing. `audio_busy()` is non-zero while a tone, rest, sequence or PCM buffer plays, or a request (a stop included) waits for the tick. `audio_set_volume()` sets the PWM duty cycle from `0` (silent) to `100` (50%, the loudest square wave). It applies from the next step change, or from the next PCM sample. Values above 100 count as 100. The trace backend records it in `vol=`.
+`audio_stop()` stops PCM output before it returns. A tone or sequence stops at the next tick. Before `audio_init()` it does nothing. `audio_busy()` is non-zero while a tone, rest, sequence or PCM buffer plays, or a request (a stop included) waits for the tick. After `audio_stop()` it turns `0` at the next tick, even for PCM. `audio_set_volume()` sets the PWM duty cycle from `0` (silent) to `100` (50%, the loudest square wave). It applies from the next step change, or from the next PCM sample. Values above 100 count as 100. The trace backend records it in `vol=`.
 
 ```c
 void audio_poll(void);
@@ -250,7 +256,7 @@ Fills `divi`, `clock_hz`, `rng` and `dat` of an `audio_pwm_cfg_t`. The divisor i
 | Function | Context |
 |---|---|
 | `audio_select()`, `audio_set_pins()`, `audio_get_pins()`, `audio_init()` | Main context. `audio_init()` busy-waits for the tick. |
-| `audio_tone()`, `audio_beep()`, `audio_play()`, `audio_stop()`, `audio_busy()`, `audio_set_volume()` | Main or IRQ context. They mask IRQs for a few instructions. |
+| `audio_tone()`, `audio_beep()`, `audio_play()`, `audio_stop()`, `audio_busy()`, `audio_set_volume()`, `audio_pcm_samples()` | Main or IRQ context. They mask IRQs for a few instructions. |
 | `audio_play_rtttl()` | Main context: it parses with a buffer on the stack |
 | `audio_play_pcm()` | Main context: on the trace backend it computes a CRC over the whole buffer |
 | `audio_poll()`, `audio_wait()` | Main context only. They print with `k_printf()`. |
@@ -276,7 +282,7 @@ PCM prints two markers. The trace backend runs the same engine with the same tim
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_end n=<count> last=<index> t_ms=<ms>
 ```
 
-`op=pcm` is the start. `crc` is the CRC-32 of the data, as `crc32()` computes it. `op=pcm_end` is the natural end: `n` counts the IRQs that output a sample, and `last` is the last index output. Its `t_ms` is the start time plus the system timer time the play took. A stop or a replacement prints the `op=stop` line instead, at the tick that applies it.
+`op=pcm` is the start. `crc` is the CRC-32 of the data, as `crc32()` computes it. `op=pcm_end` is the natural end: `n` counts the IRQs that output a sample, and `last` is the last index output. Its `t_ms` is the start time plus the system timer time the play took. A stop or a replacement prints the `op=stop` line instead, at the next tick. The PCM output itself stops when the call returns.
 
 Sharp edges:
 
@@ -290,7 +296,7 @@ Sharp edges:
 | Late ticks skip notes. | A tick delayed past several steps reports each change in order, at its due time. After 16 in one tick, the rest are skipped and only the final state is output. |
 | Square wave tones. | Volume changes the duty cycle, which also changes the tone colour. PCM volume scales the samples instead. |
 | One IRQ per PCM sample. | At 22050 Hz that is 22050 IRQs a second, and other IRQs wait behind each one. Use the lowest rate that sounds right. |
-| `audio_play_pcm()` keeps the pointer. | The buffer must stay valid until the play ends or `audio_stop()`. |
+| `audio_play_pcm()` keeps the pointer. | The buffer must stay valid until the play ends, or until `audio_stop()` or a call that replaces the sound returns. |
 | Fewer PCM IRQs on QEMU. | Under QEMU 10.1 on a macOS host, the guest got about one system timer IRQ per millisecond: 81 IRQs for 800 samples at 8000 Hz, and 1243 for one second at 22050 Hz. We did not look for the cause or measure other hosts. On QEMU, `n` can be far below `len` while the play still ends on time. The tests therefore do not assert an IRQ per sample. |
 | PWM on real hardware. | The probe writes RNG1 with the PWM clock running. If it reads back wrong on a real board, auto picks `trace`: force PWM to try anyway. |
 | Pin mux errors are silent. | `audio_init()` ignores a `gpio_set_function()` failure on the PWM backend. |
