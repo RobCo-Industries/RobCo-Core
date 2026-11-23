@@ -90,3 +90,15 @@ Use a W25Qxx flash, a logic analyser, or both.
 |---|---|---|---|
 | SPI data path | All | `examples/spi` with a flash on CE0 | The JEDEC id of the part, such as `ef40xx` for Winbond |
 | SPI signalling | All | `examples/spi` with a logic analyser | Rates at or below 1 MHz, the clock polarity and phase of each mode, chip select levels with and without `SPI_CS_HIGH`, CE1, the gap every 16 bytes, no hang |
+
+## SPI display
+
+Use an ILI9341 module wired as in [BOARD_SUPPORT.md](spec/BOARD_SUPPORT.md#spi-display).
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| TFT init and picture | All | `examples/tft` | Eight upright colour bars, white to black from the left, and a white border on all four sides. Colours not swapped red for blue. |
+| TFT rotation | All | `examples/tft` built with `EXTRA_CFLAGS=-DTFT_EXAMPLE_ROTATION=0`, then 180 and 270 | Each picture upright and not mirrored, the size in `ev=init` |
+| TFT id | All | `examples/tft` with MISO wired | `ev=id rc=0` and the raw id bytes |
+| TFT SPI rate | All | `examples/tft` at the 10 MHz default, then with `hz` raised step by step up to 64 MHz | A clean picture at 10 MHz. Note the highest rate that still shows a clean picture. |
+| TFT frame time | All | A loop of `tft_present_px32()` at the default rate | Time per frame against the 128 ms the guide computes for a 250 MHz core clock |
