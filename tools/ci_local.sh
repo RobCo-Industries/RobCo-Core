@@ -4,6 +4,10 @@
 # The tree is copied to build/ci-local/src, so the container's outputs
 # never mix with the host's. The container runs as the calling user with
 # HOME=/tmp, no host environment and at most CI_LOCAL_CPUS CPUs.
+# When this library lies outside the tree, it is copied too, to
+# .ci-local/robco-core in the copy, and make gets ROBCO_CORE for it. A
+# symbolic link to the library points there. Any other link that leaves
+# the tree stops the script.
 #
 # Usage: tools/ci_local.sh [--root DIR] [make arguments]
 #        tools/ci_local.sh [--root DIR] --build-image
@@ -21,13 +25,13 @@ set -eu
 
 die() { echo "ci-local: $*" >&2; exit 1; }
 
-core=$(cd "$(dirname "$0")/.." && pwd)
-root=$(pwd)
+core=$(cd -P "$(dirname "$0")/.." && pwd -P)
+root=$(pwd -P)
 build_image=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --root) [ $# -ge 2 ] || die "--root needs a directory"
-                root=$(cd "$2" 2>/dev/null && pwd) || die "no directory $2"
+                root=$(cd -P "$2" 2>/dev/null && pwd -P) || die "no directory $2"
                 shift 2 ;;
         --build-image) build_image=1; shift ;;
         --) shift; break ;;
@@ -86,21 +90,66 @@ mkdir -p "$work/src"
 (cd "$root" && tar -cf - --exclude ./build --exclude ./.venv --exclude .git .) \
     | (cd "$work/src" && tar -xf -)
 
-# The doc-link check reads HEAD in each checkout. Give the tree, and the
-# library when it sits inside the tree, a minimal .git with its commit,
-# as actions/checkout leaves.
+# The library: inside the tree, or copied to a fixed place in the copy.
+core_in=/work
+make_core=
+case "$core" in
+    "$root") core_rel= ;;
+    "$root"/*) core_rel=${core#"$root"/}; core_in=/work/$core_rel ;;
+    *)
+        core_rel=.ci-local/robco-core
+        core_in=/work/$core_rel
+        make_core=ROBCO_CORE=$core_in
+        # The tree may sit inside the library: skip its build directory.
+        skip=./build
+        case "$root" in "$core"/*) skip=./${root#"$core"/}/build ;; esac
+        mkdir -p "$work/src/$core_rel"
+        (cd "$core" && tar -cf - --exclude ./build --exclude "$skip" --exclude ./.venv \
+            --exclude .git .) | (cd "$work/src/$core_rel" && tar -xf -) ;;
+esac
+
+# The container sees only the copy. A link to the library points to its
+# place in the copy. Any other link that leaves the tree is an error.
+target_of() {
+    t=$(readlink "$1")
+    case "$t" in /*) ;; *) t=$(dirname "$1")/$t ;; esac
+    if [ -d "$t" ]; then
+        (cd -P "$t" && pwd -P)
+    elif [ -e "$t" ]; then
+        echo "$(cd -P "$(dirname "$t")" && pwd -P)/$(basename "$t")"
+    fi
+}
+find "$work/src" -path "$work/src/.ci-local" -prune -o -type l -print | while IFS= read -r l; do
+    rel=${l#"$work/src"/}
+    t=$(target_of "$root/$rel")
+    if [ -n "$make_core" ] && [ "$t" = "$core" ]; then
+        rm "$l"
+        ln -s "$core_in" "$l"
+        continue
+    fi
+    case "$(readlink "$l")" in
+        /*) die "$rel is an absolute link. The container cannot follow it." ;;
+    esac
+    case "$t" in
+        ''|"$root"|"$root"/*) ;;
+        *) die "$rel links to $t, outside $root. The container cannot see it." ;;
+    esac
+done
+
+# The doc-link check reads HEAD in each checkout. Give the tree and the
+# library a minimal .git with its commit, as actions/checkout leaves.
 head_of() {
     git -C "$1" rev-parse HEAD 2>/dev/null || echo 0000000000000000000000000000000000000000
 }
 mkdir -p "$work/src/.git"
 head_of "$root" > "$work/src/.git/HEAD"
-case "$core" in
-    "$root"/*)
-        rel=${core#"$root"/}
-        mkdir -p "$work/src/$rel/.git"
-        head_of "$core" > "$work/src/$rel/.git/HEAD" ;;
-esac
+if [ -n "$core_rel" ]; then
+    mkdir -p "$work/src/$core_rel/.git"
+    head_of "$core" > "$work/src/$core_rel/.git/HEAD"
+fi
 
+# shellcheck disable=SC2086
+set -- $make_core "$@"
 echo "ci-local: $image, $cpus CPUs: make CI=1 $*"
 exec docker run --rm --cpus "$cpus" --user "$(id -u):$(id -g)" -e HOME=/tmp \
     -v "$work/src:/work" -w /work "$image" make CI=1 "$@"

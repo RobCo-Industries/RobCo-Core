@@ -214,6 +214,8 @@ It takes about 35 seconds from clean. After that it compiles a file again only w
 
 `make ci-local` runs the CI build itself, in the `robco-ci` container with Docker. It catches what the cross GCC cannot: 64-bit type sizes, the Linux libc and the exact GCC version of CI. It copies the tree to `build/ci-local/src` without `build`, `.venv` and `.git`, writes the `.git/HEAD` files the doc-link check reads, then runs `make CI=1 <targets>` as the calling user. No host environment variable reaches the container. The container gets at most `CI_LOCAL_CPUS` CPUs, 4 by default. The script refuses a bare `-j`, which would start unlimited jobs.
 
+The container sees only the copy. When `ROBCO_CORE` points outside the tree, the script copies RobCo-Core to `.ci-local/robco-core` in the copy and passes `ROBCO_CORE` for that place to make. A symbolic link to RobCo-Core, such as `external/robco-core`, points there too. The script stops on any other link that leaves the tree, and on an absolute link. A path in a project's `Makefile` that leaves the tree, such as a source outside it, fails in the container.
+
 ```sh
 make ci-local                                  # the default targets
 make ci-local CI_LOCAL_TARGETS="-k test-host"  # other targets, once
