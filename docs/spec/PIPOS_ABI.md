@@ -285,6 +285,16 @@ There is one voice. `tone`, `sample` and `play_seq` return at once and the sound
 
 A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample`, `sample_queue` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call refused for its arguments plays nothing and leaves the current sound playing.
 
+When several errors apply, a call returns the first one in this order:
+
+1. A number out of its limits: `-PIP_EINVAL`. These are the frequency and duration of `tone`, the length of `sample` and `sample_queue`, the count of `play_seq` and the level of `volume`.
+2. A bad pointer: `-PIP_EFAULT`.
+3. A bad note in `play_seq`: `-PIP_EINVAL`.
+4. A sample already waiting, for `sample_queue`: `-PIP_EBUSY`.
+5. The audio driver refuses the sound: `-PIP_EIO`.
+
+So `sample_queue` with a bad length or pointer returns that error even when a sample already waits.
+
 The volume belongs to the device, not to the image. A level set by a ROM or a holotape stays after it ends, until the next power-on. Pip-OS stops the sound an image started, and a waiting sample, when the image starts and when it ends.
 
 `tone`, `sample`, `play_seq` and `audio_stop` drop the waiting sample as well as the playing one.
