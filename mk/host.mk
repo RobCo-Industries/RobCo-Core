@@ -299,3 +299,25 @@ test-host: test-host-gccwarn $(HOST_ALL)
 	if [ -n "$$failed" ]; then echo "test-host: FAILED:$$failed" >&2; exit 1; fi; \
 	echo "test-host: all passed"
 
+# ci-local runs a CI build in the robco-ci container with Docker, from a
+# copy of the tree in build/ci-local/src. See tools/ci_local.sh.
+#   make ci-local                         CI_LOCAL_TARGETS, as CI's build job
+#   make ci-local CI_LOCAL_TARGETS="..."  other goals for one run
+#   make ci-local-image                   builds robco-ci:<tag> locally
+# A project sets CI_LOCAL_TARGETS to its workflow's make-targets. The
+# default is "all test-host", or RobCo-Core's host job in RobCo-Core.
+ifeq ($(ROBCO_HOST_SELF),1)
+CI_LOCAL_TARGETS ?= test-host HOST_SANITIZE=require
+else
+CI_LOCAL_TARGETS ?= all test-host
+endif
+CI_LOCAL_CPUS ?= 4
+CI_LOCAL = CI_LOCAL_TARGETS='$(CI_LOCAL_TARGETS)' CI_LOCAL_CPUS='$(CI_LOCAL_CPUS)' \
+           sh $(or $(ROBCO_HOST_P),./)tools/ci_local.sh --root "$(CURDIR)"
+
+.PHONY: ci-local ci-local-image
+ci-local:
+	@$(CI_LOCAL)
+
+ci-local-image:
+	@$(CI_LOCAL) --build-image
