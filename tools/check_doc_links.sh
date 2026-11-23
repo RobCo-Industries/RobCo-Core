@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
-# Checks that every RobCo-Core link in a project's Markdown files points at
-# the commit its RobCo-Core submodule has checked out.
+# Checks that every link to a pinned repository in a project's Markdown files
+# points at the commit its submodule has checked out.
 #
-#   external/robco-core/tools/check_doc_links.sh <root> <submodule> [exclude...]
+#   external/robco-core/tools/check_doc_links.sh [--repo owner/name] <root> <submodule> [exclude...]
 #
-# root is the project root. submodule is the RobCo-Core submodule path,
-# relative to root. Each exclude is one more path, relative to root, to skip.
+# --repo names the GitHub repository the links point at. The default is
+# RobCo-Industries/RobCo-Core. root is the project root. submodule is the
+# path of that repository's submodule, relative to root. It may be nested,
+# such as external/pip-os/external/robco-core.
+# One run checks one repository. A project that pins two repositories calls
+# the script once per repository:
+#
+#   check_doc_links.sh --repo RobCo-Industries/Pip-OS . external/pip-os
+#   check_doc_links.sh . external/pip-os/external/robco-core
+#
+# Each exclude is one more path, relative to root, to skip. Each exclude is one more path, relative to root, to skip.
 # Leading ./, doubled slashes and a trailing / are fine. An absolute path or
 # a .. part in the submodule or an exclude is a usage error.
-# It reads every github.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/<ref>
+# It reads every github.com/<owner>/<name>/(blob|tree|commit)/<ref>
 # URL, on any line, code blocks and reference definitions included. The ref
 # ends at /, ), #, ?, whitespace, a quote, < or >, and at the characters that
 # can follow a URL in Markdown or prose: ` ] } , ; : * | and \. Git forbids
@@ -24,7 +33,9 @@
 # never calls git: in a CI container git refuses a checkout owned by another
 # user. Without git it cannot tell tracked files, so it scans every *.md file
 # under root. It skips CHANGELOG.md, which records old pins on purpose, and
-# CLAUDE.md and AGENTS.md at any depth. It skips the submodule, the excludes
+# CLAUDE.md and AGENTS.md at any depth. It skips the submodule, every
+# directory above it that holds a .git entry (the outer submodule of a nested
+# one, never root itself), the excludes
 # and every directory named .git, .venv, .claude, build, node_modules,
 # vendor or third_party.
 # Exits 0 when every link matches, 1 when one differs or the commit is
@@ -36,7 +47,17 @@ die() {
     exit 1
 }
 
-[ $# -ge 2 ] || { echo "usage: $0 <root> <submodule> [exclude...]" >&2; exit 2; }
+usage="usage: $0 [--repo owner/name] <root> <submodule> [exclude...]"
+repo=RobCo-Industries/RobCo-Core
+if [ "${1-}" = --repo ]; then
+    [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
+    repo=$2
+    shift 2
+fi
+[[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "check-doc-links: bad --repo '$repo'" >&2; echo "$usage" >&2; exit 2; }
+name=${repo#*/}
+repo_re=${repo//./\\.}
+[ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 # Normalizes a path relative to root: drops leading ./, doubled and trailing
 # slashes. Refuses an absolute path, a .. part, or the root itself, because
 # find reports paths as ./<rel> and could never match those.
@@ -62,7 +83,7 @@ rel() {
 }
 bad() {
     echo "check-doc-links: $*" >&2
-    echo "usage: $0 <root> <submodule> [exclude...]" >&2
+    echo "$usage" >&2
     exit 2
 }
 
@@ -125,6 +146,12 @@ esac
 
 prune=(-name .git -o -name .venv -o -name .claude -o -name build -o -name node_modules
     -o -name vendor -o -name third_party -o -path "./$core")
+# An outer submodule holds the inner one: skip each parent with a .git entry.
+p=$core
+while [ "${p%/*}" != "$p" ]; do
+    p=${p%/*}
+    [ -e "$p/.git" ] && prune+=(-o -path "./$p")
+done
 for x in ${excludes[@]+"${excludes[@]}"}; do
     prune+=(-o -path "./$x")
 done
@@ -146,14 +173,14 @@ while IFS= read -r -d '' f; do
         esac
         if [ ${#hash} -eq 40 ]; then
             if [ "$hash" != "$commit" ]; then
-                echo "check-doc-links: ${f#./}:$n links RobCo-Core at $seg, the submodule is at $commit" >&2
+                echo "check-doc-links: ${f#./}:$n links $name at $seg, the submodule is at $commit" >&2
                 status=1
             fi
         elif [ ${#hash} -ge 7 ] && [ ${#hash} -lt 40 ]; then
-            echo "check-doc-links: ${f#./}:$n links RobCo-Core at abbreviated commit $seg, use the full hash $commit" >&2
+            echo "check-doc-links: ${f#./}:$n links $name at abbreviated commit $seg, use the full hash $commit" >&2
             status=1
         fi
-    done < <(grep -noE "github\.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/$ref_chars" "$f" |
+    done < <(grep -noE "github\.com/$repo_re/(blob|tree|commit)/$ref_chars" "$f" |
         sed -E 's#^([0-9]+):.*/(blob|tree|commit)/#\1:#')
 done < <(find . \( "${prune[@]}" \) -prune -o -name '*.md' -type f -print0)
 
