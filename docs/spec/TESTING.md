@@ -158,6 +158,7 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 | V15 | First `-serial` is the PL011, second is the mini UART | Serial capture order |
 | V16 | SPI0 is modelled on every board. With nothing attached a byte completes at once and reads 0. | The SPI and TFT panel target tests |
 | V17 | QEMU's `pca9554` model answers on I2C bus 1 with the data sheet registers. qtest `set_irq_in` drives its input pins. | The GPIO expander target test |
+| V18 | A qtest write to GPSET0/1 or GPCLR0/1 sets or clears the GPLEV0/1 bit of any pin, input pins included, while the guest runs. The device has no input lines, GPLEV is read-only, pulls change nothing, event detect and the GPIO interrupt are not modelled. | The GPIO button and dial target tests |
 
 V4 and V8 are not checked.
 
