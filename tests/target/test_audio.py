@@ -21,7 +21,7 @@ TUNE = [(523, 150), (784, 150), (659, 150), (0, 150), (1047, 300), (880, 150), (
 LOOP = [(660, 60), (0, 40), (990, 60)]
 
 TONE_CASES = ["beep", "seq", "tune", "loop", "interrupt"]
-PCM_CASES = ["pcm", "pcm_fast", "pcm_stop", "pcm_swap", "pcm_loop", "pcm_tick", "pcm_args"]
+PCM_CASES = ["pcm", "pcm_fast", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick", "pcm_args"]
 
 # AUDIO_ERR_* codes.
 ERR_NO_INIT, ERR_RANGE, ERR_ARG, ERR_BUSY = -1, -6, -7, -8
@@ -115,6 +115,13 @@ def check_pcm(vm, c):
     assert (int(swap["busy"]), int(swap["prio"])) == (ERR_BUSY, 0), swap
     assert (int(swap["tbusy"]), int(swap["tprio"])) == (ERR_BUSY, 0), swap
 
+    # Each cut prints its stop line at the tick; the replacements then start.
+    marks = c["pcm_cut"]
+    assert [m["op"] for m in marks] == ["pcm", "stop", "pcm", "stop", "tone", "stop",
+                                        "pcm", "stop", "pcm", "stop"], marks
+    assert marks[4]["hz"] == "440", marks
+    check_pcm_cut(vm)
+
     # 25 ms looped: still playing after 300 ms, ends only on the stop.
     marks = c["pcm_loop"]
     assert [m["op"] for m in marks] == ["pcm", "stop"], marks
@@ -131,6 +138,17 @@ def check_pcm(vm, c):
 
     assert c["pcm_args"] == [], c["pcm_args"]
     check_pcm_args(vm)
+
+
+def check_pcm_cut(vm):
+    """No sample IRQ reads the old buffer once audio_stop() or a replacement returns."""
+    cuts = {m["kind"]: m for m in events(vm, "pcm_cut")}
+    assert set(cuts) == {"stop", "tone", "pcm"}, vm.serial
+    for m in cuts.values():
+        assert (m["ret"], m["cut"]) == ("0", "0"), m
+        # The IRQ ran before the cut, so a late read would show.
+        assert int(m["before"]) > 0, m
+        assert m["after"] == "0", m
 
 
 def check_pcm_args(vm):
@@ -256,6 +274,7 @@ def test_audio_forced_pwm(board, example_image):
             assert [int(swap[k]) for k in ("busy", "prio", "tbusy", "tprio")] == \
                 [ERR_BUSY, 0, ERR_BUSY, 0], swap
             assert events(vm, "pcm_loop")[-1]["busy"] == "1", vm.serial
+            check_pcm_cut(vm)
             tick = events(vm, "pcm_tick")[-1]
             # audio_wait() returns after one second: the IRQ ended the play.
             assert 1000000 <= int(tick["us"]) < 1000000 + PCM_END_SLACK_MS * 1000, tick

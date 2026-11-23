@@ -176,6 +176,58 @@ static void play_pcm_swap(void)
     case_end("pcm_swap", tprio);
 }
 
+/*
+ * Plays 0.5 s from the first half of the buffer, cuts it after 50 ms
+ * with `kind`, then overwrites that half. Prints how many samples the
+ * play output before the cut, and how many the old buffer gave after.
+ */
+static void pcm_cut_one(int kind)
+{
+    static const char *const names[] = { "stop", "tone", "pcm" };
+    uint8_t *old = pcm_buf;
+    uint8_t *next = pcm_buf + PCM_BUF / 2;
+    uint32_t b0, t0, t1, p1;
+    uint32_t s;
+    int ret, cut;
+
+    pcm_fill(PCM_BUF);
+    ret = audio_play_pcm(old, PCM_BUF / 2, 22050, 0);
+    sleep_ms(50);
+    /* Masked so the tick cannot start the new sound before the count. */
+    s = irq_save();
+    (void)audio_pcm_samples(&b0);
+    if (kind == 0) {
+        audio_stop();
+        cut = 0;
+    } else if (kind == 1) {
+        cut = audio_tone(440, 50);
+    } else {
+        cut = audio_play_pcm(next, PCM_BUF / 2, 22050, AUDIO_PRIORITY);
+    }
+    t0 = audio_pcm_samples(0);
+    irq_restore(s);
+    k_memset(old, 0x5a, PCM_BUF / 2);
+    sleep_ms(30);
+    t1 = audio_pcm_samples(&p1);
+    if (kind != 2) {
+        p1 = 0;
+    }
+    audio_stop();
+    audio_wait();
+    k_printf("@RC stage=audio ev=pcm_cut kind=%s ret=%d cut=%d before=%u after=%d\n",
+             names[kind], ret, cut, (unsigned)b0, (int)(t1 - t0 - p1));
+}
+
+/* A stop or a replacement stops reading the PCM buffer before it returns. */
+static void play_pcm_cut(void)
+{
+    case_begin("pcm_cut");
+    pcm_cut_one(0);
+    pcm_cut_one(1);
+    pcm_cut_one(2);
+    case_end("pcm_cut", 0);
+}
+
 /* 25 ms looped for 300 ms. */
 static void play_pcm_loop(void)
 {
@@ -233,6 +285,7 @@ static void play_pcm_all(void)
     play_pcm_fast();
     play_pcm_stop();
     play_pcm_swap();
+    play_pcm_cut();
     play_pcm_loop();
     play_pcm_tick();
     play_pcm_args();
