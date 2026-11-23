@@ -21,7 +21,8 @@
 #
 # Without HOST_TEST_DIR the file builds RobCo-Core's own tests: every
 # tests/host/test_<name>.c with the file system, build/host/fs_tool for
-# tests/tools, the read-only file system test, which links a second copy
+# tests/tools, build/host/tft_tool for tests/target/test_tft.py,
+# the read-only file system test, which links a second copy
 # of the file system built with ROBCO_FS_READONLY=1, and the images
 # tools/rimg.py packs for test_rimg_pack.
 #
@@ -109,7 +110,7 @@ ifeq ($(ROBCO_HOST_SELF),1)
 HOST_RIMG_DIR := $(HOST_BUILD)/rimg
 HOST_CFLAGS += -DROBCO_HOST_RIMG_DIR='"$(HOST_RIMG_DIR)"'
 HOST_RIMG_IMGS := $(HOST_RIMG_DIR)/rom1.img $(HOST_RIMG_DIR)/holo.img $(HOST_RIMG_DIR)/boot.img
-HOST_ALL += $(HOST_BUILD)/fs_tool $(HOST_BUILD)/test_fs_readonly $(HOST_RO_IMG) $(HOST_RIMG_IMGS)
+HOST_ALL += $(HOST_BUILD)/fs_tool $(HOST_BUILD)/tft_tool $(HOST_BUILD)/test_fs_readonly $(HOST_RO_IMG) $(HOST_RIMG_IMGS)
 HOST_RUN += $(HOST_BUILD)/test_fs_readonly
 endif
 
@@ -183,8 +184,13 @@ $(HOST_RIMG_DIR)/boot.img: $(HOST_RIMG_PAYLOAD) tools/rimg.py
 
 $(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
 
-# These tests include the ILI9341 driver through tests/host/tft_fake.h.
+# These include the ILI9341 driver through tests/host/tft_fake.h.
 $(HOST_BUILD)/test_tft_bus $(HOST_BUILD)/test_tft_panel: src/drv/tft_ili9341.c
+
+# Expected bus CRC of examples/tft, used by tests/target/test_tft.py.
+$(HOST_BUILD)/tft_tool: tests/host/tft_tool.c src/drv/tft_ili9341.c examples/tft/picture.h $(HOST_LINK) $(HOST_HDRS)
+	@mkdir -p $(HOST_BUILD)
+	$(HOST_CC) $(HOST_CFLAGS) -o $@ $< $(HOST_LINK)
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the
@@ -198,7 +204,7 @@ HOST_GW = $(HOST_GCCWARN_CC) -c -o /dev/null $(filter-out $(HOST_SAN_FLAGS) -g -
           -O2 -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -idirafter "$$inc"
 HOST_GW_SRCS := $(HOST_TEST_SRCS) $(filter %.c,$(HOST_LIB_SRCS) $(HOST_SRCS)) \
                 $(if $(filter fs,$(HOST_CORE_SETS)),$(ROBCO_HOST_P)tests/host/blk_file.c) \
-                $(if $(ROBCO_HOST_SELF),tests/host/fs_tool.c $(HOST_RO_TEST))
+                $(if $(ROBCO_HOST_SELF),tests/host/fs_tool.c tests/host/tft_tool.c $(HOST_RO_TEST))
 HOST_GW_FS_SRCS := $(if $(filter fs,$(HOST_CORE_SETS)),$(sort $(wildcard $(ROBCO_HOST_P)src/fs/*.c)))
 HOST_GW_FATFS_SRCS := $(if $(filter fatfs,$(HOST_CORE_SETS)),\
                         $(ROBCO_HOST_P)third_party/fatfs/ff.c $(ROBCO_HOST_P)third_party/fatfs/ffunicode.c)
