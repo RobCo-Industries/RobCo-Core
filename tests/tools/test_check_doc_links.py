@@ -144,3 +144,50 @@ def test_bad_usage(tmp_path, no_git):
                        text=True, env=no_git)
     assert r.returncode == 2
     assert "usage" in r.stderr
+
+
+@pytest.mark.parametrize("sub", ["./" + SUB, SUB + "/", ".//" + SUB, "external//robco-core/"])
+def test_submodule_path_forms_skip_its_markdown(tmp_path, no_git, sub):
+    proj = make_project(tmp_path)
+    write(proj, SUB + "/docs/x.md", f"[old]({link(OLD)})\n")
+    write(proj, "docs/out.md", f"[old]({link(OLD)})\n")
+    r = run(proj, no_git, sub=sub)
+    assert r.returncode == 1
+    assert "docs/out.md:1" in r.stderr
+    assert r.stderr.count("links RobCo-Core") == 1, r.stderr
+
+
+@pytest.mark.parametrize("ex", ["./docs/gen/", "docs//gen", "docs/gen/"])
+def test_exclude_path_forms(tmp_path, no_git, ex):
+    proj = make_project(tmp_path)
+    write(proj, "docs/gen/x.md", f"[old]({link(OLD)})\n")
+    write(proj, "docs/out.md", f"[old]({link(OLD)})\n")
+    r = run(proj, no_git, ex)
+    assert r.returncode == 1
+    assert "docs/out.md:1" in r.stderr
+    assert r.stderr.count("links RobCo-Core") == 1, r.stderr
+
+
+@pytest.mark.parametrize("root_form", ["dot", "absolute"])
+def test_root_forms(tmp_path, no_git, root_form):
+    proj = make_project(tmp_path)
+    write(proj, SUB + "/docs/x.md", f"[old]({link(OLD)})\n")
+    write(proj, "docs/gen/x.md", f"[old]({link(OLD)})\n")
+    write(proj, "docs/out.md", f"[old]({link(OLD)})\n")
+    root = "." if root_form == "dot" else str(proj.resolve())
+    r = subprocess.run(["bash", str(SCRIPT), root, "./" + SUB, "./docs/gen/"],
+                       capture_output=True, text=True, env=no_git, cwd=proj)
+    assert r.returncode == 1
+    assert "docs/out.md:1" in r.stderr
+    assert r.stderr.count("links RobCo-Core") == 1, r.stderr
+
+
+@pytest.mark.parametrize("args", [
+    ["/abs/robco-core"], [".", ], ["./"], ["../robco-core"], ["external/../x"],
+    [SUB, "/abs/docs"], [SUB, "docs/../.."],
+])
+def test_unsupported_paths_are_usage_errors(tmp_path, no_git, args):
+    proj = make_project(tmp_path)
+    r = run(proj, no_git, *args[1:], sub=args[0])
+    assert r.returncode == 2, r.stderr
+    assert "usage" in r.stderr

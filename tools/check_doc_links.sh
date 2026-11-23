@@ -6,6 +6,8 @@
 #
 # root is the project root. submodule is the RobCo-Core submodule path,
 # relative to root. Each exclude is one more path, relative to root, to skip.
+# Leading ./, doubled slashes and a trailing / are fine. An absolute path or
+# a .. part in the submodule or an exclude is a usage error.
 # A link is github.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/<hash>,
 # and its hash must equal the full submodule commit.
 #
@@ -26,9 +28,42 @@ die() {
 }
 
 [ $# -ge 2 ] || { echo "usage: $0 <root> <submodule> [exclude...]" >&2; exit 2; }
+# Normalizes a path relative to root: drops leading ./, doubled and trailing
+# slashes. Refuses an absolute path, a .. part, or the root itself, because
+# find reports paths as ./<rel> and could never match those.
+rel() {
+    local p=$1 q
+    case "$p" in
+    /*) bad "$2 '$1' must be relative to the root" ;;
+    esac
+    while :; do
+        q=${p//\/\//\/}
+        q=${q#./}
+        q=${q%/}
+        q=${q%/.}
+        q=${q//\/.\//\/}
+        [ "$q" = "$p" ] && break
+        p=$q
+    done
+    case "/$p/" in
+    //|/./) bad "$2 '$1' names the root itself" ;;
+    */../*) bad "$2 '$1' must stay under the root" ;;
+    esac
+    printf '%s\n' "$p"
+}
+bad() {
+    echo "check-doc-links: $*" >&2
+    echo "usage: $0 <root> <submodule> [exclude...]" >&2
+    exit 2
+}
+
 root=$1
-core=${2%/}
+core=$(rel "$2" submodule) || exit 2
 shift 2
+excludes=()
+for x in "$@"; do
+    excludes+=("$(rel "$x" exclude)") || exit 2
+done
 cd "$root" || die "cannot enter $root"
 [ -e "$core" ] || die "$core is missing under $root: run git submodule update --init"
 
@@ -81,8 +116,8 @@ esac
 
 prune=(-name .git -o -name .venv -o -name .claude -o -name build -o -name node_modules
     -o -name vendor -o -name third_party -o -path "./$core")
-for x in "$@"; do
-    prune+=(-o -path "./${x%/}")
+for x in ${excludes[@]+"${excludes[@]}"}; do
+    prune+=(-o -path "./$x")
 done
 
 status=0
