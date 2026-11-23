@@ -12,6 +12,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | [Audio](./api/audio.md) | `audio.h` |
 | [Buses, clock and configuration](./api/buses.md) | `i2c.h`, `rtc.h`, `datetime.h`, `spi.h`, `ini.h` |
 | [User mode](./api/umode.md) | `umode.h` |
+| [GPIO expanders](./api/gpiox.md) | `gpiox.h` |
 
 ## Contents
 
@@ -49,6 +50,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | `spi.h` | [SPI master](./api/buses.md#spi-master-spih) |
 | `ini.h` | [Configuration files](./api/buses.md#configuration-files-inih) |
 | `umode.h` | [User-mode tasks](./api/umode.md#user-mode-tasks-umodeh) |
+| `gpiox.h` | [PCA9554 expanders](./api/gpiox.md#pca9554-expanders-gpioxh) |
 | `crc32.h` | [CRC-32](#crc-32-crc32h) |
 | `rimg.h` | [Image header](#image-header-rimgh) |
 | `bootinfo.h` | [Boot info block](#boot-info-block-bootinfoh) |
