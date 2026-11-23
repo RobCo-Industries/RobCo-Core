@@ -41,16 +41,23 @@ file system built with `ROBCO_FS_READONLY=1` and reads an image that
 CI builds the host tests with GCC, and GCC reports warnings that Apple
 clang does not, such as `-Wformat-truncation`. So when the host `cc` is
 clang, `make test-host` first runs `make test-host-gccwarn`. It compiles
-every host test and every source they link with `arm-none-eabi-gcc`, the
-host build's flags, `-O2` and the macOS SDK headers, and links nothing.
-A warning fails the build as it would in CI. The cross compiler targets
-32-bit ARM, so the check skips pointer and integer casts of different
-sizes, and a format whose type size differs between 32-bit ARM and a
-64-bit Linux host can still pass here and fail in CI. The target prints
-one line and skips when the host `cc` is GCC, when the cross GCC is
-missing or when no SDK is found. `HOST_GCCWARN_CC` and `HOST_GCCWARN_INC`
-point it at another compiler or header directory. A project that
-includes `mk/host.mk` gets it with the same source lists.
+every C file in the host test folder and every source the tests link with
+`arm-none-eabi-gcc` and the macOS SDK headers, and links nothing. Each
+file is compiled twice: once with CI's flags, `-O1` and the sanitizers,
+and once without the sanitizers at `-O2`. Both passes matter. UBSan hides
+loop bounds from GCC, so some truncation warnings fire only with CI's
+flags, and other warnings need `-O2`. A warning fails the build as it
+would in CI. `tests/fixtures/gccwarn/format_truncation_bad.c` is bad on
+purpose: the check compiles it and fails if CI's pass accepts it.
+The cross compiler targets 32-bit ARM, so the check skips pointer and
+integer casts of different sizes, and a format whose type size differs
+between 32-bit ARM and a 64-bit Linux host can still pass here and fail
+in CI. `make ci-local` catches those. The target prints one line and
+skips when the host `cc` is GCC, when the cross GCC is missing or when
+no SDK is found. `HOST_GCCWARN_CC` and `HOST_GCCWARN_INC` point it at
+another compiler or header directory. A project that includes
+`mk/host.mk` gets it with the same source lists, plus `HOST_GCCWARN_SRCS`
+for C files outside its host test folder.
 
 To add a test, create `tests/host/test_<name>.c`:
 

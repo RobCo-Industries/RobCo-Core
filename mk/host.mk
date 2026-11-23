@@ -31,8 +31,9 @@
 # turns sanitizers off, HOST_SANITIZE=require fails when the compiler
 # cannot use them.
 #
-# test-host-gccwarn, run by test-host, compiles every host test and every
-# source they link with the cross GCC and the host headers, to catch the
+# test-host-gccwarn, run by test-host, compiles every C file in
+# HOST_TEST_DIR, every source the tests link and HOST_GCCWARN_SRCS with the
+# cross GCC and the host headers, at CI's flags and at -O2, to catch the
 # GCC-only warnings CI reports when HOST_CC is clang. It skips, with one
 # line, when HOST_CC is GCC, the cross GCC is missing or no host headers
 # are found. HOST_GCCWARN_CC (default $(CROSS)gcc) and HOST_GCCWARN_INC
@@ -63,9 +64,9 @@ HOST_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -g -O1 -DROBCO_HOST=1 \
                -I $(ROBCO_HOST_P)include -I $(ROBCO_HOST_P)tests/host \
                $(addprefix -I ,$(HOST_INCLUDES)) $(addprefix -D,$(HOST_DEFINES))
 
-# Probe once: some compilers or platforms lack ASan or UBSan.
-ifneq ($(filter 1 require,$(HOST_SANITIZE)),)
+# CI builds with these. Probe once: some compilers or platforms lack ASan or UBSan.
 HOST_SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+ifneq ($(filter 1 require,$(HOST_SANITIZE)),)
 HOST_SAN_OK := $(shell mkdir -p $(HOST_BUILD) && \
                  printf 'int main(void){return 0;}\n' > $(HOST_BUILD)/probe.c && \
                  $(HOST_CC) $(HOST_SAN_FLAGS) -o $(HOST_BUILD)/probe $(HOST_BUILD)/probe.c >/dev/null 2>&1 && \
@@ -202,43 +203,108 @@ $(HOST_BUILD)/test_gpiox: src/drv/gpiox_pca9554.c
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the
-# host build's flags plus -O2, which some GCC warnings need. The cross GCC
-# targets 32-bit ARM, so pointer and integer casts of different sizes are
-# not checked: on a 64-bit host they are the same size, and clang checks
-# them there.
+# cross GCC and the host headers. Each file is compiled twice:
+#   ci: CI's host flags, the sanitizers and -O1, minus -g. UBSan hides
+#       loop bounds from GCC, so some -Wformat-truncation warnings fire
+#       only with them.
+#   o2: the same flags without the sanitizers, at -O2, which other GCC
+#       warnings need.
+# The cross GCC targets 32-bit ARM, so pointer and integer casts of
+# different sizes are not checked: on a 64-bit host they are the same
+# size, and clang checks them there.
+#
+# Sources: every .c file in HOST_TEST_DIR, the pure library, HOST_SRCS,
+# the file system sets in HOST_CORE_SETS, and HOST_GCCWARN_SRCS, extra
+# project files such as host tools kept elsewhere. Each file and pass
+# leaves a stamp in $(HOST_BUILD)/gccwarn, so a second run compiles only
+# what changed, and make -j runs the compiles in parallel.
 HOST_GCCWARN_CC ?= $(or $(CROSS),arm-none-eabi-)gcc
 HOST_GCCWARN_INC ?=
-HOST_GW = $(HOST_GCCWARN_CC) -c -o /dev/null $(filter-out $(HOST_SAN_FLAGS) -g -O1,$(HOST_CFLAGS)) \
-          -O2 -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -idirafter "$$inc"
-HOST_GW_SRCS := $(HOST_TEST_SRCS) $(filter %.c,$(HOST_LIB_SRCS) $(HOST_SRCS)) \
-                $(if $(filter fs,$(HOST_CORE_SETS)),$(ROBCO_HOST_P)tests/host/blk_file.c) \
-                $(if $(ROBCO_HOST_SELF),tests/host/fs_tool.c tests/host/tft_tool.c $(HOST_RO_TEST))
-HOST_GW_FS_SRCS := $(if $(filter fs,$(HOST_CORE_SETS)),$(sort $(wildcard $(ROBCO_HOST_P)src/fs/*.c)))
-HOST_GW_FATFS_SRCS := $(if $(filter fatfs,$(HOST_CORE_SETS)),\
-                        $(ROBCO_HOST_P)third_party/fatfs/ff.c $(ROBCO_HOST_P)third_party/fatfs/ffunicode.c)
+HOST_GCCWARN_SRCS ?=
 
+# "ok <include dir>" or "skip <reason>", found once when make starts.
+HOST_GW_STATE := $(shell \
+  defs=$$($(HOST_CC) -dM -E -x c /dev/null 2>/dev/null); \
+  case "$$defs" in (*__clang__*) ;; (*__GNUC__*) echo "skip $(HOST_CC) is GCC"; exit 0;; esac; \
+  command -v $(HOST_GCCWARN_CC) >/dev/null 2>&1 || { echo "skip no $(HOST_GCCWARN_CC)"; exit 0; }; \
+  inc="$(HOST_GCCWARN_INC)"; \
+  if [ -z "$$inc" ] && command -v xcrun >/dev/null 2>&1; then \
+    inc="$$(xcrun --show-sdk-path 2>/dev/null)/usr/include"; \
+  fi; \
+  if [ -n "$$inc" ] && [ -f "$$inc/stdio.h" ]; then echo "ok $$inc"; \
+  else echo "skip no host headers, set HOST_GCCWARN_INC"; fi)
+HOST_GW_INC := $(wordlist 2,$(words $(HOST_GW_STATE)),$(HOST_GW_STATE))
+
+HOST_GW_OUT := $(HOST_BUILD)/gccwarn
+HOST_GW_BASE = -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -idirafter "$(HOST_GW_INC)"
+HOST_GW_CC = $(HOST_GCCWARN_CC) -c -o /dev/null -MMD -MT $@ -MF $(@:.ok=.d) $(HOST_GW_BASE)
+HOST_GW_FLAGS_ci = $(filter-out -g $(HOST_SAN_FLAGS),$(HOST_CFLAGS)) $(HOST_SAN_FLAGS)
+HOST_GW_FLAGS_o2 = $(filter-out -g -O1 $(HOST_SAN_FLAGS),$(HOST_CFLAGS)) -O2
+HOST_GW_GROUP_src :=
+HOST_GW_GROUP_fs = $(HOST_FS_CFLAGS)
+HOST_GW_GROUP_fatfs = $(HOST_FS_CFLAGS) $(HOST_FATFS_CFLAGS)
+HOST_GW_GROUP_ro = -DROBCO_FS_READONLY=1 $(HOST_FS_CFLAGS) $(HOST_FATFS_CFLAGS)
+
+HOST_GW_SRCS_src := $(sort $(wildcard $(HOST_TEST_DIR)/*.c) \
+                      $(filter %.c,$(HOST_LIB_SRCS) $(HOST_SRCS) $(HOST_GCCWARN_SRCS)) \
+                      $(if $(filter fs,$(HOST_CORE_SETS)),$(ROBCO_HOST_P)tests/host/blk_file.c))
+HOST_GW_SRCS_fs := $(if $(filter fs,$(HOST_CORE_SETS)),$(sort $(wildcard $(ROBCO_HOST_P)src/fs/*.c)))
+HOST_GW_SRCS_fatfs := $(if $(filter fatfs,$(HOST_CORE_SETS)),\
+                        $(ROBCO_HOST_P)third_party/fatfs/ff.c $(ROBCO_HOST_P)third_party/fatfs/ffunicode.c)
+HOST_GW_SRCS_ro := $(if $(ROBCO_HOST_SELF),$(HOST_GW_SRCS_fs) $(HOST_GW_SRCS_fatfs))
+
+# $(HOST_BUILD)/gccwarn/<pass>/<group>.cmd holds the compiler, its version
+# and the flags of one pass and group. It is rewritten only when its text
+# changes, and every stamp of that pass and group depends on it. So a new
+# compiler, define or flag compiles again, whether it comes from the
+# command line or from a project's Makefile.
+ifeq ($(firstword $(HOST_GW_STATE)),ok)
+HOST_GW_CCID := $(shell command -v $(HOST_GCCWARN_CC); $(HOST_GCCWARN_CC) --version 2>&1 | head -n 1)
+endif
+HOST_GW_CMD = $(HOST_GW_CCID) -c $(HOST_GW_BASE) $(HOST_GW_FLAGS_$(1)) $(HOST_GW_GROUP_$(2))
+
+.PHONY: host-gw-force
+host-gw-force:
+
+# One static pattern rule per pass and group:
+# $(HOST_BUILD)/gccwarn/<pass>/<group>/<source>.ok
+define HOST_GW_RULE
+$$(HOST_GW_OUT)/$(1)/$(2).cmd: host-gw-force
+	@mkdir -p $$(dir $$@)
+	@printf '%s\n' '$$(subst ','\'',$$(call HOST_GW_CMD,$(1),$(2)))' > $$@.tmp
+	@if cmp -s $$@.tmp $$@; then rm -f $$@.tmp; else mv -f $$@.tmp $$@; fi
+HOST_GW_STAMPS += $$(patsubst %,$$(HOST_GW_OUT)/$(1)/$(2)/%.ok,$$(HOST_GW_SRCS_$(2)))
+$$(patsubst %,$$(HOST_GW_OUT)/$(1)/$(2)/%.ok,$$(HOST_GW_SRCS_$(2))): $$(HOST_GW_OUT)/$(1)/$(2)/%.ok: % $$(ROBCO_HOST_P)mk/host.mk $$(HOST_GW_OUT)/$(1)/$(2).cmd | $$(HOST_ALL)
+	@mkdir -p $$(dir $$@)
+	@$$(HOST_GW_CC) $$(HOST_GW_FLAGS_$(1)) $$(HOST_GW_GROUP_$(2)) $$< || \
+	  { echo "test-host-gccwarn: $$< fails the $(1) pass" >&2; exit 1; }
+	@touch $$@
+endef
+HOST_GW_STAMPS :=
+$(foreach p,ci o2,$(foreach g,src fs fatfs ro,$(eval $(call HOST_GW_RULE,$(p),$(g)))))
+-include $(HOST_GW_STAMPS:.ok=.d)
+
+# RobCo-Core's self-test: a file that is bad on purpose must fail the ci
+# pass. It passes the o2 pass, which is the hole the ci pass closes.
+ifeq ($(ROBCO_HOST_SELF),1)
+HOST_GW_BAD := tests/fixtures/gccwarn/format_truncation_bad.c
+HOST_GW_SELF := $(HOST_GW_OUT)/selftest.ok
+$(HOST_GW_SELF): $(HOST_GW_BAD) mk/host.mk $(HOST_GW_OUT)/ci/src.cmd $(HOST_GW_OUT)/o2/src.cmd
+	@mkdir -p $(dir $@)
+	@if $(HOST_GW_CC) $(HOST_GW_FLAGS_ci) $< 2>/dev/null; then \
+	  echo "test-host-gccwarn: self-test: the ci pass missed $<" >&2; exit 1; fi
+	@$(HOST_GW_CC) $(HOST_GW_FLAGS_o2) $< || \
+	  { echo "test-host-gccwarn: self-test: the o2 pass should accept $<" >&2; exit 1; }
+	@touch $@
+endif
+
+ifeq ($(firstword $(HOST_GW_STATE)),ok)
+test-host-gccwarn: $(HOST_ALL) $(HOST_GW_SELF) $(HOST_GW_STAMPS)
+	@echo "test-host-gccwarn: $(HOST_GCCWARN_CC) found no warning in the ci and o2 passes"
+else
 test-host-gccwarn: $(HOST_ALL)
-	@set -u; \
-	skip() { echo "test-host-gccwarn: skipped, $$1"; exit 0; }; \
-	defs=$$($(HOST_CC) -dM -E -x c /dev/null 2>/dev/null); \
-	case "$$defs" in *__clang__*) ;; *__GNUC__*) skip "$(HOST_CC) is GCC";; esac; \
-	command -v $(HOST_GCCWARN_CC) >/dev/null 2>&1 || skip "no $(HOST_GCCWARN_CC)"; \
-	inc="$(HOST_GCCWARN_INC)"; \
-	if [ -z "$$inc" ] && command -v xcrun >/dev/null 2>&1; then \
-	  inc="$$(xcrun --show-sdk-path 2>/dev/null)/usr/include"; \
-	fi; \
-	[ -n "$$inc" ] && [ -f "$$inc/stdio.h" ] || skip "no host headers, set HOST_GCCWARN_INC"; \
-	bad=""; \
-	for f in $(HOST_GW_SRCS); do $(HOST_GW) $$f || bad="$$bad $$f"; done; \
-	for f in $(HOST_GW_FS_SRCS); do $(HOST_GW) $(HOST_FS_CFLAGS) $$f || bad="$$bad $$f"; done; \
-	for f in $(HOST_GW_FATFS_SRCS); do \
-	  $(HOST_GW) $(HOST_FS_CFLAGS) $(HOST_FATFS_CFLAGS) $$f || bad="$$bad $$f"; \
-	done; \
-	$(if $(ROBCO_HOST_SELF),for f in $(HOST_GW_FS_SRCS) $(HOST_GW_FATFS_SRCS); do \
-	  $(HOST_GW) -DROBCO_FS_READONLY=1 $(HOST_FS_CFLAGS) $(HOST_FATFS_CFLAGS) $$f || bad="$$bad ro:$$f"; \
-	done;) \
-	if [ -n "$$bad" ]; then echo "test-host-gccwarn: FAILED:$$bad" >&2; exit 1; fi; \
-	echo "test-host-gccwarn: $(HOST_GCCWARN_CC) found no warning"
+	@echo "test-host-gccwarn: skipped, $(HOST_GW_INC)"
+endif
 
 # Runs every binary, then fails if any failed.
 test-host: test-host-gccwarn $(HOST_ALL)
@@ -249,3 +315,26 @@ test-host: test-host-gccwarn $(HOST_ALL)
 	done; \
 	if [ -n "$$failed" ]; then echo "test-host: FAILED:$$failed" >&2; exit 1; fi; \
 	echo "test-host: all passed"
+
+# ci-local runs a CI build in the robco-ci container with Docker, from a
+# copy of the tree in build/ci-local/src. See tools/ci_local.sh.
+#   make ci-local                         CI_LOCAL_TARGETS, as CI's build job
+#   make ci-local CI_LOCAL_TARGETS="..."  other goals for one run
+#   make ci-local-image                   builds robco-ci:<tag> locally
+# A project sets CI_LOCAL_TARGETS to its workflow's make-targets. The
+# default is "all test-host", or RobCo-Core's host job in RobCo-Core.
+ifeq ($(ROBCO_HOST_SELF),1)
+CI_LOCAL_TARGETS ?= test-host HOST_SANITIZE=require
+else
+CI_LOCAL_TARGETS ?= all test-host
+endif
+CI_LOCAL_CPUS ?= 4
+CI_LOCAL = CI_LOCAL_TARGETS='$(CI_LOCAL_TARGETS)' CI_LOCAL_CPUS='$(CI_LOCAL_CPUS)' \
+           sh $(or $(ROBCO_HOST_P),./)tools/ci_local.sh --root "$(CURDIR)"
+
+.PHONY: ci-local ci-local-image
+ci-local:
+	@$(CI_LOCAL)
+
+ci-local-image:
+	@$(CI_LOCAL) --build-image

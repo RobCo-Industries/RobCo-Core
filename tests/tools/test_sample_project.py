@@ -173,3 +173,39 @@ def test_sdimage_rejects_a_directory_on_a_file(project):
     assert r.returncode != 0 and "end it with / to copy into it" in r.stderr
     r = make(project, "sdimage", "SDIMAGE_FILES=nothing:X", check=False)
     assert r.returncode != 0
+
+
+def test_gccwarn_compiles_again_when_the_command_changes(project, tmp_path):
+    """A new define or compiler reruns the check on unchanged files."""
+    cross = shutil.which("arm-none-eabi-gcc")
+    if cross is None:
+        pytest.skip("arm-none-eabi-gcc not installed")
+    log = tmp_path / "cc.log"
+    cc = tmp_path / "cc-logged"
+    cc.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\nexec "{cross}" "$@"\n')
+    cc.chmod(0o755)
+    shutil.copy(os.path.join(ROOT, "tests", "fixtures", "gccwarn", "define_gated.c"),
+                project / "src" / "gated.c")
+
+    def check(*args):
+        log.write_text("")
+        r = make(project, "test-host-gccwarn", f"HOST_GCCWARN_CC={cc}",
+                 "HOST_GCCWARN_SRCS=src/gated.c", *args, check=False)
+        compiled = [ln for ln in log.read_text().splitlines() if "gated.c" in ln]
+        return r, compiled
+
+    r, compiled = check()
+    if "skipped" in r.stdout:
+        pytest.skip(r.stdout.strip())
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len(compiled) == 2
+    r, compiled = check()
+    assert r.returncode == 0 and compiled == []
+    r, compiled = check("HOST_DEFINES=SAMPLE_HOST=1 OTHER=1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len(compiled) == 2
+    r, compiled = check("HOST_DEFINES=SAMPLE_HOST=1 OTHER=1")
+    assert compiled == []
+    r, compiled = check("HOST_DEFINES=SAMPLE_HOST=1 GCCWARN_BREAK=1")
+    assert r.returncode != 0
+    assert "src/gated.c fails the ci pass" in r.stderr

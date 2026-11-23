@@ -47,6 +47,7 @@ make venv && make test
 | Spikes | `make test-spikes` | The three hardware spikes on every QEMU board |
 | Examples | `make test-examples` | Every example and variant, built warning-free |
 | Target | `make test-target` | Every example booted in QEMU on four boards. `BOARD=raspi0` picks one. |
+| CI | `make ci-local` | CI's host job in the `robco-ci` container with Docker. `make ci-local-image` builds the image. |
 
 [tests/README.md](./tests/README.md) explains each layer.
 
