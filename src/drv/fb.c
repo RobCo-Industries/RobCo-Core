@@ -27,6 +27,8 @@
 static uint32_t fb_msg[FB_MSG_WORDS] __attribute__((aligned(CACHE_LINE_MAX)));
 static fb_info_t fb_state;
 static int fb_ready;
+/* Bumped by every successful fb_init() and fb_adopt(). Never 0 after one. */
+static uint32_t fb_gen;
 
 /* Appends a tag with `words` value words. Returns the index of value word 0. */
 static uint32_t put_tag(uint32_t *n, uint32_t tag, uint32_t words, uint32_t v0, uint32_t v1)
@@ -47,6 +49,13 @@ static uint32_t put_tag(uint32_t *n, uint32_t tag, uint32_t words, uint32_t v0, 
 static int tag_ok(uint32_t value_at)
 {
     return (((volatile uint32_t *)fb_msg)[value_at - 1] & MBOX_RESPONSE) != 0;
+}
+
+static void fb_bump_generation(void)
+{
+    if (++fb_gen == 0) {
+        fb_gen = 1;
+    }
 }
 
 int fb_init(uint32_t width, uint32_t height, uint32_t depth)
@@ -108,12 +117,55 @@ int fb_init(uint32_t width, uint32_t height, uint32_t depth)
 
     fb_state = info;
     fb_ready = 1;
+    fb_bump_generation();
+    return 0;
+}
+
+int fb_adopt(const fb_info_t *info)
+{
+    uintptr_t a;
+
+    if (info == NULL || info->addr == NULL) {
+        return FB_ERR_ADDR;
+    }
+    a = (uintptr_t)info->addr;
+    if ((a & 3u) != 0 || (info->size != 0 && a + (info->size - 1u) < a)) {
+        return FB_ERR_ADDR;
+    }
+    if (info->width == 0 || info->height == 0) {
+        return FB_ERR_SIZE;
+    }
+    if (info->depth != 32) {
+        return FB_ERR_DEPTH;
+    }
+    /* Divisions, not products: a huge width or height must not overflow. */
+    if ((info->pitch & 3u) != 0 || info->pitch / 4u < info->width ||
+        info->size / info->pitch < info->height) {
+        return FB_ERR_BUFFER;
+    }
+    if (info->order != FB_ORDER_BGR && info->order != FB_ORDER_RGB) {
+        return FB_ERR_ORDER;
+    }
+
+    /* The same mapping as fb_init(): the buffer is in GPU memory. */
+    if (mmu_map) {
+        mmu_map((uint32_t)a, info->size, MMU_ATTR_FB);
+    }
+
+    fb_state = *info;
+    fb_ready = 1;
+    fb_bump_generation();
     return 0;
 }
 
 const fb_info_t *fb_get(void)
 {
     return fb_ready ? &fb_state : NULL;
+}
+
+uint32_t fb_generation(void)
+{
+    return fb_ready ? fb_gen : 0;
 }
 
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b)
@@ -187,25 +239,41 @@ void fb_blit_1bpp(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     }
 }
 
-void fb_scroll_up(uint32_t pixels, uint32_t bg)
+void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t pixels,
+                    uint32_t bg)
 {
-    uint32_t h = fb_state.height;
-    uint32_t y;
+    uint32_t j;
 
-    if (!fb_ready) {
+    if (!fb_ready || x >= fb_state.width || y >= fb_state.height || w == 0 || h == 0) {
         return;
     }
+    if (w > fb_state.width - x) {
+        w = fb_state.width - x;
+    }
+    if (h > fb_state.height - y) {
+        h = fb_state.height - y;
+    }
     if (pixels >= h) {
-        fb_fill_rect(0, 0, fb_state.width, h, bg);
+        fb_fill_rect(x, y, w, h, bg);
         return;
     }
     if (pixels == 0) {
         return;
     }
-    for (y = 0; y + pixels < h; y++) {
-        k_memcpy(row_ptr(y), row_ptr(y + pixels), fb_state.width * 4);
+    /*
+     * Upward: each destination row lies above its source row, so copying
+     * top to bottom never reads a row already overwritten. Within one copy
+     * the rows are distinct, since pitch >= width * 4.
+     */
+    for (j = 0; j + pixels < h; j++) {
+        k_memcpy(row_ptr(y + j) + x, row_ptr(y + j + pixels) + x, w * 4);
     }
-    fb_fill_rect(0, h - pixels, fb_state.width, pixels, bg);
+    fb_fill_rect(x, y + h - pixels, w, pixels, bg);
+}
+
+void fb_scroll_up(uint32_t pixels, uint32_t bg)
+{
+    fb_scroll_rect(0, 0, fb_state.width, fb_state.height, pixels, bg);
 }
 
 void fb_clear(uint32_t colour)

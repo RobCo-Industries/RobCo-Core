@@ -28,6 +28,10 @@
 #define CONSOLE_ERR_NO_FB       (-1)
 #define CONSOLE_ERR_TOO_BIG     (-2)
 #define CONSOLE_ERR_SCHEME      (-3)
+#define CONSOLE_ERR_CURSOR      (-4)
+
+/* console_dump() shows a cell whose character is unknown, after console_adopt(), as this. */
+#define CONSOLE_DUMP_UNKNOWN    '#'
 
 typedef struct {
     uint8_t r, g, b;
@@ -42,11 +46,29 @@ typedef struct {
 const console_scheme_t *console_scheme_info(unsigned scheme);
 
 /*
- * Needs fb_init first. Clears the screen and resets the grid, cursor and
- * attribute. Call it again after every successful fb_init(): until then
- * the console draws nothing and console_cols() returns 0.
+ * Needs fb_init first. Clears the grid and resets the grid, cursor and
+ * attribute. Call it again after every successful fb_init() or fb_adopt():
+ * until then the console draws nothing and console_cols() returns 0.
  */
 int console_init(unsigned scheme);
+
+/*
+ * Starts the console on the framebuffer an earlier stage left on, after
+ * fb_adopt(), without clearing it. The grid is `cols` by `rows` cells,
+ * the cursor at `cx`,`cy`, hidden, attribute normal. Checks, in order: a
+ * framebuffer (CONSOLE_ERR_NO_FB), the scheme (CONSOLE_ERR_SCHEME), a
+ * non-empty grid that fits the screen and the cell buffer
+ * (CONSOLE_ERR_TOO_BIG), the cursor inside the grid (CONSOLE_ERR_CURSOR).
+ * On an error nothing changes, on screen or in the console state.
+ *
+ * The characters already on screen are unknown: console_dump() shows
+ * them as CONSOLE_DUMP_UNKNOWN until they are written over. Scrolling
+ * moves pixels, so they move up intact. The console draws, clears and
+ * scrolls only inside its grid: pixels right of it and below it stay. console_set_scheme() repaints
+ * only known cells, and the block cursor does not show on an unknown
+ * cell.
+ */
+int console_adopt(unsigned cols, unsigned rows, unsigned cx, unsigned cy, unsigned scheme);
 
 /*
  * Handles '\n' (new line, column 0), '\r', '\b' (moves left, no erase)
@@ -74,7 +96,10 @@ void console_cursor_show(int on);
  * and the attribute stays as it was.
  */
 void console_set_attr(unsigned attr);
-/* Redraws the whole screen from the cell buffer. Unknown ids are ignored. */
+/*
+ * Redraws the whole grid from the cell buffer. After console_adopt(),
+ * cells still unknown keep their pixels. Unknown ids are ignored.
+ */
 void console_set_scheme(unsigned scheme);
 /* The active scheme id, CONSOLE_SCHEME_GREEN before console_init(). */
 unsigned console_scheme(void);
@@ -82,7 +107,8 @@ unsigned console_scheme(void);
 /*
  * Test hook. Writes an "@RC ... ev=screen" header, one "|" line per row
  * with trailing spaces trimmed, then "@RC ... ev=screen_end". Cells
- * outside printable ASCII show as '#'.
+ * outside printable ASCII, and unknown cells after console_adopt(), show
+ * as '#'.
  */
 void console_dump(void (*out)(char));
 

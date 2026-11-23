@@ -319,7 +319,9 @@ Trace marker, one per change:
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=<tone|stop> hz=<n> vol=<n> t_ms=<ms>
 ```
 
-`op=stop` means `hz=0`: the end of a sound, a rest or `audio_stop()`. A change from silence to silence prints nothing. `t_ms` is the audio clock: it starts at `tick_ms()` in `audio_init()` and follows the system timer, updated each tick. Each change carries the time it was due. A new tone or a stop request takes effect at the next tick, so its time is that tick.
+`op=stop` means `hz=0`: the end of a sound, a rest or `audio_stop()`. A natural change from silence to silence prints nothing.
+
+Stop rule. When a play that was started ends early, the trace prints `op=stop` exactly once. A play is a tone, a sequence, in a rest too, or PCM with or without a queued buffer. It ends early when `audio_stop()` or a new start replaces it. The tick that applies the call prints the stop line, then the line of the new start, both with that tick's `t_ms`. So `audio_stop()` followed by a start gives the same lines whether a tick runs between the two calls or not. A stop when nothing plays prints nothing. A natural end keeps its own line: `op=stop` for a tone or a sequence that ends on a sound, `op=pcm_end` for PCM. The rule adds trace lines only: the PWM backend writes the same registers in the same order. `t_ms` is the audio clock: it starts at `tick_ms()` in `audio_init()` and follows the system timer, updated each tick. Each change carries the time it was due. A new tone or a stop request takes effect at the next tick, so its time is that tick.
 
 PCM prints three markers. The trace backend runs the same engine with the same timer IRQ, so QEMU tests exercise the real IRQ path:
 

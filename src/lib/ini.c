@@ -159,7 +159,7 @@ typedef struct {
     char value[INI_MAX_VALUE + 1];
 } scratch_t;
 
-/* Returns 0 for a blank or section line, 1 for a key, or an error. */
+/* Returns 0 for a blank line, 1 for a key, 2 for a section, or an error. */
 static int parse_line(const char *p, const char *end, scratch_t *s)
 {
     int rc;
@@ -169,7 +169,8 @@ static int parse_line(const char *p, const char *end, scratch_t *s)
         return 0;
     }
     if (*p == '[') {
-        return take_section(p + 1, end, s->section);
+        rc = take_section(p + 1, end, s->section);
+        return rc < 0 ? rc : 2;
     }
     rc = take_name(&p, end, s->key, INI_MAX_KEY);
     if (rc < 0) {
@@ -187,6 +188,18 @@ static int parse_line(const char *p, const char *end, scratch_t *s)
 
 int ini_parse(const char *text, size_t len, ini_handler_t fn, void *ctx, unsigned *err_line)
 {
+    if (fn == NULL) {
+        if (err_line != NULL) {
+            *err_line = 0;
+        }
+        return INI_ERR_ARG;
+    }
+    return ini_parse_sections(text, len, fn, NULL, ctx, err_line);
+}
+
+int ini_parse_sections(const char *text, size_t len, ini_handler_t fn,
+                       ini_section_handler_t on_section, void *ctx, unsigned *err_line)
+{
     scratch_t s;
     const char *p;
     const char *end;
@@ -198,7 +211,7 @@ int ini_parse(const char *text, size_t len, ini_handler_t fn, void *ctx, unsigne
     if (err_line != NULL) {
         *err_line = 0;
     }
-    if (fn == NULL || (text == NULL && len != 0)) {
+    if ((fn == NULL && on_section == NULL) || (text == NULL && len != 0)) {
         return INI_ERR_ARG;
     }
     if (len == 0) {
@@ -237,7 +250,10 @@ int ini_parse(const char *text, size_t len, ini_handler_t fn, void *ctx, unsigne
             }
             return rc;
         }
-        if (rc == 1 && fn(s.section, s.key, s.value, line, ctx) != 0) {
+        if (rc == 1 && fn != NULL && fn(s.section, s.key, s.value, line, ctx) != 0) {
+            return INI_STOPPED;
+        }
+        if (rc == 2 && on_section != NULL && on_section(s.section, line, ctx) != 0) {
             return INI_STOPPED;
         }
         p = eol < end ? eol + 1 : end;

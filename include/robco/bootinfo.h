@@ -72,9 +72,12 @@
 #define BOOTINFO_E_VERSION      (-2)
 #define BOOTINFO_E_SIZE         (-3)
 #define BOOTINFO_E_CRC          (-4)
+#define BOOTINFO_E_NO_FB        (-5)  /* bootinfo_fb_info(): no framebuffer in the block */
 
 #ifndef __ASSEMBLER__
 #include <stddef.h>
+
+#include <robco/fb.h>
 
 typedef struct __attribute__((packed)) robco_bootinfo {
     uint32_t magic;
@@ -143,6 +146,13 @@ int bootinfo_validate(const robco_bootinfo_t *bi);
  * it is larger than `max`.
  */
 uint32_t bootinfo_fw_blob_size(const void *blob, uint32_t max);
+
+/*
+ * Fills `out` from the block's fb_* fields for fb_adopt(). Returns
+ * BOOTINFO_OK, or BOOTINFO_E_NO_FB when `bi` is NULL, ROBCO_CAP_FB is
+ * clear or fb_addr is 0. Checks nothing else: fb_adopt() does.
+ */
+int bootinfo_fb_info(const robco_bootinfo_t *bi, fb_info_t *out);
 
 /*
  * Carry-over rule. A field that describes state this stage set up itself

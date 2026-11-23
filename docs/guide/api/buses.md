@@ -386,6 +386,14 @@ int ini_parse(const char *text, size_t len, ini_handler_t fn, void *ctx, unsigne
 Calls `fn` once per key, in file order, with NUL-terminated copies that live until `fn` returns. `line` counts from 1. Return `0` from `fn` to go on, anything else to stop. `ini_parse()` returns `0` at the end, `INI_STOPPED` when `fn` stopped it, or an error. Empty text returns `0`. `err_line`, if not NULL, gets the line of the error, or `0`. Keys before the bad line have already reached `fn`, so check the return code before you use them. The scratch buffers, 192 bytes, live on the stack.
 
 ```c
+typedef int (*ini_section_handler_t)(const char *section, unsigned line, void *ctx);
+int ini_parse_sections(const char *text, size_t len, ini_handler_t fn,
+                       ini_section_handler_t on_section, void *ctx, unsigned *err_line);
+```
+
+`ini_parse()` with a second handler. `on_section` gets each section header line in file order, before the keys under it reach `fn`. It sees a section with no keys, and each repeat of a name. `section` is a NUL-terminated copy that lives until the handler returns. A non-zero return stops the parse with `INI_STOPPED`, as for `fn`. Either handler may be NULL. With both NULL the call returns `INI_ERR_ARG`. A loader can list the `[entry NAME]` sections of `BOOT.CFG` with it, empty ones included. `ini_parse()` calls it with `on_section` NULL, so existing callers see no change.
+
+```c
 int ini_get(const char *text, size_t len, const char *section, const char *key,
             char *out, size_t out_size);
 ```

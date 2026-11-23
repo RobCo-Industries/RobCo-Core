@@ -17,6 +17,10 @@ static const audio_note_t arpeggio[] = { { 523, 120 }, { 659, 120 }, { 784, 200 
 static const audio_note_t alarm[] = { { 660, 60 }, { 0, 40 }, { 990, 60 } };
 
 static const audio_note_t high = { 880, 300 };
+/* A long rest in the middle, so a stop lands in it. */
+static const audio_note_t rest_seq[] = { { 440, 50 }, { 0, 500 }, { 880, 50 } };
+/* Runs of each trace rule case: the trace must be the same every time. */
+#define RULE_RUNS 5
 
 /* A short original jingle. */
 static const char jingle[] = "terminal:d=8,o=5,b=200:c,g,e,p,4c6,a,4g.";
@@ -449,6 +453,47 @@ static void play_pcm_all(void)
     play_pcm_under();
 }
 
+/* A stop, then PCM before the tick runs: IRQs stay masked across both calls. */
+static void play_stop_pcm(void)
+{
+    uint32_t s;
+    int ret;
+
+    case_begin("stop_pcm");
+    pcm_fill(800);
+    audio_tone(440, 3000);
+    sleep_ms(50);
+    s = irq_save();
+    audio_stop();
+    ret = audio_play_pcm(pcm_buf, 800, 8000, 0);
+    irq_restore(s);
+    case_end("stop_pcm", ret);
+}
+
+/* A stop in the 500 ms rest of a sequence. */
+static void play_stop_rest(void)
+{
+    int ret;
+
+    case_begin("stop_rest");
+    ret = audio_play(rest_seq, 3, 0);
+    sleep_ms(250);
+    audio_stop();
+    case_end("stop_rest", ret);
+}
+
+static void play_rule(void)
+{
+    int i;
+
+    for (i = 0; i < RULE_RUNS; i++) {
+        play_stop_pcm();
+    }
+    for (i = 0; i < RULE_RUNS; i++) {
+        play_stop_rest();
+    }
+}
+
 static void play_all(void)
 {
     play_beep();
@@ -457,6 +502,7 @@ static void play_all(void)
     play_loop();
     play_interrupt();
     play_pcm_all();
+    play_rule();
 }
 
 void robco_main(void)
