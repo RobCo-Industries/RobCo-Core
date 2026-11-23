@@ -186,12 +186,12 @@ void stream(void)
 
     audio_play_pcm(buf[0], n, 8000, 0);
     while ((n = fill(buf[cur], sizeof buf[cur])) != 0) {
-        /* Waits until the other buffer has taken over. */
-        while (!audio_pcm_can_queue() && audio_busy()) {
-            audio_poll();
-        }
         if (audio_pcm_queue(buf[cur], n) == AUDIO_ERR_STATE) {
             audio_play_pcm(buf[cur], n, 8000, 0);   /* underrun: restart */
+        }
+        /* Waits until buf[cur] takes over or the sound ends. */
+        while (!audio_pcm_can_queue() && audio_busy()) {
+            audio_poll();
         }
         cur ^= 1;
     }
@@ -199,7 +199,7 @@ void stream(void)
 }
 ```
 
-`fill()` is yours: it writes up to `max` bytes and returns how many, `0` at the end. It writes into the buffer that played before. It is free: the queue call that put it in has returned, and `audio_pcm_can_queue()` turned `1` after that.
+`fill()` is yours: it writes up to `max` bytes and returns how many, `0` at the end. Each `fill()` writes the buffer that does not play. The first loop fills `buf[1]`, which never played. After that, the wait ends when the queued buffer takes over, so the other one is free. The wait also ends when the sound has ended: then neither buffer plays, and the next queue call returns `AUDIO_ERR_STATE`. The loop then starts the sound again from that buffer, with a gap. After that restart, `audio_pcm_can_queue()` is `1` at once, and the other buffer is free.
 
 ```c
 int audio_play_rtttl(const char *text, unsigned flags);
