@@ -389,10 +389,12 @@ audio_play_pcm(pcm_buf, 800, 8000, 0);   /* filled at run time */
 audio_wait();
 audio_play_pcm(pcm_buf, 800, 8000, 0);   /* three chunks as one sound */
 audio_pcm_queue(pcm_buf + 800, 600);
-while (!audio_pcm_can_queue()) {
+while (!audio_pcm_can_queue() && audio_busy()) {
     audio_poll();
 }
-audio_pcm_queue(pcm_buf + 1400, 1000);
+if (audio_pcm_queue(pcm_buf + 1400, 1000) == AUDIO_ERR_STATE) {
+    audio_play_pcm(pcm_buf + 1400, 1000, 8000, 0);   /* underrun */
+}
 audio_wait();
 ```
 
