@@ -23,6 +23,9 @@ PERIPH_BASE = {"raspi0": 0x20000000, "raspi1ap": 0x20000000,
 GPIO_OFFSET = 0x200000
 GPSET0, GPCLR0, GPLEV0 = 0x1C, 0x28, 0x34
 
+# play() spins for the last part of each wait.
+SPIN_S = 0.006
+
 # Clockwise Gray sequence of the levels (A, B), starting at rest with both high.
 CW = ((1, 1), (1, 0), (0, 0), (0, 1))
 
@@ -139,8 +142,11 @@ class PiGpio:
                 now = time.perf_counter() - t0
                 if now >= t:
                     break
-                if t - now > 0.003:
-                    time.sleep(t - now - 0.002)  # then spin: sleep overshoots
+                if t - now > SPIN_S:
+                    # Short sleeps, then spin: a long sleep can overshoot by ms.
+                    time.sleep(min(t - now - SPIN_S, SPIN_S))
+                else:
+                    time.sleep(0)  # lets the harness threads run, so they do not take the GIL late
             late = max(late, now - t)
             if pin is not None:
                 self.set(pin, level)
