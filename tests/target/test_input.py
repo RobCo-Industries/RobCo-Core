@@ -234,3 +234,24 @@ def test_input_script_handler(board, example_image):
         wait_count(vm, lambda: events(vm, "script"), 2)
         assert events(vm, "script") == tap("up"), vm.serial
         no_exception(vm)
+
+
+def test_input_console_burst(board, example_image):
+    """A 200-byte line sent at once arrives whole and in order.
+
+    The example prints each event before it takes the next, so the queue
+    fills. The backend leaves bytes in the UART until the queue has room,
+    and QEMU holds the rest back.
+    """
+    printable = [chr(c) for c in range(0x20, 0x7F) if chr(c) != "q"]
+    line = "".join(printable[i % len(printable)] for i in range(199))
+    with boot(example_image("input"), board, serial2=True) as vm:
+        start(vm)
+        vm.send(line + "\r")
+        expected = [("char", str(ord(c)), 0) for c in line] + tap("select")
+        got = wait_count(vm, lambda: events(vm, "serial"), len(expected))
+        assert got == expected, vm.serial
+        vm.send("q")
+        stats = wait_count(vm, lambda: markers(vm, "stats"), 1)
+        assert stats[0]["dropped"] == "0", vm.serial
+        no_exception(vm)

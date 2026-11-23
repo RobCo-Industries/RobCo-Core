@@ -143,9 +143,10 @@ Returns the sum of the signed detent steps of DIAL events with code `dial` since
 #define INPUT_DROP_OLDEST   1
 void input_set_overflow(int policy);
 unsigned input_dropped(void);
+int input_room(unsigned n);
 ```
 
-`input_set_overflow()` picks what a full queue does. `INPUT_DROP_NEWEST`, the default, refuses the new event. `INPUT_DROP_OLDEST` drops the oldest queued event and appends the new one, so the queue keeps the latest 32. Other values change nothing. `input_init()` sets the default again. `input_dropped()` returns the events dropped since `input_init()` under either policy, the same count as `input_stats()`. Both are safe from any context.
+`input_set_overflow()` picks what a full queue does. `INPUT_DROP_NEWEST`, the default, refuses the new event. `INPUT_DROP_OLDEST` drops the oldest queued event and appends the new one, so the queue keeps the latest 32. Other values change nothing. `input_init()` sets the default again. `input_dropped()` returns the events dropped since `input_init()` under either policy, the same count as `input_stats()`. `input_room(n)` returns non-zero when `n` more events fit with no loss under the current policy. A backend calls it before it takes data it cannot give back. All three are safe from any context.
 
 | On overflow | `INPUT_DROP_NEWEST` | `INPUT_DROP_OLDEST` |
 |---|---|---|
@@ -211,7 +212,7 @@ The stuck-line guard samples for the first 100 ms of ticks (at least one tick) a
 int input_serial_start(int mode);
 ```
 
-Reads the PL011 console through the ANSI parser. `INPUT_SERIAL_MAIN` reads from `input_poll()`. `INPUT_SERIAL_TICK` reads from a tick callback. Each call reads up to 64 bytes. Returns `0`, `INPUT_ERR_STATE` before `uart_init()` or on a second call, `INPUT_ERR_ARG` for another mode, or `INPUT_ERR_SPACE` when no poller or tick slot is free. Until this call the backend reads nothing, so code that calls `uart_poll()` itself keeps every byte. After it, the backend takes every byte.
+Reads the PL011 console through the ANSI parser. `INPUT_SERIAL_MAIN` reads from `input_poll()`. `INPUT_SERIAL_TICK` reads from a tick callback. Each call reads up to 64 bytes. One byte makes at most `INPUT_SERIAL_BYTE_EVENTS` (4) queued events: a printable byte makes one CHAR event, a key byte a press and a release, and a byte after a lone ESC can make BACK and a key. Under `INPUT_DROP_NEWEST` the backend reads a byte only when the queue has room for 4 events. The other bytes wait in the PL011 receive FIFO, which holds 16 bytes. When the FIFO is full, QEMU holds the rest back. On a board a sender with no flow control overruns the FIFO and the UART loses the bytes. So a paste of any length arrives whole in QEMU, and on a board as long as the consumer keeps up with the line rate. Under `INPUT_DROP_OLDEST` the backend reads every byte and the queue keeps the latest events, as that policy asks. When reading resumes after a wait for room, the ESC timeout starts again, so a sequence split by the wait still parses. Returns `0`, `INPUT_ERR_STATE` before `uart_init()` or on a second call, `INPUT_ERR_ARG` for another mode, or `INPUT_ERR_SPACE` when no poller or tick slot is free. Until this call the backend reads nothing, so code that calls `uart_poll()` itself keeps every byte. After it, the backend takes every byte.
 
 | Bytes | Event |
 |---|---|
@@ -328,9 +329,10 @@ Like `input_queue_push()`, but a full queue drops its oldest event first and cou
 void input_core_init(input_core_t *c);
 int input_core_push(input_core_t *c, const input_event_t *ev, int *pressed);
 int32_t input_core_dial_total(const input_core_t *c, unsigned dial);
+int input_core_room(const input_core_t *c, unsigned n);
 ```
 
-The state behind `input_push()`: a queue, the held keys, the dial totals and the overflow policy in `c->policy`. `input_core_init()` empties it all and sets `INPUT_DROP_NEWEST`. `input_core_push()` updates the held keys and the dial totals, then queues the event under the policy, and returns what `input_push()` returns. It stores the result of `input_hold_update()` in `*pressed` when `pressed` is not 0. `input_core_dial_total()` reads a total as `input_dial_total()` does. No locking: `src/drv/input.c` masks IRQs around it.
+The state behind `input_push()`: a queue, the held keys, the dial totals and the overflow policy in `c->policy`. `input_core_init()` empties it all and sets `INPUT_DROP_NEWEST`. `input_core_push()` updates the held keys and the dial totals, then queues the event under the policy, and returns what `input_push()` returns. It stores the result of `input_hold_update()` in `*pressed` when `pressed` is not 0. `input_core_dial_total()` reads a total as `input_dial_total()` does. `input_core_room()` returns non-zero when `n` more events fit with no loss: always under `INPUT_DROP_OLDEST`, and when `n` slots are free under `INPUT_DROP_NEWEST`. No locking: `src/drv/input.c` masks IRQs around it.
 
 ```c
 void input_debounce_init(input_debounce_t *d, unsigned stable_samples, uint32_t active_low);
@@ -352,9 +354,10 @@ A Gray-code state table. A one-bit change of A/B adds or removes a transition. A
 void input_ansi_init(input_ansi_t *p, uint32_t esc_timeout_ms);
 int input_ansi_feed(input_ansi_t *p, uint8_t byte, uint32_t now_ms, input_event_t *out);
 int input_ansi_poll(input_ansi_t *p, uint32_t now_ms, input_event_t *out);
+void input_ansi_resume(input_ansi_t *p, uint32_t now_ms);
 ```
 
-The parser behind the console backend. `input_ansi_feed()` writes up to `INPUT_ANSI_OUT_MAX` (2) events and returns their count. Keys come out as presses only, with `source` and `t_ms` 0. Call `input_ansi_poll()` when no byte came. It turns a lone ESC into BACK once `esc_timeout_ms` passed since the ESC, and drops an unfinished sequence after the same time. It returns 0 or 1. `input_ansi_feed()` makes the same check before it takes the byte, so a byte fed after the timeout never joins the old sequence. Sequences may arrive split across calls within the timeout.
+The parser behind the console backend. `input_ansi_feed()` writes up to `INPUT_ANSI_OUT_MAX` (2) events and returns their count. Keys come out as presses only, with `source` and `t_ms` 0. Call `input_ansi_poll()` when no byte came. It turns a lone ESC into BACK once `esc_timeout_ms` passed since the ESC, and drops an unfinished sequence after the same time. It returns 0 or 1. `input_ansi_feed()` makes the same check before it takes the byte, so a byte fed after the timeout never joins the old sequence. Sequences may arrive split across calls within the timeout. `input_ansi_resume()` restarts the timeout of a pending ESC or sequence at `now_ms`. A reader that left bytes waiting calls it when it reads again. It does nothing in the ground state.
 
 ```c
 void input_hold_init(input_hold_t *h);
@@ -378,7 +381,7 @@ The line reader and tokenizer behind the script backend. Blanks are spaces and t
 
 | Function | Context |
 |---|---|
-| `input_push()`, `input_pending()`, `input_flush()`, `input_stats()`, `input_key_down()`, `input_dial_total()`, `input_set_overflow()`, `input_dropped()` | Any |
+| `input_push()`, `input_pending()`, `input_flush()`, `input_stats()`, `input_key_down()`, `input_dial_total()`, `input_set_overflow()`, `input_dropped()`, `input_room()` | Any |
 | `input_poll()`, `input_wait()` | Main only. They run the main-loop backends. |
 | `input_init()`, `input_set_repeat()`, `input_gpio_*()` setup, `input_serial_start()`, `input_script_start()`, `input_script_set_handler()`, `input_add_poller()` | Main only |
 | GPIO sampling, repeat, console in tick mode | IRQ, from tick callbacks |
@@ -394,7 +397,7 @@ The line reader and tokenizer behind the script backend. Blanks are spaces and t
 | Repeat follows the last press. | Pressing a second key moves the repeat to it. Releasing the second key stops repeat even if the first is still held. Releasing a key on one source keeps the repeat while another source holds it. |
 | Key state covers codes 0 to 31. | `input_key_down()` and repeat ignore KEY events with a higher code. |
 | The console backend takes every byte. | After `input_serial_start()`, `uart_getc()` and `uart_poll()` in other code compete for bytes. |
-| Serial input needs a busy loop. | In main mode the backends read only inside `input_poll()`. A main loop that stalls longer than the UART FIFO lasts loses bytes. |
+| Serial input needs a busy loop. | In main mode the backends read only inside `input_poll()`. A main loop that stalls longer than the UART FIFO lasts loses bytes on a board. The PL011 FIFO holds 16 bytes and the mini UART FIFO 8. A full queue under `INPUT_DROP_NEWEST` stalls reading the same way: the console backend leaves bytes in the FIFO instead of dropping them. |
 | `wait` blocks the script, not the system. | Lines after `wait` stay in the mini UART FIFO and the host until the time passes. On a board the mini UART receive FIFO holds 8 bytes, so a host must not send more during a `wait`. See [Mini UART](#mini-uart-uart_minih). |
 | Timestamps use the system timer. | `t_ms` is `timer_now_ms()`, not `tick_ms()`, so it is valid from IRQ context and before the tick starts. |
 
