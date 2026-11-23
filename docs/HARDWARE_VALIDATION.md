@@ -91,6 +91,12 @@ Use a PCA9554 at `0x20` and another at `0x21`, with LEDs on outputs and switches
 | PCA9554 pins | All | `examples/gpiox`, press a key at each `ev=wait` | `ev=attach ... rc=0` for both chips, `ev=absent ... rc=-32`, the LED patterns of each step, and `ev=in` bits that match the switches |
 | No glitch at attach | All | `examples/gpiox` reset while outputs drive LEDs | A logic analyser shows only reads during `gpiox_attach()`, and the LEDs do not flicker |
 
+## Watchdog
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| Watchdog | All | `examples/wdog`, then send `f`, `k`, `s`, `r` and `h` | `f` resets within about 1 s, `k` prints `ev=kicked` with `remaining=` below 1000 and stays up, `s` prints `ev=stayed`, `r` reboots at once, `h` stays halted |
+
 ## SPI device
 
 Use a W25Qxx flash, a logic analyser, or both.
