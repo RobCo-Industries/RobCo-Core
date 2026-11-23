@@ -14,7 +14,7 @@
 #   check_doc_links.sh --repo RobCo-Industries/Pip-OS . external/pip-os
 #   check_doc_links.sh . external/pip-os/external/robco-core
 #
-# Each exclude is one more path, relative to root, to skip. Each exclude is one more path, relative to root, to skip.
+# Each exclude is one more path, relative to root, to skip.
 # Leading ./, doubled slashes and a trailing / are fine. An absolute path or
 # a .. part in the submodule or an exclude is a usage error.
 # It reads every github.com/<owner>/<name>/(blob|tree|commit)/<ref>
