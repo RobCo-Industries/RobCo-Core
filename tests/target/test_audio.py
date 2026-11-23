@@ -1,7 +1,6 @@
 """Boot examples/audio through boot() on every board: backend choice and trace markers."""
 
 import re
-import sys
 import zlib
 
 from harness.boot import boot
@@ -29,12 +28,6 @@ ERR_NO_INIT, ERR_RANGE, ERR_ARG, ERR_BUSY = -1, -6, -7, -8
 
 # A late end is fine under load; this only catches a play that never ends on time.
 PCM_END_SLACK_MS = 1000
-
-# QEMU without ppoll(), as on macOS, rounds its timer waits up to whole
-# milliseconds, so a guest gets about one timer IRQ per millisecond. The
-# PCM position comes from the clock, so the play still ends on time, but
-# fewer IRQs output a sample and the last one can land past the end.
-QEMU_TIMER_MS = sys.platform == "darwin"
 
 
 def pcm_data(n):
@@ -90,16 +83,11 @@ def check_pcm_play(marks, rate, n, vol):
     assert nominal <= took < nominal + PCM_END_SLACK_MS, (took, nominal)
     last = int(end["last"])
     got = int(end["n"])
-    # Never more IRQs that output a sample than samples.
-    assert got <= n and last <= n - 1, end
-    if QEMU_TIMER_MS:
-        # About one IRQ per millisecond: at least one per 2 ms, the last in the final 2 ms.
-        assert got >= nominal // 2, (end, nominal)
-        assert n - 1 - last <= rate * 2 // 1000, end
-    else:
-        # Close to every sample on an idle guest, and the last one.
-        assert got >= 0.9 * n, end
-        assert last == n - 1, end
+    # The library does not promise an IRQ per sample: QEMU may deliver far fewer.
+    # At least one IRQ per 2 ms proves it fired through the whole play.
+    assert nominal // 2 <= got <= n, (end, nominal)
+    # The last sample output lies in the final 2 ms of the buffer.
+    assert n - 1 - rate * 2 // 1000 <= last <= n - 1, end
 
 
 def check_pcm(vm, c):

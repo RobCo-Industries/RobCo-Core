@@ -291,7 +291,7 @@ Sharp edges:
 | Square wave tones. | Volume changes the duty cycle, which also changes the tone colour. PCM volume scales the samples instead. |
 | One IRQ per PCM sample. | At 22050 Hz that is 22050 IRQs a second, and other IRQs wait behind each one. Use the lowest rate that sounds right. |
 | `audio_play_pcm()` keeps the pointer. | The buffer must stay valid until the play ends or `audio_stop()`. |
-| QEMU timer IRQs on macOS. | QEMU without `ppoll()` rounds its timer waits to whole milliseconds. PCM then gets about one IRQ per millisecond. The play still ends on time, but `n` is far below `len`. |
+| Fewer PCM IRQs on QEMU. | Under QEMU 10.1 on a macOS host, the guest got about one system timer IRQ per millisecond: 81 IRQs for 800 samples at 8000 Hz, and 1243 for one second at 22050 Hz. We did not look for the cause or measure other hosts. On QEMU, `n` can be far below `len` while the play still ends on time. The tests therefore do not assert an IRQ per sample. |
 | PWM on real hardware. | The probe writes RNG1 with the PWM clock running. If it reads back wrong on a real board, auto picks `trace`: force PWM to try anyway. |
 | Pin mux errors are silent. | `audio_init()` ignores a `gpio_set_function()` failure on the PWM backend. |
 
