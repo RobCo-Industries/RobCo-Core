@@ -8,8 +8,12 @@
 # relative to root. Each exclude is one more path, relative to root, to skip.
 # Leading ./, doubled slashes and a trailing / are fine. An absolute path or
 # a .. part in the submodule or an exclude is a usage error.
-# A link is github.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/<hash>,
-# and its hash must equal the full submodule commit.
+# It reads every github.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/<ref>
+# URL, on any line, code blocks and reference definitions included. The ref
+# ends at /, ), #, ?, whitespace, a quote, < or >. A ref of exactly 40 hex
+# digits is a pin and must equal the submodule commit; case does not matter.
+# A ref of 7 to 39 hex digits is an abbreviated commit and is an error: use
+# the full hash. Any other ref is a branch or tag name and is ignored.
 #
 # Like check_pins.sh, it reads the commit from the submodule's git files and
 # never calls git: in a CI container git refuses a checkout owned by another
@@ -125,12 +129,21 @@ while IFS= read -r -d '' f; do
     case "${f##*/}" in
     CHANGELOG.md | CLAUDE.md | AGENTS.md) continue ;;
     esac
-    while IFS=: read -r n hash; do
-        if [ "$hash" != "$commit" ]; then
-            echo "check-doc-links: ${f#./}:$n links RobCo-Core at $hash, the submodule is at $commit" >&2
+    while IFS=: read -r n seg; do
+        hash=$(printf '%s' "$seg" | tr 'A-F' 'a-f')
+        case "$hash" in
+        '' | *[!0-9a-f]*) continue ;;
+        esac
+        if [ ${#hash} -eq 40 ]; then
+            if [ "$hash" != "$commit" ]; then
+                echo "check-doc-links: ${f#./}:$n links RobCo-Core at $seg, the submodule is at $commit" >&2
+                status=1
+            fi
+        elif [ ${#hash} -ge 7 ] && [ ${#hash} -lt 40 ]; then
+            echo "check-doc-links: ${f#./}:$n links RobCo-Core at abbreviated commit $seg, use the full hash $commit" >&2
             status=1
         fi
-    done < <(grep -noE 'github\.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/[0-9a-fA-F]+' "$f" |
+    done < <(grep -noE "github\.com/RobCo-Industries/RobCo-Core/(blob|tree|commit)/[^/)#?[:space:]\"'<>]*" "$f" |
         sed -E 's#^([0-9]+):.*/(blob|tree|commit)/#\1:#')
 done < <(find . \( "${prune[@]}" \) -prune -o -name '*.md' -type f -print0)
 

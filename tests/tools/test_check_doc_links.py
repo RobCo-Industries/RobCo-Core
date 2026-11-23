@@ -191,3 +191,74 @@ def test_unsupported_paths_are_usage_errors(tmp_path, no_git, args):
     r = run(proj, no_git, *args[1:], sub=args[0])
     assert r.returncode == 2, r.stderr
     assert "usage" in r.stderr
+
+
+@pytest.mark.parametrize("url", [
+    link("develop", "blob", "README.md"),
+    link("feature-x", "tree", ""),
+    link("dead-code", "blob", "x.md"),
+    link("beef", "tree", "src"),
+    link("abc123", "blob", "x.md"),
+    link("v1.0", "tree", ""),
+])
+def test_branch_and_tag_links_are_not_pins(tmp_path, no_git, url):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"[b]({url})\n")
+    r = run(proj, no_git)
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize("short", [COMMIT[:7], COMMIT[:12], COMMIT[:39]])
+def test_abbreviated_commit_is_an_error(tmp_path, no_git, short):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"[s]({link(short)})\n")
+    r = run(proj, no_git)
+    assert r.returncode == 1
+    assert f"a.md:1 links RobCo-Core at abbreviated commit {short}, use the full hash {COMMIT}" in r.stderr
+
+
+def test_uppercase_hash_compares_case_insensitively(tmp_path, no_git):
+    proj = make_project(tmp_path, head="ab" * 20)
+    write(proj, "a.md", f"[u]({link('AB' * 20)})\n")
+    assert run(proj, no_git).returncode == 0
+    write(proj, "a.md", f"[u]({link('CD' * 20)})\n")
+    r = run(proj, no_git)
+    assert r.returncode == 1
+    assert f"at {'CD' * 20}, the submodule is at {'ab' * 20}" in r.stderr
+
+
+def test_several_links_on_one_line_mixed(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"[a]({link(COMMIT)}) [b]({link('develop')}) [c]({link(OLD)}) [d]({link('1234567')})\n")
+    r = run(proj, no_git)
+    assert r.returncode == 1
+    assert f"a.md:1 links RobCo-Core at {OLD}," in r.stderr
+    assert "abbreviated commit 1234567" in r.stderr
+    assert r.stderr.count("links RobCo-Core") == 2, r.stderr
+
+
+def test_reference_definitions(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"[x][r] [y][s]\n\n[r]: {link(OLD)}\n[s]: <{link('main')}>\n[t]: {link(COMMIT)} \"title\"\n")
+    r = run(proj, no_git)
+    assert r.returncode == 1
+    assert f"a.md:3 links RobCo-Core at {OLD}," in r.stderr
+    assert r.stderr.count("links RobCo-Core") == 1, r.stderr
+
+
+def test_hash_ends_at_delimiters(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    base = "https://github.com/RobCo-Industries/RobCo-Core/blob/"
+    write(proj, "a.md", f"{base}{COMMIT}#L1 {base}{COMMIT}?plain=1 '{base}{COMMIT}' <{base}{COMMIT}>\n{base}{COMMIT}\n")
+    r = run(proj, no_git)
+    assert r.returncode == 0, r.stderr
+    write(proj, "a.md", f"{base}{COMMIT}0/x.md\n")
+    assert run(proj, no_git).returncode == 0  # 41 hex is a name, not a pin
+
+
+def test_code_blocks_are_checked_too(tmp_path, no_git):
+    proj = make_project(tmp_path)
+    write(proj, "a.md", f"```\n{link(OLD)}\n```\n")
+    r = run(proj, no_git)
+    assert r.returncode == 1
+    assert "a.md:2" in r.stderr

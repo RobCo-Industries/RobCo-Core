@@ -417,7 +417,7 @@ robco-core/tools/check_pins.sh .github/workflows/ci.yml
 
 It prints `check-pins: ok (<commit>, <tag>)`, or names each value that differs and exits 1. It reads the commit from the submodule's git files, so it also works in the CI container, where git refuses a checkout owned by another user. It checks each job that calls `robco-ci.yml`, and each one needs its own `image-tag` in its `with:` block. It is not a full YAML parser: it reads block mappings and a `with:` flow mapping on one line, such as `with: {image-tag: <tag>}`. On anchors, aliases, `<<:` merges, block scalars, tab indents, a flow mapping over several lines or a `with:` given through an expression, it stops and names the line. It needs `python3`, which the CI image has. Add it to `make test` so CI runs it too.
 
-Links in your Markdown files to `github.com/RobCo-Industries/RobCo-Core/blob/<hash>/...` drift the same way. `tools/check_doc_links.sh` checks that every such `blob`, `tree` or `commit` link uses the full submodule commit. Pass the project root and the submodule path, then any more paths to skip:
+Links in your Markdown files to `github.com/RobCo-Industries/RobCo-Core/blob/<hash>/...` drift the same way. `tools/check_doc_links.sh` checks that every such `blob`, `tree` or `commit` link uses the full submodule commit. A 40 hex digit ref must match it. A 7 to 39 hex digit ref is an error, because docs must use the full hash. Branch and tag names are ignored. Pass the project root and the submodule path, then any more paths to skip:
 
 ```sh
 robco-core/tools/check_doc_links.sh . robco-core
