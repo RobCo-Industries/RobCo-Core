@@ -360,7 +360,7 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md), or `io` when the card or the mount failed. `path` names the file the attempt was for. Other failures use their own `code`, such as `mmu`, with no `path`. On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |
 | `jump` | `entry` | Last line before entering the next stage at `entry` |
 | `ready` | | Stage reached its main screen or prompt |
-| `shell` | `reason` | Stage entered its emergency shell. `reason` is the `code` of the error that caused it. |
+| `shell` | `reason` | Stage entered its emergency shell. `reason` is the `code` of the error that caused it, or why the shell was asked for. A first stage adds `available`: `1` when the shell opens, `0` when it cannot run. See [First-stage emergency shell](#first-stage-emergency-shell). |
 | `halt` | | The stage stops on purpose |
 | `exception` | `type pc lr spsr dfsr dfar` | CPU exception. `type` is `undef`, `svc`, `prefetch_abort`, `data_abort`, `irq`, `fiq` or `reset`. The stage halts after it. |
 | `panic` | `msg` | Fatal software error. `msg` uses `_` for spaces. |
@@ -381,11 +381,16 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `key_window_end` | `key` | First stage: the key window ended. `key=1` when a key came. |
 | `bootinfo` | `flags caps dev part_lba fdt_size` | First stage: the boot info as handed over, right before `jump` |
 | `idle` | | First stage: the boot stopped and the stage waits in its idle loop |
-| `reboot` | | First stage: the maintenance port asked for a reboot |
+| `reboot` | | First stage: the maintenance port or the shell's reboot command asked for a reboot |
+| `shell_cmd` | `name rc` | First stage: one shell line ended. `name` is the command in lower case, or `unknown`. `rc` is `0`, or a word that says why the command failed. |
+| `diag` | `name result`, then test keys | First stage: one diagnostic ran. `result` is `ok`, `fail`, `absent` or `skipped`. |
+| `diag_done` | `ok fail absent skipped` | First stage: the run of every diagnostic ended, with the count of each result |
+| `video_pattern` | `width height` | First stage: the video diagnostic drew its test pattern |
+| `fault_hook` | `name` | First stage, test builds only: the image carries a fault hook for tests. A shipped image never prints it. |
 
 | Stage | Must emit |
 |---|---|
-| `bios` | `boot`, `init`, `input`, `post`, `post_done`, `mount`, `config`, `settings`, `beep`, `key_window`, `key_window_end`, `load`, `fallback`, `error`, `bootinfo`, `jump`, `shell`, `idle` |
+| `bios` | `boot`, `init`, `input`, `post`, `post_done`, `mount`, `config`, `settings`, `beep`, `key_window`, `key_window_end`, `load`, `fallback`, `error`, `bootinfo`, `jump`, `shell`, `shell_cmd`, `diag`, `diag_done`, `idle` |
 | `bootagent` | `boot`, `handoff`, `ready` when the menu shows, `load`, `error`, `jump` |
 | `uos`, `maint`, `diag` | `boot`, `handoff`, `ready` |
 | `pipos` | `boot`, `load`, `error`, `jump` for the ROM, `rom_exit`, `rom_kill`, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
@@ -393,7 +398,7 @@ A marker may carry more keys than the table below lists, and a stage may print e
 
 All stages emit `exception` and `panic` when those happen. Deitrix runs in USR mode, so it prints through the `log` syscall.
 
-The first-stage events, from `init` to `reboot` in the table, are RETROS-BIOS's. Their keys are a draft.
+The first-stage events, from `init` to `fault_hook` in the table, are RETROS-BIOS's. Their keys are a draft.
 
 `key_window` is always followed by `key_window_end`, also with `delay_ms = 0`. `shell_request` comes between them when a key came. `post` comes once per probe, in probe order, on every path, and `post_done` follows the last one.
 
@@ -412,7 +417,7 @@ RETROS-BIOS runs eight probes in this order. This order is a draft.
 
 | Probe | Passes when | `absent` when | Stops the boot |
 |---|---|---|---|
-| `memory` | The memory test of 256 KiB at `0x00400000` finds no fault | Never | Yes, and no later probe runs |
+| `memory` | The memory test of 256 KiB at `0x00400000` finds no fault | Never | Yes. Only the `timer` probe still runs. |
 | `video` | The framebuffer and the console start | Never | No |
 | `timer` | The system timer changes within a million reads | Never | Yes, and no later probe runs |
 | `sd` | `sd_init()` succeeds and block 0 reads | No card answers | Yes, also when absent |
@@ -421,7 +426,7 @@ RETROS-BIOS runs eight probes in this order. This order is a draft.
 | `rtc` | A DS1307 or DS3231 answers and its time reads | No chip answers | No |
 | `audio` | `audio_init()` returns 0 | `audio_init()` returns `AUDIO_ERR_NO_PWM` or `AUDIO_ERR_PIN` | No |
 
-Memory runs first because everything after it needs memory. Video runs before the timer because the framebuffer and the mailbox do not wait on the timer. The timer runs before every probe that waits on it. After a failed memory test or a stopped timer, every later probe is `skipped`. A failed memory test gives `code=memtest`, a stopped timer `code=timer`, and a failed `sd` or `fat` probe `code=io` with `what=sd` or `what=fat`.
+Memory runs first because everything after it needs memory. Video runs before the timer because the framebuffer and the mailbox do not wait on the timer. The timer runs before every probe that waits on it. After a stopped timer, every later probe is `skipped` with `after=timer`. After a failed memory test, every later probe but `timer` is `skipped` with `after=memory`. The timer probe still runs, because the shell may open after a failed memory test and the shell waits on the timer. A failed memory test gives `code=memtest`, a stopped timer `code=timer`, and a failed `sd` or `fat` probe `code=io` with `what=sd` or `what=fat`.
 
 ## Failure behaviour
 
@@ -430,7 +435,8 @@ Memory runs first because everything after it needs memory. Video runs before th
 | RETROS-BIOS | `MFBOOT.SYS` fails any step | `ev=error`, `ev=fallback`, then try `MFBOOT.BAK` |
 | RETROS-BIOS | `MFBOOT.BAK` also fails | `ev=error`, then the emergency shell |
 | RETROS-BIOS | SD card or FAT mount fails | `ev=error code=io`, then the emergency shell |
-| RETROS-BIOS | The memory test fails or the timer does not advance | `ev=error code=memtest` or `code=timer`, then the halted state |
+| RETROS-BIOS | The memory test fails and the timer passed | `ev=error code=memtest`, a warning, then the emergency shell |
+| RETROS-BIOS | The timer does not advance | `ev=error code=timer` or `code=memtest`, then the halted state |
 | MFBootAgent | The chosen entry fails | `ev=error`. Shows the error in the menu and stays in the menu. |
 | MFBootAgent | `BOOT.CFG` missing or bad | Menu with the default entry only |
 | UOS | Boot info not trusted | Cold-boots and runs |
@@ -440,8 +446,56 @@ Memory runs first because everything after it needs memory. Video runs before th
 | Pip-OS | A holotape crashes | `ev=holo_kill`. Control returns to Deitrix. |
 | Any | CPU exception in a stage | `ev=exception`, then halt |
 
-Until RETROS-BIOS has its emergency shell, every stop puts it in the halted state. It shows the error and `BOOT HALTED`, prints `ev=shell` with `available=0` and then `ev=idle`, and waits. It never jumps and never reboots by itself, so there is no reboot loop. The maintenance port keeps answering, and its `reboot` command restarts the board through the watchdog. In QEMU the maintenance port is the mini UART on the second serial port. On hardware the mini UART reaches no pin. This state is a draft.
-
-The emergency shell runs on the PL011 and on the screen console. It accepts at least `help`, `info` and `reboot`. `info` prints the boot info fields. `reboot` uses the watchdog.
+After any of these stops RETROS-BIOS never jumps and never reboots by itself, so there is no reboot loop. [First-stage emergency shell](#first-stage-emergency-shell) says what it does instead.
 
 Each real stage provides its own emergency shell. RobCo-Core has none: `loader_load_fallback()` returns the result and prints nothing, and the stage decides what to print and where to go. `examples/chain1`, built with `CHAIN1_SD`, follows the RETROS-BIOS rows above for its markers. Where RETROS-BIOS would enter its shell, it prints `ev=shell` with the reason, then `ev=halt`, and halts.
+
+## First-stage emergency shell
+
+RETROS-BIOS has an emergency shell on the PL011 and on the screen console. This section fixes when it opens, its markers and the maintenance port. The command set, such as `HELP`, `INFO`, `POST`, `DIR`, `BOOT`, `CONTINUE`, `DIAG` and `REBOOT`, is the BIOS's own business: see the RETROS-BIOS user manual. This section is a draft.
+
+### When it opens
+
+| Cause | `shell reason=` | Result |
+|---|---|---|
+| A key in the key window, on the console or the maintenance port | `key` | The shell opens. The boot waits in it. |
+| `shell` on the maintenance port before the key window ends | `maint` | The shell opens at the end of the window, also with `delay_ms = 0` |
+| A load error, or `code=io` from the `sd` or `fat` probe | The error `code` | The shell opens under the error lines |
+| A failed memory test with a timer that passed | `memtest` | The stage shows a warning that results may be wrong, then opens the shell |
+| A stopped timer | `timer` | No shell. The halted state. |
+| A failed memory test and a stopped timer | `memtest` | No shell. The halted state. |
+
+The shell needs the system timer: input waits, the SD card, the audio and most diagnostics wait on it. So the shell opens only when the `timer` probe passed. The marker carries `available=1` when the shell opens and `available=0` when it cannot.
+
+In the halted state the stage shows the first error and `BOOT HALTED`, prints `shell available=0` and then `idle`, and waits. Its idle loop polls the maintenance port without waiting on the timer. The `reboot` command restarts the board through the watchdog.
+
+### Leaving it
+
+- `CONTINUE` goes on with the normal boot. It works only when a key or the maintenance port opened the shell. After a boot error there is nothing to continue, and it is refused.
+- `CONTINUE` follows the rule of the power-on boot. When the last self test had a fatal result, a failed `memory`, `timer`, `sd` or `fat` probe, `CONTINUE` is refused and the shell stays open. This also holds after a `POST` run from the shell.
+- `BOOT` loads and starts the second stage. It is the operator's choice, so it stays allowed after a fatal self test and after a boot error. After a failed memory test it shows the warning first. It uses the same load and handoff steps and markers as the boot. `BOOT` with a path loads only that file, so no `fallback` comes.
+- `REBOOT` restarts the board through the watchdog.
+
+A `POST` run from the shell applies the same rule as the boot. A stopped timer closes the shell and enters the halted state. A failed memory test with a timer that passed shows the warning, and the shell stays open.
+
+### Shell markers
+
+- The shell prints `shell` once, when it opens.
+- Every line that is not blank ends with one `shell_cmd`. A `BOOT` that starts a second stage ends with `jump` instead. `REBOOT` prints its `shell_cmd`, then `reboot`.
+- Markers a command prints, such as `post`, `diag`, `error` or `load`, come before its `shell_cmd`.
+- `rc` in `shell_cmd` is `0`, or one of `usage`, `unknown`, `nofile`, `isdir`, `notdir`, `novol`, `io`, `outside`, `device`, `abort`, `refused`, `fail`, or the load error code for `BOOT`, or the self test error code for a refused `CONTINUE`.
+- The diagnostics print one `diag` per test. `name` is `mem`, `sd`, `video`, `audio`, `timer`, `rng`, `rtc` or `input`. A run of every test ends with `diag_done`. The other keys of each test are the BIOS's own.
+
+### Maintenance port
+
+The maintenance port answers in every phase, also in the halted state. In QEMU it is the mini UART on the second serial port. On hardware the mini UART reaches no pin. Each line gets `ok` or `err <reason>`. The library's built-in script commands, such as `key` and `char`, work too.
+
+| Command | Effect |
+|---|---|
+| `state` | One line: `phase=<init\|post\|keys\|load\|halted\|shell> error=<code\|none> shell_requested=<0\|1> post=<ok\|fail>` |
+| `dump` | The screen text. `err no screen` without a framebuffer. |
+| `shell` | Asks for the shell at the end of the key window. Refused when the shell is open, past the key window, and in the halted state. |
+| `paging on`, `paging off` | Turns the shell's pager on or off. It is on at boot. Tests turn it off. |
+| `reboot` | Prints `reboot` and restarts the board through the watchdog |
+
+The shell reads its lines from the PL011 console only. A script drives it by writing the command line to the console.
