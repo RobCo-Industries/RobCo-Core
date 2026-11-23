@@ -199,6 +199,33 @@ Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` f
 | `build` | `make CI=1 <make-targets>`, default `all`. Uploads `artifact-path` as the `build` artifact when it is set. |
 | `test` | `make CI=1 <test-targets> BOARD=<board>` once per board in `boards`, default `raspi0` and `raspi2b`. Skipped when `test-targets` is empty. |
 
+### Catch CI failures before a push
+
+CI builds the host tests on Linux with GCC and `-Werror`. A Mac builds them with clang, which lacks some GCC warnings. Two checks close the gap.
+
+`make test-host-gccwarn` runs first in `make test-host` when the host `cc` is clang. It compiles every host C file with `arm-none-eabi-gcc` and the macOS SDK headers, without linking, in two passes:
+
+| Pass | Flags | Catches |
+|---|---|---|
+| `ci` | CI's host flags: `-O1` and `-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer` | Warnings GCC gives only with the sanitizers, such as a `-Wformat-truncation` on `snprintf` in a loop |
+| `o2` | The same flags without the sanitizers, at `-O2` | Warnings GCC gives only with more optimisation |
+
+It takes about 35 seconds from clean and only rebuilds changed files after that. It skips with one line when the host `cc` is GCC, when the cross GCC is missing or when no SDK headers are found. The cross GCC targets 32-bit ARM, so it cannot see warnings that depend on a 64-bit `long` or pointer.
+
+`make ci-local` runs the CI build itself, in the `robco-ci` container with Docker. It catches what the cross GCC cannot: 64-bit type sizes, the Linux libc and the exact GCC version of CI. It copies the tree to `build/ci-local/src` without `build`, `.venv` and `.git`, writes the `.git/HEAD` files the doc-link check reads, then runs `make CI=1 <targets>` as the calling user. No host environment variable reaches the container. The container gets at most `CI_LOCAL_CPUS` CPUs, 4 by default. The script refuses a bare `-j`, which would start unlimited jobs.
+
+```sh
+make ci-local                                  # the default targets
+make ci-local CI_LOCAL_TARGETS="-k test-host"  # other targets, once
+make ci-local-image                            # build robco-ci:<tag> locally
+```
+
+The default targets are CI's build job. In RobCo-Core they are `test-host HOST_SANITIZE=require`, the `host` job. A project that includes `mk/host.mk` gets both targets with `all test-host` as the default. It sets `CI_LOCAL_TARGETS` to the `make-targets` of its workflow when they differ. `tools/ci_local.sh` takes the same targets as arguments.
+
+The script runs `robco-ci:<tag>` when that local image exists, else `ghcr.io/robco-industries/robco-ci:<tag>`, which needs a registry login. `<tag>` comes from `ci/IMAGE_TAG`. `CI_IMAGE` overrides both. With no image, it names the command that builds one. `make ci-local-image` builds the image from `ci/Dockerfile`. It compiles QEMU, so a first build takes several minutes and loads every CPU.
+
+Project maintainers: after you bump the RobCo-Core pin, remove local copies of these checks. UOS has `test-host-gccwarn-ci` in its `Makefile` and its own `tools/ci_local.sh`.
+
 ## Hardware checklists
 
 QEMU is not the authority for real boards. A change that touches what QEMU cannot model ships with a short checklist in the repo's `docs/`.
