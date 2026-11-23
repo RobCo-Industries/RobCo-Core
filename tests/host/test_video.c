@@ -20,10 +20,42 @@
 
 #include "rc_test.h"
 
+/*
+ * Fails unless mbox_answers is set. Then it answers a property message as
+ * the firmware would: every tag succeeds, the buffer is at FAKE_FB_ADDR.
+ * Nothing may draw there: tests use it only while the console is stale.
+ */
+#define FAKE_FB_ADDR 0x1000u
+static int mbox_answers;
+
 int mbox_call(uint32_t *buf)
 {
-    (void)buf;
-    return -1;
+    uint32_t i = 2, words;
+
+    if (!mbox_answers) {
+        return -1;
+    }
+    buf[1] = 0x80000000u;
+    while (buf[i] != 0) {
+        words = buf[i + 1] / 4u;
+        buf[i + 2] = 0x80000000u | buf[i + 1];
+        switch (buf[i]) {
+        case TAG_ALLOCATE:
+            buf[i + 3] = FAKE_FB_ADDR;
+            buf[i + 4] = buf[i + 3] ? 640u * 4u * 480u : 0;
+            break;
+        case TAG_GET_PITCH:
+            buf[i + 3] = 640u * 4u;
+            break;
+        case TAG_GET_PIXEL_ORDER:
+            buf[i + 3] = FB_ORDER_RGB;
+            break;
+        default:
+            break;
+        }
+        i += 3 + words;
+    }
+    return 0;
 }
 
 static unsigned map_calls;
@@ -66,6 +98,7 @@ static void reset(void)
     fb_ready = 0;
     k_memset(&fb_state, 0, sizeof(fb_state));
     ready = 0;
+    mbox_answers = 0;
     memset(screen, FILL, BYTES);
 }
 
@@ -648,4 +681,104 @@ TEST(fb_scroll_rect_moves_the_clipped_rectangle_only)
     fb_scroll_up(17, 13);
     model_scroll(0, 0, BW, BH, 17, 13);
     CHECK_MEM(big_words, big_before, sizeof(big_words));
+}
+
+/* 1 if the console is stale: no size, and no call below draws a pixel. */
+static int console_is_stale(void)
+{
+    memcpy(before, screen, BYTES);
+    console_puts("stale\n");
+    console_clear();
+    console_set_cursor(1, 1);
+    console_cursor_show(1);
+    console_set_scheme(CONSOLE_SCHEME_BLUE);
+    return console_cols() == 0 && console_rows() == 0 &&
+           memcmp(screen, before, BYTES) == 0;
+}
+
+/* 1 if the console runs: it has its size and console_puts() draws. */
+static int console_is_live(void)
+{
+    static char ch = 'A';
+    char s[2] = { ch, '\0' };
+
+    /* A new letter each time: the same one would draw the same pixels. */
+    ch = ch == 'Z' ? 'A' : (char)(ch + 1);
+    memcpy(before, screen, BYTES);
+    console_set_cursor(0, 0);
+    console_puts(s);
+    return console_cols() == 12 && console_rows() == 4 && memcmp(screen, before, BYTES) != 0;
+}
+
+TEST(every_successful_fb_adopt_makes_the_console_stale)
+{
+    fb_info_t base = good(FB_ORDER_RGB);
+    fb_info_t b;
+    unsigned n;
+
+    for (n = 0; n < 3; n++) {
+        reset();
+        CHECK_EQ(fb_adopt(&base), 0);
+        CHECK_EQ(console_adopt(12, 4, 0, 0, CONSOLE_SCHEME_AMBER), 0);
+        CHECK(console_is_live());
+        b = base;
+        if (n == 0) {
+            b.pitch = SW * 4u;          /* only the pitch */
+        } else if (n == 1) {
+            b.order = FB_ORDER_BGR;     /* only the order */
+        }                               /* n == 2: identical */
+        CHECK_EQ(fb_adopt(&b), 0);
+        if (!console_is_stale()) {
+            RC_FAIL("case %u: console still live after fb_adopt", n);
+        }
+        /* console_adopt() starts it again; so does console_init(). */
+        CHECK_EQ(console_adopt(12, 4, 0, 0, CONSOLE_SCHEME_AMBER), 0);
+        CHECK(console_is_live());
+        CHECK_EQ(fb_adopt(&b), 0);
+        CHECK_EQ(console_init(CONSOLE_SCHEME_AMBER), 0);
+        CHECK(console_is_live());
+    }
+}
+
+TEST(a_failed_fb_adopt_or_fb_init_keeps_the_console)
+{
+    fb_info_t i = good(FB_ORDER_RGB);
+    fb_info_t bad = good(FB_ORDER_BGR);
+    uint32_t gen;
+
+    reset();
+    CHECK_EQ(fb_adopt(&i), 0);
+    CHECK_EQ(console_adopt(12, 4, 0, 0, CONSOLE_SCHEME_AMBER), 0);
+    gen = fb_generation();
+    bad.order = 2;
+    CHECK_EQ(fb_adopt(&bad), FB_ERR_ORDER);
+    CHECK_EQ(fb_init(640, 480, 32), FB_ERR_MBOX);
+    CHECK_EQ(fb_init(640, 480, 16), FB_ERR_DEPTH);
+    CHECK_EQ(fb_generation(), gen);
+    CHECK(console_is_live());
+}
+
+TEST(fb_init_makes_the_console_stale)
+{
+    fb_info_t i = good(FB_ORDER_RGB);
+    uint32_t gen;
+
+    reset();
+    CHECK_EQ(fb_generation(), 0);
+    CHECK_EQ(fb_adopt(&i), 0);
+    CHECK_EQ(console_adopt(12, 4, 0, 0, CONSOLE_SCHEME_AMBER), 0);
+    gen = fb_generation();
+    CHECK(gen != 0);
+    mbox_answers = 1;
+    CHECK_EQ(fb_init(640, 480, 32), 0);
+    mbox_answers = 0;
+    CHECK(fb_generation() != gen);
+    /* The new buffer is not real memory: only calls that draw nothing are safe. */
+    CHECK_EQ(console_cols(), 0);
+    CHECK_EQ(console_rows(), 0);
+    /* Back on the RAM buffer, the console stays stale until restarted. */
+    CHECK_EQ(fb_adopt(&i), 0);
+    CHECK(console_is_stale());
+    CHECK_EQ(console_init(CONSOLE_SCHEME_AMBER), 0);
+    CHECK(console_is_live());
 }

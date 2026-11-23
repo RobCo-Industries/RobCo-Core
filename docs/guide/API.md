@@ -708,20 +708,21 @@ typedef struct {
 int fb_init(uint32_t width, uint32_t height, uint32_t depth);
 ```
 
-Sends one property message that sets the size and depth, asks for RGB order, allocates the buffer and reads the pitch and the actual order. Only `depth == 32` works. Returns `0`, or a negative `FB_ERR_*` and keeps the previous state. A second successful call replaces the buffer. The console then draws nothing and `console_cols()` returns `0` until you call `console_init()` again, which sizes the grid for the new mode.
+Sends one property message that sets the size and depth, asks for RGB order, allocates the buffer and reads the pitch and the actual order. Only `depth == 32` works. Returns `0`, or a negative `FB_ERR_*` and keeps the previous state. A second successful call replaces the buffer. Every successful call makes the console stale. It then draws nothing and `console_cols()` returns `0` until you call `console_init()` again, which sizes the grid for the new mode.
 
 ```c
 int fb_adopt(const fb_info_t *info);
 ```
 
-Takes over a framebuffer an earlier stage left on. It sends no mailbox message and writes no pixel. It checks the description in this order: the address, width and height, depth 32, a pitch of at least `width * 4` and a multiple of 4, a size of at least `pitch * height`, the pixel order. It returns the first `FB_ERR_*` it finds and keeps the previous state. After `0`, every `fb_*` call works as after `fb_init()`. With the MMU linked, it maps the buffer as `fb_init()` does. The console is then stale until `console_init()` or `console_adopt()`. See [Adopting the screen](#adopting-the-screen).
+Takes over a framebuffer an earlier stage left on. It sends no mailbox message and writes no pixel. It checks the description in this order: the address, width and height, depth 32, a pitch of at least `width * 4` and a multiple of 4, a size of at least `pitch * height`, the pixel order. It returns the first `FB_ERR_*` it finds and keeps the previous state. After `0`, every `fb_*` call works as after `fb_init()`. With the MMU linked, it maps the buffer as `fb_init()` does. The console is then stale until `console_init()` or `console_adopt()`, even when the description matches the previous one. A failed call keeps the console running. See [Adopting the screen](#adopting-the-screen).
 
 ```c
 const fb_info_t *fb_get(void);
+uint32_t fb_generation(void);
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 ```
 
-`fb_get()` returns the active state, or NULL until `fb_init()` or `fb_adopt()` succeeds. `fb_rgb()` builds a pixel word for the active pixel order. The firmware may ignore the RGB request, so always build colours with `fb_rgb()`.
+`fb_get()` returns the active state, or NULL until `fb_init()` or `fb_adopt()` succeeds. `fb_generation()` returns `0` until then. Every success changes it, and the console compares it with the value it recorded at start to tell when it is stale. `fb_rgb()` builds a pixel word for the active pixel order. The firmware may ignore the RGB request, so always build colours with `fb_rgb()`.
 
 ```c
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t colour);
@@ -800,7 +801,7 @@ Returns the colours and name (`green`, `amber`, `blue`, `white`) of a scheme, or
 int console_init(unsigned scheme);
 ```
 
-Sizes the grid from the framebuffer, loads the scheme, clears the grid and puts the cursor at 0,0 with attribute normal and the cursor hidden. Returns `0` or a `CONSOLE_ERR_*`. Call it again after every successful `fb_init()`: until then the console is stale and every drawing call does nothing.
+Sizes the grid from the framebuffer, loads the scheme, clears the grid and puts the cursor at 0,0 with attribute normal and the cursor hidden. Returns `0` or a `CONSOLE_ERR_*`. Call it again after every successful `fb_init()` or `fb_adopt()`: until then the console is stale. A stale console acts as one never started: every drawing call does nothing, and `console_cols()` and `console_rows()` return `0`.
 
 ```c
 int console_adopt(unsigned cols, unsigned rows, unsigned cx, unsigned cy, unsigned scheme);
@@ -823,7 +824,7 @@ void console_write(const char *s, size_t n);
 void console_puts(const char *s);
 ```
 
-Write text at the cursor with the current attribute. Before `console_init()`, or while the console is stale after `fb_init()`, they do nothing.
+Write text at the cursor with the current attribute. Before `console_init()`, or while the console is stale after `fb_init()` or `fb_adopt()`, they do nothing.
 
 | Byte | Effect |
 |---|---|
@@ -889,7 +890,7 @@ console_set_attr(CONSOLE_ATTR_NORMAL);
 
 ### Adopting the screen
 
-A later stage keeps the screen the earlier stage left on. Trust the boot info, then call `fb_adopt()` and `console_adopt()`. If either fails, fall back to `fb_init()` and `console_init()`. Based on `examples/chain2/main.c`:
+A later stage keeps the screen the earlier stage left on. Trust the boot info, then call `fb_adopt()` and `console_adopt()`. If either fails, fall back to `fb_init()` and `console_init()`. Start the console after the last `fb_adopt()` or `fb_init()`: each one makes a running console stale. Based on `examples/chain2/main.c`:
 
 ```c
 const robco_bootinfo_t *bi = bootinfo_get();

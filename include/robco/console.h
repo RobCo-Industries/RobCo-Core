@@ -47,8 +47,8 @@ const console_scheme_t *console_scheme_info(unsigned scheme);
 
 /*
  * Needs fb_init first. Clears the grid and resets the grid, cursor and
- * attribute. Call it again after every successful fb_init(): until then
- * the console draws nothing and console_cols() returns 0.
+ * attribute. Call it again after every successful fb_init() or fb_adopt():
+ * until then the console draws nothing and console_cols() returns 0.
  */
 int console_init(unsigned scheme);
 

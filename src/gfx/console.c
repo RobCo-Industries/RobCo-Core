@@ -30,26 +30,20 @@ static int cursor_on;
 /* Set after a write to the last column: the next printable char wraps. */
 static int wrap_pending;
 static int ready;
-/* The framebuffer the grid was sized for. Another one makes the console stale. */
-static const uint8_t *grid_fb;
-static uint32_t grid_w, grid_h;
+/* fb_generation() when the console started. Another value makes it stale. */
+static uint32_t grid_gen;
 /* Pixel words for the active scheme: background, dim, normal, bright. */
 static uint32_t px_bg, px_level[3];
 
 /*
- * Non-zero while console_init() has run on the active framebuffer. After
- * another fb_init() the grid no longer matches, so the console draws
- * nothing until console_init() runs again.
+ * Non-zero while the console started on the active framebuffer. Every
+ * successful fb_init() or fb_adopt() makes it stale, since the layout or
+ * pixel order may differ: the console draws nothing until console_init()
+ * or console_adopt() runs again.
  */
 static int con_ready(void)
 {
-    const fb_info_t *fb;
-
-    if (!ready) {
-        return 0;
-    }
-    fb = fb_get();
-    return fb != NULL && fb->addr == grid_fb && fb->width == grid_w && fb->height == grid_h;
+    return ready && fb_generation() != 0 && fb_generation() == grid_gen;
 }
 
 static void load_scheme(unsigned scheme)
@@ -251,9 +245,7 @@ int console_init(unsigned scheme)
     load_scheme(scheme);
     clear_cells();
     clear_grid();
-    grid_fb = fb->addr;
-    grid_w = fb->width;
-    grid_h = fb->height;
+    grid_gen = fb_generation();
     ready = 1;
     return 0;
 }
@@ -290,9 +282,7 @@ int console_adopt(unsigned c, unsigned r, unsigned x, unsigned y, unsigned schem
             cells[j][i].attr = CONSOLE_ATTR_NORMAL;
         }
     }
-    grid_fb = fb->addr;
-    grid_w = fb->width;
-    grid_h = fb->height;
+    grid_gen = fb_generation();
     ready = 1;
     return 0;
 }

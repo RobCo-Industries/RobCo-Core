@@ -22,7 +22,7 @@ typedef struct {
 /*
  * Allocates a framebuffer with one property message. Only depth 32.
  * Returns 0, or a negative FB_ERR_* and leaves the previous state alone.
- * After a second successful call the console is stale: call console_init()
+ * After every successful call the console is stale: call console_init()
  * again to size its grid for the new mode.
  */
 int fb_init(uint32_t width, uint32_t height, uint32_t depth);
@@ -36,12 +36,18 @@ int fb_init(uint32_t width, uint32_t height, uint32_t depth);
  * least pitch * height (FB_ERR_BUFFER), order (FB_ERR_ORDER). On an error
  * the previous state stays. After 0, every fb_* call works as after
  * fb_init(), and the console is stale until console_init() or
- * console_adopt().
+ * console_adopt(), even when the values match the previous ones.
  */
 int fb_adopt(const fb_info_t *info);
 
 /* NULL until fb_init or fb_adopt succeeds. */
 const fb_info_t *fb_get(void);
+
+/*
+ * 0 until fb_init() or fb_adopt() succeeds. Every success changes it, even
+ * one with the same values. The console records it to tell when it is stale.
+ */
+uint32_t fb_generation(void);
 
 /* Pixel word for the active pixel order. */
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);

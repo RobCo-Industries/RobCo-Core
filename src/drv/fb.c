@@ -27,6 +27,8 @@
 static uint32_t fb_msg[FB_MSG_WORDS] __attribute__((aligned(CACHE_LINE_MAX)));
 static fb_info_t fb_state;
 static int fb_ready;
+/* Bumped by every successful fb_init() and fb_adopt(). Never 0 after one. */
+static uint32_t fb_gen;
 
 /* Appends a tag with `words` value words. Returns the index of value word 0. */
 static uint32_t put_tag(uint32_t *n, uint32_t tag, uint32_t words, uint32_t v0, uint32_t v1)
@@ -47,6 +49,13 @@ static uint32_t put_tag(uint32_t *n, uint32_t tag, uint32_t words, uint32_t v0, 
 static int tag_ok(uint32_t value_at)
 {
     return (((volatile uint32_t *)fb_msg)[value_at - 1] & MBOX_RESPONSE) != 0;
+}
+
+static void fb_bump_generation(void)
+{
+    if (++fb_gen == 0) {
+        fb_gen = 1;
+    }
 }
 
 int fb_init(uint32_t width, uint32_t height, uint32_t depth)
@@ -108,6 +117,7 @@ int fb_init(uint32_t width, uint32_t height, uint32_t depth)
 
     fb_state = info;
     fb_ready = 1;
+    fb_bump_generation();
     return 0;
 }
 
@@ -144,12 +154,18 @@ int fb_adopt(const fb_info_t *info)
 
     fb_state = *info;
     fb_ready = 1;
+    fb_bump_generation();
     return 0;
 }
 
 const fb_info_t *fb_get(void)
 {
     return fb_ready ? &fb_state : NULL;
+}
+
+uint32_t fb_generation(void)
+{
+    return fb_ready ? fb_gen : 0;
 }
 
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b)
