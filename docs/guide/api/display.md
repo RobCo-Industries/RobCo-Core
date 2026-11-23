@@ -31,7 +31,8 @@ This page covers the ILI9341 TFT panel driver. Return codes and context rules fo
 | `TFT_ERR_TIMER` | `-5` | The system timer does not run |
 | `TFT_ERR_NO_PANEL` | `-6` | The id read gave all zeros or all ones |
 | `TFT_PIN_NONE` | `-1` | No reset or backlight pin |
-| `TFT_DEFAULT_HZ` | `32000000` | Default SPI clock asked for |
+| `TFT_SPEC_MAX_HZ` | `10000000` | Fastest write clock in the ILI9341 data sheet: a 100 ns serial write cycle |
+| `TFT_DEFAULT_HZ` | `10000000` | Default SPI clock asked for, equal to `TFT_SPEC_MAX_HZ` |
 | `TFT_HZ_MIN`, `TFT_HZ_MAX` | `1000000`, `64000000` | Accepted range of `hz` |
 | `TFT_READ_HZ` | `4000000` | SPI clock for `tft_read_id()` |
 | `TFT_CHUNK_PIXELS` | `64` | Pixels converted per SPI write, in a 128-byte stack buffer |
@@ -56,7 +57,7 @@ typedef struct {
 | Field | Rule |
 |---|---|
 | `cs` | `0` or `1` |
-| `hz` | `TFT_HZ_MIN` to `TFT_HZ_MAX`. The SPI divider rounds down the rate, so the bus never runs faster. |
+| `hz` | `TFT_HZ_MIN` to `TFT_HZ_MAX`. The SPI divider rounds down the rate, so the bus never runs faster. See the note on rates below. |
 | `dc_pin` | GPIO 0 to 53, not GPIO 7 to 11 |
 | `reset_pin` | Same rule, or `TFT_PIN_NONE`. Differs from `dc_pin`. |
 | `backlight_pin` | Same rule, or `TFT_PIN_NONE`. Differs from the two pins above. High is on. |
@@ -101,6 +102,8 @@ The BGR bit, `0x08`, is added when `bgr` is set. These values assume the glass i
 
 Power control, VCOM, frame rate and gamma stay at the values the panel loads at reset. A panel that comes up dim or with odd colours may need them. This driver does not guess them.
 
+The default rate is 10 MHz, the fastest write clock in the ILI9341 data sheet. `tft_init()` accepts up to 64 MHz because many modules run faster in practice. A rate above 10 MHz is your choice: it is outside the data sheet's write timing, may corrupt the picture, and is not validated here.
+
 `tft_width()` and `tft_height()` give the size for the rotation, or `0` before init. `tft_get_hz()` gives the SPI rate actually set, `core / divider`, or `0` before init.
 
 ### Drawing
@@ -132,7 +135,7 @@ int tft_read_id(uint32_t *id);
 
 The driver's sleep and display state follows the last panel command that succeeded. A failed panel command leaves the old state. A failed backlight write returns `TFT_ERR_BUS` but keeps the new panel state, and the next `tft_sleep()` or `tft_display()` call writes the backlight again. The caller can retry the same call. A failed `tft_init()` leaves the driver uninitialised, so other calls return `TFT_ERR_INIT` until an init succeeds. `tft_sleep()` returns `TFT_ERR_TIMER` and sends nothing when the system timer has stopped.
 
-`tft_read_id()` sends RDDID (`04`) at `TFT_READ_HZ` and stores the next four bytes, the first in the top bits. The data sheet's read cycle is slower than its write cycle, hence the lower rate. The data sheet puts a dummy clock before the three id bytes. Whether that is one bit or a whole byte on the 4-wire interface is not certain, so the driver returns the raw bytes and does not compare them with an expected id. All zeros or all ones, which an absent panel or an unwired MISO gives, return `TFT_ERR_NO_PANEL`.
+`tft_read_id()` sends RDDID (`04`) at `TFT_READ_HZ` and stores the next four bytes, the first in the top bits. The data sheet's serial read cycle for an id read is at least 150 ns, so at most 6.67 MHz. `TFT_READ_HZ` stays below it. The data sheet puts a dummy clock before the three id bytes. Whether that is one bit or a whole byte on the 4-wire interface is not certain, so the driver returns the raw bytes and does not compare them with an expected id. All zeros or all ones, which an absent panel or an unwired MISO gives, return `TFT_ERR_NO_PANEL`.
 
 ### Tap and pixel helpers
 
@@ -149,7 +152,7 @@ uint16_t tft_px32_to_565(uint32_t px, unsigned order);
 
 ### Time per frame
 
-A full frame is 320 x 240 x 2 = 153600 pixel bytes, plus 11 bytes of CASET, PASET and RAMWR. At exactly 32 MHz that is 153611 x 8 / 32000000 = 38.4 ms. The real rate is the core clock over an even divider: with a 250 MHz core clock, 32 MHz asked gives 31.25 MHz and 39.3 ms. The SPI driver also stops the clock briefly every 16 bytes and between writes. That overhead is not measured yet. A dirty rectangle costs 2 bytes per pixel plus the same 11 bytes.
+A full frame is 320 x 240 x 2 = 153600 pixel bytes, plus 11 bytes of CASET, PASET and RAMWR. At exactly 10 MHz that is 153611 x 8 / 10000000 = 122.9 ms, about 8 full frames per second. The real rate is the core clock over an even divider, never above the rate asked for: with a 250 MHz core clock, 10 MHz asked gives 9.62 MHz and 127.8 ms. So send dirty rectangles, not full frames, when the picture changes often. The SPI driver also stops the clock briefly every 16 bytes and between writes. That overhead is not measured yet. A dirty rectangle costs 2 bytes per pixel plus the same 11 bytes.
 
 ### Not done
 

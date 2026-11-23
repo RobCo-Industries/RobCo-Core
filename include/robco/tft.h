@@ -19,11 +19,23 @@
 
 #define TFT_PIN_NONE        (-1)
 
-#define TFT_DEFAULT_HZ      32000000u
+/*
+ * The ILI9341 data sheet gives a serial write cycle of at least 100 ns, so
+ * at most 10 MHz. The default stays inside it. tft_init() accepts up to
+ * TFT_HZ_MAX because many modules run faster in practice. A rate above
+ * TFT_SPEC_MAX_HZ is outside the data sheet's write timing, may corrupt
+ * the picture, and is not validated here. spi_configure() rounds down, so
+ * the rate set never exceeds the rate asked for.
+ */
+#define TFT_SPEC_MAX_HZ     10000000u
+#define TFT_DEFAULT_HZ      TFT_SPEC_MAX_HZ
 #define TFT_HZ_MIN          1000000u
 #define TFT_HZ_MAX          64000000u
 
-/* Rate used by tft_read_id(). The data sheet's read cycle is slower than its write cycle. */
+/*
+ * Rate used by tft_read_id(). The data sheet's serial read cycle for an id
+ * read is at least 150 ns, so at most 6.67 MHz. 4 MHz stays below it.
+ */
 #define TFT_READ_HZ         4000000u
 
 /* Pixels converted per SPI write: a 128-byte stack buffer. */

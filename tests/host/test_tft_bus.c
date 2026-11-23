@@ -61,7 +61,7 @@ static void up(unsigned rotation)
 TEST(init_transcript_default)
 {
     static const ev_t want[] = {
-        RATE(32000000),
+        RATE(TFT_DEFAULT_HZ),
         PIN(RST, 0), US(10), PIN(RST, 1),   /* hardware reset: 10 us pulse */
         MS(120),                            /* tRT: 120 ms before SLPOUT */
         CSL, C(0x11), CSH,                  /* SLPOUT */
@@ -78,14 +78,14 @@ TEST(init_transcript_default)
     CHECK_EQ(fake_spi_init_calls, 1);
     CHECK_EQ(tft_width(), 320);
     CHECK_EQ(tft_height(), 240);
-    CHECK_EQ(tft_get_hz(), 31250000);   /* 250 MHz over 8 */
+    CHECK_EQ(tft_get_hz(), 9615384);    /* 250 MHz over 26 */
 }
 
 /* No reset line: SWRESET instead. A backlight pin: off first, on last. Inversion on. */
 TEST(init_transcript_soft_reset_backlight_invert)
 {
     static const ev_t want[] = {
-        RATE(32000000),
+        RATE(TFT_DEFAULT_HZ),
         PIN(BL, 0),
         CSL, C(0x01), CSH,                  /* SWRESET */
         MS(120),
@@ -125,7 +125,7 @@ TEST(init_madctl_per_rotation)
         { 270, 1, 0xe8, 320, 240 },     /* MY | MX | MV | BGR */
     };
     ev_t want[] = {
-        RATE(32000000),
+        RATE(TFT_DEFAULT_HZ),
         PIN(RST, 0), US(10), PIN(RST, 1), MS(120),
         CSL, C(0x11), CSH, MS(120),
         CSL, C(0x3a), D(0x55), CSH,
@@ -194,6 +194,31 @@ TEST(config_validation_each_field)
     CHECK_EQ(init_with(&c), 0);
     c.hz = TFT_HZ_MAX;
     CHECK_EQ(init_with(&c), 0);
+}
+
+/*
+ * The default is the data sheet's 10 MHz, and a faster rate is accepted.
+ * The rate set is never above the rate asked for: 10 MHz on a 250 MHz
+ * core is a divider of 25, rounded up to 26, so 9.62 MHz.
+ */
+TEST(rate_never_rounds_above_the_request)
+{
+    tft_config_t c = config();
+    uint32_t hz;
+
+    CHECK_EQ(TFT_DEFAULT_HZ, TFT_SPEC_MAX_HZ);
+    CHECK_EQ(TFT_SPEC_MAX_HZ, 10000000u);
+    CHECK(TFT_READ_HZ <= 6666666u);     /* 150 ns id read cycle */
+    CHECK_EQ(init_with(&c), 0);
+    CHECK_EQ(tft_get_hz(), 9615384u);
+    c.hz = TFT_SPEC_MAX_HZ + 1u;
+    CHECK_EQ(init_with(&c), 0);
+    for (hz = TFT_HZ_MIN; hz <= TFT_HZ_MAX; hz += 999983u) {
+        c.hz = hz;
+        CHECK_EQ(init_with(&c), 0);
+        CHECK(tft_get_hz() <= hz);
+        CHECK(tft_get_hz() > 0u);
+    }
 }
 
 TEST(stopped_timer_fails_before_any_pin)
@@ -468,7 +493,7 @@ TEST(sleep_and_display_transcripts)
 TEST(read_id)
 {
     static const ev_t want[] = {
-        RATE(TFT_READ_HZ), CSL, C(0x04), { EV_READ, 0, 4 }, CSH, RATE(32000000),
+        RATE(TFT_READ_HZ), CSL, C(0x04), { EV_READ, 0, 4 }, CSH, RATE(TFT_DEFAULT_HZ),
     };
     uint32_t id = 1;
 
@@ -484,7 +509,7 @@ TEST(read_id)
     fake_rx[3] = 0x41;
     CHECK_EQ(tft_read_id(&id), 0);
     CHECK_EQ(id, 0x9341);
-    CHECK_EQ(tft_get_hz(), 31250000);
+    CHECK_EQ(tft_get_hz(), 9615384);
     CHECK_EQ(tft_read_id(rc_launder(NULL)), TFT_ERR_ARG);
 }
 
@@ -721,7 +746,7 @@ static void refused(void)
 TEST(failed_init_refuses_calls_then_retries_cleanly)
 {
     static const ev_t hard[] = {
-        RATE(32000000),
+        RATE(TFT_DEFAULT_HZ),
         PIN(RST, 0), US(10), PIN(RST, 1), MS(120),
         CSL, C(0x11), CSH, MS(120),
         CSL, C(0x3a), D(0x55), CSH,
@@ -730,7 +755,7 @@ TEST(failed_init_refuses_calls_then_retries_cleanly)
         CSL, C(0x29), CSH,
     };
     static const ev_t soft[] = {
-        RATE(32000000),
+        RATE(TFT_DEFAULT_HZ),
         PIN(BL, 0),
         CSL, C(0x01), CSH, MS(120),
         CSL, C(0x11), CSH, MS(120),

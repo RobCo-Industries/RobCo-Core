@@ -100,4 +100,5 @@ Use an ILI9341 module wired as in [BOARD_SUPPORT.md](spec/BOARD_SUPPORT.md#spi-d
 | TFT init and picture | All | `examples/tft` | Eight upright colour bars, white to black from the left, and a white border on all four sides. Colours not swapped red for blue. |
 | TFT rotation | All | `examples/tft` built with `EXTRA_CFLAGS=-DTFT_EXAMPLE_ROTATION=0`, then 180 and 270 | Each picture upright and not mirrored, the size in `ev=init` |
 | TFT id | All | `examples/tft` with MISO wired | `ev=id rc=0` and the raw id bytes |
-| TFT frame time | All | A loop of `tft_present_px32()` | Time per frame against the 39 ms the guide computes |
+| TFT SPI rate | All | `examples/tft` at the 10 MHz default, then with `hz` raised step by step up to 64 MHz | A clean picture at 10 MHz. Note the highest rate that still shows a clean picture. |
+| TFT frame time | All | A loop of `tft_present_px32()` at the default rate | Time per frame against the 128 ms the guide computes for a 250 MHz core clock |

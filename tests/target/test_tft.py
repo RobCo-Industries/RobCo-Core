@@ -50,7 +50,8 @@ def test_tft_panel_bus(board, example_image):
         init = event(vm, "init")
         assert init["rc"] == "0", vm.serial
         assert (init["w"], init["h"]) == ("320", "240")
-        assert 0 < int(init["hz"]) <= 32000000, vm.serial
+        # 10 MHz default; the SPI driver never rounds above it.
+        assert 0 < int(init["hz"]) <= 10000000, vm.serial
         draw = event(vm, "draw")
         assert draw["rc"] == "0", vm.serial
         assert (draw["bytes"], draw["crc"]) == (want_bytes, want_crc), vm.serial

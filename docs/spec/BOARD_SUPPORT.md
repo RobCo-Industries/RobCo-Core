@@ -132,7 +132,7 @@ It avoids the pins above, GPIO 0 and 1 (ID EEPROM), GPIO 12 and 13 and GPIO 18 t
 
 ### SPI display
 
-`TFT_CONFIG_DEFAULT` in `tft.h` wires an ILI9341 panel this way. It is a default that any `tft_config_t` can change. It is not validated on hardware.
+`TFT_CONFIG_DEFAULT` in `tft.h` wires an ILI9341 panel this way. It is a default that any `tft_config_t` can change. It is not validated on hardware. The default SPI clock is 10 MHz, the fastest write clock in the ILI9341 data sheet. The divider rounds it down to 9.62 MHz with a 250 MHz core clock. Faster rates up to 64 MHz are accepted but are outside the data sheet and not validated.
 
 | Panel pin | Pin |
 |---|---|
