@@ -52,6 +52,22 @@ typedef int (*ini_handler_t)(const char *section, const char *key,
 int ini_parse(const char *text, size_t len, ini_handler_t fn, void *ctx, unsigned *err_line);
 
 /*
+ * Called once per section header line in file order, also for a section
+ * with no keys and for each repeat of a name. `section` is a
+ * NUL-terminated copy that lives until the handler returns. Return 0 to
+ * go on, non-zero to stop.
+ */
+typedef int (*ini_section_handler_t)(const char *section, unsigned line, void *ctx);
+
+/*
+ * ini_parse() with a second handler: `on_section` sees each header,
+ * before the keys under it reach `fn`. Either handler may be NULL, not
+ * both (INI_ERR_ARG). Same return codes and `err_line` as ini_parse().
+ */
+int ini_parse_sections(const char *text, size_t len, ini_handler_t fn,
+                       ini_section_handler_t on_section, void *ctx, unsigned *err_line);
+
+/*
  * Copies the value of `key` in `section` ("" for keys before any section)
  * into `out`. The last one wins when a key repeats. The whole text must
  * parse. Returns 0, INI_ERR_NOT_FOUND, INI_ERR_SPACE or a parse error.

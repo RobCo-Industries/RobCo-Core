@@ -13,6 +13,11 @@
  * replacement cuts PCM at once, with IRQs masked, so the caller owns its
  * buffer again when the call returns. The tick still prints the stop line.
  *
+ * Trace rule: the tick that applies a request prints one op=stop when a
+ * tone, a sequence (in a rest too) or PCM was playing, before any start
+ * line. So a stop followed by a start gives the same lines whether a tick
+ * runs between the two calls or not. A natural end keeps its own line.
+ *
  * Queued PCM: audio_pcm_queue() chains a buffer, with IRQs masked, into
  * `pcm` when it plays or into `pcm_req` when its start waits for the tick.
  * The engine switches to it in the channel 3 IRQ, on the same time base.
@@ -313,7 +318,7 @@ static void pcm_cut_locked(void)
     }
 }
 
-/* Tick context. Stops PCM mid-play: silence, a stop record, no more IRQs. */
+/* Tick context. Stops PCM mid-play: silence, no more IRQs. The caller traces the stop. */
 static void pcm_halt(void)
 {
     pcm.active = 0;
@@ -323,8 +328,6 @@ static void pcm_halt(void)
     timer_compare_clear(PCM_CHANNEL);
     if (backend == AUDIO_BACKEND_PWM) {
         audio_pwm_out(0, 0);
-    } else {
-        audio_trace_out(0, volume, clock_ms);
     }
 }
 
@@ -345,8 +348,16 @@ static void audio_tick(void)
         return;
     }
     if (req.valid) {
+        /* A started play ends here, by a stop or a replacement: one stop line. */
+        int cut = seq.active || pcm.active || pcm_cut;
+
         if (pcm.active || pcm_cut) {
             pcm_halt();
+        }
+        if (cut && backend != AUDIO_BACKEND_PWM) {
+            audio_trace_out(0, volume, clock_ms);
+            /* Traced already: output() prints only a new tone. PWM keeps its writes. */
+            sounding = 0;
         }
         if (req.stop) {
             audio_seq_stop(&seq);
@@ -845,7 +856,9 @@ void audio_wait(void)
             return;
         }
         /* wfi wakes on a pending IRQ even while masked; the handler runs after restore. */
+#ifndef ROBCO_HOST
         __asm__ volatile("wfi" : : : "memory");
+#endif
         irq_restore(s);
     }
 }
