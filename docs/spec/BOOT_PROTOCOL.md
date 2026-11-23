@@ -381,9 +381,10 @@ A marker may carry more keys than the table below lists, and a stage may print e
 
 | Event | Keys | Meaning |
 |---|---|---|
-| `boot` | `midr soc base board_rev mem entry_mode` | First marker of every image. `entry_mode` is the CPU mode at entry, such as `svc` or `hyp`. |
+| `boot` | `midr soc base board_rev mem entry_mode` | First marker of every image. `entry_mode` is the CPU mode at entry, such as `svc` or `hyp`. RETROS-BIOS and MFBootAgent add `version`, their own version. |
 | `handoff` | `trusted=0\|1` | Result of the trust rule. Not printed by first stages. |
-| `mount` | `lba blocks` | The stage mounted the boot volume that holds the next image. `lba` is 0 for a card with no partition table. |
+| `mount` | `lba blocks` | The stage mounted the boot volume that holds the next image. `lba` is 0 for a card with no partition table. RETROS-BIOS and Pip-OS add `part`, the MBR slot 0 to 3 or `whole` for a card with no partition table. |
+| `card` | `rc`, then `sd`, `part` or `fs why` | Pip-OS: the result of the card mount. `rc` is `ok`, `nocard`, `nopart` or `nomount`. |
 | `load` | `path size crc addr name` | An image loaded and passed every validation step. `size` is `file_size`, `crc` the header CRC, `addr` the load address, `name` the header name. Without `path`, the image was already in its slot and the stage only validated it. |
 | `fallback` | `path from to reason` | The loader moves to the backup file `path`, the same as `to`. `from` is the primary file and `reason` the code it failed with. |
 | `error` | `code path` | A load or validation failed. `code` uses the names from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md), or `io` when the card or the mount failed. `path` names the file the attempt was for. Other failures use their own `code`, such as `mmu`, with no `path`. On an unsupported board `robco_start()` prints `code=unsupported_board midr` instead and halts. |
