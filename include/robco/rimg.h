@@ -136,6 +136,21 @@ int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
  */
 int rimg_check_header(const void *head, size_t avail, const rimg_expect_t *expect);
 
+/*
+ * The image CRC: CRC-32 over file bytes [0, file_size) with the crc32
+ * field at offset 0x3C read as zero. Returns 0 when image is NULL or
+ * file_size is below 0x40. Touches no hardware.
+ */
+uint32_t rimg_crc(const void *image, uint32_t file_size);
+
+/*
+ * Checks the running image against its own sealed CRC, over the whole
+ * file with no skipped range. Returns RIMG_OK or RIMG_E_CRC. Call it
+ * early: a .data variable the image wrote before the call changes the
+ * result. The startup code keeps its own state out of the file bytes.
+ */
+int rimg_self_check(void);
+
 /* The @RC name of a rimg_err_t code, such as "crc". "unknown" for others. */
 const char *rimg_strerror(int code);
 #endif

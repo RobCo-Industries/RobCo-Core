@@ -228,6 +228,22 @@ def test_chain_handoff_quiets_timer(board, example_image):
         assert not events(vm, "chain2", "exception"), vm.serial
 
 
+def test_chain2_checks_own_crc(board, example_image):
+    """chain2 recomputes its CRC over the whole file after start, with no skipped range."""
+    nxt = example_image("chain2", "selfcheck", "-DCHAIN2_SELF_CHECK=1")
+    with open(nxt, "rb") as f:
+        data = f.read()
+    crc = struct.unpack_from("<I", data, CRC_OFFSET)[0]
+    with boot(example_image("chain1"), board, extra_args=chain_args(nxt)) as vm:
+        vm.wait_for(READY, timeout=60)
+        check = one(vm, "chain2", "selfcheck")
+        assert check["rc"] == "ok", vm.serial
+        assert check["size"] == str(len(data)), vm.serial
+        assert check["crc"] == f"{crc:#010x}", vm.serial
+        # The entry registers are still there: they live in BSS, not in the file.
+        assert one(vm, "chain2", "boot")["entry_mode"] == "svc", vm.serial
+
+
 # Loading from the SD card: chain1 built with CHAIN1_SD=1.
 PRIMARY = "/ROBCO/MFBOOT.SYS"
 BACKUP = "/ROBCO/MFBOOT.BAK"

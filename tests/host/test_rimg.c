@@ -192,6 +192,22 @@ TEST(crc)
     CHECK_EQ(check(NULL), RIMG_E_CRC);
 }
 
+TEST(crc_ignores_its_own_field)
+{
+    uint32_t sealed;
+
+    build();
+    sealed = hdr()->crc32;
+    CHECK_EQ(rimg_crc(img, IMG_SIZE), sealed);
+    /* The value in the crc32 field does not change the result. */
+    hdr()->crc32 = 0xdeadbeefu;
+    CHECK_EQ(rimg_crc(img, IMG_SIZE), sealed);
+    img[IMG_SIZE - 1] ^= 0x80;
+    CHECK(rimg_crc(img, IMG_SIZE) != sealed);
+    CHECK_EQ(rimg_crc(NULL, IMG_SIZE), 0);
+    CHECK_EQ(rimg_crc(img, 0x3f), 0);
+}
+
 TEST(order)
 {
     build();

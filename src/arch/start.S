@@ -156,6 +156,7 @@ robco_entry:
     strlo   r2, [r0], #4
     blo     4b
 
+    /* After the clear: robco_boot_args_store lives in BSS. */
     ldr     r0, =robco_boot_args_store
     stmia   r0, {r4-r8}
 
@@ -167,8 +168,13 @@ robco_park:
 
     .ltorg
 
-    .section .data.robco_boot_args, "aw"
+    /*
+     * In .bss, outside the file bytes the image CRC covers, so an image can
+     * check its own CRC after start. Step 7 zeroes BSS first, then stores
+     * the entry registers here, so the clear never erases them.
+     */
+    .section .bss.robco_boot_args, "aw", %nobits
     .balign 4
     .global robco_boot_args_store
 robco_boot_args_store:
-    .word   0, 0, 0, 0, 0
+    .space  20

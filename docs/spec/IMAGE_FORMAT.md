@@ -179,6 +179,8 @@ A loader that fails at step 6 has already overwritten the slot. That is fine, be
 
 The loader does not zero BSS. The image's own startup code does that.
 
+An image can check its own CRC after start with `rimg_self_check()`. The CRC then holds only while the image has not written its `.data`. RobCo-Core's startup code writes nothing into the file bytes: it saves the entry registers in BSS, after it zeroes BSS.
+
 ## Files on the SD card
 
 The boot partition is FAT32. Names are 8.3 and upper case.

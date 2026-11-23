@@ -114,7 +114,7 @@ You write this function. It runs in SVC mode with IRQ and FIQ masked. If it retu
 const robco_boot_args_t *robco_boot_args(void);
 ```
 
-Returns the registers and mode saved at entry. Do not write through the pointer.
+Returns the registers and mode saved at entry. Do not write through the pointer. `start.S` stores them in BSS right after it zeroes BSS, so they are not part of the file bytes the image CRC covers.
 
 ```c
 void robco_halt(void) __attribute__((noreturn));
@@ -1005,6 +1005,18 @@ int rimg_validate(const void *image, size_t avail, const rimg_expect_t *expect,
 ```
 
 Runs [validation steps 1 to 6](../spec/IMAGE_FORMAT.md#validation) on an image in memory. `avail` is the number of readable bytes at `image`, and the image's `file_size` must not exceed it. Returns `RIMG_OK` and sets `*out` (if not NULL) to the header, or the code of the first failed step. Fewer than `0x60` bytes gives `RIMG_E_IO`. `expect` may be NULL. It touches no hardware and is safe from any context.
+
+```c
+uint32_t rimg_crc(const void *image, uint32_t file_size);
+```
+
+The image CRC from the [spec](../spec/IMAGE_FORMAT.md#crc): CRC-32 over `[0, file_size)` with the `crc32` field at `0x3C` read as zero. Returns `0` for a NULL `image` or a `file_size` below `0x40`. It touches no hardware.
+
+```c
+int rimg_self_check(void);
+```
+
+Checks the running image against its own sealed CRC, over the whole file. Returns `RIMG_OK` or `RIMG_E_CRC`. Call it early in `robco_main()`. The library keeps its startup state in BSS, but a `.data` variable that the image writes before the call changes the result. `examples/chain2` built with `CHAIN2_SELF_CHECK=1` calls it after its boot line.
 
 ```c
 const char *rimg_strerror(int code);
