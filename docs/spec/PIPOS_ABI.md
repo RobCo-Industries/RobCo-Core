@@ -135,7 +135,7 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 | `0x47` | `power` | `uint32 op`: 0 reboot, 1 halt, 2 screen off, 3 screen on | 0, does not return, or `-PIP_EINVAL` | draft |
 | `0x48` | `log` | `const char *text` | 0. Prints on the PL011. | draft |
 | `0x49` | `rand` | none | Random value, 0 to 2^31 - 1, or `-PIP_EIO` | draft |
-| `0x4A` | `set_time` | `uint32 unix_seconds` | 0. ROM only. | draft |
+| `0x4A` | `set_time` | `uint32 unix_seconds` | 0, or `-PIP_EIO` if the clock chip write fails. ROM only. | draft |
 | `0x50` | `read_save` | `const char *name, void *buf, uint32 size` | Bytes read | stable number, draft arguments |
 | `0x51` | `write_save` | `const char *name, const void *buf, uint32 size` | Bytes written | stable number, draft arguments |
 | `0x52` | `save_info` | `const char *name, uint32 *size` | 0 | draft |
@@ -247,7 +247,7 @@ A row of `blit_1bpp` is `(w + 7) / 8` bytes. A row of `blit_rgb` is `4 * w` byte
 
 `read_dial` returns the dial position in degrees, 0 to 359. One detent of the dial is 15 degrees. The position comes from a running total of detents since boot, so it does not depend on the event queue. It counts turns whose events were dropped and turns made while no image runs. An image start or end does not reset it.
 
-Events come from a queue of 32. When the queue is full, the oldest event is dropped. The queue is emptied when an image starts and when it ends. Every input call takes new input first, so an image that only polls still sees events.
+Events come from a queue of 32. When the queue is full, the oldest event is dropped. The queue is emptied when an image starts and when it ends. Every input call takes new input first, so an image that only polls still sees events. `poll_event` checks its `out` pointer before it looks at the queue, so a bad pointer returns `-PIP_EFAULT` even when no event waits.
 
 ```c
 typedef struct __attribute__((packed)) pip_event {
@@ -300,7 +300,7 @@ typedef struct __attribute__((packed)) pip_note {
 
 ## Time, sensors and power
 
-Pip-OS keeps a software clock in Unix seconds. At boot it reads a real-time clock chip if one answers. `set_time` sets the software clock. It does not write the chip, so the next boot starts again from the chip. With no chip and no `set_time`, the clock is not set and `get_time` returns `-PIP_ENODEV` and writes nothing.
+Pip-OS keeps a software clock in Unix seconds. At boot it reads a real-time clock chip if one answers. `set_time` sets the software clock. When a real-time clock chip answers, Pip-OS also writes the time to the chip, so it survives a reboot. If the chip write fails, `set_time` returns `-PIP_EIO`. The software clock keeps the new value. With no chip, `set_time` returns 0 and the time is lost at power-off. The chips hold years 2000 to 2099, Unix seconds 946684800 to 4102444799. For a time outside that range, the software clock takes it, the chip is not written, and `set_time` returns 0. With no chip and no `set_time`, the clock is not set and `get_time` returns `-PIP_ENODEV` and writes nothing.
 
 The clock counts on the 1 MHz system timer, so periods with interrupts off do not slow it. It only goes back through `set_time`. `set_time` accepts any value. The clock stops at `0xFFFFFFFF` instead of wrapping.
 
