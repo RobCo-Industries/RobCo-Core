@@ -235,6 +235,9 @@ host secret in the terminal and in CI logs. Build the `env=` of a subprocess
 with `minimal_env(**extra)` from `tests/harness/env.py`. It keeps an
 allowlist of host variables and hides values in its repr. A child that
 needs no change can simply inherit: leave out `env=`.
+A test that reaches the network uses `network_env(**extra)` instead. It adds
+the host proxy and CA settings, which stay off the allowlist because a proxy
+URL can hold a password.
 `tests/tools/test_env_hygiene.py` fails on a full copy.
 
 ## When a wait times out

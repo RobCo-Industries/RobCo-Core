@@ -5,7 +5,9 @@ arguments and locals when a test fails, so a copy of os.environ ends up in the
 terminal, in saved logs and in CI logs, secrets included.
 
 minimal_env() copies only the variables the tools need. Pass the rest as
-explicit extras. The returned mapping hides its values in repr() as a second
+explicit extras. network_env() adds the proxy and CA settings for the few
+tests that reach the network. They stay out of ALLOWED because a proxy URL
+can hold a user name and password. The returned mapping hides its values in repr() as a second
 guard, so a traceback shows the variable names only.
 """
 
@@ -39,6 +41,22 @@ class Env(dict):
 def minimal_env(**extra):
     """Allowlisted host variables plus `extra`. A None extra removes the variable."""
     env = Env((k, os.environ[k]) for k in ALLOWED if k in os.environ)
+    for k, v in extra.items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = str(v)
+    return env
+
+
+NETWORK = tuple(n for p in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY")
+                for n in (p, p.lower())) + ("SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE")
+
+
+def network_env(**extra):
+    """minimal_env(**extra) plus the host proxy and CA settings that are set."""
+    env = minimal_env()
+    env.update((k, os.environ[k]) for k in NETWORK if k in os.environ)
     for k, v in extra.items():
         if v is None:
             env.pop(k, None)

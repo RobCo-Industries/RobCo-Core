@@ -61,7 +61,7 @@ FAILING = """
 import os
 import sys
 sys.path.insert(0, {tests!r})
-from harness.env import minimal_env
+from harness.env import minimal_env, network_env
 
 
 def build():
@@ -78,12 +78,12 @@ def test_fails():
 """
 
 
-def child_output(tmp_path, build, *args):
+def child_output(tmp_path, build, *args, extra=None):
     (tmp_path / "test_throwaway.py").write_text(
         textwrap.dedent(FAILING.format(tests=TESTS, build=build)))
     # pytest sorts dict keys and cuts long reprs: a name that sorts first shows
     # even in the default style, like AWS_ or API_ secrets on a real host.
-    env = {"A_ROBCO_LEAK_CANARY": CANARY, "PATH": os.environ.get("PATH", os.defpath)}
+    env = {"A_ROBCO_LEAK_CANARY": CANARY, "PATH": os.environ.get("PATH", os.defpath), **(extra or {})}
     r = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
                         *args, str(tmp_path)],
                        cwd=tmp_path, env=env, capture_output=True, text=True)
@@ -108,3 +108,31 @@ def test_the_old_way_leaks(tmp_path):
     old = "dict(os." + "environ)"
     counts = {args: child_output(tmp_path, old, *args).count(CANARY) for args in STYLES}
     assert counts[()] > 0 and counts[("--showlocals", "-vv")] > 0, counts
+
+
+PROXY = {"HTTPS_PROXY": f"http://user:{CANARY}@proxy.invalid:8080"}
+
+CHECK_NETWORK = """
+import sys
+sys.path.insert(0, {tests!r})
+from harness.env import minimal_env, network_env, Env
+n, m = network_env(), minimal_env()
+assert type(n) is Env and n["HTTPS_PROXY"].endswith("@proxy.invalid:8080")
+assert "HTTPS_PROXY" not in m
+assert "proxy.invalid" not in repr(n) and "HTTPS_PROXY" in repr(n)
+"""
+
+
+def test_network_env_passes_proxy(tmp_path):
+    env = {"PATH": os.environ.get("PATH", os.defpath), **PROXY}
+    r = subprocess.run([sys.executable, "-c", CHECK_NETWORK.format(tests=TESTS)],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, "network_env proxy check failed"
+
+
+def test_network_env_does_not_leak(tmp_path):
+    for args in ((), ("-vv",), ("--showlocals", "-vv")):
+        out = child_output(tmp_path, "network_env()", *args, extra=PROXY)
+        assert "fails on purpose" in out and "HTTPS_PROXY" in out
+        leaks = out.count(CANARY)
+        assert leaks == 0, f"canary leaked {leaks} times with {args}"

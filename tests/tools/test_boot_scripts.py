@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from harness.env import minimal_env
+from harness.env import minimal_env, network_env
 
 from test_rimg_tool import sealed
 
@@ -27,9 +27,10 @@ needs_sha256 = pytest.mark.skipif(shutil.which("sha256sum") is None and shutil.w
                                   reason="fetch_firmware.sh needs sha256sum or shasum")
 
 
-def run(*args, env=None):
+def run(*args, env=None, net=False):
+    build = network_env if net else minimal_env
     return subprocess.run(["bash", *map(str, args)], capture_output=True, text=True,
-                          env=minimal_env(**(env or {})))
+                          env=build(**(env or {})))
 
 
 def spec_config(kernel):
@@ -154,6 +155,7 @@ def test_mkbootdir_refuses_missing_verifier(image, tmp_path):
 @needs_sha256
 def test_download(image, tmp_path):
     target = tmp_path / "boot"
-    r = run(MKBOOT, image, target, "--kernel-name", "RETROS.IMG")
+    # curl needs the host proxy settings to reach GitHub behind a proxy.
+    r = run(MKBOOT, image, target, "--kernel-name", "RETROS.IMG", net=True)
     assert r.returncode == 0, r.stderr
     assert run(FETCH, "--check", target).returncode == 0
