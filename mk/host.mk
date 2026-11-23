@@ -236,8 +236,8 @@ HOST_GW_STATE := $(shell \
 HOST_GW_INC := $(wordlist 2,$(words $(HOST_GW_STATE)),$(HOST_GW_STATE))
 
 HOST_GW_OUT := $(HOST_BUILD)/gccwarn
-HOST_GW_CC = $(HOST_GCCWARN_CC) -c -o /dev/null -MMD -MT $@ -MF $(@:.ok=.d) \
-             -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -idirafter "$(HOST_GW_INC)"
+HOST_GW_BASE = -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -idirafter "$(HOST_GW_INC)"
+HOST_GW_CC = $(HOST_GCCWARN_CC) -c -o /dev/null -MMD -MT $@ -MF $(@:.ok=.d) $(HOST_GW_BASE)
 HOST_GW_FLAGS_ci = $(filter-out -g $(HOST_SAN_FLAGS),$(HOST_CFLAGS)) $(HOST_SAN_FLAGS)
 HOST_GW_FLAGS_o2 = $(filter-out -g -O1 $(HOST_SAN_FLAGS),$(HOST_CFLAGS)) -O2
 HOST_GW_GROUP_src :=
@@ -253,11 +253,28 @@ HOST_GW_SRCS_fatfs := $(if $(filter fatfs,$(HOST_CORE_SETS)),\
                         $(ROBCO_HOST_P)third_party/fatfs/ff.c $(ROBCO_HOST_P)third_party/fatfs/ffunicode.c)
 HOST_GW_SRCS_ro := $(if $(ROBCO_HOST_SELF),$(HOST_GW_SRCS_fs) $(HOST_GW_SRCS_fatfs))
 
+# $(HOST_BUILD)/gccwarn/<pass>/<group>.cmd holds the compiler, its version
+# and the flags of one pass and group. It is rewritten only when its text
+# changes, and every stamp of that pass and group depends on it. So a new
+# compiler, define or flag compiles again, whether it comes from the
+# command line or from a project's Makefile.
+ifeq ($(firstword $(HOST_GW_STATE)),ok)
+HOST_GW_CCID := $(shell command -v $(HOST_GCCWARN_CC); $(HOST_GCCWARN_CC) --version 2>&1 | head -n 1)
+endif
+HOST_GW_CMD = $(HOST_GW_CCID) -c $(HOST_GW_BASE) $(HOST_GW_FLAGS_$(1)) $(HOST_GW_GROUP_$(2))
+
+.PHONY: host-gw-force
+host-gw-force:
+
 # One static pattern rule per pass and group:
 # $(HOST_BUILD)/gccwarn/<pass>/<group>/<source>.ok
 define HOST_GW_RULE
+$$(HOST_GW_OUT)/$(1)/$(2).cmd: host-gw-force
+	@mkdir -p $$(dir $$@)
+	@printf '%s\n' '$$(subst ','\'',$$(call HOST_GW_CMD,$(1),$(2)))' > $$@.tmp
+	@if cmp -s $$@.tmp $$@; then rm -f $$@.tmp; else mv -f $$@.tmp $$@; fi
 HOST_GW_STAMPS += $$(patsubst %,$$(HOST_GW_OUT)/$(1)/$(2)/%.ok,$$(HOST_GW_SRCS_$(2)))
-$$(patsubst %,$$(HOST_GW_OUT)/$(1)/$(2)/%.ok,$$(HOST_GW_SRCS_$(2))): $$(HOST_GW_OUT)/$(1)/$(2)/%.ok: % $$(ROBCO_HOST_P)mk/host.mk | $$(HOST_ALL)
+$$(patsubst %,$$(HOST_GW_OUT)/$(1)/$(2)/%.ok,$$(HOST_GW_SRCS_$(2))): $$(HOST_GW_OUT)/$(1)/$(2)/%.ok: % $$(ROBCO_HOST_P)mk/host.mk $$(HOST_GW_OUT)/$(1)/$(2).cmd | $$(HOST_ALL)
 	@mkdir -p $$(dir $$@)
 	@$$(HOST_GW_CC) $$(HOST_GW_FLAGS_$(1)) $$(HOST_GW_GROUP_$(2)) $$< || \
 	  { echo "test-host-gccwarn: $$< fails the $(1) pass" >&2; exit 1; }
@@ -272,7 +289,7 @@ $(foreach p,ci o2,$(foreach g,src fs fatfs ro,$(eval $(call HOST_GW_RULE,$(p),$(
 ifeq ($(ROBCO_HOST_SELF),1)
 HOST_GW_BAD := tests/fixtures/gccwarn/format_truncation_bad.c
 HOST_GW_SELF := $(HOST_GW_OUT)/selftest.ok
-$(HOST_GW_SELF): $(HOST_GW_BAD) mk/host.mk
+$(HOST_GW_SELF): $(HOST_GW_BAD) mk/host.mk $(HOST_GW_OUT)/ci/src.cmd $(HOST_GW_OUT)/o2/src.cmd
 	@mkdir -p $(dir $@)
 	@if $(HOST_GW_CC) $(HOST_GW_FLAGS_ci) $< 2>/dev/null; then \
 	  echo "test-host-gccwarn: self-test: the ci pass missed $<" >&2; exit 1; fi
