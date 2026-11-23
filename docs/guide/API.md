@@ -341,10 +341,13 @@ int k_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
 
 | Supported | Not supported |
 |---|---|
-| `%s %c %d %u %x %X %p %%` | Length modifiers (`%l`, `%ll`, `%z`), precision, `-` and `+` flags, floating point |
-| A `0` flag and a field width, such as `%08x` | `*` width |
+| `%s %c %d %u %x %X %p %%` | Length modifiers (`%l`, `%ll`, `%z`), `+`, space and `#` flags, floating point |
+| `-` and `0` flags, a field width and a precision, such as `%08x`, `%-6s`, `%.5s`, `%.3d` | |
+| `*` for the width or the precision, such as `%*d`, `%-*s`, `%.*s` | |
 
-Pass 64-bit values as two 32-bit halves or cast them to `unsigned`. `%s` prints `(null)` for a NULL pointer. An unknown conversion prints as written.
+The flags, width and precision follow C. `-` pads on the right and beats `0`. A negative `*` width means `-`. A negative `*` precision means no precision. `%.5s` prints at most 5 bytes and reads no further. On `%d %u %x %X` the precision is the minimum digit count, it turns `0` off, and `%.0d` prints nothing for 0. `%c` takes a width. `%s` ignores `0`. `%p` always prints `0x` and the full pointer in zero-padded hex, and ignores flags, width and precision.
+
+Pass 64-bit values as two 32-bit halves or cast them to `unsigned`. `%s` prints `(null)` for a NULL pointer, cut by the precision. An unknown conversion prints its whole spec as written, such as `%-5q`. A `*` in it still takes an argument. A `%` spec cut off by the end of the format prints nothing.
 
 `k_printf()` holds no lock and the output hook busy-waits. Calling it from IRQ context works, but the text can land in the middle of a main-context line.
 
