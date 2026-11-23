@@ -360,7 +360,7 @@ def boot_args(image, board, mode="auto", sd=None):
 
 @contextlib.contextmanager
 def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
-         timeout=10.0, elf=None, keepalive=None):
+         timeout=10.0, elf=None, keepalive=None, qtest=False):
     """Boot `image` on `board` and yield a Vm. QEMU is always killed on exit.
 
     elf is the image's ELF, used to name functions in the state dump.
@@ -368,11 +368,14 @@ def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
     keepalive sends a QMP query-status every 20 ms while the VM runs
     (tests/README.md, "QEMU keep-alive"). None follows the environment
     variable ROBCO_QEMU_KEEPALIVE (on unless it is 0 or off).
+    qtest=True adds a qtest socket while the guest runs under TCG, so a
+    test can drive device inputs with vm.qmp.set_irq_in().
     """
     if board not in BOARDS:
         raise ValueError(f"unknown board {board!r}, expected one of {sorted(BOARDS)}")
     args = boot_args(image, board, mode, sd)
-    q = Qemu(BOARDS[board].binary, board, timeout=timeout, null_serial=False)
+    q = Qemu(BOARDS[board].binary, board, timeout=timeout, null_serial=False,
+             qtest=qtest, qtest_accel=None)
     ports = 2 if serial2 else 1
     paths = [q._sock(f"serial{i}") for i in range(ports)]
     # Start stopped, connect serial and QMP, then run: no output is lost.
