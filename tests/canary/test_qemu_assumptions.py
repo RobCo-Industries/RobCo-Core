@@ -331,7 +331,7 @@ def test_v16_pca9554_registers(binary, machine):
 
 @pytest.mark.parametrize("binary,machine", PCA_MACHINES, ids=[m for _, m in PCA_MACHINES])
 def test_v16_pca9554_pins_from_outside(binary, machine):
-    """V16b: qom-get pinN shows config|output; qtest set_irq_in drives inputs; qom-set rewrites registers."""
+    """V16b: qom-get pinN shows config|output; set_irq_in ANDs with the pin; qom-set rewrites registers."""
     need(binary, machine)
     path = "/machine/peripheral/x0"
     with Qemu(binary, machine, PCA_ARGS, qtest=True) as q:
@@ -345,6 +345,11 @@ def test_v16_pca9554_pins_from_outside(binary, machine):
         assert bus.regs(0x20) == [0xEA, 0x5A, 0x00, 0xF0]
         assert pca_pins(q, path) == 0xFA  # qom-get does not show driven inputs
         q.set_irq_in(path, 4, 1)
+        assert bus.read(0x20, 0) == [0xFA]
+        # A low on an output driven high wins: the pin reads 0, a wired AND.
+        q.set_irq_in(path, 1, 0)
+        assert bus.read(0x20, 0) == [0xF8]
+        q.set_irq_in(path, 1, 1)
         assert bus.read(0x20, 0) == [0xFA]
         # qom-set makes the pin an output at that level: not an outside drive.
         q.execute("qom-set", path=path, property="pin7", value="low")

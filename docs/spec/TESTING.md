@@ -75,6 +75,7 @@ Some tests attach more devices:
 | `test_input.py` | Mini UART as a second serial port | `boot(..., serial2=True)` |
 | `test_rtc.py` | DS1338 RTC model, DS1307 registers, on I2C bus 1 | `-device ds1338,bus=i2c-bus.1,address=0x68` |
 | `test_spi.py` | W25Q32 SPI flash on the SPI0 bus | `-device w25q32,bus=spi` |
+| `test_gpiox.py` | Two PCA9554 GPIO expanders on I2C bus 1, inputs driven through qtest | `-device pca9554,bus=i2c-bus.1,address=0x20` and `0x21`, `boot(..., qtest=True)` |
 
 `test_rtc.py` and `test_spi.py` also boot once without the device, to check the absent case.
 
