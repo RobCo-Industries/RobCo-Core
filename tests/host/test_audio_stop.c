@@ -226,7 +226,15 @@ static void run(int which, int p, int a, int t, char *lines, size_t size)
     }
     tick(0);
     audio_trace_flush();
-    snprintf(lines, size, "%s", which == AUDIO_BACKEND_PWM ? pwm_log : out);
+    /* A copy, cut to size. snprintf with "%s" here trips GCC's
+     * -Wformat-truncation under the CI sanitizer flags. */
+    const char *log = which == AUDIO_BACKEND_PWM ? pwm_log : out;
+    size_t n = strlen(log);
+    if (n >= size) {
+        n = size - 1;
+    }
+    memcpy(lines, log, n);
+    lines[n] = '\0';
 }
 
 /* What the rule says: one stop if something played, then the new start. */
