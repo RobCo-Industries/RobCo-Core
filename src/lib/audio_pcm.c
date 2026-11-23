@@ -92,24 +92,46 @@ static uint32_t time_of(const audio_pcm_t *p, uint32_t m)
 }
 
 /*
+ * Hands over to the waiting buffer: positions in it are pos - len. The
+ * origin time does not move, so the grid stays exact.
+ */
+static void take_next(audio_pcm_t *p)
+{
+    p->origin_pos -= p->len;
+    p->data = p->next;
+    p->len = p->next_len;
+    p->next = 0;
+    p->next_len = 0;
+    p->switches++;
+}
+
+/*
  * Moves the origin forward by whole units, where time and samples are both
  * exact. After a switch, origin_pos can be below 0 as a signed value: the
  * origin lies in the previous buffer. len is at most 2^31 - 1, so it fits.
+ * A one-shot origin that passes the end switches to the waiting buffer
+ * first, so a late call keeps its position. Only then does it clamp to the
+ * end, and the caller sees END.
  */
 static void rebase(audio_pcm_t *p, uint32_t elapsed)
 {
     uint32_t k = elapsed / p->unit_us;
     uint32_t dn = k * p->unit_n;
-    uint32_t pos = p->origin_pos + dn;
 
     p->origin_us += k * p->unit_us;
     p->next_q = p->next_q > dn ? p->next_q - dn : 0;
     if (p->flags & AUDIO_LOOP) {
-        pos %= p->len;
-    } else if ((int64_t)(int32_t)p->origin_pos + dn > (int64_t)p->len) {
-        pos = p->len;
+        p->origin_pos = (p->origin_pos + dn) % p->len;
+        return;
     }
-    p->origin_pos = pos;
+    if (p->next && (int64_t)(int32_t)p->origin_pos + dn >= (int64_t)p->len) {
+        take_next(p);
+    }
+    if ((int64_t)(int32_t)p->origin_pos + dn > (int64_t)p->len) {
+        p->origin_pos = p->len;
+    } else {
+        p->origin_pos += dn;
+    }
 }
 
 int audio_pcm_chain(audio_pcm_t *p, const uint8_t *data, size_t len)
@@ -142,8 +164,7 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
     q = samples_at(p, elapsed);
     abs = p->origin_pos + q;
     /*
-     * Past the end of a one-shot buffer: the waiting buffer takes over at
-     * pos - len. The origin time does not move, so the grid stays exact.
+     * Past the end of a one-shot buffer: the waiting buffer takes over.
      * origin_pos is signed after a switch, and its sum with q can pass
      * 2^31, so the compare runs on 64 bits. It adds and compares only.
      */
@@ -154,12 +175,7 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
             return AUDIO_PCM_END;
         }
         abs -= p->len;
-        p->origin_pos -= p->len;
-        p->data = p->next;
-        p->len = p->next_len;
-        p->next = 0;
-        p->next_len = 0;
-        p->switches++;
+        take_next(p);
     }
     if (q < p->next_q) {
         return AUDIO_PCM_NONE;

@@ -372,6 +372,148 @@ TEST(switch_right_after_rebase)
     CHECK_EQ(audio_pcm_poll(&p, 100001250u, &pos), AUDIO_PCM_END);
 }
 
+/*
+ * Reference for a chain of a then b started at t0: one long buffer of
+ * a + b samples. Returns the expected poll result and sets the index in
+ * the buffer that plays.
+ */
+static int ref_chain(uint32_t elapsed, uint32_t rate, uint32_t a, uint32_t b, uint32_t *pos,
+                     int *in_b)
+{
+    uint64_t g = (uint64_t)elapsed * rate / 1000000u;
+
+    if (g >= (uint64_t)a + b) {
+        return AUDIO_PCM_END;
+    }
+    *in_b = g >= a;
+    *pos = (uint32_t)(g >= a ? g - a : g);
+    return AUDIO_PCM_SAMPLE;
+}
+
+/* Review case: the first poll comes 68 s late, past a 10-sample buffer. */
+TEST(late_rebase_keeps_position_across_switch)
+{
+    audio_pcm_t p;
+    uint32_t pos = 0;
+
+    audio_pcm_start(&p, buf, 10, 8000, 0, 0);
+    CHECK_EQ(audio_pcm_chain(&p, buf_b, 800000), 0);
+    CHECK_EQ(audio_pcm_poll(&p, 68000000u, &pos), AUDIO_PCM_SAMPLE);
+    CHECK(p.data == buf_b);
+    CHECK_EQ(pos, 543990);
+}
+
+/* Late polls at multiples of 2^26 us before, at and after the switch. */
+TEST(late_rebase_multiples_around_switch)
+{
+    static const uint32_t rates[] = { 4000, 8000, 11025, 22050 };
+    static const int32_t offs[] = { -1000000, -1, 0, 1, 1000000 };
+    unsigned i, k, o;
+
+    for (i = 0; i < 4; i++) {
+        uint32_t r = rates[i];
+
+        for (k = 1; k <= 4; k++) {
+            /* The switch lands at k * 2^26 us. */
+            uint32_t sw = k * (1u << 26);
+            uint32_t a = (uint32_t)((uint64_t)sw * r / 1000000u);
+            uint32_t b = r * 30;
+
+            for (o = 0; o < 5; o++) {
+                uint32_t m;
+
+                for (m = 1; m <= 3; m++) {
+                    uint32_t t = m * (1u << 26) + (uint32_t)offs[o];
+                    audio_pcm_t p;
+                    uint32_t pos = 0;
+                    uint32_t want = 0;
+                    int in_b = 0;
+                    int res;
+
+                    audio_pcm_start(&p, buf, a, r, 0, 0);
+                    CHECK_EQ(audio_pcm_chain(&p, buf_b, b), 0);
+                    res = ref_chain(t, r, a, b, &want, &in_b);
+                    CHECK_EQ(audio_pcm_poll(&p, t, &pos), res);
+                    if (res == AUDIO_PCM_SAMPLE) {
+                        CHECK_EQ(pos, want);
+                        CHECK(p.data == (in_b ? buf_b : buf));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* Chained play equals one long buffer, for many polls, some very late. */
+TEST(chain_matches_one_buffer_random_polls)
+{
+    static const uint32_t rates[] = { 4000, 8000, 11025, 22050 };
+    uint32_t seed = 12345;
+    unsigned i, run;
+
+    for (i = 0; i < 4; i++) {
+        uint32_t r = rates[i];
+
+        for (run = 0; run < 200; run++) {
+            audio_pcm_t p;
+            uint32_t a, b, t0, t = 0;
+            uint64_t last = UINT64_MAX;
+            unsigned n;
+
+            seed = seed * 1664525u + 1013904223u;
+            a = 1 + (seed >> 8) % (r * 120);
+            seed = seed * 1664525u + 1013904223u;
+            b = 1 + (seed >> 8) % (r * 300);
+            seed = seed * 1664525u + 1013904223u;
+            t0 = seed;
+            audio_pcm_start(&p, buf, a, r, 0, t0);
+            CHECK_EQ(audio_pcm_chain(&p, buf_b, b), 0);
+            for (n = 0; n < 40; n++) {
+                uint32_t pos = 0, want = 0;
+                int in_b = 0, res, got;
+                uint32_t step;
+
+                seed = seed * 1664525u + 1013904223u;
+                switch (seed >> 29) {
+                case 0:
+                    step = 0;
+                    break;
+                case 1:
+                case 2:
+                    step = (seed >> 4) % 1000;
+                    break;
+                case 3:
+                case 4:
+                    step = (seed >> 4) % 5000000u;
+                    break;
+                default:
+                    /* Very late: up to about four rebase periods. */
+                    step = (seed >> 3) % (5u << 26);
+                    break;
+                }
+                if (t > 4000000000u - step) {
+                    break;
+                }
+                t += step;
+                res = ref_chain(t, r, a, b, &want, &in_b);
+                got = audio_pcm_poll(&p, t0 + t, &pos);
+                if (res == AUDIO_PCM_END) {
+                    CHECK_EQ(got, AUDIO_PCM_END);
+                    break;
+                }
+                if ((uint64_t)want + (in_b ? a : 0) == last) {
+                    CHECK_EQ(got, AUDIO_PCM_NONE);
+                    continue;
+                }
+                CHECK_EQ(got, AUDIO_PCM_SAMPLE);
+                CHECK_EQ(pos, want);
+                CHECK(p.data == (in_b ? buf_b : buf));
+                last = (uint64_t)want + (in_b ? a : 0);
+            }
+        }
+    }
+}
+
 TEST(volume_scale)
 {
     CHECK_EQ(audio_pcm_scale(0, 100), 0);
