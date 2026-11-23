@@ -4,8 +4,9 @@
  * skips samples instead of slowing the sound, and nothing drifts.
  *
  * Cost: one IRQ calls audio_pcm_poll() and audio_pcm_next_us(). Both use
- * 32x32 to 64-bit multiplies only. A 32-bit divide runs at a loop wrap
- * and every 2^26 us at most. The 64-bit divides run in audio_pcm_start().
+ * 32x32 to 64-bit multiplies. A looped buffer adds a 32-bit modulo per
+ * sample after its first pass, and a rebase adds a 32-bit divide every
+ * 2^26 us at most. The 64-bit divides run in audio_pcm_start() only.
  */
 #include <stddef.h>
 #include <stdint.h>

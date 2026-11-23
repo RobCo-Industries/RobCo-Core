@@ -4,6 +4,10 @@
  *
  * Silence is DAT = 0 with the channel left enabled, so the output sits
  * low and does not jump when a tone starts or stops.
+ *
+ * PCM mode: the range is fixed at AUDIO_PCM_PWM_RANGE, a carrier above
+ * hearing, and each sample IRQ writes the duty. A tone sets its own range
+ * again, so each start picks its mode.
  */
 #include <stdint.h>
 
@@ -53,6 +57,8 @@
 int audio_pwm_probe(void);
 int audio_pwm_setup(int pin0, unsigned fn0, int pin1, unsigned fn1);
 void audio_pwm_out(uint32_t hz, unsigned vol);
+void audio_pwm_pcm_mode(void);
+void audio_pwm_sample(uint32_t dat);
 
 static uint32_t pwm;
 static uint32_t cm;
@@ -180,6 +186,36 @@ void audio_pwm_out(uint32_t hz, unsigned vol)
             mmio_write(pwm + PWM_RNG2, c.rng);
             mmio_write(pwm + PWM_DAT2, c.dat);
         }
+    }
+    mmio_dmb();
+}
+
+/* IRQ context. Switches to PCM mode at the midpoint, the PCM silence. */
+void audio_pwm_pcm_mode(void)
+{
+    uint32_t mid = audio_pcm_duty(128, AUDIO_PCM_PWM_RANGE);
+
+    mmio_dmb();
+    if (ch1) {
+        mmio_write(pwm + PWM_RNG1, AUDIO_PCM_PWM_RANGE);
+        mmio_write(pwm + PWM_DAT1, mid);
+    }
+    if (ch2) {
+        mmio_write(pwm + PWM_RNG2, AUDIO_PCM_PWM_RANGE);
+        mmio_write(pwm + PWM_DAT2, mid);
+    }
+    mmio_dmb();
+}
+
+/* IRQ context, once per sample. `dat` comes from audio_pcm_duty(). */
+void audio_pwm_sample(uint32_t dat)
+{
+    mmio_dmb();
+    if (ch1) {
+        mmio_write(pwm + PWM_DAT1, dat);
+    }
+    if (ch2) {
+        mmio_write(pwm + PWM_DAT2, dat);
     }
     mmio_dmb();
 }
