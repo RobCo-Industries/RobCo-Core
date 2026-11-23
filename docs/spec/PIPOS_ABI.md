@@ -108,7 +108,7 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 | `0x0B` | `set_clip` | `int32 x, int32 y, uint32 wh`. `wh = 0` clears the clip. | 0 | draft |
 | `0x0C` | `set_color` | `uint32 fg, uint32 bg` | 0 | draft |
 | `0x0D` | `text_metrics` | `const char *text, uint32 scale` | `(width << 16) \| height` | draft |
-| `0x0E` | `present` | none | 0. Copies the back buffer to the display. | draft |
+| `0x0E` | `present` | none | 0, or `-PIP_ENODEV`. Copies the back buffer to the display. | draft |
 | `0x0F` | `set_font` | `uint32 font_id` | 0, or `-PIP_EINVAL` | draft |
 | `0x10` | `read_buttons` | none | Bit mask of pressed buttons | stable |
 | `0x11` | `read_dial` | none | Dial position, 0 to 359 | stable |
@@ -189,29 +189,29 @@ Each image has its own drawing state. Pip-OS resets it when the image starts.
 | Clip rectangle | `set_clip` | The whole surface |
 | Font | `set_font` | 0 |
 
-`PIP_COLOR_NONE` is `0x01000000`. As a background it means transparent.
+`PIP_COLOR_NONE` is `0x01000000`. As a background it means transparent. Pip-OS ignores the top byte of every other colour argument.
 
-Every call clips to the clip rectangle and to the surface. Coordinates outside are legal and draw nothing. The back buffer starts black.
+Every call clips to the clip rectangle and to the surface. Coordinates outside are legal and draw nothing. When the ROM starts, the back buffer is cleared to black. The boot screen stays until the ROM's first `present`.
 
 ### Drawing calls
 
 | Call | Rules |
 |---|---|
-| `draw_line` | Foreground colour. Both end points are drawn. |
+| `draw_line` | Foreground colour. Bresenham: along the longer axis each step moves one pixel. The other axis moves `round(i * minor / major)` at step `i`, with halves rounded away from the start point. Both end points are drawn. A line from a point to itself draws that point. |
 | `draw_point` | Uses the colour argument, not the foreground colour. |
-| `draw_text` | Glyphs in the foreground colour. If the background is not `PIP_COLOR_NONE`, each glyph cell is filled with it first. `x, y` is the top left corner. `scale` is 1 to 8. The text is at most 255 bytes. Bytes outside printable ASCII draw as `?`. Returns the width in pixels. |
-| `text_metrics` | Same limits as `draw_text`. Draws nothing. |
+| `draw_text` | Glyphs in the foreground colour. If the background is not `PIP_COLOR_NONE`, each glyph cell is filled with it first. `x, y` is the top left corner. `scale` is 1 to 8, and each font pixel becomes a `scale` by `scale` block. The text is at most 255 bytes. Bytes outside 0x20 to 0x7E draw as `?`. Returns the width in pixels, 8 times `scale` per byte. Checks `scale` before the text pointer. |
+| `text_metrics` | Same limits and check order as `draw_text`. Draws nothing. |
 | `clear` | Fills the whole surface with the colour argument. Ignores the clip rectangle. |
-| `rect` | `fill` 0 draws the outline, 1 fills. Foreground colour. A zero width or height draws nothing. |
-| `polyline` | `xy` holds `count` pairs of `int16 x, y`. `count` is 2 to 256. `closed` 1 joins the last point to the first. Foreground colour. |
-| `arc` | See `pip_arc_t`. Foreground colour. |
+| `rect` | `fill` 0 draws the outline, 1 fills. Foreground colour. The outline is the first and last row and column, so a rectangle 1 or 2 pixels wide or high is filled. A zero width or height draws nothing. |
+| `polyline` | `xy` holds `count` pairs of `int16 x, y`. `count` is 2 to 256. `closed` 0 leaves it open, 1 joins the last point to the first. Foreground colour. Checks the limits, then copies the points in. |
+| `arc` | See `pip_arc_t`. Foreground colour. Checks the limits, then copies the struct in. |
 | `blit_1bpp` | See `pip_blit_t`. Rows are packed most significant bit first. Set bits draw in `color`. Clear bits draw nothing. |
 | `blit_rgb` | See `pip_blit_t`. Each pixel is a `uint32` `0x00RRGGBB`. `color` is ignored. |
-| `set_clip` | `wh = 0` resets the clip to the whole surface. The rectangle is cut to the surface. |
+| `set_clip` | `wh = 0` resets the clip to the whole surface. A non-zero `wh` with a zero width or height returns `-PIP_EINVAL`. The rectangle is cut to the surface. A rectangle entirely outside leaves an empty clip, and nothing draws until the next `set_clip`. |
 | `set_font` | Font 0 is the 8x16 system font. ABI 1.0 has no other font, so any other value returns `-PIP_EINVAL`. |
-| `present` | Copies the back buffer to the display. The back buffer keeps its content. |
+| `present` | Copies the back buffer to the display. The back buffer keeps its content. Returns `-PIP_ENODEV` with no framebuffer or one smaller than 320x240. |
 
-A bad limit, such as `scale` 9 or `count` 1, returns `-PIP_EINVAL`.
+A bad limit, such as `scale` 9, `count` 1 or a `fill`, `closed` or blit `flags` value out of range, returns `-PIP_EINVAL`.
 
 ```c
 typedef struct __attribute__((packed)) pip_arc {
@@ -234,7 +234,9 @@ typedef struct __attribute__((packed)) pip_blit {
 
 Angles are in degrees, clockwise on the screen, from the positive x axis. So 90 points down. The arc runs clockwise from `start_deg` to `end_deg`. If `end_deg` is not above `start_deg`, it passes through 0. `start_deg` 0 with `end_deg` 360 is a full circle.
 
-A row of `blit_1bpp` is `(w + 7) / 8` bytes. A row of `blit_rgb` is `4 * w` bytes. `stride` must be at least one row. Pip-OS checks the range from `data` to the end of the last row.
+The disk of an arc is every pixel with `dx^2 + dy^2 <= r^2 + r`. The outline is the disk pixels with at least one of their four neighbours outside the disk. A pixel is drawn when its angle lies between the start and end rays, both rays included. The rays come from a table of `round(65536 * sin(d))` for whole degrees, and the test uses exact integer cross products. A filled slice includes the centre.
+
+A row of `blit_1bpp` is `(w + 7) / 8` bytes. A row of `blit_rgb` is `4 * w` bytes. `stride` must be at least one row. A blit copies its struct in and checks it. Then Pip-OS checks the range from `data` to the end of the last row, `stride * (h - 1)` plus one row. A bad range returns `-PIP_EFAULT` and draws nothing.
 
 ## Input
 
