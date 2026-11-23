@@ -179,8 +179,6 @@ Streaming with two buffers, refilled from a file or a generator:
 ```c
 static uint8_t buf[2][4096];
 
-size_t fill(uint8_t *dst, size_t max);   /* yours: returns bytes, 0 at the end */
-
 void stream(void)
 {
     size_t n = fill(buf[0], sizeof buf[0]);
@@ -201,7 +199,7 @@ void stream(void)
 }
 ```
 
-`fill()` writes into the buffer that played before. It is free: the queue call that put it in has returned, and `audio_pcm_can_queue()` turned `1` after that.
+`fill()` is yours: it writes up to `max` bytes and returns how many, `0` at the end. It writes into the buffer that played before. It is free: the queue call that put it in has returned, and `audio_pcm_can_queue()` turned `1` after that.
 
 ```c
 int audio_play_rtttl(const char *text, unsigned flags);
