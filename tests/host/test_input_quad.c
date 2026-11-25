@@ -238,13 +238,13 @@ TEST(quad_two_double_transitions_from_a_detent)
     input_quad_init(&q, 4, 0, 1, 1);
     CHECK_EQ(run(&q, "2013"), 1);
     /*
-     * 11 [01] 00 [10] 11: a detent counter-clockwise, or out and back.
-     * The old direction says neither: nothing is counted, never +1.
+     * 11 [10] 00 [01] 11: a fast turn that hides two states. The second
+     * double transition takes the last direction: one detent clockwise.
+     * A turn back hidden the same way would count +1 too: one step wrong.
      */
-    CHECK_EQ(run(&q, "03"), 0);
+    CHECK_EQ(run(&q, "03"), 1);
     CHECK_EQ(q.pend, 0);
     CHECK_EQ(q.acc, 0);
-    /* The next detent counts as usual. */
     CHECK_EQ(run(&q, "1023"), -1);
 }
 
@@ -362,6 +362,58 @@ TEST(quad_bounce_at_rest_counts_once)
     CHECK_EQ(run(&q, "0"), 1);
     CHECK_EQ(run(&q, "202020"), 0);
     CHECK_EQ(q.invalid, 0);
+}
+
+/* Moves the absolute position *pos by n transitions, feeding each. */
+static int walk(input_quad_t *q, int *pos, int n)
+{
+    int sum = 0;
+
+    for (; n > 0; n--) {
+        sum += feed_pos(q, ++*pos);
+    }
+    for (; n < 0; n++) {
+        sum += feed_pos(q, --*pos);
+    }
+    return sum;
+}
+
+TEST(quad_start_off_a_detent)
+{
+    input_quad_t q;
+    int pos = 2, sum = 0, worst = 0, i;
+
+    /*
+     * The true detents are at Gray position 0 (00), but the layer starts
+     * at position 2 (11), half a detent away. 11 becomes the rest state.
+     */
+    input_quad_init(&q, 4, 0, 1, 1);
+    /* Two transitions to the true detent at 4: no step yet, one behind. */
+    sum += walk(&q, &pos, 2);
+    CHECK_EQ(sum, 0);
+    /* Every detent still counts once, two transitions late. */
+    sum += walk(&q, &pos, 40);
+    CHECK_EQ(sum, 10);              /* truth 11 at position 44 */
+    /* It never heals: the rest state stays at 11. */
+    CHECK_EQ(q.rest, 3);
+    /* Back to position 0: the total is right again in this direction. */
+    sum += walk(&q, &pos, -44);
+    CHECK_EQ(sum, 0);
+    /* A walk both ways: at a true detent the total is off by one at most. */
+    for (i = 0; i < 2000; i++) {
+        sum += walk(&q, &pos, (rnd() & 1) ? 1 : -1);
+        if ((pos & 3) == 0) {
+            int err = sum - pos / 4;
+
+            if (err < 0) {
+                err = -err;
+            }
+            if (err > worst) {
+                worst = err;
+            }
+        }
+    }
+    CHECK_EQ(worst, 1);
 }
 
 TEST(quad_initial_state)
