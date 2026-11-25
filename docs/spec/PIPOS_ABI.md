@@ -447,9 +447,9 @@ The slot card is a FAT volume that the library can mount. Pip-OS mounts it read-
 
 ### Listing
 
-`holo_enumerate` lists the slot tapes first, in directory order. Then it reads `/PIPBOY/HOLO` on the boot card in directory order and lists the tapes whose file name is not already listed. So a slot tape shadows a boot card tape with the same file name, compared without case. A listed file is named `NAME.HTP` and its header passes the magic, version and size checks. It does not check the CRC. It writes at most `max` entries, 1 to 32, counting both places together, and returns the count. A missing folder gives 0 entries. Pip-OS checks the whole `max` entries of `out` before it reads a card. A file with a long name is listed under its 8.3 alias. A file too short for a header is skipped.
+`holo_enumerate` lists the slot tapes first, in directory order. Then it reads `/PIPBOY/HOLO` on the boot card in directory order and lists the tapes whose file name is not already listed. So a slot file shadows a boot card tape with the same file name, compared without case. It shadows by name alone: a slot file `NAME.HTP` that fails the header checks hides the boot card tape too, and neither is listed. `holo_launch` of that name returns `-PIP_ENOEXEC`. Pulling the slot card brings the boot card tape back. A listed file is named `NAME.HTP` and its header passes the magic, version and size checks. It does not check the CRC. It writes at most `max` entries, 1 to 32, counting both places together, and returns the count. A missing folder gives 0 entries. Pip-OS checks the whole `max` entries of `out` before it reads a card. A file with a long name is listed under its 8.3 alias. A file too short for a header is skipped.
 
-The slot never makes `holo_enumerate` fail. A slot that is empty, still settling, or holds a card it cannot use adds no entry and no error. A read error on the slot card during the listing drops every slot entry, and the call still lists the boot card. A read error on the boot card returns `-PIP_EIO`.
+The slot never makes `holo_enumerate` fail. A slot that is empty, still settling, or holds a card it cannot use adds no entry and no error. A read error on the slot card during the listing drops every slot entry, and the call still lists the boot card, including the tapes those entries shadowed. A read error on the boot card returns `-PIP_EIO`.
 
 | Holotape call error | Cause |
 |---|---|
@@ -487,7 +487,7 @@ typedef struct __attribute__((packed)) pip_holo_info {
 3. Run the holotape. The ROM waits inside `holo_launch`.
 4. When the holotape ends, close its files, stop the sound, empty the event queue and restore the ROM's drawing state.
 
-The image is loaded whole before it runs. Still, when the slot card is pulled while its tape runs, Pip-OS ends the tape, prints `ev=holo_kill reason=eject`, and `holo_launch` returns `-PIP_ENODEV`. Step 4 runs as for any ended tape. The slot does not affect a tape launched from the boot card.
+The image is loaded whole before it runs. Still, when the slot card is pulled while its tape runs, Pip-OS ends the tape no later than the tape's next syscall of any kind after Pip-OS saw the card leave. A tape that makes no syscall runs on. When Pip-OS ends the tape, it prints `ev=holo_kill reason=eject`, and `holo_launch` returns `-PIP_ENODEV`. Step 4 runs as for any ended tape. The slot does not affect a tape launched from the boot card.
 
 `holo_launch` returns the holotape's exit status, 0 to 255, `-PIP_EFAULT` when Pip-OS killed it after a fault, or `-PIP_ENODEV` as above. The back buffer holds whatever the holotape drew, so the ROM redraws its screen.
 
@@ -508,24 +508,25 @@ While a holotape runs, every call sees it as the caller: its kind, its memory fo
 | Bit | Name | Meaning |
 |---|---|---|
 | 0 | `PIP_HOLO_EV_INSERTED` | A card was inserted and its volume is mounted. A `holo_enumerate` made after this bit lists its tapes. |
-| 1 | `PIP_HOLO_EV_REMOVED` | The card left |
+| 1 | `PIP_HOLO_EV_REMOVED` | The card left, whether it was mounted or bad |
 | 2 | `PIP_HOLO_EV_BAD` | A card was inserted and cannot be used: no FAT volume, a card type the driver refuses, or an init error. None of its tapes is listed. |
 | 3 to 31 | | 0 |
 
 - A card that is in at boot reports `INSERTED` or `BAD` once, after boot.
+- A card that leaves before the debounce ends sets no bit.
 - Several changes between two calls set several bits, and their order is lost. A ROM that sees `REMOVED` with `INSERTED` enumerates again.
 - A holotape that calls it gets 0, and the mask is not cleared: the bits wait for the ROM.
 - With `PIP_HW_TAPE` clear it returns 0.
 
 Each change also puts a `PIP_EV_TAPE` event in the ROM's event queue, so `wait_event` wakes. Its `value` holds the bits for that one change. The queue is emptied around `holo_launch` and can drop events, so the event is a hint and `holo_eject_event` is the truth. A running holotape never gets `PIP_EV_TAPE`.
 
-A change is reported after the driver's 250 ms card detect debounce and, for an insertion, after the mount. Pip-OS does its slot work inside the calls that take new input, as in [Input](#input). A ROM that makes none of those calls may not see a change.
+A change is reported after the driver's 250 ms card detect debounce and, for an insertion, after the mount. Pip-OS does its slot work at least inside these calls: `sleep_ms`, `poll_event`, `wait_event`, `read_buttons`, `read_dial`, `file_read`, `holo_enumerate` and `holo_eject_event`. A ROM that makes none of them sees no slot change.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Empty
     Empty --> Settling: card detect low
-    Settling --> Empty: card detect high
+    Settling --> Empty: card left in the debounce, no bit
     Settling --> Mounted: debounce over, mount ok / INSERTED
     Settling --> Bad: debounce over, card or mount refused / BAD
     Mounted --> Empty: card pulled / REMOVED
@@ -537,7 +538,7 @@ stateDiagram-v2
 1. At start, read `hw_flags`. With `PIP_HW_TAPE` clear, the list of tapes changes only when the ROM changes the boot card itself.
 2. Call `holo_enumerate` and show the list. `PIP_HOLO_SLOT` tells which tapes sit on the slot.
 3. On each `PIP_EV_TAPE`, and after each `holo_launch` returns, call `holo_eject_event`.
-4. When it returns a non-zero mask, call `holo_enumerate` again. Show `BAD` to the user if you want to.
+4. When it returns a non-zero mask, call `holo_enumerate` again. A ROM may show a message on `BAD` and drop it on `REMOVED`.
 
 ### Compatibility
 
