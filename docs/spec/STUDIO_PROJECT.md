@@ -364,6 +364,8 @@ backend = "robco"
 sources = ["main.c", "game.c", "logic.c", "draw.c"]
 ```
 
+Deitrix adds two things for this: the line `ABI := 1.4` in `holotapes/culvert/Makefile`, and `holotapes/culvert/robco.toml` with the content above. It changes no source file and no order. A later change of the ABI changes both files in one commit.
+
 The lock file that a build of the first example writes. The hashes are placeholders: no package is built yet.
 
 ```toml

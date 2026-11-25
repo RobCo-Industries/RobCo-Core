@@ -261,7 +261,7 @@ It makes these checks in order and stops at the first that fails. It writes noth
 | 3 | The tool knows every format in `formats` of that package's `sdk.json` | `package: format` |
 | 4 | `templates.json` passes the checks of [templates.json](./SDK_PACKAGE.md#templatesjson) | `templates: format` or `templates: manifest` |
 | 5 | `templates.json` lists a template whose `id` is `TEMPLATE` | `new: template`. The detail lists the ids. |
-| 6 | No file in a `substitute` file holds a token other than `@NAME@` | `templates: token` |
+| 6 | No `substitute` file of the template holds a token other than `@NAME@` | `templates: token` |
 | 7 | `NAME` in the current folder does not exist, or is an empty folder | `new: exists` |
 
 Then it writes:

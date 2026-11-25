@@ -304,7 +304,7 @@ The runner reads `/PIPBOY/RUNNER.CFG`. It is INI text in the syntax of [`ini.h`]
 
 The runner reads this one key and passes an empty argument string to the tape. Left out on purpose: an argument string, a list of tapes and a tape on the slot card.
 
-The tool writes the file as exactly these bytes, with `NAME` the `project.name` and LF line ends:
+The tool writes the file as exactly these two lines, each ended by one line feed, with `NAME` the `project.name`:
 
 ```
 [run]
@@ -401,12 +401,12 @@ flowchart TB
     B["Kernel boots"] --> L{"ROM1.ROM loads?"}
     L -- No --> R0["ev=ready rom=0"]
     L -- Yes --> C{"RUNNER.CFG usable?"}
-    C -- No --> D1["ev=done result=config"]
+    C -- No --> CFG["ev=done result=config"]
     C -- Yes --> RUN["ev=run tape=NAME.HTP"]
     RUN --> H["holo_launch"]
-    H --> D2["ev=done result=... rc=..."]
-    D1 --> X["ROM exits<br/>ev=rom_exit, ev=ready rom=1"]
-    D2 --> X
+    H --> RES["ev=done result=... rc=..."]
+    CFG --> X["ROM exits<br/>ev=rom_exit, ev=ready rom=1"]
+    RES --> X
 ```
 
 ### What Pip-OS must add for the runner
