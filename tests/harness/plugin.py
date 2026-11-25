@@ -16,6 +16,9 @@ Fixtures:
   robco_build   robco_build(directory, target="all", variant=None, flags=(),
                 image=None) runs make once per (directory, target, variant,
                 flags) in the session and returns the image path.
+
+Temp folders: a passing test's tmp_path goes when the test ends, a
+failing test's stays. ROBCO_KEEP_TMP=1 keeps them all.
 """
 
 import glob
@@ -42,6 +45,37 @@ def pytest_sessionstart(session):
         sweep_stale()
     except Exception as e:  # noqa: BLE001
         sys.stderr.write(f"robco harness: skipped the QEMU sweep: {e!r}\n")
+
+
+KEEP_TMP_ENV = "ROBCO_KEEP_TMP"
+RETENTION_INI = "tmp_path_retention_policy"
+
+
+def _retention_set_by_user(config):
+    """True when pytest.ini, setup.cfg, pyproject.toml or -o names the policy."""
+    if RETENTION_INI in (config.inicfg or {}):
+        return True
+    overrides = getattr(config.known_args_namespace, "override_ini", None) or []
+    return any(o.split("=", 1)[0].strip() == RETENTION_INI for o in overrides)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    """Remove a passing test's tmp_path when the test ends.
+
+    Card images and build copies fill the disk otherwise: pytest keeps
+    every tmp_path of the last three runs. A failing test keeps its
+    folder. ROBCO_KEEP_TMP=1 keeps every folder. A policy the project
+    sets itself wins.
+
+    pytest reads the policy into its factory in its own pytest_configure,
+    which runs before this trylast hook, so the factory gets it here.
+    """
+    factory = getattr(config, "_tmp_path_factory", None)
+    if factory is None or _retention_set_by_user(config):
+        return
+    keep = os.environ.get(KEEP_TMP_ENV, "") not in ("", "0")
+    factory._retention_policy = "all" if keep else "failed"
 
 
 def pytest_addoption(parser):
