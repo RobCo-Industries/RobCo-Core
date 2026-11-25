@@ -32,7 +32,7 @@ A package file is a zip archive named `<name>-<version>.zip`, such as `pipos-1.3
 
 An archive that breaks a rule fails the install with `package: archive` and names the entry. The tool extracts nothing from it.
 
-A tool installs a package into its own folder, `<cache>/packages/<name>/<version>/`. The tool never writes into an installed package folder after the install.
+A tool installs a package into its own folder, `<cache>/packages/<name>/<version>/`. The tool never writes into an installed package folder after the install. [What the cache records](#what-the-cache-records) names the one file the install adds.
 
 ### The cache folder
 
@@ -44,15 +44,31 @@ A tool installs a package into its own folder, `<cache>/packages/<name>/<version
 | macOS | `$HOME/Library/Caches/robco` |
 | Windows | `%LOCALAPPDATA%\robco` |
 
-The environment variable `ROBCO_CACHE` overrides the table on every system. Its value is used as `<cache>` itself, with no `robco` added. A value that is set but empty counts as unset. A value that is not an absolute path fails every command that needs the cache with `cache: path`. The tool creates `<cache>` and its subfolders when it first needs them.
+The environment variable `ROBCO_CACHE` overrides the table on every system. Its value is used as `<cache>` itself, with no `robco` added. A value that is set but empty counts as unset. A value that is not an absolute path fails with `cache: path`. Every command of [STUDIO_CLI.md](./STUDIO_CLI.md#commands) needs the cache, and makes this check right after the check of its command line, before it reads any file. The tool creates `<cache>` and its subfolders when it first needs them.
 
 | Folder | Content |
 |---|---|
 | `<cache>/packages/<name>/<version>/` | An installed package |
-| `<cache>/tools/<name>/<version>/<host>/` | An extracted tool archive, such as `<cache>/tools/gcc/15.2.1-1.1/linux-x64/` |
+| `<cache>/tools/<name>/<version>/<host>/` | An installed tool: what the folder `root` of its archive holds, so `bin/` is right under it, such as `<cache>/tools/gcc/15.2.1-1.1/linux-x64/bin/`. See [Tool archives](#tool-archives). |
 | `<cache>/firmware/<tag>/` | The firmware files of one [firmware pin](#firmware-pins) |
 
-A person may delete `<cache>` at any time. The next command that needs a file downloads it again and checks it as [Hashes](#hashes) says.
+A person may delete `<cache>` at any time, or the folder of one package or one tool. The next command that needs a file downloads it again and checks it as [Hashes](#hashes) says.
+
+#### What the cache records
+
+A lock pins the hash of an archive, and the cache keeps the extracted files, not the archive. So each install records which archive a folder came from.
+
+| Rule | Detail |
+|---|---|
+| The file | `.robco-archive`, right under the package folder or the tool folder |
+| Its content | The SHA-256 of the archive the folder was extracted from: 64 lower case hex digits and one line feed, 65 bytes |
+| When it is written | By the install, into the temporary folder, before the folder moves into the cache. So one rename brings the files and the record. |
+| What it is not | A file of the package. `files` of `sdk.json` does not list it, and no check of `files` counts it. |
+| An archive that holds an entry of that name in that place | Refused: `package: archive` for a package, `tool: archive` for a tool |
+
+The cache holds an item when its folder is there and holds a `.robco-archive` in that form. A folder without one was not put there by an install that ended. The tool treats the item as missing: the next install of it removes the folder first.
+
+A command that finds an item in the cache does not download it. It compares the record with the hash it would have downloaded, as [Hashes](#hashes) says. So two projects whose locks pin two archives of one version cannot both build from one cache, and the tool says so instead of building with the wrong one.
 
 ```mermaid
 flowchart LR
@@ -158,7 +174,7 @@ An index entry says what a package is before anyone downloads it, and the resolv
 | `tools` | The same entries in the same order, or absent in both |
 | `formats` | The same names, each with the same value. The order of names does not count. |
 
-A field that differs fails the install with `package: manifest` and names the field. The package does not enter the cache. A package that is already in the cache was checked when it was installed, and a build with a lock checks its archive hash, so this comparison runs at an install only.
+A field that differs fails the install with `package: manifest` and names the field. The package does not enter the cache. A package that is already in the cache was checked when it was installed, and a later command checks the hash of the archive it came from, by [What the cache records](#what-the-cache-records). So this comparison runs at an install only.
 
 ### Layout of pipos
 
@@ -230,7 +246,7 @@ Rules for the tool:
 | Resolving | For the `pipos` package it picked, it takes each tool at the `version` the package names. The index entry of the package carries the same `tools`, so resolving needs no download. |
 | Comparing versions | As strings, byte for byte. Tool versions have no order. |
 | The index has no tool with that name and version | Fails with `sdk: no tool` and names the tool and the version |
-| That tool has no archive for the running host | Fails with `index: host` |
+| That tool has no archive for the running host | Fails with `index: host`, for `gcc` and for `qemu`, whatever the command installs |
 | `tools` of an installed `sdk.json` differs from `tools` of its index entry | Fails the install with `package: manifest`, by [What must equal the index entry](#what-must-equal-the-index-entry) |
 | `tools` is absent in a `pipos` package, has another length, another order or another name | Fails with `package: manifest` |
 | A package other than `pipos` carries `tools` | Fails with `package: manifest` |
@@ -638,7 +654,7 @@ The Pi firmware files are never part of a package. The `pipos` package carries t
 | `base_url` | string | The download base. `<base_url>/<file>` is each file. |
 | `files` | array of objects | `name`, `sha256`, for `bootcode.bin`, `start.elf`, `fixup.dat` |
 
-A tool downloads each file, checks its SHA-256 and keeps it in `<cache>/firmware/<tag>/`. A mismatch deletes the file and fails with `firmware: hash`. The tool never puts a firmware file into a package, an index or a release of its own.
+No command of version 1 of [STUDIO_CLI.md](./STUDIO_CLI.md) downloads a firmware file: [the simulator card](./STUDIO_CLI.md#the-simulator-card) holds none, and `robco sdk install` fetches none. A later command that writes a card for a real device downloads each file, checks its SHA-256 and keeps it in `<cache>/firmware/<tag>/`. A mismatch deletes the file and fails with `firmware: hash`. The tool never puts a firmware file into a package, an index or a release of its own.
 
 ## The templates package
 
@@ -831,9 +847,9 @@ The index is one JSON file that lists every package and tool a tool may install.
 | `requires` | array | No | As in `sdk.json` |
 | `tools` | array | For `pipos` | As in `sdk.json`. See [Tools a package names](#tools-a-package-names). |
 | `formats` | object | Yes | As in `sdk.json`: one integer per format the package carries. The resolver reads it for the fourth rule of [Version and ABI rules](#version-and-abi-rules). |
-| `url` | string | Yes | Where the archive is. `https:` or, for a local index, a path relative to the index file. |
+| `url` | string | Yes | Where the archive is: a URL that starts with `https://`, or in a local index a path relative to the folder of the index file, by the path rules of [The archive](#the-archive). Any other value fails with `index: entry`. |
 | `size` | integer | Yes | The archive size in bytes |
-| `sha256` | string | Yes | The archive's SHA-256 |
+| `sha256` | string | Yes | The archive's SHA-256, 64 lower case hex digits |
 
 `tools` entries:
 
@@ -847,9 +863,9 @@ An archive object:
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `url` | string | Yes | Where the archive is |
+| `url` | string | Yes | Where the archive is, in the form of the `url` of a package entry |
 | `size` | integer | Yes | Its size in bytes |
-| `sha256` | string | Yes | Its SHA-256 |
+| `sha256` | string | Yes | Its SHA-256, 64 lower case hex digits |
 | `root` | string | Yes | The folder inside the archive that holds `bin/`. Empty when `bin/` is at the top. |
 
 A host name has 1 to 32 characters from `a` to `z`, `0` to `9` and `-`, and starts with a letter. This spec defines five: `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64` and `windows-x64`. A tool finds its own host among them.
@@ -859,7 +875,27 @@ A host name has 1 to 32 characters from `a` to `z`, `0` to `9` and `-`, and star
 | One of the five names | Reads the archive object |
 | Another name in the form above | The same. It is a host that a later tool knows. The tool checks its archive object like the others, keeps it, and writes its hash into the lock with the rest, so a lock written today works on that host later. |
 | A key in another form | Fails with `index: entry` and names the key |
-| No key for the running host, in a tool the command needs | Fails with `index: host` |
+| No key for the running host, in a tool that a resolution takes | Fails with `index: host`. A resolution takes both tools at the versions the package names, in every command: `robco build` and `robco update` too, which install no `qemu`. A lock without an archive for the running host would be [stale](./STUDIO_PROJECT.md#a-stale-lock) as soon as it was written. |
+
+### Tool archives
+
+A tool archive is a zip archive, or a tar archive compressed with gzip. The tool tells the two apart by the first bytes of the file: `50 4B 03 04` for zip and `1F 8B` for gzip. It never goes by the name in the URL.
+
+The tool installs one in these steps:
+
+1. It downloads the archive and checks it, by [Hashes](#hashes).
+2. It extracts every entry into a temporary folder under `<cache>`. A symbolic link whose target stays inside the archive is kept as a link.
+3. It takes the folder that `root` names, or the whole extraction when `root` is empty, and checks that it holds `bin/`.
+4. It writes `.robco-archive` into that folder, by [What the cache records](#what-the-cache-records), moves the folder to `<cache>/tools/<name>/<version>/<host>/` and removes what is left of the temporary folder.
+
+| Case | Error |
+|---|---|
+| The file is neither kind of archive, or its data cannot be read to the end | `tool: archive` |
+| An entry would land outside the extraction folder: an absolute name, a `..` component, or a link that leads outside | `tool: archive`, with the entry |
+| `root` names no folder of the archive, or that folder holds no `bin/` | `tool: archive`, with `root` |
+| The folder holds an entry named `.robco-archive` | `tool: archive` |
+
+A failure removes the download and the temporary folder, and nothing enters the cache. A program that a command needs and `bin/` lacks is not checked here: the command that starts it fails with `tool: program`.
 
 ### Where the index is
 
@@ -919,17 +955,22 @@ A tool, `gcc` or `qemu`, is never picked by its version. The resolved `pipos` pa
 
 ## Hashes
 
-Every hash is SHA-256, written as 64 lower case hex digits. A tool compares hashes as strings after it lowers their case.
+Every hash is SHA-256, written as 64 lower case hex digits: in the index, in `sdk.json`, in `robco.lock` and in `.robco-archive`. A hash in another form, upper case included, breaks the form of its field and fails with the code of its file: `index: entry`, `package: manifest` or `lock: entry`. A tool writes the hashes it computes in the same form and compares hashes as strings, byte for byte.
 
 | What | Checked against | When | On a mismatch |
 |---|---|---|---|
-| A downloaded package archive | The index `sha256` and `size` | After the download, before any extraction | Deletes the download. Fails with `package: hash`. |
-| A package archive named in `robco.lock` | The lock `sha256` | Before the tool uses it | Fails with `lock: hash`. Changes nothing. |
+| A downloaded package archive | The `sha256` and `size` of its index entry. With a lock, the tool downloads only the entry whose hash the lock pins, so the lock agrees. | After the download, before any extraction | Deletes the download. Fails with `package: hash`. |
 | Each file of a package | Its `files` entry in `sdk.json` | After extraction, before the folder enters the cache | Deletes the extracted folder. Fails with `package: hash` and names the file. |
-| A tool archive | The index archive object, and the lock if one exists | After the download, before extraction | Deletes the download. Fails with `tool: hash`. |
+| A downloaded tool archive | The `sha256` and `size` of its archive object in the index. With a lock, as for a package. | After the download, before extraction | Deletes the download. Fails with `tool: hash`. |
+| A package or a tool that the cache holds, in a command that read a lock | Its `.robco-archive`, against `sha256` of the `[[package]]` entry, or against the value of the running host in `[tool.archives]` | Before the tool uses the item, where it would have installed it | Fails with `lock: hash` and names the item and its folder. Changes nothing. |
+| A package or a tool that the cache holds, in a command that resolved from the index, `robco sdk install` included | Its `.robco-archive`, against the `sha256` of the index entry | The same | Fails with `package: hash` or `tool: hash`, and names the item and its folder. Changes nothing. |
 | A firmware file | `sdk.json` `firmware` | After the download | Deletes the file. Fails with `firmware: hash`. |
 
-A tool never retries a mismatch from another location, and never installs a file that failed its check. A download that stops short counts as a mismatch.
+A tool never retries a mismatch from another location, and never installs a file that failed its check. A download that stops short counts as a mismatch. So does an archive or a file that cannot be fetched at all: a URL that does not answer or answers with an error, and a local path with no file. The code is the same, `package: hash`, `tool: hash` or `firmware: hash`, and the detail says that nothing was fetched. Only the index has a code of its own for this, `index: read`.
+
+The two rows for an item in the cache never delete it. Another project may pin the archive the cache holds. The detail names the folder, and a person who wants the other archive deletes that folder and runs the command again.
+
+`robco new` reads the `templates` package with no lock and no index, so it compares no record.
 
 ## What a package must never contain
 

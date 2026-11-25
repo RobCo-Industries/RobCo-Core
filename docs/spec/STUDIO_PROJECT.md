@@ -390,10 +390,10 @@ The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock
 
 1. It checks that the pinned packages still fit the manifest, by the rules of [SDK_PACKAGE.md](./SDK_PACKAGE.md#version-and-abi-rules). A lock that fails is [stale](#a-stale-lock). This check comes before any install or download.
 2. It finds each listed package in the cache at its exact version, or installs it. The tool never replaces a pinned package with another version or another archive on its own. An item that the cache lacks and the index no longer lists fails with `lock: missing`, as [A stale lock](#a-stale-lock) says.
-3. It checks each archive against its `sha256`, as [Hashes](./SDK_PACKAGE.md#hashes) says. A mismatch fails the command with `lock: hash` and names the package or the tool. The tool changes nothing.
+3. It checks each item against the hash the lock pins, as [Hashes](./SDK_PACKAGE.md#hashes) says. For an item it downloads, the archive must have that hash. For an item the cache holds, the record of [What the cache records](./SDK_PACKAGE.md#what-the-cache-records) must equal it. A cached item that differs fails the command with `lock: hash` and names the package or the tool. The tool changes nothing.
 4. It checks, once the `pipos` package is installed and before it installs or starts any tool, that each `[[tool]]` entry has the `version` that the package's `sdk.json` names for it. A difference fails the command with `lock: tool` and names the tool and both versions. The message ends with `run robco update`. The tool changes nothing. Only a lock edited by hand can fail here, since the tool writes both from one resolution.
 
-So every tool a command installs or starts passed three checks: its name is `gcc` or `qemu`, by [Reading the lock](#reading-the-lock), the locked `pipos` package names it at that version, by step 4, and its archive has the hash the lock pins.
+So every tool a command installs or starts passed three checks: its name is `gcc` or `qemu`, by [Reading the lock](#reading-the-lock), the locked `pipos` package names it at that version, by step 4, and its archive has the hash the lock pins, by step 3.
 
 A resolution writes the `[[tool]]` entries from the package it picked: for each of `gcc` and `qemu`, the version the package names and the SHA-256 of every archive the index lists for that version.
 
@@ -425,7 +425,7 @@ The check needs the manifest and the lock only, with one exception: what a liste
 
 A `[[tool]]` entry that the project does not need cannot exist in a lock that passes [Reading the lock](#reading-the-lock): the lock holds no tool but `gcc` and `qemu`, each at most once, and the project needs both. A `[[tool]]` at a version that the locked package does not name fails with `lock: tool`, by [What the lock pins](#what-the-lock-pins).
 
-A lock that is not stale but names a package version or a tool archive that the index no longer lists still pins it. The tool installs it from `<cache>` if it is there. If it must download it and the index has no entry with that name, version and hash, it fails with `lock: missing` and names it.
+A lock that is not stale but names a package version or a tool archive that the index no longer lists still pins it. The tool uses it from `<cache>` if it is there. If it must download it and the index has no entry with that name, version and hash, it fails with `lock: missing` and names it. For a tool, the hash is the one of the running host.
 
 ### robco update
 

@@ -93,7 +93,8 @@ Every failure has one code. This table maps each code to its exit code, includin
 | `package: archive`, `package: format`, `package: manifest`, `package: hash` | 4 | [The archive](./SDK_PACKAGE.md#the-archive), [Reading sdk.json](./SDK_PACKAGE.md#reading-sdkjson) | A package is refused: its archive, a format it uses, one of its files `sdk.json`, `flags.json` and `boot.json`, or a hash |
 | `index: location`, `index: read`, `index: syntax`, `index: format`, `index: entry`, `index: duplicate`, `index: host` | 4 | [Reading the index](./SDK_PACKAGE.md#reading-the-index) | The index has no location, could not be fetched or opened, is not valid, or has no archive for this host |
 | `sdk: no package`, `sdk: no tool` | 4 | [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules) | Nothing in the index fits |
-| `tool: hash` | 4 | [Hashes](./SDK_PACKAGE.md#hashes) | A tool archive fails its check |
+| `tool: hash` | 4 | [Hashes](./SDK_PACKAGE.md#hashes) | A tool archive fails its check, or the cache holds another archive of that tool |
+| `tool: archive` | 4 | [Tool archives](./SDK_PACKAGE.md#tool-archives) | A tool archive cannot be extracted, or does not hold what the index says |
 | `tool: program` | 4 | [robco build](#robco-build), [Starting QEMU](#starting-qemu) | An installed tool folder lacks a program the command must start |
 | `firmware: hash` | 4 | [Firmware pins](./SDK_PACKAGE.md#firmware-pins) | A firmware file fails its check |
 | `cache: path` | 4 | [The cache folder](./SDK_PACKAGE.md#the-cache-folder) | `ROBCO_CACHE` is not an absolute path |
@@ -316,7 +317,7 @@ The `result` line adds:
 
 | Step | Work | `update` | `build` | `run` | `test` | Fails with |
 |---|---|---|---|---|---|---|
-| 1 | Check the command line, by [Options](#options) | Yes | Yes | Yes | Yes | `usage`, 2 |
+| 1 | Check the command line, by [Options](#options), then the place of the cache, by [The cache folder](./SDK_PACKAGE.md#the-cache-folder) | Yes | Yes | Yes | Yes | `usage`, 2. `cache: path`, 4. |
 | 2 | Read `robco.toml`, in the six steps of [Order of checks](#order-of-checks) | Yes | Yes | Yes | Yes | `project: none`, 3. `io: read`, 9. A `manifest:` code, 3. |
 | 3 | Delete `build/NAME.HTP` when it is there | No | Yes | Yes | Yes | `io: write`, 9 |
 | 4 | Find and read the scenario files, then read the golden images, by [robco test](#robco-test) | No | No | No | Yes | A `test:` code, 3. `io: read`, 9. |
@@ -324,7 +325,7 @@ The `result` line adds:
 | 6 | Resolve: read the index and pick the `pipos` package, each package it requires and the two tools it names, by [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules) | Always | Without a lock | Without a lock | Without a lock | An `index:` code, `sdk: no package`, `sdk: no tool`, 4 |
 | 7 | Install each package of the lock, or of the resolution, that the cache lacks. The packages come sorted by name in byte order. | Yes | Yes | Yes | Yes | An `index:` code, 4. `lock: missing`, `lock: hash`, 3. A `package:` code, 4. `io: write`, 9. |
 | 8 | Read `sdk.json` of each of those packages in the cache. With a lock from step 5: finish the stale check with what the packages require, then check the locked tools against the `pipos` package, step 4 of [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins). | No | Yes | Yes | Yes | `package: manifest`, `package: format`, 4. `lock: stale`, `lock: tool`, 3. |
-| 9 | Install the tools that the cache lacks: `gcc`, and then `qemu` where the column says so | No | `gcc` | `gcc`, `qemu` | `gcc`, `qemu` | An `index:` code, 4. `lock: missing`, `lock: hash`, 3. `tool: hash`, 4. `io: write`, 9. |
+| 9 | Install the tools that the cache lacks: `gcc`, and then `qemu` where the column says so | No | `gcc` | `gcc`, `qemu` | `gcc`, `qemu` | An `index:` code, 4. `lock: missing`, `lock: hash`, 3. `tool: hash`, `tool: archive`, 4. `io: write`, 9. |
 | 10 | Write `robco.lock`, when step 6 resolved, by [How the tool writes the lock](./STUDIO_PROJECT.md#how-the-tool-writes-the-lock) | Yes | Without a lock | Without a lock | Without a lock | `io: write`, 9 |
 | 11 | Build the tape, by [robco build](#robco-build) | No | Yes | Yes | Yes | `package: manifest`, `package: format`, `tool: program`, 4. A `build:` code, 5. `io: write`, 9. |
 | 12 | Read `boot.json`, check the boards and find the QEMU program, steps 1 and 2 of [Starting QEMU](#starting-qemu) | No | No | Yes | Yes | `package: manifest`, `package: format`, 4. `run: board`, 3. `tool: program`, 4. |
@@ -339,6 +340,7 @@ What the order means:
 - A command installs no tool before step 9. The version of `gcc` and of `qemu` comes from the lock of step 5 or from the resolution of step 6, and step 8 has checked it against the `pipos` package. A project fresh from `robco new` has no lock, so `robco run` and `robco test` resolve at step 6 like `robco build`, and only then install `qemu`.
 - `robco build` never installs `qemu`. `robco update` installs the packages, since step 7 is what checks them, and no tool.
 - Steps 7 and 9 read the index only when the cache lacks an item, by [Where the index is](./SDK_PACKAGE.md#where-the-index-is). With a lock, the item to download is the index entry with the name, the version and the hash that the lock pins. Without such an entry the step fails with `lock: missing`.
+- An item that the cache holds is not downloaded. Steps 7 and 9 compare its record with the hash of the lock or of the resolution, by [Hashes](./SDK_PACKAGE.md#hashes): `lock: hash` with a lock, `package: hash` or `tool: hash` after a resolution.
 - The lock is written at step 10, after every install of the command passed its checks. A command that fails before step 10 writes no lock: a first build that fails leaves the project without one, and a `robco update` that fails leaves the old one as it is.
 - Steps 12 to 14 come after the build. A `--board` that the package does not list fails at step 12, with the tape built.
 
