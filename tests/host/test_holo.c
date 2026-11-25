@@ -66,6 +66,7 @@ static model_t panel;
 static unsigned display_bytes;
 static unsigned display_while_bus;
 static unsigned power_on_count;
+static uint64_t card_wire_bytes;    /* bytes clocked while HOLO_BUS is high */
 
 /* Pin log: every write to PWR or BUS, in order. */
 static struct { uint8_t pin; uint8_t lvl; } plog[4096];
@@ -107,6 +108,9 @@ static uint8_t wire(uint8_t mosi)
         card_cs_low = !level[CS];
     } else {
         card_cs_low = fn[CS] == GPIO_FN_ALT0 && ta && ce == 1;
+    }
+    if (level[BUS]) {
+        card_wire_bytes++;
     }
     if (level[BUS] && level[PWR] && card_in) {
         uint8_t v = sdm_byte(&sd, card_cs_low, mosi, hz);
@@ -841,4 +845,365 @@ TEST(display_with_bus_high_is_caught)
     CHECK_EQ(tft_fill_rect(0, 0, 4, 4, 0xffff), 0);
     CHECK(display_while_bus > 0);
     CHECK(sd.violations > 0);
+}
+
+/*
+ * Stepped attach. drive() runs a cooperative loop: one step per pass, a
+ * pass costs LOOP_US of fake time, and with `display` set a display
+ * transfer runs between every two steps. It records per step the bytes
+ * on the card's bus and the fake time the call took.
+ */
+#define LOOP_US 500u
+#define STEP_US_MAX 2000u
+
+static const tft_config_t tc = TFT_CONFIG_DEFAULT;
+static unsigned calls;          /* step calls */
+static unsigned busy_steps;     /* step calls that clocked the card */
+static uint64_t max_bytes;
+static uint64_t max_ns;
+static unsigned bus_left_on;    /* found HOLO_BUS high or CS low between steps */
+static unsigned display_fail;
+
+static void between(int display)
+{
+    bus_left_on += level[BUS] != 0 || level[CS] != 1 || (holo_status() & HOLO_ST_BUS);
+    if (display) {
+        display_fail += tft_fill_rect(0, 0, 4, 4, (uint16_t)calls) != 0;
+    }
+    timer_delay_us(LOOP_US);
+}
+
+static int one_step(void)
+{
+    uint64_t b0 = card_wire_bytes;
+    uint64_t t0 = now_ns;
+    int rc = holo_attach_step();
+
+    calls++;
+    if (card_wire_bytes != b0) {
+        busy_steps++;
+    }
+    if (card_wire_bytes - b0 > max_bytes) {
+        max_bytes = card_wire_bytes - b0;
+    }
+    if (now_ns - t0 > max_ns) {
+        max_ns = now_ns - t0;
+    }
+    return rc;
+}
+
+static void stats_reset(void)
+{
+    calls = busy_steps = 0;
+    max_bytes = max_ns = 0;
+    bus_left_on = display_fail = 0;
+}
+
+/* Steps until a final result, `limit` calls at most. */
+static int drive(int display, unsigned limit)
+{
+    int rc = SD_PENDING;
+
+    while (rc == SD_PENDING && calls < limit) {
+        between(display);
+        rc = one_step();
+    }
+    between(display);
+    return rc;
+}
+
+static int stepped_bring_up(int kind)
+{
+    world(kind, 1);
+    settle();
+    stats_reset();
+    CHECK_EQ(holo_attach_start(), 0);
+    CHECK(holo_status() & HOLO_ST_ATTACHING);
+    return drive(0, 100000u);
+}
+
+static void stepped_kind(int kind, int want, unsigned want_busy)
+{
+    CHECK_EQ(stepped_bring_up(kind), want);
+    CHECK_EQ(busy_steps, want_busy);
+    CHECK(max_bytes <= SDSPI_STEP_BYTES);
+    CHECK(max_ns <= STEP_US_MAX * 1000ull);
+    CHECK_EQ(bus_left_on, 0);
+    CHECK_EQ(holo_status() & HOLO_ST_ATTACHING, 0);
+    CHECK_EQ(holo_blkdev() != NULL, want == 0);
+    CHECK_EQ(holo_attach_step(), want);
+    CHECK_EQ(holo_attach_step(), want);
+    CHECK_EQ(level[BUS], 0);
+    CHECK_EQ(level[PWR], want == 0);
+    NO_VIOLATION();
+    printf("  kind %d: %u calls, %u with the bus, largest %llu bytes in %llu us\n", kind, calls,
+           busy_steps, (unsigned long long)max_bytes, (unsigned long long)(max_ns / 1000u));
+}
+
+/* SDHC: start+CMD0, CMD8, CMD59, 4 x CMD55+ACMD41, CMD58, CMD9, CMD10. SDSC adds CMD16. */
+TEST(stepped_attach_sdhc) { stepped_kind(SDM_SDHC, 0, 10); }
+TEST(stepped_attach_sdsc) { stepped_kind(SDM_SDSC, 0, 11); }
+TEST(stepped_attach_v1_mmc)
+{
+    stepped_kind(SDM_V1, SD_ERR_OLD, 2);
+    stepped_kind(SDM_MMC, SD_ERR_OLD, 2);
+}
+
+TEST(stepped_attach_reads_after)
+{
+    uint8_t b[512];
+
+    CHECK_EQ(stepped_bring_up(SDM_SDHC), 0);
+    CHECK_EQ(blk_read(holo_blkdev(), 7, 1, b), 0);
+    CHECK_MEM(b, mem + 7u * 512u, 512);
+    CHECK_EQ(holo_info()->clock_hz, HOLO_HZ_DEFAULT);
+    NO_VIOLATION();
+}
+
+/* A card busy for n ACMD41 polls: n more steps, none longer than the bound. */
+TEST(stepped_attach_busy_card)
+{
+    static const unsigned busy[] = { 0, 1, 20, 300 };
+    unsigned i;
+
+    for (i = 0; i < sizeof(busy) / sizeof(busy[0]); i++) {
+        world(SDM_SDHC, 1);
+        sd.acmd41_busy = busy[i];
+        settle();
+        stats_reset();
+        CHECK_EQ(holo_attach_start(), 0);
+        CHECK_EQ(drive(0, 100000u), 0);
+        CHECK_EQ(busy_steps, 7u + busy[i]);
+        CHECK(max_bytes <= SDSPI_STEP_BYTES);
+        CHECK(max_ns <= STEP_US_MAX * 1000ull);
+        NO_VIOLATION();
+        printf("  busy %u: %u calls, largest %llu bytes in %llu us\n", busy[i], calls,
+               (unsigned long long)max_bytes, (unsigned long long)(max_ns / 1000u));
+    }
+}
+
+/* The bound itself: no step, of any outcome, clocks more than SDSPI_STEP_BYTES. */
+TEST(stepped_attach_step_bound)
+{
+    static const unsigned faults[] = {
+        0, SDM_F_NOANSWER, SDM_F_NEVER_READY, SDM_F_BAD_ECHO, SDM_F_BAD_CSD,
+    };
+    unsigned i;
+    int rc;
+
+    for (i = 0; i < sizeof(faults) / sizeof(faults[0]); i++) {
+        world(SDM_SDHC, 1);
+        sd.faults = faults[i];
+        sd.gone = faults[i] == SDM_F_NOANSWER;
+        settle();
+        stats_reset();
+        CHECK_EQ(holo_attach_start(), 0);
+        rc = drive(0, 100000u);
+        CHECK_EQ(rc == 0, faults[i] == 0);
+        CHECK(busy_steps > 0);
+        CHECK(max_bytes <= SDSPI_STEP_BYTES);
+        CHECK(max_ns <= STEP_US_MAX * 1000ull);
+        CHECK_EQ(level[BUS], 0);
+        CHECK_EQ(level[PWR], faults[i] == 0);
+    }
+}
+
+/* The power wait is a deadline: steps before it return at once. */
+TEST(stepped_attach_power_wait_never_blocks)
+{
+    uint64_t t0;
+
+    world(SDM_SDHC, 1);
+    settle();
+    CHECK_EQ(holo_attach_start(), 0);
+    CHECK_EQ(level[PWR], 1);
+    CHECK_EQ(level[BUS], 0);
+    t0 = now_ns;
+    CHECK_EQ(holo_attach_step(), SD_PENDING);
+    CHECK(now_ns - t0 < 10000u);
+    CHECK_EQ(sd.bytes, 0);
+    wait_ms(HOLO_POWER_MS);
+    CHECK_EQ(holo_attach_step(), SD_PENDING);
+    CHECK(sd.bytes > 0);
+    CHECK_EQ(level[BUS], 0);
+}
+
+/* The card goes after k steps: the next step ends it, slot off. */
+TEST(stepped_attach_removal_at_every_step)
+{
+    unsigned total;
+    unsigned k;
+    unsigned bad = 0;
+
+    CHECK_EQ(stepped_bring_up(SDM_SDHC), 0);
+    total = calls;
+    for (k = 0; k <= total; k++) {
+        int rc;
+
+        world(SDM_SDHC, 1);
+        settle();
+        stats_reset();
+        CHECK_EQ(holo_attach_start(), 0);
+        rc = drive(0, k);
+        if (rc != SD_PENDING && k < total) {
+            bad++;
+        }
+        set_card(0);
+        if (k < total) {
+            rc = holo_attach_step();
+            bad += rc != BLK_ERR_NOMEDIA;
+            bad += holo_attach_step() != BLK_ERR_NOMEDIA;
+        } else {
+            (void)holo_poll();
+        }
+        if (level[BUS] || level[PWR] || holo_blkdev() != NULL || sd.violations ||
+            (holo_status() & HOLO_ST_ATTACHING)) {
+            bad++;
+            printf("  pulled after step %u: rc=%d bus=%d pwr=%d %s\n", k, rc, level[BUS],
+                   level[PWR], sd.first);
+        }
+    }
+    CHECK_EQ(bad, 0);
+}
+
+/* Pulled after n bytes, inside a step: that step ends the attach. */
+TEST(stepped_attach_removal_at_every_byte)
+{
+    uint64_t total;
+    uint64_t n;
+    unsigned bad = 0;
+
+    CHECK_EQ(stepped_bring_up(SDM_SDHC), 0);
+    total = sd.bytes;
+    CHECK(total > 100);
+    for (n = 1; n <= total; n++) {
+        int rc;
+
+        world(SDM_SDHC, 1);
+        settle();
+        sd.vanish_after = n;
+        flip_cd_on_vanish = 1;
+        stats_reset();
+        CHECK_EQ(holo_attach_start(), 0);
+        rc = drive(1, 100000u);
+        if (rc != BLK_ERR_NOMEDIA || level[BUS] || level[PWR] || holo_blkdev() != NULL ||
+            sd.violations || bus_left_on || max_bytes > SDSPI_STEP_BYTES ||
+            holo_attach_step() != BLK_ERR_NOMEDIA) {
+            bad++;
+            printf("  pulled after %llu: rc=%d bus=%d pwr=%d %s\n", (unsigned long long)n, rc,
+                   level[BUS], level[PWR], sd.first);
+        }
+    }
+    CHECK_EQ(bad, 0);
+}
+
+/* holo_detach() after k steps ends the attach; a new one later works. */
+TEST(stepped_attach_detach_mid_attach)
+{
+    unsigned total;
+    unsigned k;
+    unsigned bad = 0;
+
+    CHECK_EQ(stepped_bring_up(SDM_SDHC), 0);
+    total = calls;
+    for (k = 0; k < total; k++) {
+        world(SDM_SDHC, 1);
+        settle();
+        stats_reset();
+        CHECK_EQ(holo_attach_start(), 0);
+        bad += drive(0, k) != SD_PENDING;
+        holo_detach();
+        bad += level[BUS] || level[PWR] || level[CS] != 1;
+        bad += (holo_status() & HOLO_ST_ATTACHING) != 0;
+        bad += holo_attach_step() != BLK_ERR_NOMEDIA;
+        bad += holo_attach_start() != SD_ERR_AGAIN;
+        wait_ms(HOLO_OFF_MS);
+        stats_reset();
+        bad += holo_attach_start() != 0;
+        bad += drive(0, 100000u) != 0;
+        bad += sd.violations != 0;
+    }
+    CHECK_EQ(bad, 0);
+}
+
+/* holo_poll() with the card in leaves the attach alone; with it gone, ends it. */
+TEST(stepped_attach_poll_mid_attach)
+{
+    unsigned i;
+
+    world(SDM_SDHC, 1);
+    settle();
+    stats_reset();
+    CHECK_EQ(holo_attach_start(), 0);
+    for (i = 0; i < 6; i++) {
+        between(0);
+        CHECK_EQ(holo_poll(), 0);
+        CHECK_EQ(one_step(), SD_PENDING);
+    }
+    CHECK_EQ(holo_poll(), 0);
+    CHECK_EQ(drive(0, 100000u), 0);
+    NO_VIOLATION();
+
+    world(SDM_SDHC, 1);
+    settle();
+    stats_reset();
+    CHECK_EQ(holo_attach_start(), 0);
+    CHECK_EQ(drive(0, 5), SD_PENDING);
+    set_card(0);
+    CHECK_EQ(holo_poll(), HOLO_EV_REMOVED);
+    SLOT_OFF();
+    CHECK_EQ(holo_status() & HOLO_ST_ATTACHING, 0);
+    CHECK_EQ(holo_attach_step(), BLK_ERR_NOMEDIA);
+    NO_VIOLATION();
+}
+
+/* A start while an attach runs keeps that attach: no second power on. */
+TEST(stepped_attach_start_while_running)
+{
+    world(SDM_SDHC, 1);
+    settle();
+    stats_reset();
+    CHECK_EQ(holo_attach_start(), 0);
+    CHECK_EQ(drive(0, 4), SD_PENDING);
+    CHECK_EQ(holo_attach_start(), 0);
+    CHECK_EQ(holo_attach(), 0);
+    CHECK_EQ(power_on_count, 1);
+    CHECK_EQ(holo_attach_start(), 0);
+    CHECK_EQ(holo_attach_step(), 0);
+    CHECK_EQ(power_on_count, 1);
+    NO_VIOLATION();
+}
+
+TEST(stepped_attach_start_errors)
+{
+    world(SDM_SDHC, 0);
+    CHECK_EQ(holo_attach_start(), BLK_ERR_NOMEDIA);
+    CHECK_EQ(holo_attach_step(), BLK_ERR_NOMEDIA);
+    set_card(1);
+    CHECK_EQ(holo_attach_start(), SD_ERR_AGAIN);
+    CHECK_EQ(holo_attach_step(), SD_ERR_AGAIN);
+    CHECK_EQ(power_on_count, 0);
+}
+
+/* The display transfers between every two steps: it finds the bus off and CS high. */
+TEST(stepped_attach_display_between_steps)
+{
+    uint8_t b[512];
+    unsigned d0;
+
+    world(SDM_SDHC, 1);
+    CHECK_EQ(tft_init(&tc), 0);
+    settle();
+    stats_reset();
+    d0 = display_bytes;
+    CHECK_EQ(holo_attach_start(), 0);
+    CHECK_EQ(drive(1, 100000u), 0);
+    CHECK_EQ(bus_left_on, 0);
+    CHECK_EQ(display_fail, 0);
+    CHECK(display_bytes - d0 > calls * 8u);
+    CHECK_EQ(display_while_bus, 0);
+    CHECK_EQ(blk_read(holo_blkdev(), 3, 1, b), 0);
+    CHECK_MEM(b, mem + 3u * 512u, 512);
+    CHECK_EQ(tft_get_hz(), 9615384u);
+    NO_VIOLATION();
 }
