@@ -1,0 +1,862 @@
+"""QEMU never outlives the test process that started it. No QEMU needed.
+
+A stand-in script plays QEMU: it writes its pid next to itself and sleeps.
+"""
+
+import os
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+
+import pytest
+
+from harness import qemu as qemu_mod
+from harness.qemu import Qemu, sweep_stale
+
+TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REAL_START = qemu_mod.process_start  # some tests replace it
+
+
+@pytest.fixture(autouse=True, params=["process_group", "preexec_fn"])
+def group_form(request, monkeypatch):
+    """Run every test with each way of setting the process group.
+
+    Python 3.11 and later use Popen(process_group=). Older ones fall back
+    to preexec_fn. The environment variable reaches the child tests' VMs.
+    """
+    fallback = request.param == "preexec_fn"
+    if not fallback and sys.version_info < (3, 11):
+        pytest.skip("Popen(process_group=) needs Python 3.11")
+    monkeypatch.setattr(qemu_mod, "USE_PROCESS_GROUP", not fallback)
+    if fallback:
+        monkeypatch.setenv(qemu_mod.PGID_FALLBACK_ENV, "1")
+    else:
+        monkeypatch.delenv(qemu_mod.PGID_FALLBACK_ENV, raising=False)
+    return request.param
+
+
+def write_fake(folder, body="exec sleep 600"):
+    """A fake QEMU binary in `folder`: it records its pid, then runs `body`."""
+    folder.mkdir(exist_ok=True)
+    script = folder / "qemu-fake"
+    script.write_text(f'#!/bin/sh\necho $$ >> "$(dirname "$0")/pids"\n{body}\n')
+    script.chmod(0o755)
+    return script
+
+
+def kill_stand_ins(folder):
+    pids = folder / "pids"
+    if pids.exists():
+        for pid in map(int, pids.read_text().split()):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+@pytest.fixture
+def fake(tmp_path):
+    """A fake QEMU binary. Kills every stand-in it started at the end."""
+    yield write_fake(tmp_path)
+    kill_stand_ins(tmp_path)
+
+
+@pytest.fixture
+def stubborn(tmp_path):
+    """A fake QEMU that ignores SIGTERM, so close() waits for it."""
+    yield write_fake(tmp_path / "stubborn", "trap '' TERM\nexec sleep 600")
+    kill_stand_ins(tmp_path / "stubborn")
+
+
+@pytest.fixture
+def short(tmp_path):
+    """A fake QEMU that exits by itself at once."""
+    yield write_fake(tmp_path / "short", "exit 0")
+
+
+def stand_in_pids(script, count=1, timeout=5.0):
+    path = script.parent / "pids"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            pids = [int(p) for p in path.read_text().split()]
+            if len(pids) >= count:
+                return pids
+        time.sleep(0.01)
+    raise AssertionError("the stand-in did not start")
+
+
+def gone(pid, timeout=5.0):
+    """True once `pid` names no process or a zombie.
+
+    A container whose process 1 reaps no child keeps a dead orphan as a
+    zombie, and os.kill(pid, 0) still finds it. A zombie counts as dead.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if not qemu_mod._alive(pid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+
+
+def proc_state(pid):
+    """One line on `pid` for a failure message: /proc on Linux, ps elsewhere."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return f"{pid}: no such process"
+    except OSError as e:
+        return f"{pid}: {e}"
+    try:
+        r = subprocess.run(["ps", "-o", "pid,ppid,pgid,stat,command", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=2.0)
+        return r.stdout.strip() or f"{pid}: no such process"
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"{pid}: {e}"
+
+
+def group_of(pid):
+    """The stand-in's group, that is the watcher's pid, or None if it is gone."""
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def states(pid, watcher):
+    return f"stand-in: {proc_state(pid)} | watcher: {proc_state(watcher)}"
+
+
+CHILD = textwrap.dedent("""
+    import os, signal, sys, time
+    sys.path.insert(0, {tests!r})
+    from harness.qemu import Qemu, sweep_stale
+    q = Qemu({binary!r}, "none", qmp=False).start()
+    pids = os.path.join(os.path.dirname({binary!r}), "pids")
+    while not os.path.exists(pids):
+        time.sleep(0.01)
+    print("started", flush=True)
+    how = {how!r}
+    if how == "exit":
+        os._exit(0)
+    if how == "close":
+        print("closing", flush=True)
+        q.close()
+    if how == "own-exit":
+        q.proc.wait()
+        print("exited", flush=True)
+    time.sleep(600)
+""")
+
+
+@pytest.mark.parametrize("how", ["kill", "term", "int", "hup", "exit"])
+def test_qemu_dies_with_its_test_process(fake, how):
+    # "int" and "hup": what a terminal sends the test process on Ctrl-C
+    # and on close. QEMU's group is not the terminal's, so only the test
+    # process gets them.
+    code = CHILD.format(tests=TESTS, binary=str(fake), how=how)
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "started"
+        (pid,) = stand_in_pids(fake)
+        watcher = group_of(pid)  # the watcher leads the stand-in's group
+        if how == "kill":
+            child.kill()
+        elif how == "term":
+            child.terminate()
+        elif how == "int":
+            child.send_signal(signal.SIGINT)
+        elif how == "hup":
+            child.send_signal(signal.SIGHUP)
+        child.wait(5)
+        assert gone(pid), (f"QEMU stand-in {pid} outlived its test process ({how}); "
+                           f"{states(pid, watcher)}")
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+
+
+def test_qemu_dies_when_test_process_dies_in_close(stubborn):
+    # close() waits for a QEMU that ignores SIGTERM. The test process dies
+    # then: the watcher must still be there to kill QEMU.
+    code = CHILD.format(tests=TESTS, binary=str(stubborn), how="close")
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "started"
+        (pid,) = stand_in_pids(stubborn)
+        watcher = group_of(pid)
+        assert child.stdout.readline().strip() == "closing"
+        time.sleep(0.5)  # close() now waits on the stand-in
+        child.kill()
+        child.wait(5)
+        assert gone(pid, timeout=2.0), (f"QEMU stand-in {pid} outlived a kill during close(); "
+                                        f"{states(pid, watcher)}")
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+
+
+@pytest.fixture
+def deaf(tmp_path):
+    """A fake QEMU that ignores SIGINT, SIGHUP and SIGTERM."""
+    yield write_fake(tmp_path / "deaf", "trap '' INT HUP TERM\nexec sleep 600")
+    kill_stand_ins(tmp_path / "deaf")
+
+
+EARLY_CLOSE = textwrap.dedent("""
+    import os, sys
+    sys.path.insert(0, {tests!r})
+    from harness import qemu
+    # Test-only: a watcher slow to set up widens the window before its trap.
+    qemu.WATCHER = "sleep 0.2; " + qemu.WATCHER
+    q = qemu.Qemu({binary!r}, "none", qmp=False).start()
+    pids = os.path.join(os.path.dirname({binary!r}), "pids")
+    while not os.path.exists(pids) or len(open(pids).read().split()) < {count}:
+        pass  # the stand-in has recorded its pid: well inside the window
+    print("closing", flush=True)
+    q.close()
+""")
+
+
+def test_qemu_dies_when_test_process_dies_in_early_close(stubborn):
+    # close() at once after start(), before a slow watcher could set any
+    # trap. The test process dies while close() waits on a QEMU that
+    # ignores SIGTERM. The watcher must still be there to kill QEMU.
+    for i in range(30):
+        code = EARLY_CLOSE.format(tests=TESTS, binary=str(stubborn), count=i + 1)
+        child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        try:
+            assert child.stdout.readline().strip() == "closing"
+            pid = stand_in_pids(stubborn, count=i + 1)[i]
+            watcher = group_of(pid)
+            time.sleep(0.3)  # close() now waits on the stand-in
+            child.kill()
+            child.wait(5)
+            assert gone(pid, timeout=2.0), (f"run {i}: QEMU stand-in {pid} outlived its "
+                                            f"test process; {states(pid, watcher)}")
+        finally:
+            child.kill()
+            child.wait()
+            child.stdout.close()
+
+
+GROUP_SIGNAL = textwrap.dedent("""
+    import os, sys, time
+    sys.path.insert(0, {tests!r})
+    from harness.qemu import Qemu
+    q = Qemu({binary!r}, "none", qmp=False).start()
+    print(q._watcher.pid, flush=True)
+    time.sleep(600)
+""")
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_watcher_survives_a_signal_to_its_group(deaf, sig):
+    # Someone signals the whole VM group. QEMU ignores it here. The
+    # watcher must survive and still kill QEMU when the test process dies.
+    code = GROUP_SIGNAL.format(tests=TESTS, binary=str(deaf))
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        watcher = int(child.stdout.readline())
+        (pid,) = stand_in_pids(deaf)
+        os.killpg(watcher, sig)
+        time.sleep(0.3)
+        assert qemu_mod._alive(watcher), f"the watcher died: {states(pid, watcher)}"
+        assert not gone(pid, timeout=0.0)
+        child.kill()
+        child.wait(5)
+        assert gone(pid, timeout=2.0), (f"QEMU stand-in {pid} outlived its test process; "
+                                        f"{states(pid, watcher)}")
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+
+
+LATE_JOIN = textwrap.dedent("""
+    import os, signal, sys, threading, time
+    sys.path.insert(0, {tests!r})
+    from harness import qemu
+    real = qemu._group_kwargs
+    def held(pgid, ignore=()):
+        if pgid == 0:
+            return real(pgid, ignore)
+        # Test-only: QEMU's child waits before it joins the group, so the
+        # test process dies in the window between the fork and the join.
+        # process_group= has no hook, so both forms take preexec_fn here.
+        def join():
+            time.sleep(1.0)
+            os.setpgid(0, pgid)
+        return {{"preexec_fn": join}}
+    qemu._group_kwargs = held
+    def die():
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGKILL)
+    threading.Thread(target=die, daemon=True).start()
+    q = qemu.Qemu({binary!r}, "none", qmp=False)
+    print(q.tmpdir, flush=True)
+    q.start()
+    time.sleep(600)
+""")
+
+
+def test_qemu_never_runs_when_test_process_dies_before_the_join(fake):
+    # The test process dies after QEMU's fork, before the child joins the
+    # watcher's group. The watcher kills its group and exits, which may
+    # leave a zombie leader the child can still join. QEMU must not run.
+    code = LATE_JOIN.format(tests=TESTS, binary=str(fake))
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        tmpdir = child.stdout.readline().strip()
+        assert child.wait(5) == -signal.SIGKILL
+        time.sleep(1.5)  # the child joins, then would exec QEMU
+        assert not (fake.parent / "pids").exists(), "QEMU ran with no watcher"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+UNRELEASED = textwrap.dedent("""
+    import os, signal, sys
+    sys.path.insert(0, {tests!r})
+    from harness import qemu
+    def die(self):
+        # Test-only: the test process dies after the join, before it lets
+        # the launcher exec QEMU.
+        print(self.proc.pid, self.tmpdir, flush=True)
+        os.kill(os.getpid(), signal.SIGKILL)
+    qemu.Qemu._write_pidfile = die
+    qemu.Qemu({binary!r}, "none", qmp=False).start()
+""")
+
+
+def test_qemu_never_runs_when_test_process_dies_before_the_release(fake):
+    code = UNRELEASED.format(tests=TESTS, binary=str(fake))
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        pid, tmpdir = child.stdout.readline().split()
+        assert child.wait(5) == -signal.SIGKILL
+        assert gone(int(pid)), f"the launcher outlived its test process; {proc_state(pid)}"
+        assert not (fake.parent / "pids").exists(), "QEMU ran after its test process died"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_vm_does_not_start_after_its_watcher_died(monkeypatch, fake):
+    # The watcher dies, not reaped yet, so its group still exists and
+    # the child joins it. start() must refuse to let QEMU run.
+    real = Qemu._start_watcher
+
+    def start_then_kill(self):
+        real(self)
+        self._watcher.kill()
+        while not qemu_mod.zombie(self._watcher.pid):
+            time.sleep(0.01)
+    if not state_works():
+        pytest.skip(NO_STATE)
+    monkeypatch.setattr(Qemu, "_start_watcher", start_then_kill)
+    q = Qemu(str(fake), "none", qmp=False)
+    with pytest.raises(qemu_mod.QemuError, match="cannot start QEMU"):
+        q.start()
+    assert not (fake.parent / "pids").exists(), "QEMU ran with a dead watcher"
+    assert not os.path.exists(q.tmpdir)
+
+
+def state_works():
+    """True when this process can read a process state: /proc or ps."""
+    if os.path.isdir(f"{qemu_mod.PROC}/self"):
+        return True
+    try:
+        r = qemu_mod._run_ps_stat(os.getpid())
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+NO_STATE = "cannot read a process state here: no /proc and ps may not run"
+
+
+def make_zombie():
+    """A child that has exited and that nobody has reaped yet."""
+    if not state_works():
+        pytest.skip(NO_STATE)
+    proc = subprocess.Popen(["true"])
+    deadline = time.monotonic() + 5.0
+    while not qemu_mod.zombie(proc.pid):
+        assert time.monotonic() < deadline, f"no zombie: {proc_state(proc.pid)}"
+        time.sleep(0.01)
+    return proc
+
+
+def test_a_zombie_counts_as_dead():
+    proc = make_zombie()
+    try:
+        os.kill(proc.pid, 0)  # the kernel still lists it
+        assert not qemu_mod._alive(proc.pid)
+        assert qemu_mod.process_start(proc.pid) is None
+        assert gone(proc.pid, timeout=0.0)
+    finally:
+        proc.wait()
+
+
+def test_a_live_process_is_no_zombie():
+    proc = subprocess.Popen(["sleep", "600"])
+    try:
+        assert not qemu_mod.zombie(proc.pid)
+        assert qemu_mod._alive(proc.pid)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_sweep_kills_a_vm_whose_owner_is_a_zombie(tmp_path):
+    # In a container whose process 1 reaps nothing, a dead owner stays a
+    # zombie. The sweep must take it for dead and stop its VM.
+    if not ps_works():
+        pytest.skip(NO_START)
+    owner = make_zombie()
+    try:
+        vm, folder = stale_vm(tmp_path, owner=owner.pid)
+        try:
+            assert sweep_stale(str(tmp_path)) == [vm.pid]
+            assert vm.wait(5) == -signal.SIGKILL
+            assert not os.path.exists(folder)
+        finally:
+            vm.kill()
+            vm.wait()
+    finally:
+        owner.wait()
+
+
+def test_dead_test_process_signals_no_bystander(short, tmp_path):
+    # QEMU exits by itself, then the test process dies. The watcher kills
+    # its own group only, so a process outside it lives on.
+    bystander = subprocess.Popen(["sleep", "600"], start_new_session=True)
+    code = CHILD.format(tests=TESTS, binary=str(short), how="own-exit")
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "started"
+        assert child.stdout.readline().strip() == "exited"
+        child.kill()
+        child.wait(5)
+        time.sleep(0.5)  # the watcher acts on end of file
+        assert bystander.poll() is None, "the watcher signalled a bystander"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+        bystander.kill()
+        bystander.wait()
+
+
+def test_close_leaves_no_process(fake):
+    q = Qemu(str(fake), "none", qmp=False).start()
+    (pid,) = stand_in_pids(fake)
+    watcher = q._watcher.pid
+    q.close()
+    # close() reaped both: no process and no zombie under our pid.
+    assert gone(pid, timeout=0.0)
+    assert gone(watcher, timeout=0.0)
+    assert not os.path.exists(q.tmpdir)
+
+
+def open_fds():
+    return len(os.listdir("/dev/fd"))
+
+
+def test_start_close_leaks_no_fd(fake):
+    Qemu(str(fake), "none", qmp=False).start().close()  # warm-up
+    before = open_fds()
+    for _ in range(50):
+        Qemu(str(fake), "none", qmp=False).start().close()
+    assert open_fds() == before
+    pids = fake.parent / "pids"
+    for pid in map(int, pids.read_text().split() if pids.exists() else []):
+        assert gone(pid, timeout=1.0)
+
+
+def dead_pid():
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
+
+
+def stale_vm(tmp, started_offset=0.0, owner=None, tag=qemu_mod.PIDFILE_TAG):
+    """A sleeping process and its pidfile, as a dead run leaves them."""
+    proc = subprocess.Popen(["sleep", "600"], start_new_session=True)
+    folder = tempfile.mkdtemp(prefix=qemu_mod.TMP_PREFIX, dir=tmp)
+    started = REAL_START(proc.pid)
+    started = time.time() if started is None else started
+    head = f"{tag} " if tag else ""
+    with open(os.path.join(folder, qemu_mod.PIDFILE), "w") as f:
+        f.write(f"{head}{proc.pid} {started + started_offset:.3f} "
+                f"{owner or dead_pid()} {proc.pid}\n")
+    os.chmod(os.path.join(folder, qemu_mod.PIDFILE), 0o600)
+    return proc, folder
+
+
+def test_sweep_kills_only_its_own(tmp_path):
+    if not ps_works():
+        pytest.skip(NO_START)
+    own, own_dir = stale_vm(tmp_path)
+    # Same pidfile shape, wrong start time: the pid is not the recorded VM.
+    other, other_dir = stale_vm(tmp_path, started_offset=-3600)
+    # Its owner still runs: another session's VM.
+    live, live_dir = stale_vm(tmp_path, owner=os.getppid())
+    try:
+        assert sweep_stale(str(tmp_path)) == [own.pid]
+        assert own.wait(5) == -signal.SIGKILL
+        assert not os.path.exists(own_dir)
+        assert other.poll() is None and os.path.exists(other_dir)
+        assert live.poll() is None and os.path.exists(live_dir)
+    finally:
+        for p in (own, other, live):
+            p.kill()
+            p.wait()
+
+
+def ps_works():
+    """True when this process may run ps and read a start time from it."""
+    return qemu_mod.process_start(os.getpid()) is not None
+
+
+NO_START = "cannot read a process start time here: no /proc and ps may not run"
+
+
+def test_sweep_spares_an_old_pidfile(tmp_path, no_kill):
+    # The old form held the watcher's start time, not QEMU's: unproven.
+    proc, folder = stale_vm(tmp_path, tag="")
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        assert proc.poll() is None and os.path.exists(folder)
+        assert all(sig == 0 for _, sig in no_kill)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+SLOW_QEMU = textwrap.dedent("""
+    import os, sys, tempfile, time
+    sys.path.insert(0, {tests!r})
+    tempfile.tempdir = {tmp!r}
+    from harness import qemu
+    real = qemu.Qemu._start_watcher
+    def slow(self):
+        real(self)
+        time.sleep({delay!r})  # a loaded machine: QEMU starts late
+    qemu.Qemu._start_watcher = slow
+    q = qemu.Qemu({binary!r}, "none", qmp=False).start()
+    print(q._watcher.pid, flush=True)
+    time.sleep(600)
+""")
+
+
+def test_sweep_stops_a_vm_whose_qemu_started_late(fake, tmp_path):
+    # QEMU starts well after its watcher. The watcher then dies, then the
+    # test process. The pidfile must hold QEMU's start time, or the sweep
+    # takes the orphan for a stranger and leaves it.
+    if not ps_works():
+        pytest.skip(NO_START)
+    vms = tmp_path / "vms"
+    vms.mkdir()
+    slack = 0.5
+    code = SLOW_QEMU.format(tests=TESTS, tmp=str(vms), binary=str(fake), delay=slack + 2.0)
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        watcher = int(child.stdout.readline())
+        (pid,) = stand_in_pids(fake)
+        os.kill(watcher, signal.SIGKILL)  # the one gap: QEMU without a watcher
+        child.kill()
+        child.wait(5)
+        assert not gone(pid, timeout=0.5), "the stand-in died with its test process"
+        assert sweep_stale(str(vms), slack=slack) == [pid]
+        assert gone(pid), f"the sweep left the stand-in; {states(pid, watcher)}"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+
+
+# -- the sweep never stops a session -------------------------------------
+
+def ps_raises(pid):
+    raise PermissionError(1, "Operation not permitted", "ps")
+
+
+def ps_fails(pid):
+    return subprocess.CompletedProcess(["ps"], 1, "", "ps: not allowed\n")
+
+
+def ps_garbage(pid):
+    return subprocess.CompletedProcess(["ps"], 0, "\x00not a date at all\n", "")
+
+
+def ps_hangs(pid):
+    # The real launcher with a hanging command and the real timeout.
+    return subprocess.run(["sleep", "30"], capture_output=True, text=True,
+                          timeout=qemu_mod.PS_TIMEOUT)
+
+
+@pytest.fixture
+def no_proc(monkeypatch, tmp_path):
+    """Take the ps path on every system."""
+    monkeypatch.setattr(qemu_mod, "PROC", str(tmp_path / "no-proc"))
+
+
+@pytest.mark.parametrize("launcher", [ps_raises, ps_fails, ps_garbage, ps_hangs])
+def test_process_start_is_none_when_ps_fails(monkeypatch, no_proc, launcher):
+    monkeypatch.setattr(qemu_mod, "_run_ps", launcher)
+    t = time.monotonic()
+    assert qemu_mod.process_start(os.getpid()) is None
+    assert time.monotonic() - t < qemu_mod.PS_TIMEOUT + 2
+
+
+@pytest.mark.parametrize("pid", ["x", None, 0, 1, -1, 10**30])
+def test_process_start_is_none_for_a_bad_pid(no_proc, pid):
+    assert qemu_mod.process_start(pid) is None
+
+
+def test_process_start_is_none_for_unreadable_proc(monkeypatch, tmp_path):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / str(os.getpid())).mkdir()
+    (proc / str(os.getpid()) / "stat").write_text("garbage")
+    monkeypatch.setattr(qemu_mod, "PROC", str(proc))
+    assert qemu_mod.process_start(os.getpid()) is None  # unparsable
+    assert qemu_mod.process_start(os.getpid() + 1) is None  # gone
+
+
+class _NoKillOs:
+    """The os module as the harness sees it, with kill and killpg recorded."""
+
+    def __init__(self, sent):
+        self._sent = sent
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+    def kill(self, pid, sig):
+        self._sent.append((pid, sig))
+        if sig != 0 or pid <= 1:
+            raise AssertionError(f"the sweep sent signal {sig} to pid {pid}")
+        return os.kill(pid, 0)
+
+    def killpg(self, pgid, sig):
+        self._sent.append((-pgid, sig))
+        raise AssertionError(f"the sweep signalled group {pgid}")
+
+
+@pytest.fixture
+def no_kill(monkeypatch):
+    """Record every signal the sweep tries to send, and send none."""
+    sent = []
+    monkeypatch.setattr(qemu_mod, "os", _NoKillOs(sent))
+    return sent
+
+
+def test_sweep_spares_a_process_it_cannot_read(monkeypatch, tmp_path, no_kill, capsys):
+    monkeypatch.setattr(qemu_mod, "process_start", lambda pid: None)
+    proc, folder = stale_vm(tmp_path)
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        assert proc.poll() is None
+        assert os.path.exists(os.path.join(folder, qemu_mod.PIDFILE))
+        assert all(sig == 0 for _, sig in no_kill)
+        assert capsys.readouterr().err.count("could not check") == 1
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_sweep_spares_all_when_ps_may_not_run(monkeypatch, no_proc, tmp_path, no_kill):
+    monkeypatch.setattr(qemu_mod, "_run_ps", ps_raises)
+    procs = [stale_vm(tmp_path) for _ in range(3)]
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        for proc, folder in procs:
+            assert proc.poll() is None and os.path.exists(folder)
+    finally:
+        for proc, _ in procs:
+            proc.kill()
+            proc.wait()
+
+
+BROKEN = [b"", b"\x00\xff\xfe\x80garbage", b"123 456.0", b"0 1.0 0 0",
+          b"1 1.0 1 1", b"-1 1.0 -1 -1", b"-1 1.0 999999 -1",
+          b"0 1.0 999999 0", b"12345 nan 999999 12345", b"12345 inf 999999 12345",
+          b"12345 1.0 999999 12345", b"v1 12345 1.0 999999 12345",
+          b"v2 12345 - 999999 12345", b"v2 0 1.0 0 0", b"v2 12345 nan 999999 12345"]
+
+
+@pytest.mark.parametrize("content", BROKEN)
+def test_sweep_ignores_a_broken_pidfile(monkeypatch, tmp_path, no_kill, content):
+    monkeypatch.setattr(qemu_mod, "process_start", lambda pid: 0.0)  # anything "proven"
+    folder = tempfile.mkdtemp(prefix=qemu_mod.TMP_PREFIX, dir=tmp_path)
+    with open(os.path.join(folder, qemu_mod.PIDFILE), "wb") as f:
+        f.write(content)
+    assert sweep_stale(str(tmp_path)) == []
+    assert all(sig == 0 and pid > 1 for pid, sig in no_kill)
+    assert os.path.exists(os.path.join(folder, qemu_mod.PIDFILE))
+
+
+def test_sweep_never_raises(monkeypatch, tmp_path):
+    def boom(pid):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(qemu_mod, "process_start", boom)
+    _, folder = stale_vm(tmp_path, owner=999999)
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        assert os.path.exists(folder)
+    finally:
+        with open(os.path.join(folder, qemu_mod.PIDFILE)) as f:
+            os.kill(int(f.read().split()[1]), signal.SIGKILL)
+
+
+def test_session_starts_when_the_sweep_raises(monkeypatch, capsys):
+    from harness import plugin
+
+    def boom():
+        raise PermissionError("ps not allowed")
+    monkeypatch.setattr(plugin, "sweep_stale", boom)
+    plugin.pytest_sessionstart(None)
+    assert "skipped the QEMU sweep" in capsys.readouterr().err
+
+
+def test_vm_without_a_watcher_does_not_start(monkeypatch, fake):
+    real = subprocess.Popen
+
+    def popen(cmd, *a, **k):
+        if cmd[0] == "/bin/sh":
+            raise PermissionError(1, "Operation not permitted", "/bin/sh")
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(qemu_mod.subprocess, "Popen", popen)
+    q = Qemu(str(fake), "none", qmp=False)
+    with pytest.raises(qemu_mod.QemuError, match="watcher"):
+        q.start()
+    assert not (fake.parent / "pids").exists(), "QEMU started without a watcher"
+    assert not os.path.exists(q.tmpdir)
+
+
+def test_group_form_matches_the_python(group_form):
+    assert qemu_mod._group_kwargs(0).keys() == {group_form}
+
+
+def test_vm_without_a_watcher_group_does_not_start(monkeypatch, fake):
+    # The watcher dies and is reaped before QEMU starts: its group is
+    # gone, setpgid() fails in the child and QEMU never runs.
+    real = Qemu._start_watcher
+
+    def start_then_lose(self):
+        real(self)
+        self._watcher.kill()
+        self._watcher.wait()
+    monkeypatch.setattr(Qemu, "_start_watcher", start_then_lose)
+    before = open_fds()
+    q = Qemu(str(fake), "none", qmp=False)
+    with pytest.raises(qemu_mod.QemuError, match="cannot start QEMU"):
+        q.start()
+    assert q.proc is None or q.proc.poll() is not None
+    assert not (fake.parent / "pids").exists(), "QEMU ran outside the watcher's group"
+    assert not os.path.exists(q.tmpdir)
+    assert open_fds() == before
+
+
+def test_vm_starts_when_the_pidfile_cannot_be_written(monkeypatch, fake, capsys):
+    def replace(*a):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(qemu_mod.os, "replace", replace)
+    q = Qemu(str(fake), "none", qmp=False).start()
+    try:
+        assert "cannot write" in capsys.readouterr().err
+    finally:
+        q.close()
+
+
+# -- the sweep trusts only this user's own folders ------------------------
+
+def _link_folder(tmp, folder):
+    real = os.path.join(tmp, "real")
+    os.rename(folder, real)
+    os.symlink(real, os.path.join(tmp, qemu_mod.TMP_PREFIX + "link"))
+
+
+def _link_pidfile(tmp, folder):
+    pidfile = os.path.join(folder, qemu_mod.PIDFILE)
+    elsewhere = os.path.join(tmp, "elsewhere")
+    os.rename(pidfile, elsewhere)
+    os.symlink(elsewhere, pidfile)
+
+
+def _open_folder(tmp, folder):
+    os.chmod(folder, 0o777)
+
+
+def _open_pidfile(tmp, folder):
+    os.chmod(os.path.join(folder, qemu_mod.PIDFILE), 0o666)
+
+
+@pytest.mark.parametrize("forge", [_link_folder, _link_pidfile, _open_folder, _open_pidfile])
+def test_sweep_skips_a_folder_not_provably_ours(tmp_path, capsys, forge):
+    if not ps_works():
+        pytest.skip(NO_START)
+    proc, folder = stale_vm(tmp_path)
+    try:
+        forge(str(tmp_path), folder)
+        assert sweep_stale(str(tmp_path)) == []
+        assert proc.poll() is None
+        assert capsys.readouterr().err.count("could not check") == 1
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_owned_rejects_another_user():
+    st = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 4242, 0, 0, 0, 0, 0))
+    assert qemu_mod._owned(st, 4242, stat.S_ISREG)
+    assert not qemu_mod._owned(st, 4243, stat.S_ISREG)
+    assert not qemu_mod._owned(st, 4242, stat.S_ISDIR)
+
+
+def test_sweep_spares_another_users_process(monkeypatch, tmp_path, no_kill):
+    if not ps_works():
+        pytest.skip(NO_START)
+    monkeypatch.setattr(qemu_mod, "_process_uid", lambda pid: os.getuid() + 1)
+    proc, folder = stale_vm(tmp_path)
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        assert proc.poll() is None and os.path.exists(folder)
+        assert all(sig == 0 for _, sig in no_kill)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_process_uid_is_ours():
+    assert qemu_mod._process_uid(os.getpid()) == os.getuid()
+
+
+def test_pidfile_is_private_under_a_loose_umask(fake):
+    old = os.umask(0)
+    try:
+        with Qemu(str(fake), "none", qmp=False) as q:
+            st = os.lstat(os.path.join(q.tmpdir, qemu_mod.PIDFILE))
+            assert stat.S_IMODE(st.st_mode) == 0o600
+            assert stat.S_IMODE(os.lstat(q.tmpdir).st_mode) == 0o700
+    finally:
+        os.umask(old)
