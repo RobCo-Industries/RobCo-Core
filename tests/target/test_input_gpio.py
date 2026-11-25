@@ -89,6 +89,7 @@ def judged(missed, within_bound):
 
 
 def timing_ok(short_s, missed, jitter_s, state_s=LIMIT_STATE_S):
+    """The bound for the limit runs. short_s is slip()'s short value: each state's lower bound."""
     return judged(missed, jitter_s < 2 * (state_s - short_s) - 2 * TICK_S)
 
 
@@ -181,8 +182,9 @@ def turned(detents):
 def short_pulses(vm, io, schedule, excused):
     """Plays presses whose whole span fits between two samples, so one sample sees them at most.
 
-    The span runs from the first press to the real end of the last one,
-    see pressed_span(). Two samples are at least TICK_S minus the tick's
+    The span runs from the start of the first press's write to the return
+    of the write that ended the last press: its upper bound, see
+    pressed_span(). Two samples are at least TICK_S minus the tick's
     jitter apart while no tick is missed. A run that breaks this, by the
     ticks missed and the jitter measured during that run, is played
     again, then skipped. The events such a run gave go into the set
@@ -226,7 +228,9 @@ def turn_ok(vm, io, detents, state_s, lengths=(1, 1, 1, 1), bounce=None, excused
     """Turns the dial and returns (total change, events). Retried, then skipped, while a gap could hide a state.
 
     No state is hidden while every tick gap is shorter than the shortest
-    state, less what the host cut from it and the bounce time. A 2 ms
+    state, less what the host cut from it and the bounce time. The cut
+    comes from slip(): the lower bound of each state, from the return of
+    one write to the start of the next. A 2 ms
     state in `lengths` is ignored: its neighbours are seen, so a gap hides
     that one state at most and the decoder infers it.
 

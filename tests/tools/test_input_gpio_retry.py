@@ -36,7 +36,7 @@ class FakeIo:
         self.vm = vm
 
     def play(self, schedule):
-        self.log = [(t, t + 0.0001) for t, _, _ in schedule]
+        self.log = [(t, t, t + 0.0001) for t, _, _ in schedule]
         self.vm.missed += self.vm.per_run
 
 
@@ -118,7 +118,7 @@ class DialIo:
         self.vm = vm
 
     def turn(self, pin_a, pin_b, detents, state_s, lengths=(1, 1, 1, 1), bounce=None):
-        self.log = [(0.0, 0.0001)]
+        self.log = [(0.0, 0.0, 0.0001)]
         self.vm.turn()
 
 

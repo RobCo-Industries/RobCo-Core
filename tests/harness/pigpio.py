@@ -99,36 +99,41 @@ def bounce_schedule(pin, active_low, count, period_s, settle):
 def slip(log):
     """Worst timing error of a play() log: (latest write, most shortened gap), in seconds.
 
-    The first is how late any write took effect against its plan. The
-    second is how much shorter than planned the time between two writes
-    at different planned times was: a state the guest had less time to see.
+    Each log entry is (planned t, start, done): the pin changed at some
+    moment between the start of its write and the write's return. The
+    first value is how late any write could have taken effect against
+    its plan, so it uses `done`. The second is how much shorter than
+    planned the time between two writes at different planned times could
+    have been: a state the guest had less time to see. A state lasts at
+    least from the return of the write that began it to the start of the
+    write that ended it, so that lower bound gives the second value.
     """
-    late = max((real - t for t, real in log), default=0.0)
+    late = max((done - t for t, _, done in log), default=0.0)
     short = 0.0
-    for (t0, r0), (t1, r1) in zip(log, log[1:]):
+    for (t0, _, d0), (t1, s1, _) in zip(log, log[1:]):
         if t1 > t0:
-            short = max(short, (t1 - t0) - (r1 - r0))
+            short = max(short, (t1 - t0) - (s1 - d0))
     return late, short
 
 
 def pressed_span(schedule, log, press):
     """Longest time, in seconds, from the first press to the end of the last press.
 
-    A write took effect between its planned time and its real time in the
-    play() log, so the span runs from the first press's planned time to
-    the real time of the write that ended the last press. Every sample
-    that saw the line pressed fell inside this span.
+    A write took effect between its start and its return in the play()
+    log, so the span runs from the start of the first press's write to
+    the return of the write that ended the last press. That is an upper
+    bound: every sample that saw the line pressed fell inside this span.
     """
     first = end = None
     held = False
-    for (t, pin, level), (_, real) in zip(schedule, log):
+    for (t, pin, level), (_, start, done) in zip(schedule, log):
         if pin is None:
             continue
         if level == press and not held:
-            first = t if first is None else first
+            first = start if first is None else first
             held = True
         elif level != press and held:
-            end = real
+            end = done
             held = False
     if first is None:
         return 0.0
@@ -188,8 +193,9 @@ class PiGpio:
     def play(self, schedule):
         """Applies (t, pin, level) changes at their times. Returns slip(self.log)[0]: the latest write.
 
-        self.log keeps (planned t, real t) of every entry, both from the
-        start of the play: see slip().
+        self.log keeps (planned t, start, done) of every entry, all from
+        the start of the play: when its write began and when it returned.
+        The pin changed somewhere in between. See slip().
         """
         t0, late = time.perf_counter(), 0.0
         self.log = []
@@ -203,11 +209,12 @@ class PiGpio:
                     time.sleep(min(t - now - SPIN_S, SPIN_S))
                 else:
                     time.sleep(0)  # lets the harness threads run, so they do not take the GIL late
+            start = time.perf_counter() - t0
             if pin is not None:
                 self.set(pin, level)
-            real = time.perf_counter() - t0  # after the write: when the pin really changed
-            self.log.append((t, real))
-            late = max(late, real - t)
+            done = time.perf_counter() - t0  # the pin changed between start and done
+            self.log.append((t, start, done))
+            late = max(late, done - t)
         return late
 
     def bounce(self, pin, count, period_s, settle=False):

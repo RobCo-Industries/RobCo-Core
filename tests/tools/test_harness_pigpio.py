@@ -115,54 +115,113 @@ def test_pigpio_names_and_levels():
     assert len(q.writes) == 3 + 4
 
 
+def on_time(log):
+    """A log of instant writes: (planned, real) pairs become (planned, start, done)."""
+    return [(t, real, real) for t, real in log]
+
+
 def test_slip_measures_late_writes_and_shortened_states():
     # Planned at 0, 10, 20 ms. The second write ran 4 ms late, the third on time.
-    log = [(0.0, 0.0), (0.010, 0.014), (0.020, 0.020)]
+    log = on_time([(0.0, 0.0), (0.010, 0.014), (0.020, 0.020)])
     late, short = pigpio.slip(log)
     assert late == pytest.approx(0.004)
     assert short == pytest.approx(0.004)     # the state from 14 to 20 ms lasted 6 ms
     # A late last write makes the state longer, not shorter.
-    assert pigpio.slip([(0.0, 0.0), (0.010, 0.010), (0.020, 0.025)])[1] == 0.0
+    assert pigpio.slip(on_time([(0.0, 0.0), (0.010, 0.010), (0.020, 0.025)]))[1] == 0.0
     # A late first write shortens the state after it.
-    assert pigpio.slip([(0.0, 0.005), (0.010, 0.010)])[1] == pytest.approx(0.005)
+    assert pigpio.slip(on_time([(0.0, 0.005), (0.010, 0.010)]))[1] == pytest.approx(0.005)
     # Two writes planned at the same time (a bounce) never count as shortened.
-    assert pigpio.slip([(0.0, 0.0), (0.0, 0.001)]) == (pytest.approx(0.001), 0.0)
+    assert pigpio.slip(on_time([(0.0, 0.0), (0.0, 0.001)])) == (pytest.approx(0.001), 0.0)
     assert pigpio.slip([]) == (0.0, 0.0)
+
+
+def test_slip_takes_the_shortest_possible_state():
+    # Each write takes 3 ms. The pin changed anywhere inside it, so the
+    # state lasted at least from 3 ms to 10 ms: 7 ms of the planned 10.
+    log = [(0.0, 0.0, 0.003), (0.010, 0.010, 0.013)]
+    late, short = pigpio.slip(log)
+    assert late == pytest.approx(0.003)
+    assert short == pytest.approx(0.003)
 
 
 def test_play_keeps_a_log():
     io = PiGpio(FakeQemu(), "raspi0")
     io.play([(0.0, 5, 1), (0.002, 5, 0), (0.004, None, None)])
-    assert [t for t, _ in io.log] == [0.0, 0.002, 0.004]
-    assert all(real >= t for t, real in io.log)
+    assert [t for t, _, _ in io.log] == [0.0, 0.002, 0.004]
+    assert all(t <= start <= done for t, start, done in io.log)
 
 
-def test_play_lateness_counts_a_slow_write(monkeypatch):
-    # A fake clock that only moves when the write blocks for 7 ms.
+def slow_play(monkeypatch, schedule, write_s):
+    """Plays on a fake clock that only moves by sleeps and by writes of write_s each."""
     clock = [0.0]
 
     class SlowQemu(FakeQemu):
         def writel(self, addr, val):
-            clock[0] += 0.007
+            clock[0] += write_s
             super().writel(addr, val)
 
     monkeypatch.setattr(pigpio.time, "perf_counter", lambda: clock[0])
     monkeypatch.setattr(pigpio.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + max(s, 1e-6)))
     io = PiGpio(SlowQemu(), "raspi0")
-    late = io.play([(0.0, 5, 1), (0.010, 5, 0)])
+    return io, io.play(schedule)
+
+
+def test_play_lateness_counts_a_slow_write(monkeypatch):
+    io, late = slow_play(monkeypatch, [(0.0, 5, 1), (0.010, 5, 0)], 0.007)
     assert late >= 0.007
     assert late == pytest.approx(pigpio.slip(io.log)[0])
+
+
+def test_slow_write_widens_both_bounds(monkeypatch):
+    schedule = [(0.0, 5, 0), (0.010, 5, 1), (0.020, None, None)]
+    fast, _ = slow_play(monkeypatch, schedule, 0.0)
+    slow, _ = slow_play(monkeypatch, schedule, 0.007)
+    # Each write spans 7 ms: start and done 7 ms apart.
+    assert all(done - start == pytest.approx(0.007) for t, start, done in slow.log[:2])
+    # The lower bound of the state shrinks by a whole write: from 10 ms to 3 ms.
+    assert pigpio.slip(fast.log)[1] == pytest.approx(0.0, abs=1e-5)
+    assert pigpio.slip(slow.log)[1] == pytest.approx(0.007, abs=1e-5)
+    # The upper bound of the press grows by a whole write: from 10 ms to 17 ms.
+    assert pigpio.pressed_span(schedule, fast.log, 0) == pytest.approx(0.010, abs=1e-5)
+    assert pigpio.pressed_span(schedule, slow.log, 0) == pytest.approx(0.017, abs=1e-5)
+
+
+def old_short(log):
+    """The old rule: each state from the return of one write to the return of the next."""
+    short = 0.0
+    for (t0, _, d0), (t1, _, d1) in zip(log, log[1:]):
+        if t1 > t0:
+            short = max(short, (t1 - t0) - (d1 - d0))
+    return short
+
+
+def test_a_state_shorter_than_the_tick_gap_is_no_longer_judged(monkeypatch):
+    # Three transitions planned 15 ms apart, each write taking 7 ms. Each
+    # state may have lasted only 8 ms, less than the 10 ms tick gap.
+    state_s, gap_s = 0.015, 0.010
+    schedule = [(0.0, 23, 0), (state_s, 24, 0), (2 * state_s, 23, 1)]
+    io, _ = slow_play(monkeypatch, schedule, 0.007)
+    (_, _, d0), (_, s1, _) = io.log[0], io.log[1]
+    assert s1 - d0 < gap_s
+    # The old rule saw both returns 15 ms apart and judged the run.
+    assert gap_s < state_s - old_short(io.log)
+    # The new rule cannot judge it: a gap may have hidden that state.
+    assert not gap_s < state_s - pigpio.slip(io.log)[1]
 
 
 def test_pressed_span_covers_the_burst():
     glitch = [(0.0, 5, 0), (0.004, 5, 1)]
     # The release ran 1 ms late: the press may have lasted 5 ms.
-    assert pigpio.pressed_span(glitch, [(0.0, 0.0001), (0.004, 0.005)], 0) == pytest.approx(0.005)
+    assert pigpio.pressed_span(glitch, on_time([(0.0, 0.0001), (0.004, 0.005)]), 0) == \
+        pytest.approx(0.0049)
+    # A write that began at 0 and returned at 0.1 ms: the press may have begun at 0.
+    assert pigpio.pressed_span(glitch, [(0.0, 0.0, 0.0001), (0.004, 0.004, 0.005)], 0) == \
+        pytest.approx(0.005)
     chatter = bounce_schedule(5, True, 3, 0.002, False)
-    on_time = [(t, t) for t, _, _ in chatter]
-    assert pigpio.pressed_span(chatter, on_time, 0) == pytest.approx(0.005)
-    assert pigpio.pressed_span(bounce_schedule(5, True, 2, 0.002, True), on_time, 0) == float("inf")
-    assert pigpio.pressed_span([(0.0, None, None)], [(0.0, 0.0)], 0) == 0.0
+    instant = [(t, t, t) for t, _, _ in chatter]
+    assert pigpio.pressed_span(chatter, instant, 0) == pytest.approx(0.005)
+    assert pigpio.pressed_span(bounce_schedule(5, True, 2, 0.002, True), instant, 0) == float("inf")
+    assert pigpio.pressed_span([(0.0, None, None)], [(0.0, 0.0, 0.0)], 0) == 0.0
 
 
 def test_old_chatter_check_let_two_samples_see_a_press():
@@ -174,12 +233,12 @@ def test_old_chatter_check_let_two_samples_see_a_press():
     # The old check looked at one press only and let this run count.
     assert 0.002 + late < 0.010 - jitter
     # The burst check sees 18 ms between the first press and the last release.
-    span = pigpio.pressed_span(old, [(t, t) for t, _, _ in old], 0)
+    span = pigpio.pressed_span(old, [(t, t, t) for t, _, _ in old], 0)
     assert span == pytest.approx(0.018)
     assert not pigpio.one_sample_at_most(span, 0, jitter, 0.010)
     # The new chatter fits between those samples whatever their phase.
     new = bounce_schedule(5, True, 3, 0.002, False)
-    assert pigpio.one_sample_at_most(pigpio.pressed_span(new, [(t, t) for t, _, _ in new], 0),
+    assert pigpio.one_sample_at_most(pigpio.pressed_span(new, [(t, t, t) for t, _, _ in new], 0),
                                      0, jitter, 0.010)
 
 
