@@ -106,6 +106,7 @@ The library muxes these pins itself when you call the driver. It never touches a
 | GPIO 2, 3 | I2C SDA, SCL at ALT0. The board has fixed 1.8 kOhm pull-ups. | `i2c_init()` |
 | GPIO 7, 8, 9, 10, 11 | SPI0 CE1, CE0, MISO, MOSI, SCLK at ALT0 | `spi_init()` |
 | GPIO 34 to 39, 48 to 53 | SD card routing, see below | `sd_init()` |
+| GPIO 7, 12, 13, 20, 21 | Holotape slot: CS as a plain output, card detect, write protect, `HOLO_BUS`, `HOLO_PWR`. GPIO 9's pull-down off. | `holo_init()` with `HOLO_CONFIG_DEFAULT` |
 | Audio pins, per board below | PWM | `audio_init()` with the PWM backend |
 
 | Board | Audio channel 1 | Audio channel 2 |
@@ -142,7 +143,7 @@ It avoids the pins above, GPIO 0 and 1 (ID EEPROM), GPIO 12 and 13 and GPIO 18 t
 | RESET | GPIO 4 |
 | LED | 3.3 V. No backlight GPIO by default. |
 
-GPIO 24, the usual reset pin in panel guides, is Dial B in the input mapping above. GPIO 4 and 25 are the only header pins that the tables above leave free, so they take DC and reset. CE1, GPIO 7, stays free for a second SPI device.
+GPIO 24, the usual reset pin in panel guides, is Dial B in the input mapping above. GPIO 4 and 25 are the only header pins that the tables above leave free, so they take DC and reset. CE1, GPIO 7, stays free for a second SPI device. The Pip-Boy HAT puts its holotape slot there, see [Holotape slot](../guide/api/holo.md).
 
 ### I2C GPIO expanders
 
