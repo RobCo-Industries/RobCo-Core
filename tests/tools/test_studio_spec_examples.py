@@ -186,19 +186,76 @@ def test_steps_open_and_close_in_order():
                 assert open_step is None, raw
 
 
+def runs_of(run):
+    """The runs of one `robco test` block: (done line, its check lines), told apart by position."""
+    runs, checks = [], []
+    for _, o in run:
+        if o["kind"] == "scenario" and o["state"] == "start":
+            checks = []
+        elif o["kind"] == "check":
+            checks.append(o)
+        elif o["kind"] == "scenario":
+            assert all(c["scenario"] == o["name"] for c in checks), o
+            runs.append((o, checks))
+            checks = []
+    return runs
+
+
 def test_test_command_examples_add_up():
+    boards_seen = set()
     for run in json_line_runs():
         result = run[-1][1]
         if result["command"] != "test":
             continue
         assert result["passed"] + result["failed"] == result["scenarios"]
-        done = [o for _, o in run if o["kind"] == "scenario" and o["state"] == "done"]
-        assert len(done) == result["scenarios"]
-        assert sum(o["outcome"] == "passed" for o in done) == result["passed"]
-        for o in done:
-            failed = [c for _, c in run if c["kind"] == "check" and c["scenario"] == o["name"]
-                      and not c["ok"]]
+        runs = runs_of(run)
+        assert len(runs) == result["scenarios"], "one run per scenario and board"
+        assert sum(o["outcome"] == "passed" for o, _ in runs) == result["passed"]
+        assert sum(o["updated"] for o, _ in runs) == result["updated"]
+        assert len({(o["name"], o["board"]) for o, _ in runs}) == len(runs)
+        for o, checks in runs:
+            failed = [c for c in checks if not c["ok"]]
             assert o["failed_step"] == (failed[0]["index"] if failed else 0)
+            assert (o["outcome"] == "passed") == (not failed), o
+            boards_seen.add(o["board"])
+        # The images of a scenario are written after its last board, and only when every
+        # board passed.
+        for name in {o["name"] for o, _ in runs}:
+            mine = [o for o, _ in runs if o["name"] == name]
+            assert all(o["updated"] == 0 for o in mine[:-1]), name
+            if any(o["outcome"] != "passed" for o in mine):
+                assert mine[-1]["updated"] == 0, name
+        for _, o in run:
+            if o["kind"] == "scenario" and o["state"] == "start":
+                assert (o["outcome"], o["failed_step"], o["updated"], o["ms"]) == ("", 0, 0, 0)
+    assert len(boards_seen) >= 2, "an example runs one scenario on two boards"
+
+
+def test_golden_images_are_shared_by_every_board():
+    golden = section(CLI, "Golden images")
+    assert "| Path | `tests/golden/SCENARIO/NAME.png`" in golden
+    assert "| Boards | One image per screen, shared by every board." in golden
+    assert "One image for every board" not in CLI, "the row that read both ways"
+    # No golden path of the three specs has a board in it.
+    boards = ("raspi0", "raspi1ap", "raspi2b", "raspi3b")
+    paths = {m for text in (CLI, PROJECT, PACKAGE)
+             for m in re.findall(r"tests/golden/[A-Za-z0-9_/-]+\.png", text)}
+    assert len(paths) >= 4
+    for path in paths:
+        parts = path.split("/")
+        assert len(parts) == 4 and not set(parts) & set(boards), path
+    # A capture that failed is kept under build/, with its board, so two boards never
+    # write one file.
+    kept = {m for m in re.findall(r"build/test/[A-Za-z0-9_/-]+\.png", CLI)}
+    assert kept and all(len(k.split("/")) == 5 for k in kept), kept
+    assert any(k.split("/")[3] in boards for k in kept)
+    # The command line of robco test is written the same way in every place.
+    form = "robco test [SCENARIO...] [--update-golden] [--board BOARD[,BOARD...]] [--index LOCATION]"
+    assert CLI.count(form) == 2 and "[--board BOARD] [--index LOCATION]` | Builds, then runs" not in CLI
+    # Each case of the table says what happens with and without --update-golden.
+    rows = [r for r in golden.split("\n") if r.startswith("| The ")]
+    assert len(rows) == 4 and all(len(r.strip("|").split("|")) == 3 for r in rows)
+    assert "test: golden" in rows[0] and "test: failed" in rows[3]
 
 
 def check_scenario(doc):

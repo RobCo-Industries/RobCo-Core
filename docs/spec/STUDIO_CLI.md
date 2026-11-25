@@ -14,7 +14,7 @@ State today: `robco` prints its version and nothing else. No command of this spe
 | `robco update --index LOCATION` | Resolves again and writes `robco.lock`. [STUDIO_PROJECT.md](./STUDIO_PROJECT.md#robco-update) defines it. | Yes |
 | `robco build [--index LOCATION]` | Builds `build/NAME.HTP` | Yes |
 | `robco run --headless [--expect TEXT] [--timeout SECONDS] [--board BOARD] [--index LOCATION]` | Builds, then boots the tape in QEMU and prints its serial lines | Yes |
-| `robco test [SCENARIO...] [--update-golden] [--board BOARD] [--index LOCATION]` | Builds, then runs the project's scenarios in QEMU | Yes |
+| `robco test [SCENARIO...] [--update-golden] [--board BOARD[,BOARD...]] [--index LOCATION]` | Builds, then runs the project's scenarios in QEMU, on one board or on several | Yes |
 
 Every command also takes `--json`. `robco --version` and `robco version` print the version and are not part of this spec.
 
@@ -75,7 +75,7 @@ A command that cannot tell which case holds never ends with 0.
 | A line held an `ev=exception` or `ev=panic` marker, or an `ev=ready` marker of the kernel before the runner's `done` line | 8 |
 | The runner ROM could not start the tape | 8 |
 
-`robco test` ends with 0 when every scenario passed, with 7 when QEMU failed in at least one scenario, and with 1 when a scenario failed and QEMU failed in none. A fault of the machine inside a scenario fails that scenario, so it gives 1.
+`robco test` counts runs. A run is one scenario on one board. The command ends with 0 when every run passed, with 7 when QEMU failed in at least one run, and with 1 when a run failed and QEMU failed in none. A fault of the machine inside a run fails that run, so it gives 1.
 
 ### Error codes
 
@@ -88,7 +88,7 @@ Every failure has one code. This table maps each code to its exit code, includin
 | `manifest: syntax`, `manifest: format`, `manifest: unknown key`, `manifest: type`, `manifest: missing`, `manifest: name`, `manifest: version`, `manifest: title`, `manifest: kind`, `manifest: subtype`, `manifest: platform`, `manifest: abi`, `manifest: path`, `manifest: icon`, `manifest: sources` | 3 | [Errors](./STUDIO_PROJECT.md#errors) | `robco.toml` is refused |
 | `lock: syntax`, `lock: format`, `lock: unknown key`, `lock: entry`, `lock: stale`, `lock: hash`, `lock: missing`, `lock: tool` | 3 | [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), [A stale lock](./STUDIO_PROJECT.md#a-stale-lock), [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins) | `robco.lock` is refused, or no longer matches what it pins |
 | `new: name`, `new: template`, `new: exists` | 3 | [robco new](#robco-new) | The name, the template or the folder is refused |
-| `run: board` | 3 | [Starting QEMU](#starting-qemu) | The package has no such board |
+| `run: board` | 3 | [Starting QEMU](#starting-qemu) | The package has no such board. `robco test` uses the same code. |
 | `test: none`, `test: name`, `test: syntax`, `test: format`, `test: unknown key`, `test: type`, `test: missing`, `test: step`, `test: value`, `test: golden` | 3 | [Scenario files](#scenario-files) | A scenario file or a golden image is refused |
 | `package: archive`, `package: format`, `package: manifest`, `package: hash` | 4 | [The archive](./SDK_PACKAGE.md#the-archive), [Reading sdk.json](./SDK_PACKAGE.md#reading-sdkjson) | A package is refused: its archive, a format it uses, one of its files `sdk.json`, `flags.json` and `boot.json`, or a hash |
 | `index: location`, `index: read`, `index: syntax`, `index: format`, `index: entry`, `index: duplicate`, `index: host` | 4 | [Reading the index](./SDK_PACKAGE.md#reading-the-index) | The index has no location, could not be fetched or opened, is not valid, or has no archive for this host |
@@ -103,11 +103,11 @@ Every failure has one code. This table maps each code to its exit code, includin
 | `run: timeout` | 6 | [What ends a run](#what-ends-a-run) | The time limit passed |
 | `sim: start`, `sim: died`, `sim: qmp` | 7 | [Starting QEMU](#starting-qemu) | QEMU did not start, died or did not answer |
 | `guest: fault`, `guest: runner` | 8 | [What ends a run](#what-ends-a-run) | The machine failed outside the tape |
-| `test: failed` | 1 | [robco test](#robco-test) | At least one scenario failed |
+| `test: failed` | 1 | [robco test](#robco-test) | At least one run of a scenario failed |
 | `io: read`, `io: write` | 9 | This table | The host refused to open, read, write, create or rename a file that exists or should be made. The detail names the path. It covers `robco.toml`, `robco.lock`, the sources, the outputs and the cache. A file of the project that is simply absent has its own code, such as `project: none`. A local index that cannot be read is `index: read`. |
 | `internal` | 10 | This table | A fault of the tool itself |
 
-`test: failed` gives exit code 7 in place of 1 when QEMU failed in a scenario, as [Exit codes](#exit-codes) says.
+`test: failed` gives exit code 7 in place of 1 when QEMU failed in a run, as [Exit codes](#exit-codes) says.
 
 ### Order of checks
 
@@ -477,9 +477,9 @@ The command takes every step of [The steps of update, build, run and test](#the-
 
 The tool boots the machine from the `pipos` package that the lock names, `PKG`, and the `qemu` tool that the lock names.
 
-1. It reads `PKG/boot.json`, by the rules of [boot.json](./TESTING.md#bootjson). A file that is not JSON, or that breaks a reader rule of that section, fails with `package: manifest` and names the file. A `format` other than `1` fails with `package: format`. A `--board` that the file does not list fails with `run: board`, and the detail lists the boards. The mode is the board's `default_mode`.
-2. The program is the board's `qemu` value in `bin/` of the `qemu` tool folder, with `.exe` on Windows. A missing program fails with `tool: program`.
-3. It makes a new, empty folder for the run in the system's temporary folder, and writes [the simulator card](#the-simulator-card) there as `sd.img`.
+1. It reads `PKG/boot.json`, by the rules of [boot.json](./TESTING.md#bootjson). A file that is not JSON, or that breaks a reader rule of that section, fails with `package: manifest` and names the file. A `format` other than `1` fails with `package: format`. A `--board` that the file does not list fails with `run: board`, and the detail lists the boards. `robco test` checks every board of its `--board` list here, in the order given, and fails at the first that the file does not list, before any machine starts. The mode is the board's `default_mode`.
+2. The program is the board's `qemu` value in `bin/` of the `qemu` tool folder, with `.exe` on Windows. A missing program fails with `tool: program`. `robco test` finds the program of every board of its list here.
+3. It makes a new, empty folder for the run in the system's temporary folder, and writes [the simulator card](#the-simulator-card) there as `sd.img`. `robco test` writes the card once, into a folder of its own, and gives the folder of each run a copy of those bytes as `sd.img`.
 4. It builds the command line in the order of [boot.json](./TESTING.md#bootjson): `{stub}` is `PKG/boot/fwstub.bin`, `{image}` is `PKG/boot/PIPOS.IMG` and `{sd}` is the card. It attaches QMP once, no qtest, both serial ports and the card, and no other device. It adds no `-seed` option: [the key of a run](./SDK_PACKAGE.md#the-key-of-a-run) must come from random numbers that nobody fixed.
 5. QMP and both serial ports use TCP on `127.0.0.1`, on every system.
 6. It starts QEMU so that QEMU dies when the tool dies, connects to QMP and to both serial ports, and only then sends QMP `cont`. The time limit of the run starts at `cont`.
@@ -577,21 +577,23 @@ The `result` line adds:
 
 ## robco test
 
-`robco test [SCENARIO...] [--update-golden] [--board BOARD] [--index LOCATION] [--json]` builds the tape and runs scenarios against it, each in a machine of its own.
+`robco test [SCENARIO...] [--update-golden] [--board BOARD[,BOARD...]] [--index LOCATION] [--json]` builds the tape and runs scenarios against it, each in a machine of its own.
 
 | Argument or option | Meaning |
 |---|---|
-| `SCENARIO` | The name of a scenario: the file `tests/SCENARIO.toml`. With none, every `tests/*.toml`, sorted by the byte value of the name. |
+| `SCENARIO` | The name of a scenario: the file `tests/SCENARIO.toml`. Several names run in the order given, and a name given twice fails with `usage`. With none, every `tests/*.toml`, sorted by the byte value of the name. |
 | `--update-golden` | Writes golden images in place of comparing them. See [Golden images](#golden-images). |
-| `--board` | As for `robco run`. Default `raspi0`. |
+| `--board` | One board name, or several with one comma between two names and no space, such as `raspi0,raspi2b`. Default `raspi0`. An empty name, and a name that comes twice, fail with `usage`. |
+
+A run is one scenario on one board. The command makes one run for each scenario and each board of `--board`. The runs come scenario by scenario, and for one scenario board by board in the order of `--board`.
 
 The command takes every step of [The steps of update, build, run and test](#the-steps-of-update-build-run-and-test), in that order. Its own parts of that list are these:
 
-1. At step 4, after it has read `robco.toml`, it finds the scenario files and reads every one. The first file that breaks a rule of [Scenario files](#scenario-files) ends the command with its `test: ...` code. No scenario file at all, or a `SCENARIO` with no file, fails with `test: none`. A test run that found nothing to run never passes.
-2. Still at step 4, without `--update-golden`, it reads every golden image the scenarios name. A missing image, or one that breaks the format rule, fails with `test: golden` and names it.
-3. At steps 5 to 13 it reads the lock or resolves, installs the packages, `gcc` and `qemu`, builds the tape and writes the card. It installs `qemu` at step 9, never before the lock or the resolution has named its version.
-4. At step 14 it runs the scenarios one after another, in the order of part 1. Each gets a fresh copy of [the simulator card](#the-simulator-card) and a new QEMU, started as [Starting QEMU](#starting-qemu) says. A scenario that fails does not stop the next one.
-5. It ends with the code that [Exit codes](#exit-codes) gives for the outcomes. When a scenario did not pass, the error is `test: failed`, and the detail counts the scenarios that failed.
+1. At step 4, after it has read `robco.toml`, it finds the scenario files and reads every one, in the order they will run. A `SCENARIO` that breaks the name rule of [Scenario files](#scenario-files) fails with `test: name`, and the tool looks for no file. With `SCENARIO` arguments the tool reads those files and no other file of `tests/`. The first file that breaks a rule of [Scenario files](#scenario-files) ends the command with its `test: ...` code. No scenario file at all, a `tests/` folder that is not there, or a `SCENARIO` with no file, fails with `test: none`. A test run that found nothing to run never passes.
+2. Still at step 4, without `--update-golden`, it reads every golden image the scenarios name, in the order of the scenarios and of their steps. A missing image, or a file that is not a PNG in the format of [Golden images](#golden-images), fails with `test: golden` and names the path. With `--update-golden` it reads no golden image.
+3. At steps 5 to 13 it reads the lock or resolves, installs the packages, `gcc` and `qemu`, builds the tape, checks every board of `--board` against `boot.json` and writes the card. It installs `qemu` at step 9, never before the lock or the resolution has named its version.
+4. At step 14 it makes the runs one after another. Each gets a fresh copy of [the simulator card](#the-simulator-card) and a new QEMU, started as [Starting QEMU](#starting-qemu) says. A run that fails does not stop the next one.
+5. It ends with the code that [Exit codes](#exit-codes) gives for the outcomes. When a run did not pass, the error is `test: failed`, and the detail counts the runs that failed.
 
 ### Scenario files
 
@@ -635,7 +637,7 @@ An `exit` step may only be the last step. A scenario without one passes when its
 
 The tool checks a file in the steps of [Order of checks](#order-of-checks). After `format` and the unknown keys it checks `timeout_ms`, then `step`, then each step in the order of the file. In one step the order is: no action key, `test: missing`. Two action keys, a `timeout_ms` that is not allowed, or an `exit` step that is not the last, `test: step`. A wrong type, `test: type`. A value outside its limits, `test: value`.
 
-A scenario names no board, no package and no tape. It must pass on every board, and `--board` picks the one a run uses.
+A scenario names no board, no package and no tape. It must pass on every board, and `--board` picks the boards it runs on.
 
 Left out on purpose: loops, conditions, variables, steps that read the script channel, text typed as characters, GPIO lines, and a scenario that runs two machines.
 
@@ -684,10 +686,12 @@ A scenario passes on nothing a tape can fake but the text of its `expect` steps.
 
 | Property | Value |
 |---|---|
-| Path | `tests/golden/SCENARIO/NAME.png`, with `SCENARIO` the scenario's name and `NAME` the value of the `screen` step |
-| Format | PNG, 8 bits per channel, colour type 2, which is RGB with no alpha and no palette. Any other PNG fails with `test: golden`. |
+| Path | `tests/golden/SCENARIO/NAME.png`, with `SCENARIO` the scenario's name and `NAME` the value of the `screen` step. The path names no board. |
+| Format | PNG, 8 bits per channel, colour type 2, which is RGB with no alpha and no palette. Any other file fails with `test: golden`. |
 | Source | A capture of QEMU, written by `robco test --update-golden` or by the suite's own test harness. Never drawn or edited by hand. |
-| Boards | One image for every board |
+| Boards | One image per screen, shared by every board. No image belongs to one board. |
+
+The screen of a tape is the same on every board. The suite's own tests rest on that today: Pip-OS and Deitrix each keep one image per screen, with no board in its name, and compare the capture of every board with it. So a scenario that runs on several boards compares every board with the same image, and a tape whose screen differs between two boards fails.
 
 The comparison:
 
@@ -698,11 +702,27 @@ The comparison:
 
 There is no tolerance, no mask and no scaling. The bytes of the two files are never compared: two PNG writers give different files for the same pixels.
 
-When a `screen` step fails, the tool writes the capture to `build/test/SCENARIO/NAME.png`, so a person can look at it. It empties `build/test/SCENARIO/` when the scenario starts.
+When a `screen` step fails, the tool writes the capture to `build/test/SCENARIO/BOARD/NAME.png`, so a person can look at it. It empties `build/test/SCENARIO/` before the first run of the scenario.
 
-With `--update-golden`, a `screen` step compares nothing. It keeps the capture and passes. When the whole scenario has passed, the tool writes each capture to its golden path, as a PNG in the format above, and creates the folders it needs. A scenario that fails writes no golden image. A person looks at the new files before committing them.
+With `--update-golden` the tool reads no golden image, and a `screen` step compares against what the command itself captured:
 
-Left out on purpose: a tolerance, a region to leave out, and an image per board. A screen that shows a clock or a random value cannot be compared in version 1.
+1. The first capture that the command takes for a path stands in for the golden image of that path, and its step passes.
+2. Every later capture for the same path is compared with that first capture, by the comparison above. That is the same `screen` step on a later board, and a later `screen` step of the scenario with the same name. A difference fails the step with `size` or `pixels`, as it would against an image. The tool then writes both captures under `build/test/SCENARIO/`, each in the folder of its board.
+3. After the last run of a scenario, when the scenario passed on every board, the tool writes the first capture of each path to that path, as a PNG in the format above, and creates the folders it needs. It writes each path once.
+4. When a run of the scenario failed, on any board and for any reason, the tool writes no image of that scenario and leaves the files that are there as they are. The other scenarios are not affected.
+
+Every case, for one `screen` step:
+
+| Case | Without `--update-golden` | With `--update-golden` |
+|---|---|---|
+| The image is missing | `test: golden`, exit code 3, at step 4. No machine starts. | The image is not read. It is written when the scenario passes on every board. |
+| The image is there, and the scenario runs on one board | The capture is compared with the image. A difference fails the step with `size` or `pixels`, and the command ends with `test: failed`. | The image is not read. The capture replaces it when the scenario passes. |
+| The scenario runs on several boards, and their screens agree | Each run compares its own capture with the one image. Each run passes or fails on its own. | One image is written, after the last board. |
+| The scenario runs on several boards, and two screens disagree | At most the boards that show the image pass. Every other run fails at the step, with `size` or `pixels`. | The step fails on the first board whose capture differs from the first board's, with `size` or `pixels`. No image of the scenario is written or changed, and the command ends with `test: failed`. |
+
+So `--update-golden` never writes one path twice, and never writes an image that a board of the command does not show. A person looks at the new files before committing them.
+
+Left out on purpose: a tolerance, a region to leave out, an image per board, and a way to pick the board whose screen wins. A screen that shows a clock or a random value cannot be compared in version 1.
 
 ### Time
 
@@ -725,16 +745,18 @@ So a tape that is to be tested logs a line after each frame it presents, and its
 
 ### Lines of robco test
 
+A run writes two `scenario` lines, one with `start` and one with `done`. Every `step`, `serial` and `check` line of the run comes between the two, and no line of another run does. So a caller tells the runs of one scenario on two boards apart by the `scenario` line that came last.
+
 A `scenario` line:
 
 | Key | Type | Value |
 |---|---|---|
 | `name` | string | The scenario's name |
 | `state` | string | `start` or `done` |
-| `board` | string | The board |
+| `board` | string | The board of the run |
 | `outcome` | string | Empty for `start`. For `done`: `passed`, `failed`, or `simulator` when QEMU failed. |
 | `failed_step` | integer | The number of the step that failed, counting from 1. 0 for `start` and for `passed`. |
-| `updated` | integer | The number of golden images written. 0 without `--update-golden`. |
+| `updated` | integer | The number of golden images the tool wrote when this run ended. The images of a scenario are written after its last board, so only the `done` line of that run can hold more than 0. 0 for `start` and without `--update-golden`. |
 | `ms` | integer | Milliseconds from `cont` to the end. 0 for `start`. |
 
 A `check` line, one per step that ran:
@@ -758,11 +780,11 @@ A `check` line with the reason `pixels` adds five keys:
 | `got` | string | The capture's pixel, in the same form |
 | `count` | integer | How many pixels differ |
 
-The `serial` lines of a scenario come between its two `scenario` lines. The `result` line adds:
+The `result` line adds:
 
 | Key | Type | Present | Value |
 |---|---|---|---|
-| `scenarios` | integer | Always | How many scenarios ran. 0 when the command failed before the first. |
+| `scenarios` | integer | Always | How many runs ended: one per scenario and board. 0 when the command failed before the first. |
 | `passed` | integer | Always | How many passed |
 | `failed` | integer | Always | How many did not |
 | `updated` | integer | Always | How many golden images were written |
@@ -895,10 +917,48 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 The same run after someone changed the golden image. Only the end is shown:
 
 ```json
-{"v":1,"kind":"check","scenario":"start","index":2,"action":"screen","ok":false,"reason":"pixels","detail":"tests/golden/start/ready.png differs, capture kept as build/test/start/ready.png","ms":6,"x":12,"y":8,"want":"#000000","got":"#33e066","count":412}
+{"v":1,"kind":"check","scenario":"start","index":2,"action":"screen","ok":false,"reason":"pixels","detail":"tests/golden/start/ready.png differs, capture kept as build/test/start/raspi0/ready.png","ms":6,"x":12,"y":8,"want":"#000000","got":"#33e066","count":412}
 {"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi0","outcome":"failed","failed_step":2,"updated":0,"ms":937}
-{"v":1,"kind":"error","code":"test: failed","detail":"1 of 1 scenarios failed","exit":1}
+{"v":1,"kind":"error","code":"test: failed","detail":"1 of 1 runs failed","exit":1}
 {"v":1,"kind":"result","command":"test","ok":false,"exit":1,"scenarios":1,"passed":0,"failed":1,"updated":0}
+```
+
+`robco test --update-golden --board raspi0,raspi2b --json`, where the two boards show the same screen. The lines of the install and of the build and the serial lines are cut. One image is written, after the last board:
+
+```json
+{"v":1,"kind":"step","step":"card","item":"","state":"start"}
+{"v":1,"kind":"step","step":"card","item":"","state":"done"}
+{"v":1,"kind":"scenario","name":"start","state":"start","board":"raspi0","outcome":"","failed_step":0,"updated":0,"ms":0}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"start"}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"done"}
+{"v":1,"kind":"check","scenario":"start","index":1,"action":"expect","ok":true,"reason":"","detail":"","ms":931}
+{"v":1,"kind":"check","scenario":"start","index":2,"action":"screen","ok":true,"reason":"","detail":"","ms":6}
+{"v":1,"kind":"check","scenario":"start","index":3,"action":"tap","ok":true,"reason":"","detail":"","ms":4}
+{"v":1,"kind":"check","scenario":"start","index":4,"action":"exit","ok":true,"reason":"","detail":"","ms":7}
+{"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi0","outcome":"passed","failed_step":0,"updated":0,"ms":948}
+{"v":1,"kind":"scenario","name":"start","state":"start","board":"raspi2b","outcome":"","failed_step":0,"updated":0,"ms":0}
+{"v":1,"kind":"step","step":"boot","item":"raspi2b","state":"start"}
+{"v":1,"kind":"step","step":"boot","item":"raspi2b","state":"done"}
+{"v":1,"kind":"check","scenario":"start","index":1,"action":"expect","ok":true,"reason":"","detail":"","ms":602}
+{"v":1,"kind":"check","scenario":"start","index":2,"action":"screen","ok":true,"reason":"","detail":"","ms":5}
+{"v":1,"kind":"check","scenario":"start","index":3,"action":"tap","ok":true,"reason":"","detail":"","ms":4}
+{"v":1,"kind":"check","scenario":"start","index":4,"action":"exit","ok":true,"reason":"","detail":"","ms":6}
+{"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi2b","outcome":"passed","failed_step":0,"updated":1,"ms":617}
+{"v":1,"kind":"result","command":"test","ok":true,"exit":0,"scenarios":2,"passed":2,"failed":0,"updated":1}
+```
+
+The same command where the screen of `raspi2b` differs from the screen of `raspi0`. The run on `raspi0` is as above. The lines from the second `scenario` line on:
+
+```json
+{"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi0","outcome":"passed","failed_step":0,"updated":0,"ms":948}
+{"v":1,"kind":"scenario","name":"start","state":"start","board":"raspi2b","outcome":"","failed_step":0,"updated":0,"ms":0}
+{"v":1,"kind":"step","step":"boot","item":"raspi2b","state":"start"}
+{"v":1,"kind":"step","step":"boot","item":"raspi2b","state":"done"}
+{"v":1,"kind":"check","scenario":"start","index":1,"action":"expect","ok":true,"reason":"","detail":"","ms":602}
+{"v":1,"kind":"check","scenario":"start","index":2,"action":"screen","ok":false,"reason":"pixels","detail":"raspi2b differs from raspi0 for tests/golden/start/ready.png, captures kept as build/test/start/raspi2b/ready.png and build/test/start/raspi0/ready.png","ms":5,"x":12,"y":8,"want":"#33e066","got":"#000000","count":412}
+{"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi2b","outcome":"failed","failed_step":2,"updated":0,"ms":609}
+{"v":1,"kind":"error","code":"test: failed","detail":"1 of 2 runs failed","exit":1}
+{"v":1,"kind":"result","command":"test","ok":false,"exit":1,"scenarios":2,"passed":1,"failed":1,"updated":0}
 ```
 
 A scenario file that uses every kind of step, `tests/moves.toml`:
@@ -946,7 +1006,7 @@ exit = 0
 timeout_ms = 5000
 ```
 
-Its golden images are `tests/golden/moves/title.png` and `tests/golden/moves/moved.png`.
+Its golden images are `tests/golden/moves/title.png` and `tests/golden/moves/moved.png`, one each for every board.
 
 ## Left out of version 1
 
@@ -958,3 +1018,4 @@ One line each, so nobody adds them by accident:
 - Byte counts inside a download, and steps that run at the same time.
 - A JSON line for the script channel, and parsed markers as JSON. A caller parses the `text` of a `serial` line.
 - Sound, the holotape slot, GPIO lines, a second machine.
+- A golden image per board, and a `--board` value that stands for every board.

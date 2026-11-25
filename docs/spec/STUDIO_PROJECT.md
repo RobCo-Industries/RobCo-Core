@@ -12,7 +12,7 @@ State today: neither the tool nor any project file exists. No code reads or writ
 | `robco.lock` | The exact packages and tools a build used | The tool |
 | `src/` | C sources, by convention. The manifest names the files. | The author |
 | `tests/*.toml` | Scenario files. See [Scenario files](./STUDIO_CLI.md#scenario-files). | The author |
-| `tests/golden/` | Golden images of the scenarios | The tool, when a person asks for it |
+| `tests/golden/` | Golden images of the scenarios, one per screen for every board. See [Golden images](./STUDIO_CLI.md#golden-images). | The tool, when a person asks for it |
 | `build/` | Every output and every intermediate file | The tool |
 | `build/gen/` | Generated C files | The tool |
 
