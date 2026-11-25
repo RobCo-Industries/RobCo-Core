@@ -200,6 +200,8 @@ $(HOST_BUILD)/tft_tool: tests/host/tft_tool.c src/drv/tft_ili9341.c examples/tft
 
 # test_gpiox.c includes the driver source to run it on a fake bus.
 $(HOST_BUILD)/test_gpiox: src/drv/gpiox_pca9554.c
+# test_sd_card_detect includes the EMMC driver to run it on a fake controller.
+$(HOST_BUILD)/test_sd_card_detect: src/drv/sd_emmc.c
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the

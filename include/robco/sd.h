@@ -40,11 +40,21 @@ typedef struct {
     uint8_t mdt_month;
     uint64_t capacity_blocks;   /* 512-byte blocks, from the CSD */
     uint32_t clock_hz;          /* bus clock in use */
+    uint32_t present_state;     /* EMMC STATUS after sd_init() read block 0 */
+    uint8_t card_detect;        /* 1: the card-inserted bit (16) read 1 then */
 } sd_info_t;
 
 /*
  * Moves the card to EMMC, resets the controller and identifies the card.
  * Returns 0 or SD_ERR_*. Calling it again restarts from scratch.
+ *
+ * It then reads block 0 and samples the card-inserted bit. Only when that
+ * bit reads 1 with the working card does card_detect become 1. Then a
+ * failed transfer with the bit clear returns BLK_ERR_NOMEDIA, and so does
+ * every transfer until the next sd_init(). With card_detect 0 the board
+ * does not report card detect: a failed transfer returns its own error,
+ * BLK_ERR_TIMEOUT or BLK_ERR_IO, and a pulled card looks the same as a
+ * broken one. The caller decides, see docs/guide/api/storage.md.
  */
 int sd_init(void);
 
