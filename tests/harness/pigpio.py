@@ -111,6 +111,42 @@ def slip(log):
     return late, short
 
 
+def pressed_span(schedule, log, press):
+    """Longest time, in seconds, from the first press to the end of the last press.
+
+    A write took effect between its planned time and its real time in the
+    play() log, so the span runs from the first press's planned time to
+    the real time of the write that ended the last press. Every sample
+    that saw the line pressed fell inside this span.
+    """
+    first = end = None
+    held = False
+    for (t, pin, level), (_, real) in zip(schedule, log):
+        if pin is None:
+            continue
+        if level == press and not held:
+            first = t if first is None else first
+            held = True
+        elif level != press and held:
+            end = real
+            held = False
+    if first is None:
+        return 0.0
+    if held:
+        return float("inf")     # ends pressed
+    return end - first
+
+
+def one_sample_at_most(span_s, missed, jitter_s, tick_s):
+    """True when no two tick samples can both fall inside span_s.
+
+    Two callbacks are at least tick_s minus the spread of their lateness
+    apart, as long as no tick was missed. `missed` counts only the ticks
+    missed during the run.
+    """
+    return missed == 0 and span_s < tick_s - jitter_s
+
+
 class PiGpio:
     """Levels of the Pi's own GPIO pins through qtest. Needs boot(..., qtest=True).
 

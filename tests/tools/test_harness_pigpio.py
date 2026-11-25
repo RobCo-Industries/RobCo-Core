@@ -152,3 +152,38 @@ def test_play_lateness_counts_a_slow_write(monkeypatch):
     late = io.play([(0.0, 5, 1), (0.010, 5, 0)])
     assert late >= 0.007
     assert late == pytest.approx(pigpio.slip(io.log)[0])
+
+
+def test_pressed_span_covers_the_burst():
+    glitch = [(0.0, 5, 0), (0.004, 5, 1)]
+    # The release ran 1 ms late: the press may have lasted 5 ms.
+    assert pigpio.pressed_span(glitch, [(0.0, 0.0001), (0.004, 0.005)], 0) == pytest.approx(0.005)
+    chatter = bounce_schedule(5, True, 3, 0.002, False)
+    on_time = [(t, t) for t, _, _ in chatter]
+    assert pigpio.pressed_span(chatter, on_time, 0) == pytest.approx(0.005)
+    assert pigpio.pressed_span(bounce_schedule(5, True, 2, 0.002, True), on_time, 0) == float("inf")
+    assert pigpio.pressed_span([(0.0, None, None)], [(0.0, 0.0)], 0) == 0.0
+
+
+def test_old_chatter_check_let_two_samples_see_a_press():
+    """The old chatter, 2 ms pressed every 4 ms, with samples at 1 and 9 ms."""
+    old = bounce_schedule(5, True, 5, 0.004, False)
+    pressed = [(t, t + 0.002) for t, _, lv in old if lv == 0]
+    assert any(a <= 0.001 < b for a, b in pressed) and any(a <= 0.009 < b for a, b in pressed)
+    jitter, late = 0.002, 0.0                   # samples 8 ms apart
+    # The old check looked at one press only and let this run count.
+    assert 0.002 + late < 0.010 - jitter
+    # The burst check sees 18 ms between the first press and the last release.
+    span = pigpio.pressed_span(old, [(t, t) for t, _, _ in old], 0)
+    assert span == pytest.approx(0.018)
+    assert not pigpio.one_sample_at_most(span, 0, jitter, 0.010)
+    # The new chatter fits between those samples whatever their phase.
+    new = bounce_schedule(5, True, 3, 0.002, False)
+    assert pigpio.one_sample_at_most(pigpio.pressed_span(new, [(t, t) for t, _, _ in new], 0),
+                                     0, jitter, 0.010)
+
+
+def test_one_sample_at_most():
+    assert pigpio.one_sample_at_most(0.004, 0, 0.003, 0.010)
+    assert not pigpio.one_sample_at_most(0.004, 0, 0.006, 0.010)
+    assert not pigpio.one_sample_at_most(0.004, 1, 0.0, 0.010)
