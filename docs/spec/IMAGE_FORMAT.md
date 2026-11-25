@@ -301,7 +301,7 @@ An implementation writes nothing when a step fails. It returns the whole sealed 
 |---|---|---|---|
 | Image, for seal | Bytes | The raw output of `objcopy` | See the steps |
 | Payload, for pack | Bytes | Code linked for `load_addr + 0x60`, or `load_addr + 0x120` with META | See the steps |
-| `name` | Text or absent | ASCII, 0 to 16 bytes. Absent leaves the header's `name` as it is. | `version` when not ASCII or longer than 16 bytes |
+| `name` | Text or absent | ASCII, 0 to 16 bytes. Absent leaves the header's `name` as it is. | `version` when not ASCII or longer than 16 bytes, as for a bad `title`: both are header and META text |
 | `image_version` | `X.Y.Z` or absent | Exactly three parts, each one or more of the ASCII digits `0` to `9`. X at most 65535, Y and Z at most 255. Stored as `(X << 16) \| (Y << 8) \| Z`. | A usage error, before any step |
 | `title` | Text or absent | ASCII, 0 to 64 bytes, no NUL. Stored NUL-padded to 64 bytes. | `version` |
 | `icon` | File bytes and a format, or absent | See [Icon decoding](#icon-decoding) | See there |
