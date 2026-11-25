@@ -50,6 +50,9 @@ SETTLE_S = 0.1
 JITTER_TRIES = 3
 # Longer than any tick gap that misses no tick (two periods).
 LEAD_S = 3 * TICK_S
+# How long a run waits for the event that ends it. A stall that delays
+# the event this long also shows as missed ticks, so the run is retried.
+EVENT_WAIT_S = 2.0
 
 
 def judged(missed, within_bound):
@@ -116,6 +119,12 @@ def ticks(vm):
 def timed(vm, run):
     """Calls run() and returns (ticks missed, longest tick gap, jitter, its result) for that call.
 
+    The rule for every timed check: the window opens before the first pin
+    change of the run and closes only after the guest processed the last
+    effect of the run. So run() returns only after it saw the last event
+    the run can cause, see until(), or, for a run that must cause no
+    event, after settle().
+
     "ticks" resets the gap and the spread at the next callback, so the gap
     that ends there is not measured. A gap of two periods or more counts a
     missed tick, so waiting LEAD_S first makes sure the run starts after
@@ -140,12 +149,33 @@ def vm_board(vm):
     return vm.qmp.machine
 
 
-def wait_events(vm, n, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while len(gpio_events(vm)) < n and time.monotonic() < deadline:
+def settle():
+    """Holds the lines still for SETTLE_S: a late sample, the debounce and one more tick fit in it."""
+    time.sleep(SETTLE_S)
+
+
+def until(vm, n, done):
+    """Waits until done(events since index n) holds, then settles. Returns the events since n.
+
+    Gives up after EVENT_WAIT_S, so a lost event fails the check that
+    follows, not the wait.
+    """
+    deadline = time.monotonic() + EVENT_WAIT_S
+    while not done(gpio_events(vm)[n:]) and time.monotonic() < deadline:
         time.sleep(0.02)
-    time.sleep(SETTLE_S)  # nothing more may come
-    return gpio_events(vm)
+    settle()  # nothing more may come
+    return gpio_events(vm)[n:]
+
+
+def released(name):
+    """The release of key `name`: the last event a tap of it causes."""
+    return lambda ev: ("key", name, 0) in ev
+
+
+def turned(detents):
+    """The last detent of a turn: only it brings the count of its sign to abs(detents)."""
+    step = ("dial", "0", 1 if detents > 0 else -1)
+    return lambda ev: ev.count(step) >= abs(detents)
 
 
 def short_pulses(vm, io, schedule, excused):
@@ -160,11 +190,15 @@ def short_pulses(vm, io, schedule, excused):
     """
     for _ in range(JITTER_TRIES):
         n = len(gpio_events(vm))
-        missed, _, jitter, _ = timed(vm, lambda: io.play(schedule))
+
+        def run():
+            io.play(schedule)
+            settle()
+
+        missed, _, jitter, _ = timed(vm, run)
         span = pressed_span(schedule, io.log, 0)
         if judged(missed, one_sample_at_most(span, missed, jitter, TICK_S)):
             return
-        time.sleep(SETTLE_S)
         excused.update(range(n, len(gpio_events(vm))))
     hosttiming.skip(f"pressed for up to {span * 1000:.1f} ms, "
                 f"{missed} ticks missed, tick jitter {jitter * 1000:.1f} ms")
@@ -180,11 +214,9 @@ def held_tap(vm, io, name, hold_s=HOLD_S):
 
         def run():
             io.tap(name, hold_s)
-            time.sleep(hold_s)
-            wait_events(vm, n + 2)
+            return until(vm, n, released(name))
 
-        missed, gap, _, _ = timed(vm, run)
-        got = gpio_events(vm)[n:]
+        missed, gap, _, got = timed(vm, run)
         if judged(missed, gap < hold_s / 2):
             return got
     hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms, {missed} ticks missed")
@@ -209,17 +241,22 @@ def turn_ok(vm, io, detents, state_s, lengths=(1, 1, 1, 1), bounce=None, excused
     bounce_s = bounce[1] * bounce[2] if bounce else 0.0
     for _ in range(JITTER_TRIES):
         n, t0 = len(gpio_events(vm)), total(vm)
-        missed, gap, _, _ = timed(
-            vm, lambda: io.turn(DIAL_A, DIAL_B, detents, state_s, lengths, bounce))
+        missed, gap, _, (got, ev) = timed(vm, lambda: turn_run(vm, io, n, t0, detents, state_s,
+                                                                lengths, bounce))
         _, short = slip(io.log)
-        time.sleep(SETTLE_S)
-        got = total(vm) - t0
         if judged(missed, gap < long_s - short - bounce_s):
-            return got, gpio_events(vm)[n:]
+            return got, ev
         if excused is not None:
             excused.append(got)
     hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms, a state cut by "
                 f"{short * 1000:.1f} ms, {missed} ticks missed")
+
+
+def turn_run(vm, io, n, t0, detents, state_s, lengths=(1, 1, 1, 1), bounce=None):
+    """One turn for timed(): turns, waits for its last detent, settles. Returns (change of the total, events)."""
+    io.turn(DIAL_A, DIAL_B, detents, state_s, lengths, bounce)
+    ev = until(vm, n, turned(detents))
+    return total(vm) - t0, ev
 
 
 def no_exception(vm):
@@ -268,10 +305,10 @@ def test_gpio_repeat(board, example_image):
             def run():
                 t0 = time.perf_counter()
                 io.tap("up", 1.0)
-                return time.perf_counter() - t0
+                held = time.perf_counter() - t0
+                return held, until(vm, n, released("up"))
 
-            missed, gap, _, held = timed(vm, run)
-            ev = wait_events(vm, n + 2)[n:]
+            missed, gap, _, (held, ev) = timed(vm, run)
             if judged(missed, held - 3 * gap >= 0.8 and held + 3 * gap < 1.1):
                 break
         else:
@@ -366,12 +403,10 @@ def test_gpio_dial_at_the_limit(board, example_image):
         for lengths in ((1, 1, 1, 1), (3, 1, 1, 1)):
             for detents in (20, -20):
                 for _ in range(JITTER_TRIES):
-                    t0 = total(vm)
-                    missed, _, jitter, _ = timed(
-                        vm, lambda: io.turn(DIAL_A, DIAL_B, detents, LIMIT_STATE_S, lengths))
+                    n, t0 = len(gpio_events(vm)), total(vm)
+                    missed, _, jitter, (got, _) = timed(
+                        vm, lambda: turn_run(vm, io, n, t0, detents, LIMIT_STATE_S, lengths))
                     _, short = slip(io.log)
-                    time.sleep(SETTLE_S)
-                    got = total(vm) - t0
                     if timing_ok(short, missed, jitter):
                         break
                 else:
@@ -383,9 +418,13 @@ def test_gpio_dial_at_the_limit(board, example_image):
                   (3 * SLOW_STATE_S, DIAL_A, 1), (4 * SLOW_STATE_S, None, None)]
         for _ in range(JITTER_TRIES):
             n = len(gpio_events(vm))
-            missed, gap, _, _ = timed(vm, lambda: io.play(wiggle))
+
+            def run():
+                io.play(wiggle)
+                settle()
+
+            missed, gap, _, _ = timed(vm, run)
             _, short = slip(io.log)
-            time.sleep(SETTLE_S)
             if judged(missed, gap < SLOW_STATE_S - short):
                 break
         else:
