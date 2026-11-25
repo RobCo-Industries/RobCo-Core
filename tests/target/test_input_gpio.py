@@ -157,13 +157,20 @@ def held_tap(vm, io, name, hold_s=HOLD_S):
     hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms, {missed} ticks missed")
 
 
-def turn_ok(vm, io, detents, state_s, lengths=(1, 1, 1, 1), bounce=None, settle_s=0.0):
+def turn_ok(vm, io, detents, state_s, lengths=(1, 1, 1, 1), bounce=None, excused=None):
     """Turns the dial and returns (total change, events). Retried, then skipped, while a gap could hide a state.
 
     No state is hidden while every tick gap is shorter than the shortest
     state, less what the host cut from it and the bounce time. A 2 ms
     state in `lengths` is ignored: its neighbours are seen, so a gap hides
     that one state at most and the decoder infers it.
+
+    A run that is tried again may have lost or added steps. Its change of
+    the total goes into the list `excused`, so a check of the whole total
+    can leave it out. It does not shift the next run: every turn ends at
+    the rest state, held for SETTLE_S, and the decoder clears its partial
+    count at the rest state (quad_rest_clears_any_history in
+    tests/host/test_input_quad.c).
     """
     long_s = state_s * min(f for f in lengths if f * state_s > 2 * HIDDEN_S)
     bounce_s = bounce[1] * bounce[2] if bounce else 0.0
@@ -173,8 +180,11 @@ def turn_ok(vm, io, detents, state_s, lengths=(1, 1, 1, 1), bounce=None, settle_
             vm, lambda: io.turn(DIAL_A, DIAL_B, detents, state_s, lengths, bounce))
         _, short = slip(io.log)
         time.sleep(SETTLE_S)
+        got = total(vm) - t0
         if gap < long_s - short - bounce_s:
-            return total(vm) - t0, gpio_events(vm)[n:]
+            return got, gpio_events(vm)[n:]
+        if excused is not None:
+            excused.append(got)
     hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms, a state cut by "
                 f"{short * 1000:.1f} ms, {missed} ticks missed")
 
@@ -259,13 +269,15 @@ def test_gpio_dial_slow(board, example_image):
     with boot(example_image("input"), board, serial2=True, qtest=True,
               gpio_high=ALL_PINS) as vm:
         io = start(vm)
+        t0, excused = total(vm), []
         for detents in (3, -2):
-            got, ev = turn_ok(vm, io, detents, SLOW_STATE_S)
+            got, ev = turn_ok(vm, io, detents, SLOW_STATE_S, excused=excused)
             sign = 1 if detents > 0 else -1
             assert (got, ev) == (detents, [("dial", "0", sign)] * abs(detents)), vm.serial
         assert held_tap(vm, io, "dial_push") == [("key", "dial_push", 1),
                                                   ("key", "dial_push", 0)], vm.serial
-        assert total(vm) == 1
+        # No step outside the judged runs and the excused ones.
+        assert total(vm) - t0 == 1 + sum(excused), (excused, vm.serial)
 
 
 def test_gpio_dial_bounce(board, example_image):
@@ -273,11 +285,15 @@ def test_gpio_dial_bounce(board, example_image):
     with boot(example_image("input"), board, serial2=True, qtest=True,
               gpio_high=ALL_PINS) as vm:
         io = start(vm)
+        t0, excused = total(vm), []
         for detents in (4, -4):
-            got, ev = turn_ok(vm, io, detents, SLOW_STATE_S, bounce=(DIAL_A, 3, 0.001))
+            got, ev = turn_ok(vm, io, detents, SLOW_STATE_S, bounce=(DIAL_A, 3, 0.001),
+                              excused=excused)
             sign = 1 if detents > 0 else -1
             assert (got, ev) == (detents, [("dial", "0", sign)] * 4), vm.serial
-        assert total(vm) == 0
+        # A run tried again for bad timing may have counted wrong: leave it out.
+        # A step outside every run still fails here.
+        assert total(vm) - t0 == sum(excused), (excused, vm.serial)
 
 
 def test_gpio_dial_hidden_states(board, example_image):
