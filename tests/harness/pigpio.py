@@ -96,6 +96,21 @@ def bounce_schedule(pin, active_low, count, period_s, settle):
     return out
 
 
+def slip(log):
+    """Worst timing error of a play() log: (latest write, most shortened gap), in seconds.
+
+    The first is how late any write took effect against its plan. The
+    second is how much shorter than planned the time between two writes
+    at different planned times was: a state the guest had less time to see.
+    """
+    late = max((real - t for t, real in log), default=0.0)
+    short = 0.0
+    for (t0, r0), (t1, r1) in zip(log, log[1:]):
+        if t1 > t0:
+            short = max(short, (t1 - t0) - (r1 - r0))
+    return late, short
+
+
 class PiGpio:
     """Levels of the Pi's own GPIO pins through qtest. Needs boot(..., qtest=True).
 
@@ -135,8 +150,13 @@ class PiGpio:
         self.release(pin)
 
     def play(self, schedule):
-        """Applies (t, pin, level) changes at their times. Returns the seconds it ran late at most."""
+        """Applies (t, pin, level) changes at their times. Returns the seconds it ran late at most.
+
+        self.log keeps (planned t, real t) of every entry, both from the
+        start of the play: see slip().
+        """
         t0, late = time.perf_counter(), 0.0
+        self.log = []
         for t, pin, level in schedule:
             while True:
                 now = time.perf_counter() - t0
@@ -150,6 +170,7 @@ class PiGpio:
             late = max(late, now - t)
             if pin is not None:
                 self.set(pin, level)
+            self.log.append((t, time.perf_counter() - t0))
         return late
 
     def bounce(self, pin, count, period_s, settle=False):

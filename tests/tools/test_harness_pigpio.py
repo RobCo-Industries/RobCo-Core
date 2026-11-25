@@ -113,3 +113,21 @@ def test_pigpio_names_and_levels():
     assert late < 0.05
     assert (io.get(23), io.get(24)) == (1, 1)
     assert len(q.writes) == 3 + 4
+
+
+def test_slip_measures_late_writes_and_shortened_states():
+    # Planned at 0, 10, 20 ms. The second write ran 4 ms late, the third on time.
+    log = [(0.0, 0.0), (0.010, 0.014), (0.020, 0.020)]
+    late, short = pigpio.slip(log)
+    assert late == pytest.approx(0.004)
+    assert short == pytest.approx(0.004)     # the state from 14 to 20 ms lasted 6 ms
+    # Two writes planned at the same time (a bounce) never count as shortened.
+    assert pigpio.slip([(0.0, 0.0), (0.0, 0.001)]) == (pytest.approx(0.001), 0.0)
+    assert pigpio.slip([]) == (0.0, 0.0)
+
+
+def test_play_keeps_a_log():
+    io = PiGpio(FakeQemu(), "raspi0")
+    io.play([(0.0, 5, 1), (0.002, 5, 0), (0.004, None, None)])
+    assert [t for t, _ in io.log] == [0.0, 0.002, 0.004]
+    assert all(real >= t for t, real in io.log)
