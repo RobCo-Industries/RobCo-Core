@@ -12,7 +12,7 @@ import time
 import pytest
 
 from harness.boot import boot
-from harness.pigpio import PiGpio, slip
+from harness.pigpio import PiGpio, bounce_schedule, slip
 
 PINS = {"up": 5, "down": 6, "left": 17, "right": 22, "select": 26, "back": 27,
         "dial_push": 16}
@@ -91,6 +91,28 @@ def wait_events(vm, n, timeout=5.0):
     return gpio_events(vm)
 
 
+def short_pulses(vm, io, schedule, longest_s, excused):
+    """Plays presses planned at most longest_s long, each seen by one sample at most.
+
+    A late write stretches a press by up to slip()'s latest write. Two
+    samples can be TICK_S minus the tick's jitter apart, so a run whose
+    press may have lasted that long is played again, then skipped. The
+    events such a run gave go into the set `excused`, by index.
+    """
+    for _ in range(JITTER_TRIES):
+        n = len(gpio_events(vm))
+        ticks(vm)
+        io.play(schedule)
+        late, _ = slip(io.log)
+        missed, jitter = ticks(vm)
+        if missed == 0 and longest_s + late < TICK_S - jitter:
+            return
+        time.sleep(SETTLE_S)
+        excused.update(range(n, len(gpio_events(vm))))
+    pytest.skip(f"machine too busy: a write {late * 1000:.1f} ms late, "
+                f"tick jitter {jitter * 1000:.1f} ms")
+
+
 def no_exception(vm):
     assert not [m for m in vm.markers() if m.get("ev") == "exception"], vm.serial
 
@@ -106,21 +128,16 @@ def test_gpio_buttons(board, example_image):
             time.sleep(HOLD_S)
             want += [("key", name, 1), ("key", name, 0)]
             assert wait_events(vm, len(want)) == want, vm.serial
+        sel, excused = PINS["select"], set()
         for _ in range(5):
-            for _ in range(JITTER_TRIES):
-                ticks(vm)
-                io.play([(0, PINS["select"], 0), (GLITCH_S, PINS["select"], 1)])
-                pulse = io.log[1][1] - io.log[0][1]
-                missed, jitter = ticks(vm)
-                if missed == 0 and pulse < TICK_S - jitter:
-                    break
-            else:
-                pytest.skip(f"machine too busy: a {pulse * 1000:.1f} ms pulse, "
-                            f"tick jitter {jitter * 1000:.1f} ms")
+            short_pulses(vm, io, [(0, sel, 0), (GLITCH_S, sel, 1)], GLITCH_S, excused)
             time.sleep(3 * TICK_S)
-        io.bounce("back", 5, GLITCH_S)      # chatter, ends released
+        # Chatter, 2 ms pressed each time, ends released.
+        short_pulses(vm, io, bounce_schedule(PINS["back"], True, 5, GLITCH_S, False),
+                     GLITCH_S / 2, excused)
         time.sleep(SETTLE_S)
-        assert gpio_events(vm) == want, vm.serial
+        got = [e for i, e in enumerate(gpio_events(vm)) if i not in excused]
+        assert got == want, vm.serial
         no_exception(vm)
 
 
