@@ -17,6 +17,7 @@ from harness import qemu as qemu_mod
 from harness.qemu import Qemu, sweep_stale
 
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REAL_START = qemu_mod.process_start  # some tests replace it
 
 
 @pytest.fixture(autouse=True, params=["process_group", "preexec_fn"])
@@ -281,8 +282,24 @@ def test_watcher_survives_a_signal_to_its_group(deaf, sig):
         child.stdout.close()
 
 
+def state_works():
+    """True when this process can read a process state: /proc or ps."""
+    if os.path.isdir(f"{qemu_mod.PROC}/self"):
+        return True
+    try:
+        r = qemu_mod._run_ps_stat(os.getpid())
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+NO_STATE = "cannot read a process state here: no /proc and ps may not run"
+
+
 def make_zombie():
     """A child that has exited and that nobody has reaped yet."""
+    if not state_works():
+        pytest.skip(NO_STATE)
     proc = subprocess.Popen(["true"])
     deadline = time.monotonic() + 5.0
     while not qemu_mod.zombie(proc.pid):
@@ -316,7 +333,7 @@ def test_sweep_kills_a_vm_whose_owner_is_a_zombie(tmp_path):
     # In a container whose process 1 reaps nothing, a dead owner stays a
     # zombie. The sweep must take it for dead and stop its VM.
     if not ps_works():
-        pytest.skip("cannot read a process start time here: ps may not run")
+        pytest.skip(NO_START)
     owner = make_zombie()
     try:
         vm, folder = stale_vm(tmp_path, owner=owner.pid)
@@ -384,19 +401,22 @@ def dead_pid():
     return p.pid
 
 
-def stale_vm(tmp, started_offset=0.0, owner=None):
+def stale_vm(tmp, started_offset=0.0, owner=None, tag=qemu_mod.PIDFILE_TAG):
     """A sleeping process and its pidfile, as a dead run leaves them."""
     proc = subprocess.Popen(["sleep", "600"], start_new_session=True)
     folder = tempfile.mkdtemp(prefix=qemu_mod.TMP_PREFIX, dir=tmp)
+    started = REAL_START(proc.pid)
+    started = time.time() if started is None else started
+    head = f"{tag} " if tag else ""
     with open(os.path.join(folder, qemu_mod.PIDFILE), "w") as f:
-        f.write(f"{proc.pid} {time.time() + started_offset:.3f} "
+        f.write(f"{head}{proc.pid} {started + started_offset:.3f} "
                 f"{owner or dead_pid()} {proc.pid}\n")
     return proc, folder
 
 
 def test_sweep_kills_only_its_own(tmp_path):
     if not ps_works():
-        pytest.skip("cannot read a process start time here: ps may not run")
+        pytest.skip(NO_START)
     own, own_dir = stale_vm(tmp_path)
     # Same pidfile shape, wrong start time: the pid is not the recorded VM.
     other, other_dir = stale_vm(tmp_path, started_offset=-3600)
@@ -417,6 +437,63 @@ def test_sweep_kills_only_its_own(tmp_path):
 def ps_works():
     """True when this process may run ps and read a start time from it."""
     return qemu_mod.process_start(os.getpid()) is not None
+
+
+NO_START = "cannot read a process start time here: no /proc and ps may not run"
+
+
+def test_sweep_spares_an_old_pidfile(tmp_path, no_kill):
+    # The old form held the watcher's start time, not QEMU's: unproven.
+    proc, folder = stale_vm(tmp_path, tag="")
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        assert proc.poll() is None and os.path.exists(folder)
+        assert all(sig == 0 for _, sig in no_kill)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+SLOW_QEMU = textwrap.dedent("""
+    import os, sys, tempfile, time
+    sys.path.insert(0, {tests!r})
+    tempfile.tempdir = {tmp!r}
+    from harness import qemu
+    real = qemu.Qemu._start_watcher
+    def slow(self):
+        real(self)
+        time.sleep({delay!r})  # a loaded machine: QEMU starts late
+    qemu.Qemu._start_watcher = slow
+    q = qemu.Qemu({binary!r}, "none", qmp=False).start()
+    print(q._watcher.pid, flush=True)
+    time.sleep(600)
+""")
+
+
+def test_sweep_stops_a_vm_whose_qemu_started_late(fake, tmp_path):
+    # QEMU starts well after its watcher. The watcher then dies, then the
+    # test process. The pidfile must hold QEMU's start time, or the sweep
+    # takes the orphan for a stranger and leaves it.
+    if not ps_works():
+        pytest.skip(NO_START)
+    vms = tmp_path / "vms"
+    vms.mkdir()
+    slack = 0.5
+    code = SLOW_QEMU.format(tests=TESTS, tmp=str(vms), binary=str(fake), delay=slack + 2.0)
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        watcher = int(child.stdout.readline())
+        (pid,) = stand_in_pids(fake)
+        os.kill(watcher, signal.SIGKILL)  # the one gap: QEMU without a watcher
+        child.kill()
+        child.wait(5)
+        assert not gone(pid, timeout=0.5), "the stand-in died with its test process"
+        assert sweep_stale(str(vms), slack=slack) == [pid]
+        assert gone(pid), f"the sweep left the stand-in; {states(pid, watcher)}"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
 
 
 # -- the sweep never stops a session -------------------------------------
@@ -525,7 +602,9 @@ def test_sweep_spares_all_when_ps_may_not_run(monkeypatch, no_proc, tmp_path, no
 
 BROKEN = [b"", b"\x00\xff\xfe\x80garbage", b"123 456.0", b"0 1.0 0 0",
           b"1 1.0 1 1", b"-1 1.0 -1 -1", b"-1 1.0 999999 -1",
-          b"0 1.0 999999 0", b"12345 nan 999999 12345", b"12345 inf 999999 12345"]
+          b"0 1.0 999999 0", b"12345 nan 999999 12345", b"12345 inf 999999 12345",
+          b"12345 1.0 999999 12345", b"v1 12345 1.0 999999 12345",
+          b"v2 12345 - 999999 12345", b"v2 0 1.0 0 0", b"v2 12345 nan 999999 12345"]
 
 
 @pytest.mark.parametrize("content", BROKEN)
@@ -549,7 +628,7 @@ def test_sweep_never_raises(monkeypatch, tmp_path):
         assert os.path.exists(folder)
     finally:
         with open(os.path.join(folder, qemu_mod.PIDFILE)) as f:
-            os.kill(int(f.read().split()[0]), signal.SIGKILL)
+            os.kill(int(f.read().split()[1]), signal.SIGKILL)
 
 
 def test_session_starts_when_the_sweep_raises(monkeypatch, capsys):

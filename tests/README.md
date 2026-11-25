@@ -514,8 +514,12 @@ still stops it: it signals QEMU's own pid, reaps it, then reaps the dead
 watcher. If the test process dies first, the next session's sweep kills
 that QEMU, since its pidfile names a dead owner.
 
-Each VM's temp folder holds `qemu.pid`: the QEMU pid, its start time,
-the test process pid and the process group, which is the watcher's pid. At session start the plugin
+Each VM's temp folder holds `qemu.pid`: a `v2` tag, the QEMU pid, its
+start time, the test process pid and the process group, which is the
+watcher's pid. The start time is QEMU's own, read once QEMU exists the
+way the sweep reads it later. A late QEMU start on a busy machine thus
+cannot hide an orphan. The sweep skips a pidfile in the older form,
+which held the watcher's start time. At session start the plugin
 calls `sweep_stale()`. It kills a QEMU only when the test process is
 gone, the pid still leads that group and started at that time. It never
 matches QEMU by name, so your own QEMU is safe.
@@ -528,6 +532,10 @@ A zombie counts as dead. In a container whose process 1 reaps no child,
 such as the CI one, a dead orphan stays a zombie and `os.kill(pid, 0)`
 still finds it. The harness reads the state from `/proc` on Linux and
 from `ps` on macOS.
+
+Where it can read no process state at all, a zombie counts as alive.
+The sweep then kills nothing and reports the pidfiles it skipped, and
+the zombie tests skip.
 
 ## The harness in a project
 

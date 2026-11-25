@@ -29,10 +29,12 @@ KEEPALIVE_TIMEOUT = 1.0
 KEEPALIVE_MAX_UNANSWERED = 8
 
 
-# Each VM's temp folder holds this file: "<qemu pid> <start time> <owner
-# pid> <pgid>". sweep_stale() reads it. See tests/README.md, "QEMU
-# outlives no test process".
+# Each VM's temp folder holds this file: "v2 <qemu pid> <start time>
+# <owner pid> <pgid>". The start time is QEMU's own, as process_start()
+# reads it, or "-" when it could not. sweep_stale() reads it and skips any
+# other form. See tests/README.md, "QEMU outlives no test process".
 PIDFILE = "qemu.pid"
+PIDFILE_TAG = "v2"
 TMP_PREFIX = "qh"
 # A watcher per VM: it leads a new process group and QEMU starts inside
 # that group. It blocks on a pipe from the test process and, at end of
@@ -232,7 +234,9 @@ def _sweep_one(folder, slack):
     """Judge one VM folder. Returns the killed pid, "skipped" or None."""
     try:
         with open(os.path.join(folder, PIDFILE)) as f:
-            pid, started, owner, pgid = f.read().split()
+            tag, pid, started, owner, pgid = f.read().split()
+        if tag != PIDFILE_TAG:
+            return "skipped"  # an older form: its start time is not QEMU's
         pid, started, owner, pgid = int(pid), float(started), int(owner), int(pgid)
     except FileNotFoundError:
         return None  # a folder with no pidfile: not a VM, or not written yet
@@ -397,7 +401,6 @@ class Qemu:
         trap is set. Waiting for it closes the window where a signal to
         the group would still kill the watcher.
         """
-        self._started = time.time()
         try:
             self._watcher = subprocess.Popen(
                 ["/bin/sh", "-c", WATCHER, "qemu-watcher"],
@@ -416,11 +419,19 @@ class Qemu:
 
     def _write_pidfile(self):
         """Record the VM for sweep_stale(). A failure only warns: the
-        watcher still stops QEMU with this process."""
+        watcher still stops QEMU with this process.
+
+        The start time is QEMU's own, read the way the sweep reads it, so
+        the two compare like with like. When it cannot be read, "-" goes
+        in its place and the sweep never kills this VM.
+        """
+        started = process_start(self.proc.pid)
+        started = "-" if started is None else f"{started:.3f}"
         tmp = os.path.join(self.tmpdir, PIDFILE + ".tmp")
         try:
             with open(tmp, "w") as f:
-                f.write(f"{self.proc.pid} {self._started:.3f} {os.getpid()} {self._watcher.pid}\n")
+                f.write(f"{PIDFILE_TAG} {self.proc.pid} {started} {os.getpid()} "
+                        f"{self._watcher.pid}\n")
             os.replace(tmp, os.path.join(self.tmpdir, PIDFILE))
         except OSError as e:
             _report(f"cannot write {PIDFILE} in {self.tmpdir}: {e}")
