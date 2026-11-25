@@ -359,7 +359,7 @@ A later stage keeps the screen the earlier stage left on. It passes the `fb_*` f
 | 0 | The loader used a fallback file, such as `MFBOOT.BAK` |
 | 1 | The user asked for maintenance mode |
 | 2 | The writing stage cold-booted and built the block itself |
-| 3 | Maintenance was asked by a request file. See [Maintenance request](#maintenance-request). Bit 1 is set too. |
+| 3 | Maintenance was asked by a request file. See [Maintenance request](#maintenance-request). Bit 1 is set too. MFBootAgent owns bits 1 and 3. |
 | 4 to 31 | Reserved, 0 |
 
 ## Trust rule
@@ -487,7 +487,7 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `countdown` | `state`, then `seconds` | Second stage: `state=start` with `seconds` when the menu shows with a timeout above 0, `state=stopped` when a key stops it |
 | `select` | `index name` | Second stage: the selection moved. `index` counts from 1. |
 | `choose` | `index name path via` | Second stage: an entry is to boot. `via` is `key` or `timeout`. |
-| `maint_req` | `result rc` | Second stage: the [maintenance request](#maintenance-request) check, once per boot. `result` is `none`, `found` or `clear_failed`. `rc` is `0`, or the file system code of the failed delete. |
+| `maint_req` | `result rc` | Second stage: the [maintenance request](#maintenance-request) check, once per boot in which the boot volume mounted. `result` is `none`, `found` or `clear_failed`. `rc` is `0`, or the file system code of the failed delete. |
 | `maint_open` | `why` | Second stage: the maintenance screen opened. `why` is `key`, `button`, `port`, `flag` or `request`. |
 | `tool` | `name result`, then tool keys | Maintenance image: one tool ended. See [Maintenance image markers](#maintenance-image-markers). |
 
@@ -642,40 +642,35 @@ Before the jump MFBootAgent unmounts the volume and calls `bootinfo_build()` wit
 | `boot_part_lba` | First block of its boot volume |
 | `boot_path` | `path` of the chosen entry |
 | `cmdline` | `cmdline` of the chosen entry, or empty |
-| `boot_flags` | Bit 0 cleared, since it loaded no fallback file. Bits 1 and 3 set when a [maintenance request](#maintenance-request) was found this boot. Bit 1 set when the person opened the maintenance screen this boot. The other bits stay as received. |
+| `boot_flags` | Bit 0 cleared, since it loaded no fallback file. Bit 1 set when a [maintenance request](#maintenance-request) was found or the person opened the maintenance screen this boot, clear otherwise. Bit 3 set when a request was found this boot, clear otherwise. The agent sets or clears bits 1 and 3 whatever it received. The other bits stay as received. |
 
 It then calls `bootinfo_seal()` and jumps with r2 set to the firmware blob copy, or 0 when there is none.
 
 ## Maintenance request
 
-A maintenance request asks the next boot to open the maintenance screen of MFBootAgent. It survives a reset because it is a file on the card. UOS writes it for `SET HALT /MAINTENANCE`.
+A maintenance request asks the next boot to open the maintenance screen of MFBootAgent. It survives a reset because it is a file on the card. UOS writes it for its command `SET HALT RESTART /MAINTENANCE`.
 
 ### The file
 
-- The request is the file `/ROBCO/MAINT.REQ` on the boot volume. Its presence is the request.
+- The request is the file `/ROBCO/MAINT.REQ` on the boot volume. Its presence is the request. Only a regular file counts. A folder of that name is no request, and the agent leaves it alone.
 - Its content is one optional line of at most 63 printable ASCII bytes, 0x20 to 0x7E, for a person to read, such as who asked. A line may end with CR, LF or CRLF.
 - A reader ignores a longer content or a byte outside that range, and still honours the file. An empty file is a valid request.
 - Nothing else carries a request. No register, no boot info field and no command line does.
 
 ### Writer
 
-Any operating image may write the request. UOS does it this way:
-
-1. It checks that the user is privileged. That rule is UOS's own.
-2. It writes `/ROBCO/MAINT.REQ` with one atomic write, `fs_write_file_atomic()`.
-3. When the write fails, it reports the error and does not restart.
-4. It restarts the terminal through the watchdog.
+Any operating image may write the request. UOS writes the file with one atomic write, `fs_write_file_atomic()`, then restarts the terminal through the watchdog. Who may ask is UOS's own rule: its command `SET HALT RESTART /MAINTENANCE` needs the `OPER` privilege. See the UOS command reference.
 
 ### Reader
 
 MFBootAgent reads the request once per boot. RETROS-BIOS never looks at it. The agent:
 
-1. Mounts the boot volume, by the rule in [Boot volume markers](#boot-volume-markers).
-2. Before the menu shows and before the countdown starts, looks for `/ROBCO/MAINT.REQ`. With no file it prints `maint_req result=none rc=0` and goes on as before.
+1. Mounts the boot volume, by the rule in [Boot volume markers](#boot-volume-markers). When nothing mounts, it halts as the [failure table](#failure-behaviour) states and prints no `maint_req`.
+2. Before the menu shows and before the countdown starts, looks for `/ROBCO/MAINT.REQ`. With no file, or with a folder of that name, it prints `maint_req result=none rc=0` and goes on as before.
 3. Reads the line, if any, and keeps it for the screen.
 4. Deletes the file with `fs_unlink()`. Delete first makes the request one-shot: a fault later cannot make the terminal start in maintenance for ever.
 5. Prints `maint_req result=found rc=0` when the delete worked, or `maint_req result=clear_failed rc=<code>` when it failed.
-6. Sets `boot_flags` bits 1 and 3 for the next image.
+6. Sets `boot_flags` bits 1 and 3 for the next image. They say what was asked, not what was started: they stay set whatever entry the person picks. An image other than the maintenance image ignores them.
 7. Shows the menu with no countdown, then opens the maintenance screen and prints `maint_open why=request`. The screen shows the request line, if any. No image boots without a key.
 
 The agent can delete this one file. It mounts the boot volume with write support, and it writes nothing else on the card.
@@ -686,10 +681,12 @@ A request and a held BACK button together count as a request: the marker says `w
 
 | Case | Marker | What the person sees |
 |---|---|---|
-| No file | `maint_req result=none rc=0` | The normal menu and countdown |
+| No file, or a folder named `MAINT.REQ` | `maint_req result=none rc=0` | The normal menu and countdown |
+| No volume mounts | `error code=io`, `idle`. No `maint_req`. | `BOOT HALTED` |
 | An empty file, or a content that is too long or not printable | `maint_req result=found rc=0`, `maint_open why=request` | The maintenance screen, with no request line |
 | The delete fails, for a locked or read-only card or an I/O error | `maint_req result=clear_failed rc=<code>`, `maint_open why=request` | The maintenance screen, with a notice that the request could not be cleared and comes back at each start until the file is removed |
 | The person closes the screen and picks an entry | `choose`, `load`, `jump` as usual | The chosen image starts. Bits 1 and 3 are set in its boot info. |
+| The person starts the maintenance image and the file is missing or bad | `choose`, then `error` with the load code | The load error under the menu, as for any entry |
 
 The agent never loops on its own. Honouring a request means opening the maintenance screen, where a person decides. With a delete that keeps failing, every start opens the screen again with the notice.
 
@@ -726,7 +723,7 @@ The image needs no login. Physical presence at the terminal, with its card, is t
 
 ### Start
 
-- The boot entry `MAINT` starts it, from the menu or from the maintenance screen.
+- The boot entry `MAINT` starts it from the menu. The agent's maintenance screen can always start it: it uses the path of the `MAINT` entry when `BOOT.CFG` has one, and `/ROBCO/MAINT.SYS` when it has none, the fallback menu included. A damaged `BOOT.CFG` is a case where a person needs this image. A missing or bad file is the usual load failure.
 - It applies the [trust rule](#trust-rule). With a trusted block it adopts the agent's screen, as `DIAG.SYS` does. Alone, or with a block it does not trust, it starts its own screen.
 - It mounts the boot volume, reads the `[maint]` section of `BOOT.CFG`, then shows its menu and prints `ready`.
 - It is driven by the console keys, the six buttons and the maintenance port, with a menu like `DIAG.SYS`.
@@ -740,7 +737,7 @@ Version 1 has these tools and no other.
 | Check card | Every folder and every file of the boot volume, each file whole | Nothing. Reports each error with its path, and the free space. |
 | Check images | Every image file in `/ROBCO`, validated with the steps of [IMAGE_FORMAT.md](./IMAGE_FORMAT.md) | Nothing. Shows the result per file. |
 | View file | One text file, shown in a pager. `BOOT.CFG`, `UOS.CFG`, `DEVICES.CFG` and `TERMINAL.CFG` are offered by name. It does not parse them. | Nothing |
-| Set clock | The DS1338 real-time clock, when one answers | The time on the clock. With no clock, the tool says so. |
+| Set clock | The real-time clock that the library's [RTC driver](../guide/api/buses.md#real-time-clock-and-software-clock-rtch) found | The time on the clock. With no clock, the tool says so. |
 | Restore users | `/UOS/SYSUAF.DEF` | `/UOS/SYSUAF.DAT`. Off unless `[maint] restore_users = on`. |
 | Restart | Nothing | Nothing. Restarts the terminal through the watchdog. |
 
@@ -773,8 +770,8 @@ Version 1 does not edit a config file, format the card, repair a file system, ch
 
 ### What each project does
 
-- MFBootAgent reads and clears the request as [Reader](#reader) states, skips `[maint]` in `BOOT.CFG` without a count, offers the `MAINT` entry on its maintenance screen, and builds `MAINT.SYS`.
-- UOS writes the request for `SET HALT /MAINTENANCE`, and ships `/UOS/SYSUAF.DEF` on its card image.
+- MFBootAgent reads and clears the request as [Reader](#reader) states, skips `[maint]` in `BOOT.CFG` without a count, lets its maintenance screen start the maintenance image, and builds `MAINT.SYS`.
+- UOS writes the request for `SET HALT RESTART /MAINTENANCE`, and ships `/UOS/SYSUAF.DEF` on its card image.
 - RETROS-BIOS does nothing.
 
 ## Third-stage markers
