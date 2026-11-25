@@ -610,7 +610,9 @@ include $(PIPOS_SDK)/pipos-app.mk
 
 ### Calls newer than the target ABI
 
-A project states the lowest ABI it needs. The SDK headers hide every call newer than that ABI, so a project that uses one fails to compile, and never meets `-PIP_ENOSYS` on an older device. This is a rule for the headers in Pip-OS. No header follows it yet.
+A project states the lowest ABI it needs. The SDK headers hide every call newer than that ABI, so a project that uses one fails to compile. This is a rule for the headers in Pip-OS. No header follows it yet.
+
+The target promises one thing: the code calls nothing newer than the target. On a kernel whose ABI minor is at or above the target, no call the headers expose returns `-PIP_ENOSYS` for being unknown. The loader still accepts the image on an older kernel of the same major, as the [version rule](#pip-os-abi) says. There, a call added after that kernel's minor returns `-PIP_ENOSYS`. A program that must run on such a kernel reads `abi_version` in [`pipos_startup_t`](#entry-state) at start and handles `-PIP_ENOSYS`.
 
 | Rule | Detail |
 |---|---|

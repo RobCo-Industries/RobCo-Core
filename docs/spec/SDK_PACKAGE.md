@@ -223,7 +223,7 @@ A `pipos` package fits a project when:
 3. The package's ABI minor is at least the project's ABI minor.
 4. Every format in the package's `formats` is one the tool knows.
 
-So a project with `abi = "1.3"` fits `pipos` 1.3.x and 1.4.x, and not 1.2.x or 2.0.x. A tape built for 1.3 loads on any 1.x kernel, because a Pip-OS loader checks only the ABI major. A call the kernel lacks returns `-PIP_ENOSYS`.
+So a project with `abi = "1.3"` fits `pipos` 1.3.x and 1.4.x, and not 1.2.x or 2.0.x. A tape built for 1.3 loads on any 1.x kernel, because a Pip-OS loader checks only the ABI major. On a kernel older than 1.3, a call added after that kernel's minor returns `-PIP_ENOSYS`. See [Calls newer than the target ABI](./PIPOS_ABI.md#calls-newer-than-the-target-abi).
 
 A `requires` entry fits by the same rules 2 and 3, with its `abi` as the project's.
 
