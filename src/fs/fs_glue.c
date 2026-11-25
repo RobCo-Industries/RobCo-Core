@@ -7,7 +7,7 @@
  * on the drive reports STA_NOINIT | STA_NODISK and every transfer fails
  * with RES_NOTRDY before reaching the device. FatFs then never serves its
  * cached window, never re-mounts the drive by itself, and writes nothing
- * back. Only fs_mount() on the slot clears it.
+ * back. Only slot_free() in fs.c clears it, when the slot is given back.
  */
 #include "fs_priv.h"
 

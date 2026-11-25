@@ -301,6 +301,69 @@ static int check_dev_free(blk_dev_t *dev)
     return FS_OK;
 }
 
+/*
+ * The only two functions that change which slots are in use. Every path
+ * that takes a slot goes through slot_take(), and every path that gives
+ * one back goes through slot_free(). slot_free() clears every field of
+ * fs_vol_t, so no flag of one use of a slot reaches the next one. See
+ * fs_priv.h for the list of fields.
+ */
+static void slot_free(int vol)
+{
+    char drv[3];
+    int i, was_mounted = fs_vols[vol].gen != 0;
+
+    /* No I/O: f_mount(NULL) only unregisters the work area. */
+    drive_prefix(drv, vol);
+    f_mount(NULL, drv, 0);
+    k_memset(&fs_vols[vol], 0, sizeof(fs_vols[vol]));
+    if (was_mounted) {
+        fs_change_count++;
+    }
+    if (default_vol == vol) {
+        default_vol = -1;
+        for (i = 0; i < (int)FF_VOLUMES; i++) {
+            if (fs_vols[i].name[0] != '\0') {
+                default_vol = i;
+                break;
+            }
+        }
+    }
+}
+
+#ifdef ROBCO_HOST
+/* Host tests only: 1 when every slot without a device is all zeros. */
+int fs_host_free_slots_clean(void);
+
+int fs_host_free_slots_clean(void)
+{
+    const unsigned char *p;
+    size_t i;
+    int vol;
+
+    for (vol = 0; vol < (int)FF_VOLUMES; vol++) {
+        if (fs_vols[vol].dev != NULL) {
+            continue;
+        }
+        p = (const unsigned char *)&fs_vols[vol];
+        for (i = 0; i < sizeof(fs_vols[vol]); i++) {
+            if (p[i] != 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+#endif
+
+/* Claims the free slot vol for dev, from a clean state. */
+static void slot_take(int vol, blk_dev_t *dev, int ro)
+{
+    slot_free(vol);
+    fs_vols[vol].dev = dev;
+    fs_vols[vol].ro = (uint8_t)(ro != 0);
+}
+
 int fs_mount(const char *volume, blk_dev_t *dev)
 {
     return fs_mount_flags(volume, dev, 0);
@@ -331,17 +394,12 @@ int fs_mount_flags(const char *volume, blk_dev_t *dev, unsigned flags)
     if (slot < 0) {
         return FS_ERR_BUSY;
     }
-    fs_vols[slot].dev = dev;
-    fs_vols[slot].blk_err = 0;
-    fs_vols[slot].gone = 0;
-    fs_vols[slot].ro = (flags & FS_MOUNT_RDONLY) != 0;
+    slot_take(slot, dev, (flags & FS_MOUNT_RDONLY) != 0);
     drive_prefix(drv, slot);
     /* f_mount() drops every cached sector of the slot and reads the medium again. */
     rc = from_fr(f_mount(&fs_vols[slot].fs, drv, 1), slot);
     if (rc != FS_OK) {
-        f_mount(NULL, drv, 0);
-        fs_vols[slot].dev = NULL;
-        fs_vols[slot].gone = 0;
+        slot_free(slot);
         return rc == FS_ERR_GONE ? FS_ERR_NOTREADY : rc;
     }
     k_strncpy(fs_vols[slot].name, volume, sizeof(fs_vols[slot].name));
@@ -356,31 +414,6 @@ int fs_mount_flags(const char *volume, blk_dev_t *dev, unsigned flags)
     return FS_OK;
 }
 
-/* Frees slot vol. No I/O: f_mount(NULL) only unregisters the work area. */
-static void release(int vol)
-{
-    char drv[3];
-    int i;
-
-    drive_prefix(drv, vol);
-    f_mount(NULL, drv, 0);
-    fs_vols[vol].dev = NULL;
-    fs_vols[vol].name[0] = '\0';
-    fs_vols[vol].gen = 0;
-    fs_vols[vol].gone = 0;
-    fs_vols[vol].ro = 0;
-    fs_change_count++;
-    if (default_vol == vol) {
-        default_vol = -1;
-        for (i = 0; i < (int)FF_VOLUMES; i++) {
-            if (fs_vols[i].name[0] != '\0') {
-                default_vol = i;
-                break;
-            }
-        }
-    }
-}
-
 int fs_eject(const char *volume)
 {
     int vol;
@@ -392,7 +425,7 @@ int fs_eject(const char *volume)
     if (vol < 0) {
         return FS_ERR_NOVOL;
     }
-    release(vol);
+    slot_free(vol);
     return FS_OK;
 }
 
@@ -444,7 +477,7 @@ int fs_unmount(const char *volume)
             return from_blk(rc);
         }
     }
-    release(vol);
+    slot_free(vol);
     return FS_OK;
 }
 
@@ -1290,14 +1323,14 @@ int fs_mkfs(blk_dev_t *dev, const fs_mkfs_opts_t *opts)
     parm.fmt = (BYTE)(fmts[opts != NULL ? opts->fmt : 0] | FM_SFD);
     parm.n_fat = 2;
     parm.au_size = opts != NULL ? opts->cluster_bytes : 0;
-    fs_vols[slot].dev = dev;
-    fs_vols[slot].blk_err = 0;
+    slot_take(slot, dev, 0);
     drive_prefix(drv, slot);
     rc = from_fr(f_mkfs(drv, &parm, work, sizeof(work)), slot);
     if (rc == FS_OK) {
         rc = from_fr(disk_ioctl((BYTE)slot, CTRL_SYNC, NULL) == RES_OK ? FR_OK : FR_DISK_ERR, slot);
     }
-    fs_vols[slot].dev = NULL;
-    return rc;
+    slot_free(slot);
+    /* Nothing was mounted, so a missing medium is not ready, as for fs_mount(). */
+    return rc == FS_ERR_GONE ? FS_ERR_NOTREADY : rc;
 #endif
 }

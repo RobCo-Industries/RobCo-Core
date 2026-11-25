@@ -476,3 +476,190 @@ TEST(eject_and_changes)
     CHECK_EQ(fs_unmount("tape"), FS_OK);
     CHECK_STR(fs_strerror(FS_ERR_GONE), "medium removed");
 }
+
+/*
+ * Slot state after a failed operation. A device that fails in one way on
+ * demand: no medium, an I/O error, or a blank card with no file system.
+ * Each operation that can fail is failed in each way, on slot 0 or with
+ * slot 0 held so it lands on slot 1. Then the same checks run as on a
+ * fresh system, and every result must match.
+ */
+enum { F_NONE, F_NOMEDIA, F_IO, F_BLANK, F_COUNT };
+enum { OP_MOUNT, OP_MOUNT_RO, OP_MKFS, OP_PROBE, OP_COUNT };
+
+typedef struct {
+    blk_dev_t dev;
+    blk_dev_t ram;
+    int fault;
+} faulty_t;
+
+static uint64_t disk_x[DISK_SIZE / 8], disk_y[DISK_SIZE / 8];
+static faulty_t dev_x, dev_y;
+
+static int faulty_rc(blk_dev_t *d)
+{
+    faulty_t *f = d->priv;
+
+    return f->fault == F_NOMEDIA ? BLK_ERR_NOMEDIA : f->fault == F_IO ? BLK_ERR_IO : 0;
+}
+
+static int faulty_read(blk_dev_t *d, uint64_t lba, uint32_t n, void *buf)
+{
+    int rc = faulty_rc(d);
+
+    return rc != 0 ? rc : blk_read(&((faulty_t *)d->priv)->ram, lba, n, buf);
+}
+
+static int faulty_write(blk_dev_t *d, uint64_t lba, uint32_t n, const void *buf)
+{
+    int rc = faulty_rc(d);
+
+    return rc != 0 ? rc : blk_write(&((faulty_t *)d->priv)->ram, lba, n, buf);
+}
+
+static int faulty_sync(blk_dev_t *d)
+{
+    return faulty_rc(d);
+}
+
+static void faulty_init(faulty_t *f, uint64_t *disk, const char *name)
+{
+    CHECK_EQ(blk_ram_init(&f->ram, disk, DISK_SIZE, 0), 0);
+    f->dev = f->ram;
+    f->dev.name = name;
+    f->dev.flags |= BLK_FLAG_REMOVABLE;
+    f->dev.read = faulty_read;
+    f->dev.write = faulty_write;
+    f->dev.sync = faulty_sync;
+    f->dev.priv = f;
+    f->fault = F_NONE;
+}
+
+/* x holds a blank card, y holds card A, nothing is mounted. */
+static void fresh_system(void)
+{
+    fs_unmount("boot");
+    fs_eject("tape");
+    fs_eject("x");
+    fs_eject("y");
+    fs_eject("hold");
+    memset(disk_x, 0, DISK_SIZE);
+    memcpy(disk_y, tmpl_a, DISK_SIZE);
+    faulty_init(&dev_x, disk_x, "x");
+    faulty_init(&dev_y, disk_y, "y");
+}
+
+#define CHECKS 26
+
+/* From src/fs/fs.c in host builds: no field of a free slot is left set. */
+int fs_host_free_slots_clean(void);
+
+/*
+ * Every operation on x and y, each result in out. It formats a device in
+ * slot 0 and in slot 1 before any mount there, because a mount sets the
+ * flags itself and would hide a flag left over. Ends with nothing mounted.
+ */
+static void run_checks(int *out)
+{
+    fs_statvfs_t vf;
+    int n = 0;
+
+    out[n++] = fs_mkfs(&dev_x.dev, NULL);                    /* slot 0 */
+    out[n++] = fs_mount_flags("x", &dev_x.dev, FS_MOUNT_RDONLY);
+    out[n++] = fs_mkdir("x:/D");
+    out[n++] = fs_mkfs(&dev_y.dev, NULL);                    /* slot 1 */
+    out[n++] = fs_mount("y", &dev_y.dev);
+    out[n++] = fs_stat("y:/NAME.TXT", &(fs_stat_t){ 0 });   /* formatted away */
+    out[n++] = fs_unmount("y");
+    out[n++] = fs_probe("x");
+    out[n++] = fs_unmount("x");
+    out[n++] = fs_mount("x", &dev_x.dev);
+    out[n++] = fs_write_file_atomic("x:/A.TXT", "abc", 3);
+    out[n++] = fs_write_file_atomic("/B.TXT", "def", 3);    /* the default volume */
+    out[n++] = fs_mount("y", &dev_y.dev);
+    out[n++] = fs_statvfs("y", &vf);
+    out[n++] = fs_mkdir("y:/E");
+    out[n++] = fs_stat("/B.TXT", &(fs_stat_t){ 0 });
+    out[n++] = fs_eject("x");
+    out[n++] = fs_stat("/E", &(fs_stat_t){ 0 });            /* now on y */
+    out[n++] = fs_unmount("y");
+    out[n++] = fs_mount_flags("y", &dev_y.dev, FS_MOUNT_RDONLY);
+    out[n++] = fs_stat("y:/E", &(fs_stat_t){ 0 });
+    out[n++] = fs_unmount("y");
+    out[n++] = fs_probe("x");
+    memset(disk_x, 0, DISK_SIZE);
+    out[n++] = fs_mount("x", &dev_x.dev);                    /* blank: no file system */
+    out[n++] = fs_mkfs(&dev_x.dev, NULL);
+    out[n++] = fs_eject("x");
+    CHECK(fs_host_free_slots_clean());
+    CHECK_EQ(n, CHECKS);
+}
+
+/* Runs op on x with the fault set. Leaves nothing mounted on x. */
+static int failed_op(int op, int fault)
+{
+    int rc;
+
+    if (fault != F_BLANK) {
+        CHECK_EQ(fs_mkfs(&dev_x.dev, NULL), FS_OK);
+    }
+    if (op == OP_PROBE) {
+        /* A blank card fails the mount first: the probe then finds no volume. */
+        CHECK_EQ(fs_mount("x", &dev_x.dev), fault == F_BLANK ? FS_ERR_NOFS : FS_OK);
+    }
+    dev_x.fault = fault == F_BLANK ? F_NONE : fault;
+    switch (op) {
+    case OP_MOUNT:    rc = fs_mount("x", &dev_x.dev); break;
+    case OP_MOUNT_RO: rc = fs_mount_flags("x", &dev_x.dev, FS_MOUNT_RDONLY); break;
+    case OP_MKFS:     rc = fs_mkfs(&dev_x.dev, NULL); break;
+    default:          rc = fs_probe("x"); break;
+    }
+    dev_x.fault = F_NONE;
+    if (op != OP_PROBE) {
+        CHECK(fs_host_free_slots_clean());
+    }
+    fs_unmount("x");
+    CHECK(fs_host_free_slots_clean());
+    memset(disk_x, 0, DISK_SIZE);
+    return rc;
+}
+
+TEST(failed_operation_leaves_clean_slot)
+{
+    static const int fresh_rc[CHECKS] = {
+        FS_OK, FS_OK, FS_ERR_RO, FS_OK, FS_OK, FS_ERR_NOENT, FS_OK, FS_OK, FS_OK, FS_OK,
+        FS_OK, FS_OK, FS_OK, FS_OK, FS_OK, FS_OK, FS_OK, FS_OK, FS_OK, FS_OK,
+        FS_OK, FS_OK, FS_ERR_NOVOL, FS_ERR_NOFS, FS_OK, FS_ERR_NOVOL,
+    };
+    int base[CHECKS], got[CHECKS];
+    int op, fault, hold, i, rc, failures = 0;
+
+    setup(); /* builds the card templates */
+    fresh_system();
+    run_checks(base);
+    CHECK_MEM(base, fresh_rc, sizeof(base));
+    for (hold = 0; hold < 2; hold++) {
+        for (op = 0; op < OP_COUNT; op++) {
+            for (fault = F_NOMEDIA; fault < F_COUNT; fault++) {
+                fresh_system();
+                if (hold) {
+                    CHECK_EQ(fs_mount("hold", &boot_dev), FS_OK);
+                }
+                rc = failed_op(op, fault);
+                failures += rc != FS_OK;
+                if (hold) {
+                    CHECK_EQ(fs_unmount("hold"), FS_OK);
+                }
+                run_checks(got);
+                for (i = 0; i < CHECKS; i++) {
+                    if (got[i] != base[i]) {
+                        RC_FAIL("hold=%d op=%d fault=%d rc=%d: check %d gave %d, fresh %d",
+                                hold, op, fault, rc, i, got[i], base[i]);
+                    }
+                }
+            }
+        }
+    }
+    /* Every pair fails except mkfs on a blank card. */
+    CHECK_EQ(failures, 2 * (OP_COUNT * (F_COUNT - 1) - 1));
+}
