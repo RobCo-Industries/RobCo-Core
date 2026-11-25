@@ -46,6 +46,7 @@ GLITCH = [(0.0, 26, 0), (0.004, 26, 1)]
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
     monkeypatch.setattr(gpio_test.time, "sleep", lambda s: None)
+    monkeypatch.setattr(gpio_test, "EVENT_WAIT_S", 0.0, raising=False)  # a lost event ends the wait at once
 
 
 def test_a_tick_missed_before_the_pulse_does_not_reject_it():
@@ -62,32 +63,54 @@ def test_a_tick_missed_during_the_pulse_rejects_it():
 
 
 class DialVm:
-    """A guest whose dial counts what each turn is told to count, with a tick gap per turn."""
+    """A guest whose dial counts what each turn is told to count, with a tick gap per turn.
+
+    A turn may stall the guest after its last level change: the guest then
+    reports its last step only on the next look at its output, and the
+    stall counts as missed ticks from then on.
+    """
 
     def __init__(self, runs):
-        self.runs = list(runs)      # (steps counted, longest tick gap in s[, ticks missed]) per turn
+        # (steps counted, longest tick gap in s[, ticks missed[, ticks missed before the last step]])
+        self.runs = list(runs)
         self.dial = 0
         self.gap = 0.0
         self.missed = 0
         self.events = []
+        self.late = None
         self.serial = ""
+
+    def report_late(self):
+        if self.late:
+            event, missed = self.late
+            self.late = None
+            self.missed += missed
+            self.dial += int(event["value"])
+            self.events.append(event)
 
     def script(self, cmd):
         if cmd == "totals":
+            self.report_late()
             return Reply(f"dial0={self.dial} dial1=0 dropped=0")
         assert cmd == "ticks"
         return Reply(f"count=1 missed={self.missed} maxgap={int(self.gap * 1e6)} jitter=1000")
 
     def markers(self):
+        self.report_late()
         return self.events
 
     def turn(self):
         steps, self.gap, *missed = self.runs.pop(0)
         self.missed += missed[0] if missed else 0
-        self.dial += steps
         sign = "1" if steps > 0 else "-1"
-        self.events += [{"stage": "input", "ev": "event", "src": "gpio", "type": "dial",
-                         "code": "0", "value": sign}] * abs(steps)
+        event = {"stage": "input", "ev": "event", "src": "gpio", "type": "dial",
+                 "code": "0", "value": sign}
+        shown = abs(steps)
+        if len(missed) > 1:
+            shown -= 1
+            self.late = (event, missed[1])
+        self.dial += shown * int(sign)
+        self.events += [event] * shown
 
 
 class DialIo:
@@ -149,20 +172,32 @@ def test_a_turn_with_a_missed_tick_and_a_small_gap_is_tried_again(monkeypatch):
     assert vm.runs == [] and vm.dial == 3
 
 
+def test_a_turn_stalled_before_its_last_step_shows_is_tried_again(monkeypatch):
+    # The stall comes after the last level change, before the guest reports the last step.
+    vm = run_dial_bounce(monkeypatch, [(4, GOOD, 0, 1), (4, GOOD), (-4, GOOD)])
+    assert vm.runs == [] and vm.dial == 4
+
+
 def test_a_turn_with_no_missed_tick_and_a_good_gap_is_judged(monkeypatch):
     vm = run_dial_bounce(monkeypatch, [(4, GOOD), (-4, GOOD)])
     assert vm.runs == [] and vm.dial == 0
 
 
 class TapVm:
-    """A guest that gives a press and a release per tap, with a tick gap and missed ticks per tap."""
+    """A guest that gives a press and a release per tap, with a tick gap and missed ticks per tap.
+
+    A tap may stall the guest after the release: the guest then reports the
+    release only on the next look at its output, and the stall counts as
+    missed ticks from then on.
+    """
 
     def __init__(self, runs, repeats=0):
-        self.runs = list(runs)      # (longest tick gap in s, ticks missed) per tap
+        self.runs = list(runs)      # (longest tick gap in s, ticks missed[, missed before the release])
         self.repeats = repeats
         self.gap = 0.0
         self.missed = 0
         self.events = []
+        self.late = None
         self.serial = ""
         self.taps = 0
 
@@ -171,15 +206,22 @@ class TapVm:
         return Reply(f"count=1 missed={self.missed} maxgap={int(self.gap * 1e6)} jitter=1000")
 
     def markers(self):
+        if self.late:
+            event, missed = self.late
+            self.late = None
+            self.missed += missed
+            self.events.append(event)
         return self.events
 
     def tap(self, name):
         self.taps += 1
-        self.gap, missed = self.runs.pop(0)
+        self.gap, missed, *late = self.runs.pop(0)
         self.missed += missed
-        ev = [("1",)] + [("2",)] * self.repeats + [("0",)]
-        self.events += [{"stage": "input", "ev": "event", "src": "gpio", "type": "key",
-                         "code": name, "value": v} for (v,) in ev]
+        ev = [{"stage": "input", "ev": "event", "src": "gpio", "type": "key",
+               "code": name, "value": v} for v in ["1"] + ["2"] * self.repeats + ["0"]]
+        if late:
+            self.late = (ev.pop(), late[0])
+        self.events += ev
 
 
 class TapIo:
@@ -192,6 +234,12 @@ class TapIo:
 
 def test_a_held_tap_with_a_missed_tick_and_a_small_gap_is_tried_again():
     vm = TapVm([(0.010, 1), (0.010, 0)])
+    got = gpio_test.held_tap(vm, TapIo(vm), "select")
+    assert vm.taps == 2 and got == [("key", "select", 1), ("key", "select", 0)]
+
+
+def test_a_held_tap_stalled_before_its_release_shows_is_tried_again():
+    vm = TapVm([(0.010, 0, 1), (0.010, 0)])
     got = gpio_test.held_tap(vm, TapIo(vm), "select")
     assert vm.taps == 2 and got == [("key", "select", 1), ("key", "select", 0)]
 
@@ -229,3 +277,9 @@ def test_a_repeat_with_a_missed_tick_and_a_small_gap_is_tried_again(monkeypatch)
 def test_a_repeat_with_no_missed_tick_and_a_good_gap_is_judged(monkeypatch):
     vm = run_repeat(monkeypatch, [(0.010, 0)])
     assert vm.taps == 1
+
+
+def test_a_repeat_stalled_before_its_release_shows_is_tried_again(monkeypatch):
+    # The press and the first repeat already make two events, so only the release ends the run.
+    vm = run_repeat(monkeypatch, [(0.010, 0, 1), (0.010, 0)])
+    assert vm.taps == 2
