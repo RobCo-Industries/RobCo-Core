@@ -348,7 +348,7 @@ On a board without card detect, the caller decides when a card is gone. The rule
 2. If the probe also fails, call `fs_eject()`. It frees the slot with no I/O. Data not yet written is lost, as it would be on a pulled card.
 3. Call `sd_init()`. `SD_ERR_NOCARD` means the slot is empty. `0` means a card is there, maybe another one: mount it again.
 
-`examples/sdraw` prints the facts in its `ev=detect` marker, for example `present=0x01ff0000 inserted=1 card_detect=reported`. One run on a real board answers the question for that board.
+`examples/sdraw` prints the facts in its `ev=detect` marker, for example `inserted=1 card_detect=reported` in QEMU, next to the raw `present` value. One run on a real board answers the question for that board.
 
 Pending hardware validation: the pin routing, the 25 MHz clock and the retry path are verified in QEMU only, with one exception. On a Zero W 1.1, `sd_init()` and reads up to 256 blocks worked with one SDHC card on 2026-11-24, with the driver set to 25 MHz. Writes, SDSC cards, retries and every other board are still unvalidated. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md#zero-w-11-examplessdraw-2026-11-24).
 
