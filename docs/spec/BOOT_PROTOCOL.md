@@ -486,9 +486,9 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `entries` | `count default timeout` | Second stage: the menu in use. `timeout` is `none` when the menu waits for a key. |
 | `countdown` | `state`, then `seconds` | Second stage: `state=start` with `seconds` when the menu shows with a timeout above 0, `state=stopped` when a key stops it |
 | `select` | `index name` | Second stage: the selection moved. `index` counts from 1. |
-| `choose` | `index name path via` | Second stage: an entry is to boot. `via` is `key` or `timeout`. |
+| `choose` | `index name path via` | Second stage: an entry is to boot. `via` is `key` or `timeout`, and a key sent through the maintenance port's `key` script command counts as `key`. |
 | `maint_req` | `result rc` | Second stage: the [maintenance request](#maintenance-request) check, once per boot in which the boot volume mounted. `result` is `none`, `found` or `clear_failed`. `rc` is `0`, or the file system code of the failed delete. |
-| `maint_open` | `why` | Second stage: the maintenance screen opened. `why` is `key`, `button`, `port`, `flag` or `request`. |
+| `maint_open` | `why` | Second stage: the maintenance screen opened. `why` is `key`, `button`, `port`, `flag` or `request`. A received `boot_flags` bit 1 opens the screen with `why=flag`. |
 | `tool` | `name result`, then tool keys | Maintenance image: one tool ended. See [Maintenance image markers](#maintenance-image-markers). |
 
 | Stage | Must emit |
