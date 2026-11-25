@@ -596,16 +596,18 @@ TEST(write_errors)
 
 TEST(device_error_codes)
 {
+    /* fs: the code at mount time. live: on a mounted volume, where no medium means gone. */
     static const struct {
         int blk;
         int fs;
+        int live;
     } map[] = {
-        { BLK_ERR_IO, FS_ERR_IO },
-        { BLK_ERR_TIMEOUT, FS_ERR_TIMEOUT },
-        { BLK_ERR_NOMEDIA, FS_ERR_NOTREADY },
-        { BLK_ERR_RANGE, FS_ERR_CORRUPT },
-        { BLK_ERR_PARAM, FS_ERR_INVAL },
-        { BLK_ERR_RO, FS_ERR_RO },
+        { BLK_ERR_IO, FS_ERR_IO, FS_ERR_IO },
+        { BLK_ERR_TIMEOUT, FS_ERR_TIMEOUT, FS_ERR_TIMEOUT },
+        { BLK_ERR_NOMEDIA, FS_ERR_NOTREADY, FS_ERR_GONE },
+        { BLK_ERR_RANGE, FS_ERR_CORRUPT, FS_ERR_CORRUPT },
+        { BLK_ERR_PARAM, FS_ERR_INVAL, FS_ERR_INVAL },
+        { BLK_ERR_RO, FS_ERR_RO, FS_ERR_RO },
     };
     blk_fault_t fault;
     size_t i;
@@ -621,7 +623,7 @@ TEST(device_error_codes)
         fault.fail_write_after = 0;
         fault.err = map[i].blk;
         CHECK_EQ(fs_mount("v", &fault.dev), FS_OK);
-        CHECK_EQ(fs_mkdir("v:/X"), map[i].fs);
+        CHECK_EQ(fs_mkdir("v:/X"), map[i].live);
         CHECK_EQ(fs_unmount("v"), FS_OK);
     }
 }

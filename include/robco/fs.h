@@ -38,9 +38,18 @@ enum {
     FS_ERR_MKFS = -19,       /* the device cannot hold a FAT volume */
     FS_ERR_TOOBIG = -20,     /* the file is larger than the buffer */
     FS_ERR_MOUNTED = -21,    /* the device, or blocks of it, are already mounted */
+    FS_ERR_GONE = -22,       /* the medium left: unmount the volume, mount it again */
 };
 
-#define FS_VOLUMES   2u   /* volumes mounted at the same time */
+/*
+ * Volumes mounted at the same time. Set ROBCO_FS_VOLUMES in robco_config.h
+ * to change it: each slot costs about 590 bytes of BSS, mostly the FatFs
+ * sector window. The default keeps the two slots RobCo-Core always had.
+ */
+#ifndef ROBCO_FS_VOLUMES
+#define ROBCO_FS_VOLUMES 2
+#endif
+#define FS_VOLUMES   ((unsigned)ROBCO_FS_VOLUMES)
 #define FS_VOL_MAX   7u   /* longest volume name */
 #define FS_PATH_MAX  255u /* longest path, volume prefix included */
 #define FS_NAME_MAX  255u /* longest name in bytes of UTF-8 */
@@ -113,17 +122,56 @@ typedef struct {
 const char *fs_strerror(int err);
 
 /*
+ * Volumes and removable media. Every fs_* function runs in main context,
+ * never in an interrupt handler, and never blocks beyond the device calls.
+ *
+ * A path picks its volume by name, "tape:/GAMES/ROBCO.HOL". A path without
+ * a name uses the default volume. A handle stays on the volume it was
+ * opened on.
+ *
+ * When a device returns BLK_ERR_NOMEDIA, its volume is gone. From that
+ * call on, every call on the volume, and on every handle opened on it,
+ * returns FS_ERR_GONE without touching the device. fs_close() and
+ * fs_closedir() still release the handle. fs_unmount() or fs_eject() then
+ * frees the slot without I/O. A handle from an earlier mount of the slot
+ * returns FS_ERR_BADF. The other volumes are not affected.
+ */
+
+/* fs_mount_flags() flags. */
+#define FS_MOUNT_RDONLY 0x1u /* every write returns FS_ERR_RO without device I/O */
+
+/*
  * Returns FS_ERR_MOUNTED when a mounted volume already uses dev, or a
  * part_open() device whose blocks overlap dev's on the same parent.
  * Other wrapper devices are opaque: never mount two views of one medium.
  */
 int fs_mount(const char *volume, blk_dev_t *dev);
 /*
+ * fs_mount() with FS_MOUNT_* flags. To mount one partition, pass a
+ * part_open() device.
+ */
+int fs_mount_flags(const char *volume, blk_dev_t *dev, unsigned flags);
+/*
  * Flushes the device, then detaches the volume. If the device's sync
  * fails, returns its error and the volume stays mounted, so the caller
- * can call it again.
+ * can call it again. On a gone volume it does no I/O and returns FS_OK.
  */
 int fs_unmount(const char *volume);
+/*
+ * Detaches the volume at once, with no I/O, as if its medium left. Data
+ * not yet written is lost. Open handles return FS_ERR_BADF after it.
+ */
+int fs_eject(const char *volume);
+/*
+ * Reads the volume's first block to learn whether the medium is still
+ * there. Returns FS_OK, FS_ERR_GONE, FS_ERR_NOVOL or a device error.
+ */
+int fs_probe(const char *volume);
+/*
+ * Counts mounts, unmounts and lost media since boot. Poll it from the main
+ * loop: when it moves, list the volumes again.
+ */
+uint32_t fs_changes(void);
 /* Returns FS_ERR_MOUNTED for a mounted device, checked as fs_mount() does. */
 int fs_mkfs(blk_dev_t *dev, const fs_mkfs_opts_t *opts);
 int fs_statvfs(const char *volume, fs_statvfs_t *out);
@@ -136,7 +184,10 @@ int fs_seek(fs_file_t *f, int64_t offset, int whence);
 int64_t fs_tell(fs_file_t *f);
 int64_t fs_size(fs_file_t *f);
 int fs_sync(fs_file_t *f);
-/* Flushes and closes. The handle is closed even when the flush fails. */
+/*
+ * Flushes and closes. The handle is closed even when the flush fails, and
+ * on a gone volume, where it returns FS_ERR_GONE.
+ */
 int fs_close(fs_file_t *f);
 
 int fs_stat(const char *path, fs_stat_t *out);

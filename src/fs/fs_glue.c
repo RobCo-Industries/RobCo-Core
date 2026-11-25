@@ -2,6 +2,12 @@
  * FatFs media access layer: maps drive numbers 0 and 1 to the blk_dev_t
  * attached to fs_vols[]. FatFs only sees RES_* codes, so the last BLK_ERR_*
  * code is kept per volume for fs.c to report.
+ *
+ * A device that returns BLK_ERR_NOMEDIA makes its volume gone. From then
+ * on the drive reports STA_NOINIT | STA_NODISK and every transfer fails
+ * with RES_NOTRDY before reaching the device. FatFs then never serves its
+ * cached window, never re-mounts the drive by itself, and writes nothing
+ * back. Only fs_mount() on the slot clears it.
  */
 #include "fs_priv.h"
 
@@ -10,6 +16,18 @@
 #include <robco/datetime.h>
 
 fs_vol_t fs_vols[FF_VOLUMES];
+uint32_t fs_change_count;
+
+void fs_vol_lost(int vol)
+{
+    if (!fs_vols[vol].gone) {
+        fs_vols[vol].gone = 1;
+        /* A mount in progress fails instead: nothing changed for callers. */
+        if (fs_vols[vol].gen != 0) {
+            fs_change_count++;
+        }
+    }
+}
 
 /* 2026-01-01 00:00:00 in FAT format. */
 #define FS_FIXED_TIME ((uint32_t)((2026u - 1980u) << 25 | 1u << 21 | 1u << 16))
@@ -57,9 +75,10 @@ DWORD get_fattime(void)
 }
 #endif
 
+/* The device of a drive, or NULL when it has none or its medium left. */
 static blk_dev_t *drive_dev(BYTE pdrv)
 {
-    return pdrv < FF_VOLUMES ? fs_vols[pdrv].dev : NULL;
+    return pdrv < FF_VOLUMES && !fs_vols[pdrv].gone ? fs_vols[pdrv].dev : NULL;
 }
 
 static DSTATUS drive_status(BYTE pdrv)
@@ -67,9 +86,9 @@ static DSTATUS drive_status(BYTE pdrv)
     blk_dev_t *dev = drive_dev(pdrv);
 
     if (dev == NULL) {
-        return STA_NOINIT;
+        return pdrv < FF_VOLUMES && fs_vols[pdrv].gone ? STA_NOINIT | STA_NODISK : STA_NOINIT;
     }
-    return (dev->flags & BLK_FLAG_READONLY) != 0 ? STA_PROTECT : 0;
+    return (dev->flags & BLK_FLAG_READONLY) != 0 || fs_vols[pdrv].ro ? STA_PROTECT : 0;
 }
 
 DSTATUS disk_status(BYTE pdrv)
@@ -88,6 +107,9 @@ static DRESULT blk_result(BYTE pdrv, int rc)
         return RES_OK;
     }
     fs_vols[pdrv].blk_err = rc;
+    if (rc == BLK_ERR_NOMEDIA) {
+        fs_vol_lost(pdrv);
+    }
     switch (rc) {
     case BLK_ERR_RO:      return RES_WRPRT;
     case BLK_ERR_NOMEDIA: return RES_NOTRDY;
@@ -113,6 +135,9 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
 
     if (dev == NULL) {
         return RES_NOTRDY;
+    }
+    if (fs_vols[pdrv].ro) {
+        return RES_WRPRT;
     }
     return blk_result(pdrv, blk_write(dev, sector, count, buff));
 }
