@@ -142,6 +142,8 @@ temporary directory outside the repository and builds it there.
   `test_sdraw.py` and `test_storage.py` attach an SD image.
   `test_storage.py` also boots the read-only build of `storage`. `test_input.py` drives the
   serial and script backends, the second over the mini UART.
+  `test_input_gpio.py` drives the GPIO buttons and the dial through
+  qtest, and needs the `ticks` command of `examples/input`.
   `test_rtc.py` attaches QEMU's `ds1338` model at I2C address `0x68`.
   `test_gpiox.py` attaches two `pca9554` models at `0x20` and `0x21`.
   `test_spi.py` attaches a `w25q32` SPI flash. `demo` and `chain1` also
@@ -181,13 +183,14 @@ temporary directory outside the repository and builds it there.
 | V9  | raspi0, 1ap, 2b | Mailbox channel 8 answers board revision, ARM memory, UART clock (3 MHz). | Property mailbox driver and UART baud setup. |
 | V10 | raspi0, 1ap, 2b | Timer C1 match sets CS bit 1 and IRQ 1 pending. Writing CS bit 1 clears it. | Timer interrupt driver. |
 | V11 | raspi0, 1ap, 2b | `-drive if=sd` attaches to the SDHCI (EMMC) controller. Size must be a power of 2. | SD driver targets EMMC. Disk images need padding. |
-| V12 | raspi0, 1ap, 2b | GPLEV0/1 read 0. No way to inject GPIO input. | GPIO input tests cannot use QEMU. |
+| V12 | raspi0, 1ap, 2b | GPLEV0/1 read 0. | Undriven active-low lines look pressed: the stuck-line guard turns the GPIO backend off. V19 shows how to drive them. |
 | V13 | raspi0, 1ap, 2b | QMP `screendump` works headless and writes a PPM. | Framebuffer tests in CI. |
 | V14 | raspi0, 1ap, 2b | PM_WDOG then PM_RSTC full reset emits a QMP `RESET` event. | Reboot and watchdog tests. |
 | V15 | raspi0, 1ap, 2b | First `-serial` is the PL011, second is the mini UART. | Serial capture order in tests. |
 | V16 | raspi0, 1ap, 2b, 3b | SPI0 is modelled. With nothing attached a byte completes at once and reads 0. | SPI and TFT panel tests run on every board. |
 | V17 | raspi0, 1ap, 2b, 3b | `-device pca9554,bus=i2c-bus.1` answers at 0x20 to 0x27 and 0x38 to 0x3F with the data sheet power-on values. The register pointer keeps 2 bits and a multi-byte read repeats one register. QMP `qom-get` of `pinN` gives the config bit OR the output bit, so it shows outputs and reads inputs as high. qtest `set_irq_in <path> unnamed-gpio-in N level` sets an outside level that the input register ANDs with the chip's own drive, so 1 releases a line and 0 also pulls an output driven high to 0. `qom-set pinN` makes the pin an output at that level. | `test_gpiox.py` observes outputs with `qom-get` and drives inputs with qtest, never with `qom-set`, and releases every line before pins change direction. |
 | V18 | raspi3b | Cores 1 to 3 reset at 0x0 in AArch64 EL3 and, with A32 code there, spin on the EL3 vector at 0x200. With `boot()` they sit in the stub's AArch32 `wfi` loop. | Spinning spare cores slow every MMIO access of CPU 0. |
+| V19 | raspi0, 1ap, 2b, 3b | `bcm2835_gpio` has 54 output lines and no input lines. A qtest `writel` to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV0/1 bit, for input pins too, and the level stays. A write to GPLEV does nothing. A pull-up leaves an undriven pin at 0. The event detect registers read 0 and GPU IRQ 49 never goes pending. An output pin reads back its level in GPLEV. Under TCG one qtest write takes under 5 ms at the median, about 0.1 ms here, and guest timer time follows host time within 5 %. | `harness/pigpio.py` drives button and dial lines with GPSET and GPCLR. Tests drive every active-low line high before the guest starts. |
 | V20 | raspi0, 1ap, 2b, 3b | `ssi-sd` is not user creatable. `sd-card-spi` plugs only into an SD bus and lands on `generic-sdhci`. | No SD card in SPI mode can be tested on SPI0. |
 | V21 | raspi0, 1ap, 2b, 3b | SPI0 drives no CS lines. Every device on `spi` gets every byte and the replies OR. Each device needs its own `cs=` index. | One device per bus in tests. CS runs on hardware. |
 | V22 | raspi0, 1ap, 2b, 3b | A read-only drive is refused as an SD card. QMP `eject` and `blockdev-change-medium` work on `sd0`; EMMC present state bits 16 and 18 follow. | Card removal tests on the EMMC path. |
@@ -237,6 +240,10 @@ straight to QEMU. `vm.qmp` is the `Qemu` object from `harness/qemu.py`.
 QEMU is killed when the `with` block ends, even on failure.
 `qtest=True` adds a qtest socket while the guest runs, so
 `vm.qmp.set_irq_in(path, n, level)` can drive a device's GPIO inputs.
+For the Pi's own GPIO pins, `gpio_high=[...]` drives those pins high
+before the guest starts, and `PiGpio` from `harness/pigpio.py` presses
+buttons and turns a dial (V19). `tests/target/test_input_gpio.py` shows
+how, and `docs/spec/TESTING.md` lists the functions.
 
 The guest may still be printing when a test reads its output.
 `vm.serial` and `vm.serial2` return everything received so far.
@@ -489,7 +496,7 @@ PYTHONPATH=external/robco-core/tests python3 -m harness.run build/app.img --boar
 
 ## What QEMU cannot prove
 
-Caches, PWM sound, GPIO input, real SPI signalling and SD pin routing
+Caches, PWM sound, real GPIO contacts, pulls and edges, real SPI signalling and SD pin routing
 on boards with WiFi need a real board. QEMU enforces MMU permissions,
 but real fault status values and the behaviour of privileged
 instructions in USR mode need real silicon too. The checklist is in

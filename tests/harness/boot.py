@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 
-from . import dump
+from . import dump, pigpio
 from .qemu import KEEPALIVE_INTERVAL, Qemu, QemuError, keepalive_default, loader_words
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -365,7 +365,7 @@ def boot_args(image, board, mode="auto", sd=None):
 
 @contextlib.contextmanager
 def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
-         timeout=10.0, elf=None, keepalive=None, qtest=False):
+         timeout=10.0, elf=None, keepalive=None, qtest=False, gpio_high=()):
     """Boot `image` on `board` and yield a Vm. QEMU is always killed on exit.
 
     elf is the image's ELF, used to name functions in the state dump.
@@ -375,9 +375,15 @@ def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
     variable ROBCO_QEMU_KEEPALIVE (on unless it is 0 or off).
     qtest=True adds a qtest socket while the guest runs under TCG, so a
     test can drive device inputs with vm.qmp.set_irq_in().
+    gpio_high lists Pi GPIO pins driven high before the guest starts,
+    through qtest (needs qtest=True). QEMU has no pulls, so an undriven
+    pin reads 0 (canary V19). harness/pigpio.py drives them afterwards.
     """
     if board not in BOARDS:
         raise ValueError(f"unknown board {board!r}, expected one of {sorted(BOARDS)}")
+    gpio_high = list(gpio_high)
+    if gpio_high and not qtest:
+        raise ValueError("gpio_high needs qtest=True")
     args = boot_args(image, board, mode, sd)
     q = Qemu(BOARDS[board].binary, board, timeout=timeout, null_serial=False,
              qtest=qtest, qtest_accel=None)
@@ -394,6 +400,8 @@ def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
         q.start()
         socks = [_connect_unix(p, q, timeout) for p in paths]
         vm = Vm(q, socks, elf if elf is not None else dump.find_elf(image))
+        for pin in gpio_high:
+            q.writel(*pigpio.level_writes(board, pin, 1))
         q.execute("cont")
         if keepalive_default() if keepalive is None else keepalive:
             q.start_keepalive(KEEPALIVE_INTERVAL)

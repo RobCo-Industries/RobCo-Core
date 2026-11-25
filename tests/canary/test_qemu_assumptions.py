@@ -424,6 +424,74 @@ def test_v18_raspi3b_harness_parks_secondaries(tmp_path):
         assert words[pc] in (WFI, 0xEAFFFFFD), (hex(pc), hex(words[pc]))  # wfi; b <wfi>
 
 
+# V19: Pi GPIO levels from outside, through qtest writes to GPSET/GPCLR.
+GPFSEL2, GPSET0, GPSET1, GPCLR0, GPCLR1 = 0x08, 0x1C, 0x20, 0x28, 0x2C
+GPLEV0, GPLEV1, GPPUD, GPPUDCLK0 = 0x34, 0x38, 0x94, 0x98
+# Event detect: status, rising, falling, high, low, async rising, async falling.
+GPIO_EVENT_REGS = (0x40, 0x4C, 0x58, 0x64, 0x70, 0x7C, 0x88)
+IRQ_PENDING2 = 0xB208   # from the peripheral base; GPU IRQ 49 (gpio_int[0]) is bit 17
+GPIO_MACHINES = [(ARM, m) for m in ARM_MACHINES] + [(A64, "raspi3b")]
+PERIPH = dict(BASE, raspi3b=0x3F000000)
+GPIO = {m: b + 0x200000 for m, b in PERIPH.items()}
+
+
+@pytest.mark.parametrize("binary,machine", GPIO_MACHINES, ids=[m for _, m in GPIO_MACHINES])
+def test_v19_gpio_level_from_gpset(binary, machine):
+    """V19a: GPSET/GPCLR set GPLEV on input pins too; GPLEV writes, pulls and events do nothing."""
+    need(binary, machine)
+    g = GPIO[machine]
+    with Qemu(binary, machine, qtest=True) as q:
+        qom = [p["name"] for p in q.execute("qom-list", path="/machine/soc/peripherals/gpio")]
+        assert not [p for p in qom if p.startswith("unnamed-gpio-in")], qom  # no input lines
+        assert q.readl(g) == 0 and q.readl(g + GPLEV0) == 0  # every pin an input, reading 0
+        q.writel(g + GPLEV0, 1 << 17)
+        assert q.readl(g + GPLEV0) == 0                    # GPLEV is read-only
+        q.writel(g + GPSET0, (1 << 17) | (1 << 23))
+        assert q.readl(g + GPLEV0) == (1 << 17) | (1 << 23)  # sticks on input pins
+        q.writel(g + GPCLR0, 1 << 17)
+        assert q.readl(g + GPLEV0) == 1 << 23
+        q.writel(g + GPSET1, 1 << 15)
+        assert q.readl(g + GPLEV1) == 1 << 15              # bank 1, pin 47
+        q.writel(g + GPCLR0, 1 << 23)
+        q.writel(g + GPCLR1, 1 << 15)
+        # Pull-up on pin 17: the undriven pin still reads 0.
+        q.writel(g + GPPUD, 2)
+        q.writel(g + GPPUDCLK0, 1 << 17)
+        q.writel(g + GPPUDCLK0, 0)
+        q.writel(g + GPPUD, 0)
+        assert q.readl(g + GPLEV0) == 0
+        # Event detect is not modelled: the registers read 0, no IRQ.
+        for off in GPIO_EVENT_REGS:
+            q.writel(g + off, 1 << 17)
+        q.writel(g + GPSET0, 1 << 17)
+        q.writel(g + GPCLR0, 1 << 17)
+        assert [q.readl(g + off) for off in GPIO_EVENT_REGS] == [0] * len(GPIO_EVENT_REGS)
+        assert q.readl(PERIPH[machine] + IRQ_PENDING2) & (1 << 17) == 0
+        # An output pin shows what was written to it.
+        q.writel(g + GPFSEL2, 1 << 15)                     # pin 25 output
+        q.writel(g + GPSET0, 1 << 25)
+        assert q.readl(g + GPLEV0) == 1 << 25
+
+
+@pytest.mark.parametrize("binary,machine", GPIO_MACHINES, ids=[m for _, m in GPIO_MACHINES])
+def test_v19_gpio_level_while_guest_runs(binary, machine, raw_image):
+    """V19b: under TCG a qtest level write takes well under 5 ms; guest time follows host time."""
+    need(binary, machine)
+    g, clo = GPIO[machine], PERIPH[machine] + 0x3004
+    with Qemu(binary, machine, ["-kernel", raw_image], qtest=True, qtest_accel=None) as q:
+        q.execute("cont")
+        took = []
+        for i in range(200):
+            t = time.perf_counter()
+            q.writel(g + (GPSET0 if i & 1 else GPCLR0), 1 << 23)
+            took.append(time.perf_counter() - t)
+        took.sort()
+        assert took[100] < 0.005 and took[190] < 0.02, took[-10:]
+        t0, c0 = time.perf_counter(), q.readl(clo)
+        time.sleep(0.5)
+        c1, t1 = q.readl(clo), time.perf_counter()
+        assert abs((c1 - c0) / ((t1 - t0) * 1e6) - 1) < 0.05
+
 # V20 to V23: what QEMU offers a future SD card driver in SPI mode on SPI0.
 SPI_MACHINES = [(ARM, m) for m in ARM_MACHINES] + [(A64, "raspi3b")]
 SPI_IDS = [m for _, m in SPI_MACHINES]
