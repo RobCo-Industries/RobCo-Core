@@ -207,6 +207,8 @@ def stale_vm(tmp, started_offset=0.0, owner=None):
 
 
 def test_sweep_kills_only_its_own(tmp_path):
+    if not ps_works():
+        pytest.skip("cannot read a process start time here: ps may not run")
     own, own_dir = stale_vm(tmp_path)
     # Same pidfile shape, wrong start time: the pid is not the recorded VM.
     other, other_dir = stale_vm(tmp_path, started_offset=-3600)
@@ -222,3 +224,177 @@ def test_sweep_kills_only_its_own(tmp_path):
         for p in (own, other, live):
             p.kill()
             p.wait()
+
+
+def ps_works():
+    """True when this process may run ps and read a start time from it."""
+    return qemu_mod.process_start(os.getpid()) is not None
+
+
+# -- the sweep never stops a session -------------------------------------
+
+def ps_raises(pid):
+    raise PermissionError(1, "Operation not permitted", "ps")
+
+
+def ps_fails(pid):
+    return subprocess.CompletedProcess(["ps"], 1, "", "ps: not allowed\n")
+
+
+def ps_garbage(pid):
+    return subprocess.CompletedProcess(["ps"], 0, "\x00not a date at all\n", "")
+
+
+def ps_hangs(pid):
+    # The real launcher with a hanging command and the real timeout.
+    return subprocess.run(["sleep", "30"], capture_output=True, text=True,
+                          timeout=qemu_mod.PS_TIMEOUT)
+
+
+@pytest.fixture
+def no_proc(monkeypatch, tmp_path):
+    """Take the ps path on every system."""
+    monkeypatch.setattr(qemu_mod, "PROC", str(tmp_path / "no-proc"))
+
+
+@pytest.mark.parametrize("launcher", [ps_raises, ps_fails, ps_garbage, ps_hangs])
+def test_process_start_is_none_when_ps_fails(monkeypatch, no_proc, launcher):
+    monkeypatch.setattr(qemu_mod, "_run_ps", launcher)
+    t = time.monotonic()
+    assert qemu_mod.process_start(os.getpid()) is None
+    assert time.monotonic() - t < qemu_mod.PS_TIMEOUT + 2
+
+
+@pytest.mark.parametrize("pid", ["x", None, 0, 1, -1, 10**30])
+def test_process_start_is_none_for_a_bad_pid(no_proc, pid):
+    assert qemu_mod.process_start(pid) is None
+
+
+def test_process_start_is_none_for_unreadable_proc(monkeypatch, tmp_path):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / str(os.getpid())).mkdir()
+    (proc / str(os.getpid()) / "stat").write_text("garbage")
+    monkeypatch.setattr(qemu_mod, "PROC", str(proc))
+    assert qemu_mod.process_start(os.getpid()) is None  # unparsable
+    assert qemu_mod.process_start(os.getpid() + 1) is None  # gone
+
+
+class _NoKillOs:
+    """The os module as the harness sees it, with kill and killpg recorded."""
+
+    def __init__(self, sent):
+        self._sent = sent
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+    def kill(self, pid, sig):
+        self._sent.append((pid, sig))
+        if sig != 0 or pid <= 1:
+            raise AssertionError(f"the sweep sent signal {sig} to pid {pid}")
+        return os.kill(pid, 0)
+
+    def killpg(self, pgid, sig):
+        self._sent.append((-pgid, sig))
+        raise AssertionError(f"the sweep signalled group {pgid}")
+
+
+@pytest.fixture
+def no_kill(monkeypatch):
+    """Record every signal the sweep tries to send, and send none."""
+    sent = []
+    monkeypatch.setattr(qemu_mod, "os", _NoKillOs(sent))
+    return sent
+
+
+def test_sweep_spares_a_process_it_cannot_read(monkeypatch, tmp_path, no_kill, capsys):
+    monkeypatch.setattr(qemu_mod, "process_start", lambda pid: None)
+    proc, folder = stale_vm(tmp_path)
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        assert proc.poll() is None
+        assert os.path.exists(os.path.join(folder, qemu_mod.PIDFILE))
+        assert all(sig == 0 for _, sig in no_kill)
+        assert capsys.readouterr().err.count("could not check") == 1
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_sweep_spares_all_when_ps_may_not_run(monkeypatch, no_proc, tmp_path, no_kill):
+    monkeypatch.setattr(qemu_mod, "_run_ps", ps_raises)
+    procs = [stale_vm(tmp_path) for _ in range(3)]
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        for proc, folder in procs:
+            assert proc.poll() is None and os.path.exists(folder)
+    finally:
+        for proc, _ in procs:
+            proc.kill()
+            proc.wait()
+
+
+BROKEN = [b"", b"\x00\xff\xfe\x80garbage", b"123 456.0", b"0 1.0 0 0",
+          b"1 1.0 1 1", b"-1 1.0 -1 -1", b"-1 1.0 999999 -1",
+          b"0 1.0 999999 0", b"12345 nan 999999 12345", b"12345 inf 999999 12345"]
+
+
+@pytest.mark.parametrize("content", BROKEN)
+def test_sweep_ignores_a_broken_pidfile(monkeypatch, tmp_path, no_kill, content):
+    monkeypatch.setattr(qemu_mod, "process_start", lambda pid: 0.0)  # anything "proven"
+    folder = tempfile.mkdtemp(prefix=qemu_mod.TMP_PREFIX, dir=tmp_path)
+    with open(os.path.join(folder, qemu_mod.PIDFILE), "wb") as f:
+        f.write(content)
+    assert sweep_stale(str(tmp_path)) == []
+    assert all(sig == 0 and pid > 1 for pid, sig in no_kill)
+    assert os.path.exists(os.path.join(folder, qemu_mod.PIDFILE))
+
+
+def test_sweep_never_raises(monkeypatch, tmp_path):
+    def boom(pid):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(qemu_mod, "process_start", boom)
+    _, folder = stale_vm(tmp_path, owner=999999)
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        assert os.path.exists(folder)
+    finally:
+        with open(os.path.join(folder, qemu_mod.PIDFILE)) as f:
+            os.kill(int(f.read().split()[0]), signal.SIGKILL)
+
+
+def test_session_starts_when_the_sweep_raises(monkeypatch, capsys):
+    from harness import plugin
+
+    def boom():
+        raise PermissionError("ps not allowed")
+    monkeypatch.setattr(plugin, "sweep_stale", boom)
+    plugin.pytest_sessionstart(None)
+    assert "skipped the QEMU sweep" in capsys.readouterr().err
+
+
+def test_vm_without_a_watcher_does_not_start(monkeypatch, fake):
+    real = subprocess.Popen
+
+    def popen(cmd, *a, **k):
+        if cmd[0] == "/bin/sh":
+            raise PermissionError(1, "Operation not permitted", "/bin/sh")
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(qemu_mod.subprocess, "Popen", popen)
+    q = Qemu(str(fake), "none", qmp=False)
+    with pytest.raises(qemu_mod.QemuError, match="watcher"):
+        q.start()
+    assert not (fake.parent / "pids").exists(), "QEMU started without a watcher"
+    assert not os.path.exists(q.tmpdir)
+
+
+def test_vm_starts_when_the_pidfile_cannot_be_written(monkeypatch, fake, capsys):
+    def replace(*a):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(qemu_mod.os, "replace", replace)
+    q = Qemu(str(fake), "none", qmp=False).start()
+    try:
+        assert "cannot write" in capsys.readouterr().err
+    finally:
+        q.close()

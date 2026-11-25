@@ -7,12 +7,14 @@ Usage:
 """
 
 import json
+import math
 import os
 import select
 import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -56,37 +58,76 @@ class QemuError(RuntimeError):
     pass
 
 
-def process_start(pid):
-    """When `pid` started, in seconds since the epoch, or None if it is gone.
+# ps answers in well under a second. A hung ps must not hold up the session.
+PS_TIMEOUT = 2.0
+PROC = "/proc"  # tests point it elsewhere to take the ps path
 
+
+def _report(msg):
+    """The harness log: one line on stderr."""
+    try:
+        sys.stderr.write(f"robco harness: {msg}\n")
+    except (OSError, ValueError):
+        pass
+
+
+def _run_ps(pid):
+    """Run ps for the start time of `pid`. Tests replace it."""
+    return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                          text=True, timeout=PS_TIMEOUT,
+                          env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"})
+
+
+def _valid_pid(pid):
+    """True for an int that names one process and no group: above 1."""
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 1
+
+
+def process_start(pid):
+    """When `pid` started, in seconds since the epoch, or None.
+
+    None when the process is gone and whenever the start time cannot be
+    learned: no /proc, no ps, ps not allowed, a hung ps, odd output.
     Linux reads /proc, so the CI container needs no ps. macOS asks ps.
     Both are good to about a second.
     """
     try:
-        with open(f"/proc/{pid}/stat") as f:
+        pid = int(pid)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not _valid_pid(pid):
+        return None
+    try:
+        with open(f"{PROC}/{pid}/stat") as f:
             ticks = int(f.read().rpartition(")")[2].split()[19])
-        with open("/proc/stat") as f:
+        with open(f"{PROC}/stat") as f:
             btime = next(int(x.split()[1]) for x in f if x.startswith("btime "))
         return btime + ticks / os.sysconf("SC_CLK_TCK")
     except FileNotFoundError:
-        if os.path.isdir("/proc/self"):
+        if os.path.isdir(f"{PROC}/self"):
             return None
-    except (OSError, ValueError, IndexError, StopIteration):
+    except (OSError, ValueError, IndexError, StopIteration, ZeroDivisionError):
         return None
-    out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
-                         text=True, env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"}).stdout.strip()
     try:
-        return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
-    except ValueError:
+        r = _run_ps(pid)
+        if r.returncode != 0:
+            return None
+        start = time.mktime(time.strptime(r.stdout.strip(), "%a %b %d %H:%M:%S %Y"))
+    except (OSError, subprocess.SubprocessError, ValueError, OverflowError,
+            TypeError, AttributeError):
         return None
+    return start if math.isfinite(start) else None
 
 
 def _alive(pid):
+    """False only when `pid` surely names no process. Never signals."""
+    if not _valid_pid(pid):
+        return True  # not a process we may ask about: count it as alive
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
+    except OSError:
         return True
     return True
 
@@ -99,39 +140,72 @@ def sweep_stale(tmp=None, slack=2.0):
     started at the recorded time, so a reused pid or a developer's own
     QEMU is never touched. Removes the folders of dead VMs. Returns the
     killed pids.
+
+    Never raises. A pidfile it cannot judge, for example because ps may
+    not run, stays in place and its VM lives. It reports the skipped
+    pidfiles once, on the harness log.
     """
-    tmp = tmp or tempfile.gettempdir()
-    killed = []
+    killed, skipped = [], []
     try:
+        tmp = tmp or tempfile.gettempdir()
         names = [n for n in os.listdir(tmp) if n.startswith(TMP_PREFIX)]
-    except OSError:
+    except Exception:  # noqa: BLE001 - the sweep is a courtesy
         return killed
     for name in names:
         folder = os.path.join(tmp, name)
         try:
-            with open(os.path.join(folder, PIDFILE)) as f:
-                pid, started, owner, pgid = f.read().split()
-            pid, started, owner, pgid = int(pid), float(started), int(owner), int(pgid)
-        except (OSError, ValueError):
-            continue
-        owner_start = process_start(owner) if owner != os.getpid() else 0.0
-        if owner_start is not None and owner_start <= started + slack:
-            continue  # the owner, or a process that could be it, still runs
-        actual = process_start(pid)
-        if actual is not None:
-            try:
-                same = os.getpgid(pid) == pgid and abs(actual - started) <= slack
-            except OSError:
-                same = False
-            if not same:
-                continue  # the pid now names another process: not ours
-            try:
-                os.kill(pid, signal.SIGKILL)
-                killed.append(pid)
-            except OSError:
-                continue
-        shutil.rmtree(folder, ignore_errors=True)
+            outcome = _sweep_one(folder, slack)
+        except Exception:  # noqa: BLE001 - skip this pidfile, keep going
+            outcome = "skipped"
+        if outcome == "skipped":
+            skipped.append(folder)
+        elif isinstance(outcome, int):
+            killed.append(outcome)
+    if skipped:
+        _report(f"left {len(skipped)} QEMU pidfile(s) it could not check, "
+                f"for example {skipped[0]}")
     return killed
+
+
+def _sweep_one(folder, slack):
+    """Judge one VM folder. Returns the killed pid, "skipped" or None."""
+    try:
+        with open(os.path.join(folder, PIDFILE)) as f:
+            pid, started, owner, pgid = f.read().split()
+        pid, started, owner, pgid = int(pid), float(started), int(owner), int(pgid)
+    except FileNotFoundError:
+        return None  # a folder with no pidfile: not a VM, or not written yet
+    except (OSError, ValueError, UnicodeDecodeError):
+        return "skipped"
+    if not (_valid_pid(pid) and _valid_pid(owner) and _valid_pid(pgid)
+            and math.isfinite(started)):
+        return "skipped"
+    if owner == os.getpid():
+        return None  # our own VM
+    owner_start = process_start(owner)
+    if owner_start is None:
+        if _alive(owner):
+            return None  # an owner we cannot read counts as alive
+    elif owner_start <= started + slack:
+        return None  # the owner, or a process that could be it, still runs
+    actual = process_start(pid)
+    if actual is None:
+        if _alive(pid):
+            return "skipped"  # alive but unproven: never killed
+        shutil.rmtree(folder, ignore_errors=True)  # the VM is gone
+        return None
+    try:
+        same = os.getpgid(pid) == pgid and abs(actual - started) <= slack
+    except OSError:
+        same = False
+    if not same:
+        return None  # the pid now names another process: not ours
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return "skipped"
+    shutil.rmtree(folder, ignore_errors=True)
+    return pid
 
 
 def have_machine(binary, machine):
@@ -258,23 +332,35 @@ class Qemu:
         exists before QEMU starts.
         """
         self._started = time.time()
-        self._watcher = subprocess.Popen(
-            ["/bin/sh", "-c", WATCHER, "qemu-watcher"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            process_group=0)
+        try:
+            self._watcher = subprocess.Popen(
+                ["/bin/sh", "-c", WATCHER, "qemu-watcher"],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                process_group=0)
+        except (OSError, subprocess.SubprocessError) as e:
+            # No watcher, no guarantee that QEMU dies with this process.
+            raise QemuError(f"cannot start the QEMU watcher with /bin/sh: {e}") from e
 
     def _write_pidfile(self):
+        """Record the VM for sweep_stale(). A failure only warns: the
+        watcher still stops QEMU with this process."""
         tmp = os.path.join(self.tmpdir, PIDFILE + ".tmp")
-        with open(tmp, "w") as f:
-            f.write(f"{self.proc.pid} {self._started:.3f} {os.getpid()} {self._watcher.pid}\n")
-        os.replace(tmp, os.path.join(self.tmpdir, PIDFILE))
+        try:
+            with open(tmp, "w") as f:
+                f.write(f"{self.proc.pid} {self._started:.3f} {os.getpid()} {self._watcher.pid}\n")
+            os.replace(tmp, os.path.join(self.tmpdir, PIDFILE))
+        except OSError as e:
+            _report(f"cannot write {PIDFILE} in {self.tmpdir}: {e}")
 
     def _stop_watcher(self):
         """Close the pipe: the watcher kills what is left of its group and exits."""
         w, self._watcher = self._watcher, None
         if w is None:
             return
-        w.stdin.close()
+        try:
+            w.stdin.close()
+        except OSError:
+            pass  # the watcher is gone: the pipe has no reader
         try:
             w.wait(3)
         except subprocess.TimeoutExpired:
@@ -357,8 +443,8 @@ class Qemu:
             return
         try:
             os.killpg(self._watcher.pid, sig)
-        except (ProcessLookupError, PermissionError):
-            pass
+        except OSError:
+            pass  # gone, or not ours to signal: the wait below decides
 
     def _stop_proc(self):
         """Stop and reap QEMU. Safe when it has already exited."""

@@ -475,6 +475,10 @@ calls `sweep_stale()`. It kills a QEMU only when the test process is
 gone, the pid still leads that group and started at that time. It never
 matches QEMU by name, so your own QEMU is safe.
 
+The sweep is a courtesy, so no error in it stops a session. It never
+kills a process whose start time it cannot read, for example where `ps`
+may not run, and leaves that pidfile in place with one line on stderr.
+
 ## The harness in a project
 
 A project with RobCo-Core in `external/robco-core` enables the plugin

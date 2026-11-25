@@ -22,6 +22,7 @@ import glob
 import os
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -33,8 +34,14 @@ DEFAULT_BOARDS = ["raspi0", "raspi2b"]
 
 
 def pytest_sessionstart(session):
-    """Stop the QEMU processes a dead earlier run left. Only its own."""
-    sweep_stale()
+    """Stop the QEMU processes a dead earlier run left. Only its own.
+
+    A courtesy: no error in it stops the session.
+    """
+    try:
+        sweep_stale()
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"robco harness: skipped the QEMU sweep: {e!r}\n")
 
 
 def pytest_addoption(parser):
