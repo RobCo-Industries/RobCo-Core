@@ -19,20 +19,43 @@ from harness.qemu import Qemu, sweep_stale
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-@pytest.fixture
-def fake(tmp_path):
-    """A fake QEMU binary. Kills every stand-in it started at the end."""
-    script = tmp_path / "qemu-fake"
-    script.write_text('#!/bin/sh\necho $$ >> "$(dirname "$0")/pids"\nexec sleep 600\n')
+def write_fake(folder, body="exec sleep 600"):
+    """A fake QEMU binary in `folder`: it records its pid, then runs `body`."""
+    folder.mkdir(exist_ok=True)
+    script = folder / "qemu-fake"
+    script.write_text(f'#!/bin/sh\necho $$ >> "$(dirname "$0")/pids"\n{body}\n')
     script.chmod(0o755)
-    yield script
-    pids = tmp_path / "pids"
+    return script
+
+
+def kill_stand_ins(folder):
+    pids = folder / "pids"
     if pids.exists():
         for pid in map(int, pids.read_text().split()):
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+@pytest.fixture
+def fake(tmp_path):
+    """A fake QEMU binary. Kills every stand-in it started at the end."""
+    yield write_fake(tmp_path)
+    kill_stand_ins(tmp_path)
+
+
+@pytest.fixture
+def stubborn(tmp_path):
+    """A fake QEMU that ignores SIGTERM, so close() waits for it."""
+    yield write_fake(tmp_path / "stubborn", "trap '' TERM\nexec sleep 600")
+    kill_stand_ins(tmp_path / "stubborn")
+
+
+@pytest.fixture
+def short(tmp_path):
+    """A fake QEMU that exits by itself at once."""
+    yield write_fake(tmp_path / "short", "exit 0")
 
 
 def stand_in_pids(script, count=1, timeout=5.0):
@@ -72,6 +95,12 @@ CHILD = textwrap.dedent("""
     how = {how!r}
     if how == "exit":
         os._exit(0)
+    if how == "close":
+        print("closing", flush=True)
+        q.close()
+    if how == "own-exit":
+        q.proc.wait()
+        print("exited", flush=True)
     time.sleep(600)
 """)
 
@@ -93,6 +122,46 @@ def test_qemu_dies_with_its_test_process(fake, how):
         child.kill()
         child.wait()
         child.stdout.close()
+
+
+def test_qemu_dies_when_test_process_dies_in_close(stubborn):
+    # close() waits for a QEMU that ignores SIGTERM. The test process dies
+    # then: the watcher must still be there to kill QEMU.
+    code = CHILD.format(tests=TESTS, binary=str(stubborn), how="close")
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "started"
+        (pid,) = stand_in_pids(stubborn)
+        assert child.stdout.readline().strip() == "closing"
+        time.sleep(0.5)  # close() now waits on the stand-in
+        child.kill()
+        child.wait(5)
+        assert gone(pid, timeout=2.0), f"QEMU stand-in {pid} outlived a kill during close()"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+
+
+def test_dead_test_process_signals_no_bystander(short, tmp_path):
+    # QEMU exits by itself, then the test process dies. The watcher kills
+    # its own group only, so a process outside it lives on.
+    bystander = subprocess.Popen(["sleep", "600"], start_new_session=True)
+    code = CHILD.format(tests=TESTS, binary=str(short), how="own-exit")
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "started"
+        assert child.stdout.readline().strip() == "exited"
+        child.kill()
+        child.wait(5)
+        time.sleep(0.5)  # the watcher acts on end of file
+        assert bystander.poll() is None, "the watcher signalled a bystander"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+        bystander.kill()
+        bystander.wait()
 
 
 def test_close_leaves_no_process(fake):

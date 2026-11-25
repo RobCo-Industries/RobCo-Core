@@ -32,11 +32,19 @@ KEEPALIVE_MAX_UNANSWERED = 8
 # outlives no test process".
 PIDFILE = "qemu.pid"
 TMP_PREFIX = "qh"
-# A watcher per VM: it blocks on a pipe from the test process and, at end
-# of file, kills QEMU's process group. The test process dying for any
-# reason, SIGKILL included, closes the pipe. close() kills the watcher
-# first, so it never signals a group that is gone.
-WATCHER = 'read _ ; kill -s KILL -- "-$1" 2>/dev/null'
+# A watcher per VM: it leads a new process group and QEMU starts inside
+# that group. It blocks on a pipe from the test process and, at end of
+# file, kills its own group: QEMU, QEMU's children and itself. The test
+# process dying for any reason, SIGKILL included, closes the pipe.
+#
+# No moment exists with QEMU up and no watcher: the watcher starts first,
+# and QEMU cannot join a group whose leader is gone. The group number
+# cannot name a stranger: a group id stays taken while its leader lives,
+# and the watcher outlives QEMU. It ignores SIGTERM, so close() can
+# SIGTERM the group and the watcher stays. close() reaps QEMU first, then
+# closes the pipe and reaps the watcher. See tests/README.md, "QEMU
+# outlives no test process".
+WATCHER = "trap '' TERM; read _ ; kill -s KILL 0"
 
 
 def keepalive_default():
@@ -214,12 +222,17 @@ class Qemu:
             qt_listener.bind(self._sock("qtest"))
             qt_listener.listen(1)
             qt_listener.settimeout(self.timeout)
-        err = open(self.stderr_path, "wb")
-        self.proc = subprocess.Popen(self.command_line(), stdin=subprocess.DEVNULL,
-                                     stdout=err, stderr=err, start_new_session=True)
-        err.close()
         try:
             self._start_watcher()
+            err = open(self.stderr_path, "wb")
+            try:
+                # Python 3.11 or later. The CI image has 3.12.
+                self.proc = subprocess.Popen(self.command_line(), stdin=subprocess.DEVNULL,
+                                             stdout=err, stderr=err,
+                                             process_group=self._watcher.pid)
+            finally:
+                err.close()
+            self._write_pidfile()
             if qt_listener:
                 try:
                     self._qt, _ = qt_listener.accept()
@@ -238,27 +251,35 @@ class Qemu:
         return self
 
     def _start_watcher(self):
-        """Tie QEMU's life to this process and write the pidfile."""
-        started = time.time()
+        """Start the watcher as the leader of QEMU's future process group.
+
+        Same session as this process: setpgid() joins only a group of
+        the caller's session. Popen returns after the exec, so the group
+        exists before QEMU starts.
+        """
+        self._started = time.time()
         self._watcher = subprocess.Popen(
-            ["/bin/sh", "-c", WATCHER, "qemu-watcher", str(self.proc.pid)],
+            ["/bin/sh", "-c", WATCHER, "qemu-watcher"],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
+            process_group=0)
+
+    def _write_pidfile(self):
         tmp = os.path.join(self.tmpdir, PIDFILE + ".tmp")
         with open(tmp, "w") as f:
-            f.write(f"{self.proc.pid} {started:.3f} {os.getpid()} {self.proc.pid}\n")
+            f.write(f"{self.proc.pid} {self._started:.3f} {os.getpid()} {self._watcher.pid}\n")
         os.replace(tmp, os.path.join(self.tmpdir, PIDFILE))
 
     def _stop_watcher(self):
+        """Close the pipe: the watcher kills what is left of its group and exits."""
         w, self._watcher = self._watcher, None
         if w is None:
             return
-        try:
-            w.kill()
-        except OSError:
-            pass
-        w.wait()
         w.stdin.close()
+        try:
+            w.wait(3)
+        except subprocess.TimeoutExpired:
+            w.kill()
+            w.wait()
 
     def _connect_qmp(self):
         deadline = time.monotonic() + self.timeout
@@ -317,19 +338,25 @@ class Qemu:
             except OSError:
                 pass
         try:
-            self._stop_watcher()
+            # QEMU first: the watcher must outlive it, so a test process
+            # killed while close() waits still takes QEMU with it.
             if self.proc:
                 self._stop_proc()
         finally:
-            shutil.rmtree(self.tmpdir, ignore_errors=True)
+            try:
+                self._stop_watcher()
+            finally:
+                shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _signal_group(self, sig):
-        # The process may exit at any time, for example after a guest
-        # power-off. macOS then reports EPERM for the group, not ESRCH.
-        if self.proc.poll() is not None:
+        # The group is the watcher's. The watcher is our child and not yet
+        # reaped, so its pid, and the group id, name no other process.
+        # QEMU may exit at any time, for example after a guest power-off.
+        # macOS then reports EPERM for the group, not ESRCH.
+        if self.proc.poll() is not None or self._watcher is None:
             return
         try:
-            os.killpg(self.proc.pid, sig)
+            os.killpg(self._watcher.pid, sig)
         except (ProcessLookupError, PermissionError):
             pass
 

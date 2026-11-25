@@ -436,21 +436,41 @@ builds itself, such as the canary's, have no keep-alive. Neither has
 
 ## QEMU outlives no test process
 
-`Qemu.start()` starts QEMU in its own process group and a small shell
-watcher next to it. The watcher blocks on a pipe from the test process.
-When that process dies, by a timeout, a signal, `SIGKILL` or an exit
-that skips `close()`, the pipe closes and the watcher kills QEMU's group.
-`close()` kills and reaps the watcher first, then stops and reaps QEMU.
+`Qemu.start()` first starts a small shell watcher as the leader of a new
+process group, then starts QEMU inside that group. The watcher blocks on
+a pipe from the test process. When that process dies, by a timeout, a
+signal, `SIGKILL` or an exit that skips `close()`, the pipe closes and
+the watcher kills its group: QEMU and itself.
+
+The order leaves no gap. QEMU never runs without a watcher, since it
+can only join a live group. `close()` stops and reaps QEMU first, then
+closes the pipe and reaps the watcher. A test process killed while
+`close()` waits for a slow QEMU still takes QEMU with it.
+
+The group id never names a stranger. A group id stays taken while its
+leader lives, and the watcher outlives QEMU. The watcher ignores
+`SIGTERM`, so `close()` can send it to the whole group.
 
 ```mermaid
-flowchart LR
-    T[test process] -- pipe --> W[watcher]
-    T -- starts --> Q[QEMU group]
-    W -- kill at end of file --> Q
+sequenceDiagram
+    participant T as test process
+    participant W as watcher
+    participant Q as QEMU
+    T->>W: start, new group, pipe
+    T->>Q: start in the watcher's group
+    alt close()
+        T->>Q: SIGTERM to the group, then SIGKILL
+        T->>T: reap QEMU
+        T->>W: close the pipe
+        W->>W: kill its group, exit
+    else test process dies
+        T--)W: pipe closes
+        W->>Q: SIGKILL to its group
+    end
 ```
 
 Each VM's temp folder holds `qemu.pid`: the QEMU pid, its start time,
-the test process pid and the process group. At session start the plugin
+the test process pid and the process group, which is the watcher's pid. At session start the plugin
 calls `sweep_stale()`. It kills a QEMU only when the test process is
 gone, the pid still leads that group and started at that time. It never
 matches QEMU by name, so your own QEMU is safe.
