@@ -463,6 +463,8 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `holo_launch` | `path` | Pip-OS starts a holotape |
 | `holo_exit` | `status` | Holotape returned |
 | `holo_kill` | `reason pc` | Pip-OS killed a holotape. `reason` and `pc` work as in `rom_kill`. `reason` is also `eject` when the slot card of a running tape was pulled. Every `holo_kill` carries `pc`. For `eject`, `pc` is the tape's program counter at the syscall where Pip-OS ended it, in the same format as for a fault. |
+| `run` | `tape` | Runner ROM: it is about to launch the tape `tape`. See [The runner ROM](./SDK_PACKAGE.md#the-runner-rom). |
+| `done` | `result rc` | Runner ROM: the run is over. `result` says how, and `rc` is what `holo_launch` returned. With `result=config` it adds `why`. See [Runner markers](./SDK_PACKAGE.md#runner-markers). |
 | `init` | `fb console tick hz` | First stage: return codes of the hardware set-up, and the tick rate |
 | `input` | `serial mini script` | First stage: return codes of the input back ends |
 | `post` | `name result`, then probe keys | First stage: one self-test probe. `result` is `ok`, `fail`, `absent` or `skipped`. A skipped probe has `after`, the probe that stopped the self test. See [First-stage self test](#first-stage-self-test). |
@@ -499,8 +501,9 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `maint` | `boot`, `handoff`, `config`, `ready`, `tool` |
 | `pipos` | `boot`, `load`, `error`, `jump` for the ROM, `rom_exit`, `rom_kill`, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
 | `deitrix` | `boot`, `ready` |
+| `runner` | `run`, `done` |
 
-All stages emit `exception` and `panic` when those happen. Deitrix runs in USR mode, so it prints through the `log` syscall.
+All stages emit `exception` and `panic` when those happen. Deitrix runs in USR mode, so it prints through the `log` syscall. The runner ROM does the same. It prints no `boot` marker, because a ROM in USR mode cannot read the values of one.
 
 The first-stage events, from `init` to `fault_hook` in the table, are RETROS-BIOS's. Their keys are a draft.
 

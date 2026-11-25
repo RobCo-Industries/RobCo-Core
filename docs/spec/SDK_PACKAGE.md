@@ -1,6 +1,6 @@
 # SDK packages
 
-An SDK package is a versioned zip archive that holds what a Studio project builds and runs against: headers, libraries, linker scripts, kernels and boot data. An SDK index lists the packages and the tools Studio downloads. This spec fixes the archive, its manifest `sdk.json`, the build flags `flags.json`, the firmware pins, the index, the rules that say whether a package fits a project, and every hash check.
+An SDK package is a versioned zip archive that holds what a Studio project builds and runs against: headers, libraries, linker scripts, kernels and boot data. An SDK index lists the packages and the tools Studio downloads. This spec fixes the archive, its manifest `sdk.json`, the build flags `flags.json`, the runner ROM, the firmware pins, the `templates` package, the index, the rules that say whether a package fits a project, and every hash check.
 
 State today: no package is built and no index exists. Pip-OS ships its SDK as the `sdk/` folder of its repository, as [PIPOS_ABI.md](./PIPOS_ABI.md#sdk) describes. A package is the compiled form of that folder plus the boot files. [STUDIO_PROJECT.md](./STUDIO_PROJECT.md) fixes the project that uses a package. [TESTING.md](./TESTING.md#bootjson) fixes `boot.json`.
 
@@ -9,12 +9,13 @@ State today: no package is built and no index exists. Pip-OS ships its SDK as th
 | Name | Kind | Contents | Version |
 |---|---|---|---|
 | `pipos` | Package | Headers, `libpip.a`, `crt0.S`, linker scripts, `flags.json`, kernels, the runner ROM, the firmware stub, `boot.json`, the firmware pins | `MAJOR.MINOR.BUILD`. `MAJOR.MINOR` is the Pip-OS ABI it implements. |
+| `templates` | Package | The project skeletons that `robco new` writes | The RobCo-Reel release, `X.Y.Z` |
 | `gcc` | Tool | One xPack `arm-none-eabi-gcc` archive per host, from its publisher | The full xPack release, such as `15.2.1-1.1` |
 | `qemu` | Tool | One QEMU build per host, with its source archive | The QEMU version, such as `10.1.2` |
 
 A package is our archive with an `sdk.json`. A tool is an upstream or separate archive that the index points to by URL and hash. A tool has no `sdk.json`.
 
-Other packages, such as `deitrix`, `terminal`, `reel` and `templates`, follow the same rules when they exist. This spec defines the layout of `pipos` only.
+Other packages, such as `deitrix`, `terminal` and `reel`, follow the same rules when they exist. This spec defines the layout of `pipos` and of `templates`.
 
 ## The archive
 
@@ -97,6 +98,12 @@ flowchart LR
 | `rimg` | The `rimg` header version, `hdr_version` | [IMAGE_FORMAT.md](./IMAGE_FORMAT.md) |
 | `flags` | `flags.json` `format` | This spec |
 | `boot` | `boot.json` `format` | [TESTING.md](./TESTING.md#bootjson) |
+| `runner` | The runner ROM's contract: `RUNNER.CFG` and its marker lines | [The runner ROM](#the-runner-rom) |
+| `templates` | `templates.json` `format` | [templates.json](#templatesjson) |
+| `project` | `robco.toml` `format` of the manifests a package holds | [STUDIO_PROJECT.md](./STUDIO_PROJECT.md#format-version) |
+| `scenario` | Scenario file `format` of the scenarios a package holds | [STUDIO_CLI.md](./STUDIO_CLI.md#scenario-files) |
+
+A `pipos` package carries `rimg`, `flags`, `boot` and `runner`. A `templates` package carries `templates`, `project` and `scenario`.
 
 `requires` entries:
 
@@ -137,7 +144,7 @@ flowchart LR
 | `boot/pipos.elf` | Its ELF, for a debugger |
 | `boot/PIPOS.CFG` | The default Pip-OS config |
 | `boot/config.txt` | The default `config.txt` |
-| `boot/RUNNER.ROM` | The runner ROM: it launches the project's tape and prints its exit status |
+| `boot/RUNNER.ROM` | The runner ROM: it launches the project's tape and prints its exit status. See [The runner ROM](#the-runner-rom). |
 | `boot/fwstub.bin` | The QEMU firmware stub, built from RobCo-Core `tests/fwstub/` |
 | `boot.json` | The QEMU arguments per board |
 | `docs/` | The API reference |
@@ -258,6 +265,157 @@ Only the sealed tape, `build/NAME.HTP`, must be byte-equal across host systems a
 ### Reading flags.json
 
 A `flags.json` with a larger `format` fails with `package: format`. An unknown field is ignored.
+
+## The runner ROM
+
+The runner ROM is the ROM that `robco run` and `robco test` boot. It launches one tape, prints how the tape ended and exits. It draws nothing, shows no menu and reads no key. With it, a tape project runs without Deitrix.
+
+State today: it does not exist. `tests/launcher/` in RobCo-Reel is a test ROM of the same shape, with the tape name built in. Pip-OS will build the runner from its SDK and ship it in the `pipos` package.
+
+| Property | Value |
+|---|---|
+| Path in the package | `boot/RUNNER.ROM` |
+| Path on a card | `/PIPBOY/ROM1.ROM` |
+| Image | A sealed `ROM1` image, subtype 0, with the header `name` `RUNNER`. It is built with `pipos-app.mk` with no `ABI` variable, so it carries the ABI of the package. |
+| Version of this contract | `runner` in `formats` of `sdk.json`, `1` for this spec. It covers `RUNNER.CFG` and the marker lines. |
+
+### What the kernel gives a ROM
+
+These are facts of the kernel as it is, and the runner is shaped by them. None is a request.
+
+| Fact | Consequence |
+|---|---|
+| The kernel loads one ROM, `/PIPBOY/ROM1.ROM`. It has no setting for another path. | The tool copies `boot/RUNNER.ROM` to the card under that name. |
+| A ROM gets no argument. `args` in its startup block is empty. | The runner reads the tape's name from a file on the card, with `file_open` and `file_read`. |
+| A ROM runs in USR mode and prints only through `log`. It cannot read the values of a `boot` marker. | The runner prints no `boot` marker. |
+| `holo_launch` returns the tape's exit status or a negative code, as [Launching](./PIPOS_ABI.md#launching) says. | The runner prints that value and needs nothing else. |
+| After the ROM exits, the kernel prints `ev=rom_exit` and `ev=ready rom=1` and stays in its main loop. It does not power off. | QEMU keeps running. The tool ends the run. |
+| The kernel sets no time limit on a tape. | A tape that never ends holds the machine. The tool's time limit ends the run. |
+| While a tape runs, the kernel reads the script channel only inside `sleep_ms`, the input calls, `file_read` and `holo_enumerate`. | A key sent to a tape that makes none of those calls is not answered. |
+| The kernel prints `ev=holo_start name=<file>` when a tape starts and `ev=holo_error code=<code> name=<file>` when a load fails. [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md#events) lists `holo_launch path` and neither of these. | A tool reads the runner's lines, not these. |
+
+### RUNNER.CFG
+
+The runner reads `/PIPBOY/RUNNER.CFG`. It is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), at most 255 bytes long.
+
+| Section | Key | Required | Value |
+|---|---|---|---|
+| `run` | `tape` | Yes | The file name of the tape, such as `PIPES.HTP`: a name `holo_launch` accepts, with no folder |
+
+The runner reads this one key and passes an empty argument string to the tape. Left out on purpose: an argument string, a list of tapes and a tape on the slot card.
+
+The tool writes the file as exactly these bytes, with `NAME` the `project.name` and LF line ends:
+
+```
+[run]
+tape = NAME.HTP
+```
+
+### What the runner does
+
+The runner is `pip_main()` of one C file. It runs these steps once, in order, and stops at the first that fails:
+
+| Step | Action | On failure it prints `ev=done` with |
+|---|---|---|
+| 1 | `file_open("/PIPBOY/RUNNER.CFG")` | `result=config why=open`, `rc` the value returned |
+| 2 | `file_read` into a buffer of 256 bytes until it returns 0 or the buffer is full, then `file_close` | `result=config why=read`, `rc` the negative value returned |
+| 3 | The file holds 1 to 255 bytes | `result=config why=size rc=0` |
+| 4 | `pip_ini_get()` of key `tape` in section `run`, into 13 bytes | `result=config why=parse`, `rc` the value returned |
+| 5 | Every byte of the value is from `0x21` to `0x7E` | `result=config why=name rc=0` |
+| 6 | Print `ev=run` with the value | |
+| 7 | `holo_launch(value, "")` | |
+| 8 | Print `ev=done` with the result of step 7 | |
+| 9 | Return 0 from `pip_main()` when the result is `exit`, else 1 | |
+
+The runner prints each marker with one `log` call, as one line that ends in a line feed. It prints nothing else. It never draws and never reads an event.
+
+### Runner markers
+
+The lines follow the marker format of [Serial markers](./BOOT_PROTOCOL.md#serial-markers), with the stage name `runner`. The keys come in the order shown, with one space between them.
+
+| Line | When |
+|---|---|
+| `@RC stage=runner ev=run tape=<file>` | Right before `holo_launch`. At most once per boot. |
+| `@RC stage=runner ev=done result=<result> rc=<rc>` | After `holo_launch` returned. `<rc>` is the value it returned, as a signed decimal number. |
+| `@RC stage=runner ev=done result=config rc=<rc> why=<why>` | `RUNNER.CFG` could not be used, and `holo_launch` was not called |
+
+A runner that reaches its end prints exactly one `done` line, and it is the last line the runner prints.
+
+| `result` | `holo_launch` returned | Meaning |
+|---|---|---|
+| `exit` | 0 to 255 | The tape ran and ended. `rc` is its exit status. |
+| `fault` | `-PIP_EFAULT`, -14 | The kernel killed the tape after a fault. The kernel printed `ev=holo_kill` first. |
+| `missing` | `-PIP_ENOENT`, -2 | No such tape on the card |
+| `bad` | `-PIP_ENOEXEC`, -40 | The file failed a validation step, or it is a data tape |
+| `io` | `-PIP_EIO`, -5 | A read of the card failed |
+| `eject` | `-PIP_ENODEV`, -41 | The slot card was pulled while its tape ran |
+| `error` | Any other negative value | Such as `-PIP_EINVAL`, -22, for a name the kernel refuses |
+| `config` | Not called | See the steps above. `why` is `open`, `read`, `size`, `parse` or `name`. |
+
+A run of a tape that returns 3:
+
+```
+@RC stage=pipos ev=jump entry=0x00400000
+@RC stage=runner ev=run tape=PIPES.HTP
+@RC stage=pipos ev=holo_start name=PIPES.HTP
+tape: ready
+@RC stage=pipos ev=holo_exit status=3
+@RC stage=runner ev=done result=exit rc=3
+@RC stage=pipos ev=rom_exit status=0
+@RC stage=pipos ev=ready rom=1
+```
+
+A card without the tape:
+
+```
+@RC stage=runner ev=run tape=PIPES.HTP
+@RC stage=runner ev=done result=missing rc=-2
+@RC stage=pipos ev=rom_exit status=1
+@RC stage=pipos ev=ready rom=1
+```
+
+A card without `RUNNER.CFG`:
+
+```
+@RC stage=runner ev=done result=config rc=-2 why=open
+@RC stage=pipos ev=rom_exit status=1
+@RC stage=pipos ev=ready rom=1
+```
+
+The `stage=pipos` lines are the kernel's own and are shown for context. Only the `stage=runner` lines are part of this contract.
+
+### When a run is over
+
+A tool reads the PL011 line by line. A line holds a marker when it contains the four bytes `@RC `, and the marker runs from the first of them to the end of the line. A tape may leave a line unfinished, so a marker does not always start its line. The tool splits the marker at spaces into `key=value` pairs, at the first `=` of each, and finds keys by name. The first of these markers ends the run:
+
+| Marker | The run ended because |
+|---|---|
+| `stage=runner` with `ev=done` | The runner reported. `result` and `rc` say how. |
+| Any stage with `ev=exception` or `ev=panic` | The kernel stopped on a fault of its own. No `done` line will come. |
+| `stage=pipos` with `ev=ready`, before any `done` line | The kernel reached its main loop and the runner did not report: the ROM did not load, with `rom=0`, or the kernel killed it, with `rom=1`. No `done` line will come. |
+
+A run with none of these lines is not over. The tape still runs, and only the tool's time limit ends it. After a `done` line the machine idles in the kernel's main loop, with the script channel still answering, until the tool stops QEMU.
+
+```mermaid
+flowchart TB
+    B["Kernel boots"] --> L{"ROM1.ROM loads?"}
+    L -- No --> R0["ev=ready rom=0"]
+    L -- Yes --> C{"RUNNER.CFG usable?"}
+    C -- No --> D1["ev=done result=config"]
+    C -- Yes --> RUN["ev=run tape=NAME.HTP"]
+    RUN --> H["holo_launch"]
+    H --> D2["ev=done result=... rc=..."]
+    D1 --> X["ROM exits<br/>ev=rom_exit, ev=ready rom=1"]
+    D2 --> X
+```
+
+### What Pip-OS must add for the runner
+
+1. `sdk/examples/runner/`: `main.c` and a `Makefile` that includes `pipos-app.mk` with `KIND := rom`, `NAME := RUNNER` and `IMAGE := RUNNER.ROM`. The code follows [What the runner does](#what-the-runner-does) and prints the lines of [Runner markers](#runner-markers), byte for byte.
+2. Its package build copies the built image to `boot/RUNNER.ROM` and writes `"runner": 1` into `formats` of `sdk.json`.
+3. A target test on every board that boots a card with the runner as `/PIPBOY/ROM1.ROM`: a tape that returns 0, a tape that returns 3, a missing tape, a tape with a bad CRC and a card without `RUNNER.CFG`. Each case checks the exact `done` line and that `ev=ready rom=1` follows.
+
+No kernel change is needed.
 
 ## Firmware pins
 
@@ -387,6 +545,7 @@ A tool never retries a mismatch from another location, and never installs a file
 | Part | Licence |
 |---|---|
 | `pipos`: headers, `libpip.a`, `crt0.S`, linker scripts, kernels, runner ROM, firmware stub, data files | MIT |
+| `templates`: every template file | MIT. A template is copied into a person's project and becomes part of their tape. |
 | `gcc`: the xPack archive. Its `libgcc` ends up in every tape. | GPL-3.0 with the GCC Runtime Library Exception for `libgcc`. The archive is not ours and is not repackaged. |
 | `qemu`: our build | GPL-2.0, with its source archive in the same release |
 | The Pi firmware | Not in any package. Fetched from its publisher under its own licence. |
@@ -405,7 +564,7 @@ A tool never retries a mismatch from another location, and never installs a file
     {"repo": "Pip-OS", "commit": "1111111111111111111111111111111111111111"},
     {"repo": "RobCo-Core", "commit": "2222222222222222222222222222222222222222"}
   ],
-  "formats": {"rimg": 1, "flags": 1, "boot": 1},
+  "formats": {"rimg": 1, "flags": 1, "boot": 1, "runner": 1},
   "requires": [],
   "tools": [
     {"name": "gcc", "version": "15.2.1-1.1"},
