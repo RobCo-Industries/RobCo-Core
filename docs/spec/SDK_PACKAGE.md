@@ -73,7 +73,7 @@ flowchart LR
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `format` | integer | Yes | `1` for this spec |
-| `name` | string | Yes | The package name. Equals the name in the file name and in the index. |
+| `name` | string | Yes | The package name: 1 to 32 characters from `a` to `z`, `0` to `9` and `-`, starting with a letter. Equals the name in the file name and in the index. |
 | `version` | string | Yes | `X.Y.Z`, decimal, each part from 0 to 65535 with no leading zero: `1.3.0`, never `1.03.0`. Equals the version in the file name and in the index. |
 | `abi` | string | For `pipos` | The ABI the package implements, `MAJOR.MINOR`, each part from 0 to 65535 with no leading zero. Equals the first two parts of `version`. See [Which package carries which field](#which-package-carries-which-field). |
 | `built_from` | array of objects | Yes | One per repository that went into the package |

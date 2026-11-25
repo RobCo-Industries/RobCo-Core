@@ -86,7 +86,7 @@ Every failure has one code. This table maps each code to its exit code, includin
 | `usage` | 2 | [Options](#options) | The command line is wrong |
 | `project: none` | 3 | [The project folder](#the-project-folder) | The current folder holds no `robco.toml` |
 | `manifest: syntax`, `manifest: format`, `manifest: unknown key`, `manifest: type`, `manifest: missing`, `manifest: name`, `manifest: version`, `manifest: title`, `manifest: kind`, `manifest: subtype`, `manifest: platform`, `manifest: abi`, `manifest: path`, `manifest: icon`, `manifest: sources` | 3 | [Errors](./STUDIO_PROJECT.md#errors) | `robco.toml` is refused |
-| `lock: syntax`, `lock: format`, `lock: unknown key`, `lock: stale`, `lock: hash`, `lock: missing`, `lock: tool` | 3 | [robco.lock](./STUDIO_PROJECT.md#robcolock) | `robco.lock` is refused, or no longer matches what it pins |
+| `lock: syntax`, `lock: format`, `lock: unknown key`, `lock: entry`, `lock: stale`, `lock: hash`, `lock: missing`, `lock: tool` | 3 | [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins) | `robco.lock` is refused, or no longer matches what it pins |
 | `new: name`, `new: template`, `new: exists` | 3 | [robco new](#robco-new) | The name, the template or the folder is refused |
 | `run: board` | 3 | [Starting QEMU](#starting-qemu) | The package has no such board |
 | `test: none`, `test: name`, `test: syntax`, `test: format`, `test: unknown key`, `test: type`, `test: missing`, `test: step`, `test: value`, `test: golden` | 3 | [Scenario files](#scenario-files) | A scenario file or a golden image is refused |
@@ -104,7 +104,7 @@ Every failure has one code. This table maps each code to its exit code, includin
 | `sim: start`, `sim: died`, `sim: qmp` | 7 | [Starting QEMU](#starting-qemu) | QEMU did not start, died or did not answer |
 | `guest: fault`, `guest: runner` | 8 | [What ends a run](#what-ends-a-run) | The machine failed outside the tape |
 | `test: failed` | 1 | [robco test](#robco-test) | At least one scenario failed |
-| `io: read`, `io: write` | 9 | This table | The host refused a file operation. The detail names the path. |
+| `io: read`, `io: write` | 9 | This table | The host refused to open, read, write, create or rename a file that exists or should be made. The detail names the path. It covers `robco.toml`, `robco.lock`, the sources, the outputs and the cache. A file of the project that is simply absent has its own code, such as `project: none`. A local index that cannot be read is `index: read`. |
 | `internal` | 10 | This table | A fault of the tool itself |
 
 `test: failed` gives exit code 7 in place of 1 when QEMU failed in a scenario, as [Exit codes](#exit-codes) says.
@@ -289,9 +289,9 @@ The `result` line adds:
 
 | Order | Work | Errors |
 |---|---|---|
-| 1 | Read `robco.toml` | `project: none`, `manifest: ...` |
-| 2 | Read `robco.lock`, or resolve and write it when there is none, by [When the lock changes](./STUDIO_PROJECT.md#when-the-lock-changes) | `lock: ...`, `index: ...`, `sdk: ...` |
-| 3 | Install each locked package, and the locked `gcc` tool, where the cache lacks them. A build never downloads `qemu`. | `package: ...`, `tool: hash`, `index: ...`, `lock: hash`, `lock: missing`, `lock: tool` |
+| 1 | Read `robco.toml` | `project: none`, `io: read`, `manifest: ...` |
+| 2 | Read `robco.lock`, by [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), or resolve and write it when there is none, by [When the lock changes](./STUDIO_PROJECT.md#when-the-lock-changes) | `lock: ...`, `index: ...`, `sdk: ...`, `io: read`, `io: write` |
+| 3 | Install each locked package where the cache lacks it. Then check the locked tools against the `pipos` package, step 4 of [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins). Then install the locked `gcc` tool where the cache lacks it. A build never downloads `qemu`. | `package: ...`, `tool: hash`, `index: ...`, `lock: hash`, `lock: missing`, `lock: tool` |
 | 4 | Find `arm-none-eabi-gcc` and `arm-none-eabi-objcopy` in `bin/` of the locked `gcc` tool, with `.exe` on Windows | `tool: program` |
 | 5 | Compile the startup code and each source, steps 1 and 2 of [Build order](./SDK_PACKAGE.md#build-order), in the order of the [source list](./STUDIO_PROJECT.md#source-order) | `build: compile`, with the source |
 | 6 | Link, step 3 | `build: link` |

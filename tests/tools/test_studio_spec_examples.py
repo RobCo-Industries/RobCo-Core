@@ -730,3 +730,100 @@ def test_pbm_number_forms_match_the_tables_of_the_image_spec():
         ok = pbm_number(width.encode()) == 32 and pbm_number(height.encode()) == 32
         assert expect == ("ok" if ok else "io"), name
         assert name.startswith("seal_holo_" if ok else "seal_err_"), name
+
+
+def toml_string(value):
+    """A basic string by the rules of "How the tool writes the lock"."""
+    out = []
+    for ch in value:
+        if ch in '\\"':
+            out.append("\\" + ch)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append("\\u00%02x" % ord(ch))
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def write_lock(index_location, packages, tools):
+    """The bytes of robco.lock, by the layout of "How the tool writes the lock"."""
+    lines = ["format = 1", "index = " + toml_string(index_location)]
+    for package in sorted(packages, key=lambda p: p["name"].encode()):
+        lines += ["", "[[package]]"]
+        lines += [f"{key} = {toml_string(package[key])}" for key in ("name", "version", "sha256")]
+    for tool in sorted(tools, key=lambda t: t["name"].encode()):
+        lines += ["", "[[tool]]", f"name = {toml_string(tool['name'])}",
+                  f"version = {toml_string(tool['version'])}", "", "[tool.archives]"]
+        lines += [f"{host} = {toml_string(sha)}"
+                  for host, sha in sorted(tool["archives"].items(), key=lambda kv: kv[0].encode())]
+    return "".join(line + "\n" for line in lines)
+
+
+def fits(entry, platform, abi):
+    """The four fit rules of "Version and ABI rules", on an index entry alone."""
+    if entry["name"] != platform or "abi" not in entry:
+        return False
+    have = [int(x) for x in entry["abi"].split(".")]
+    want = [int(x) for x in abi.split(".")]
+    known = set(entry["formats"]) <= KNOWN_FORMATS and set(entry["formats"].values()) <= {1}
+    return have[0] == want[0] and have[1] >= want[1] and known
+
+
+def resolve(index, platform, abi):
+    """(packages, tools) for a lock, picked from the index and from nothing else."""
+    fitting = [e for e in index["packages"] if fits(e, platform, abi)]
+    if not fitting:
+        return None
+    best = max(fitting, key=lambda e: [int(x) for x in e["version"].split(".")])
+    tools = []
+    for named in best["tools"]:
+        entry = next(t for t in index["tools"]
+                     if (t["name"], t["version"]) == (named["name"], named["version"]))
+        tools.append({"name": entry["name"], "version": entry["version"],
+                      "archives": {h: a["sha256"] for h, a in entry["archives"].items()}})
+    package = {"name": best["name"], "version": best["version"], "sha256": best["sha256"]}
+    return [package], tools
+
+
+def test_lock_example_is_what_a_resolution_of_the_index_example_writes():
+    lock_text = next(b for b in blocks(PROJECT, "toml") if "[[package]]" in b)
+    lock = tomllib.loads(lock_text)
+    assert set(lock) == {"format", "index", "package", "tool"} and lock["format"] == 1
+    # The example is in the writer's layout, byte for byte.
+    assert write_lock(lock["index"], lock["package"], lock["tool"]) == lock_text
+    # And it is what the index example gives for the first manifest.
+    manifest = next(tomllib.loads(b) for b in blocks(PROJECT, "toml") if "[project]" in b)
+    index = package_json('"packages"')
+    packages, tools = resolve(index, manifest["target"]["platform"], manifest["target"]["abi"])
+    assert write_lock(lock["index"], packages, tools) == lock_text
+    # The forms of "Keys".
+    for package in lock["package"]:
+        assert set(package) == {"name", "version", "sha256"}
+        assert re.fullmatch(r"[a-z][a-z0-9-]{0,31}", package["name"])
+        assert re.fullmatch(VERSION, package["version"])
+        assert re.fullmatch(r"[0-9a-f]{64}", package["sha256"])
+    assert [t["name"] for t in lock["tool"]] == ["gcc", "qemu"]
+    for tool in lock["tool"]:
+        assert set(tool) == {"name", "version", "archives"} and tool["archives"]
+        assert all(re.fullmatch(HOST, h) and re.fullmatch(r"[0-9a-f]{64}", s)
+                   for h, s in tool["archives"].items())
+    # A string that needs escapes, as a path on Windows does.
+    assert toml_string('C:\\idx\\"a"\x1f.json') == '"C:\\\\idx\\\\\\"a\\"\\u001f.json"'
+    assert tomllib.loads("index = " + toml_string('C:\\idx\\"a"\x1f.json'))["index"] == \
+        'C:\\idx\\"a"\x1f.json'
+
+
+def test_resolver_decides_from_the_index_alone():
+    index = package_json('"packages"')
+    # A newer package in a format this tool does not know is passed over, not picked.
+    newer = dict(index_entry("pipos"), version="1.4.0", abi="1.4",
+                 formats={"rimg": 1, "flags": 2, "boot": 1, "runner": 1})
+    grown = dict(index, packages=index["packages"] + [newer])
+    assert resolve(grown, "pipos", "1.3")[0][0]["version"] == "1.3.0"
+    readable = dict(newer, formats=index_entry("pipos")["formats"])
+    grown = dict(index, packages=index["packages"] + [readable])
+    assert resolve(grown, "pipos", "1.3")[0][0]["version"] == "1.4.0"
+    # No ABI is worked out from a version, and a templates package fits no project.
+    assert resolve(index, "pipos", "1.4") is None
+    assert resolve(index, "templates", "0.1") is None
+    assert all("formats" in e for e in index["packages"])

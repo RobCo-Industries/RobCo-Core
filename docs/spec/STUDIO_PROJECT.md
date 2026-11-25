@@ -43,7 +43,7 @@ A reader built on a TOML 1.0 parser does not follow this spec:
 - It refuses a file that uses one of them with `manifest: syntax`, where this spec asks for the file to be read, or to fail with another code. So two tools would disagree on the same project.
 - A reader must therefore use a TOML 1.1 parser. A test of a reader holds a manifest with each of the four forms.
 
-A tool writes only the forms that TOML 1.0 and 1.1 share. That covers [`robco.lock`](#robcolock) and the files of a template. So any TOML 1.0 program reads what the tool writes. The rule above is about what a reader accepts from a person.
+A tool writes only the forms that TOML 1.0 and 1.1 share. That covers `robco.lock`, by [How the tool writes the lock](#how-the-tool-writes-the-lock), and the files of a template. So any TOML 1.0 program reads what the tool writes. The rule above is about what a reader accepts from a person.
 
 This manifest uses the first two forms, and it writes `format` after other keys, which [Format version](#format-version) allows. It means the same as the first manifest of [Examples](#examples), and a TOML 1.0 parser refuses it:
 
@@ -313,28 +313,67 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 |---|---|---|---|
 | `format` | integer | Yes | `1` |
 | `index` | string | Yes | The index the packages came from, as the tool was given it: a URL or a local path. For the record only. |
-| `[[package]]` | array of tables | Yes, one or more | One entry per package |
-| `[[tool]]` | array of tables | Yes, one or more | One entry per downloaded tool |
+| `[[package]]` | array of tables | No | One entry per package. A package the project needs and the lock lacks makes the lock [stale](#a-stale-lock). |
+| `[[tool]]` | array of tables | No | One entry per tool: at most two, one named `gcc` and one named `qemu`. A lock without both is stale. |
 
 Each `[[package]]`:
 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | Yes | The package name, such as `pipos` |
-| `version` | string | Yes | The exact version, `X.Y.Z` |
+| `name` | string | Yes | The package name, such as `pipos`: 1 to 32 characters from `a` to `z`, `0` to `9` and `-`, starting with a letter. No two entries have the same name. |
+| `version` | string | Yes | The exact version, `X.Y.Z`, each part from 0 to 65535 with no leading zero |
 | `sha256` | string | Yes | The SHA-256 of the package archive. 64 lower case hex digits. |
 
 Each `[[tool]]`:
 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | Yes | `gcc` or `qemu` |
-| `version` | string | Yes | The version that the locked `pipos` package names for this tool, such as `15.2.1-1.1`. See [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names). |
-| `[tool.archives]` | table | Yes | One key per host, such as `linux-x64`. Each value is the SHA-256 of that host's archive. |
+| `name` | string | Yes | `gcc` or `qemu`, and nothing else. No two entries have the same name. |
+| `version` | string | Yes | The version that the locked `pipos` package names for this tool, such as `15.2.1-1.1`. 1 to 64 bytes from `0x21` to `0x7E`, with no `"` and no `\`. See [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names). |
+| `[tool.archives]` | table | Yes | One key per host, such as `linux-x64`, and at least one. Each key is a host name in the form of [The index](./SDK_PACKAGE.md#the-index). Each value is the SHA-256 of that host's archive, 64 lower case hex digits. |
 
-The lock lists the archives of every host the index offers, not only the host that wrote it. A lock written on macOS then works unchanged on Windows and Linux.
+The lock lists the archives of every host the index offers, not only the host that wrote it, and that includes a host name this version of the tool does not know. A lock written on macOS then works unchanged on Windows and Linux.
 
-Entries are sorted by `name`. A tool writes the file with the keys in the order of the tables above, so the same resolution gives the same bytes.
+A lock names no tool but `gcc` and `qemu`. Format 1 knows no other tool, and no package of format 1 can name one: `tools` of a `pipos` package holds exactly those two. A `[[tool]]` with another name can therefore never be right, whatever the manifest says, so it makes the lock invalid and not stale: `lock: entry`, with the detail `tool.name = "<value>"`. A tool walks the `[[tool]]` entries only after this check, so it never tries to install a tool that no package named.
+
+### Reading the lock
+
+| Case | Result |
+|---|---|
+| The project root has no `robco.lock` | No error. [When the lock changes](#when-the-lock-changes) says what the command does. |
+| The file exists, and the host refuses to open or to read it | `io: read`, with the path. Exit code 9. The code is not a `lock:` code, since the tool has read nothing of the lock. |
+| The bytes are not UTF-8 or not TOML 1.1 | `lock: syntax`, with the line |
+| `format` is missing, is not a positive integer, or is larger than the tool knows | `lock: format`. For a larger one the message asks for a newer tool. |
+| A key or a table that this spec does not define, at the top, in an entry or under one | `lock: unknown key`, with its dotted name, such as `tool.arch` |
+| A required key is missing, a key has the wrong TOML type, a value breaks the form its table gives, two entries have the same `name`, a `[[tool]]` has a name other than `gcc` and `qemu`, or `[tool.archives]` is empty | `lock: entry`, with the key and for a bad value the value, such as `package.sha256` or `tool.name = "gdb"`. The message ends with `run robco update`. |
+| The lock is stale | `lock: stale`, by [A stale lock](#a-stale-lock) |
+
+The checks come in the order of the table, and the tool reports the first failure. So a lock of a later format reports `lock: format`, whatever else it holds: a tool cannot tell an unknown key of a later format from a mistake. In the sixth row the tool checks `index` first, then each `[[package]]` in the order of the file, key by key in the order of the tables of [Keys](#keys), then each `[[tool]]` the same way.
+
+A failure to write `robco.lock`, or to rename the temporary file over it, is `io: write`, with the path. No `lock:` code means a failure of the host's file system.
+
+### How the tool writes the lock
+
+Two tools that resolve the same index for the same manifest write the same bytes. A writer follows this layout exactly:
+
+| Rule | Detail |
+|---|---|
+| Encoding | UTF-8, with no byte order mark |
+| Line end | One line feed, on every system. No carriage return. |
+| End of the file | The last line ends with one line feed, and nothing follows it |
+| Spaces | One space on each side of every `=`. No space at the start or the end of a line, and no tab. |
+| Comments | None |
+| Blank lines | Exactly one before each `[[package]]`, each `[[tool]]` and each `[tool.archives]` header. None anywhere else. |
+| First lines | `format = 1`, then `index`, with no blank line between them |
+| Packages | Every `[[package]]` block, sorted by `name` in byte order. In a block: `name`, `version`, `sha256`. |
+| Tools | After the last package, every `[[tool]]` block, sorted by `name` in byte order, so `gcc` then `qemu`. In a block: `name`, `version`, then `[tool.archives]`. |
+| Archives | One line per host, sorted by host name in byte order. The key is the host name, written bare, with no quotes. |
+| Strings | Basic strings in double quotes, on one line. A writer escapes `\` as `\\`, `"` as `\"`, and each character below U+0020 and U+007F as `\u00` and two lower case hex digits. It writes every other character as itself, in UTF-8. Only `index` can hold a character that needs an escape: the forms of the other values leave none. |
+| Numbers | `format` is the only one: decimal digits with no sign |
+
+A reader does not ask for this layout. It reads any TOML 1.1 file that holds the keys, by [Reading the lock](#reading-the-lock). The layout binds a writer only.
+
+The lock at the end of [Examples](#examples) is in this layout, byte for byte. It is what a resolution of the index example of [SDK_PACKAGE.md](./SDK_PACKAGE.md#examples) writes for the first manifest, with the index location `https://example.invalid/robco/index.json`.
 
 ### What the lock pins
 
@@ -343,7 +382,9 @@ The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock
 1. Installs or finds each listed package at its exact version.
 2. Checks each archive against its `sha256`, as [SDK_PACKAGE.md](./SDK_PACKAGE.md#hashes) says. A mismatch fails the build with `lock: hash` and names the package. The tool never replaces a pinned package with another version or another archive on its own.
 3. Checks that the pinned packages still fit the manifest by the rules of [SDK_PACKAGE.md](./SDK_PACKAGE.md#version-and-abi-rules).
-4. Checks, once the `pipos` package is installed, that each `[[tool]]` entry has the `version` that the package's `sdk.json` names for it. A difference fails the build with `lock: tool` and names the tool and both versions. The message ends with `run robco update`. The tool changes nothing. Only a lock edited by hand can fail here, since the tool writes both from one resolution.
+4. Checks, once the `pipos` package is installed and before it installs or starts any tool, that each `[[tool]]` entry has the `version` that the package's `sdk.json` names for it. A difference fails the build with `lock: tool` and names the tool and both versions. The message ends with `run robco update`. The tool changes nothing. Only a lock edited by hand can fail here, since the tool writes both from one resolution.
+
+So every tool a command installs or starts passed three checks: its name is `gcc` or `qemu`, by [Reading the lock](#reading-the-lock), the locked `pipos` package names it at that version, by step 4, and its archive has the hash the lock pins.
 
 A resolution writes the `[[tool]]` entries from the package it picked: for each of `gcc` and `qemu`, the version the package names and the SHA-256 of every archive the index lists for that version.
 
@@ -354,7 +395,7 @@ A resolution writes the `[[tool]]` entries from the package it picked: for each 
 | No `robco.lock` | Resolves from the index and writes the lock. |
 | A lock whose packages fit the manifest | Uses it unchanged. |
 | A stale lock | Fails with `lock: stale`. It changes nothing. |
-| A lock that does not parse, or a larger `format` | Fails with `lock: syntax` or `lock: format`. |
+| A lock that does not parse, a `format` the tool refuses, an unknown key or a bad entry | Fails with `lock: syntax`, `lock: format`, `lock: unknown key` or `lock: entry`, by [Reading the lock](#reading-the-lock). It changes nothing. |
 | A `[[tool]]` version that the installed `pipos` package does not name | Fails with `lock: tool`. It changes nothing. See [What the lock pins](#what-the-lock-pins). |
 | `robco update` | Resolves again and writes a new lock. See below. |
 
@@ -364,12 +405,14 @@ A build never moves a pin. Only `robco update` does, and only when a person runs
 
 A lock that parses is stale when one of these holds for the current manifest:
 
-1. A `[[package]]` entry no longer fits, by the rules of [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules). A change to `target.abi` or `target.platform` does this.
+1. A `[[package]]` entry no longer fits, by rules 1 to 3 of [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules). A change to `target.abi` or `target.platform` does this. The lock has no `abi` key, so the ABI of a locked `pipos` package is the first two parts of its `version`, which its `sdk.json` must equal.
 2. The manifest needs a package that the lock does not list: `pipos` for `target.platform = "pipos"`, and each package that a listed package `requires`.
 3. The lock lists a package that the manifest does not need.
 4. The lock does not list both tools, `gcc` and `qemu`, or a `[[tool]]` entry has no archive for the running host.
 
-The tool checks for a stale lock before it installs, downloads or compiles anything. It fails with `lock: stale: <detail>`. The detail names the first package or tool that fails, in the order of the list above and then by `name`, and the message ends with `run robco update`. The tool writes no `build/NAME.HTP`, deletes an older one, and leaves `robco.lock` as it is.
+The tool checks for a stale lock before it installs, downloads or compiles anything. It needs the manifest and the lock only, with one exception: what a listed package `requires` is in that package's `sdk.json`. The tool checks that part of item 2 right after it has installed the listed packages, before it installs a tool or compiles, and fails the same way. Rule 4 of the fit rules, the formats, is not a matter of a stale lock: a locked package that uses a format the tool does not know fails with `package: format` when the tool reads its `sdk.json`.
+
+A `[[tool]]` entry that the project does not need cannot exist in a lock that parses: the lock holds no tool but `gcc` and `qemu`, each at most once, and the project needs both. A `[[tool]]` at a version that the locked package does not name fails with `lock: tool`, by [What the lock pins](#what-the-lock-pins). It fails with `lock: stale: <detail>`. The detail names the first package or tool that fails, in the order of the list above and then by `name`, and the message ends with `run robco update`. The tool writes no `build/NAME.HTP`, deletes an older one, and leaves `robco.lock` as it is.
 
 A lock that is not stale but names a package version or a tool archive that the index no longer lists still pins it. The tool installs it from `<cache>` if it is there. If it must download it and the index has no entry with that name, version and hash, it fails with `lock: missing` and names it.
 
