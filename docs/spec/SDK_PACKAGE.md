@@ -941,17 +941,54 @@ A `pipos` package fits a project when:
 
 So a project with `abi = "1.3"` fits `pipos` 1.3.x and 1.4.x, and not 1.2.x or 2.0.x. A tape built for 1.3 loads on any 1.x kernel, because a Pip-OS loader checks only the ABI major. On a kernel older than 1.3, a call added after that kernel's minor returns `-PIP_ENOSYS`. See [Calls newer than the target ABI](./PIPOS_ABI.md#calls-newer-than-the-target-abi).
 
-A `requires` entry fits by the same rules 2 and 3, with its `abi` as the project's.
+A `requires` entry fits by the same rules 2, 3 and 4, with its `abi` as the project's. Rule 1 does not apply to it.
 
 A resolver applies all four rules to the index entries alone. It downloads no archive to decide. Rule 4 reads `formats` of the entry, which the archive's `sdk.json` must equal, by [What must equal the index entry](#what-must-equal-the-index-entry). An index entry without `formats` is refused with `index: entry` when the index is read, so a resolver never meets one.
 
 A version that fails rule 4 is passed over like one that fails rule 2 or 3. So when the newest `pipos` uses a format that this tool does not know, the tool picks the newest version it can read, and pins that one.
 
-No package fits: the tool fails with `sdk: no package` and names the platform and ABI. When a version passed rules 1 to 3 and failed rule 4, the detail also names the newest such version and the format it uses, and asks for a newer tool.
+No package fits: the tool fails with `sdk: no package`, with the detail of [Resolving requires](#resolving-requires).
 
-When several versions of a package fit, the tool picks the highest version by the order above. The lock then pins it. A newer package that appears in the index later changes nothing until `robco update`, as [When the lock changes](./STUDIO_PROJECT.md#when-the-lock-changes) says. A `requires` entry is resolved by the same rule.
+When several versions of a package fit, the tool picks the highest version by the order above. The lock then pins it. A newer package that appears in the index later changes nothing until `robco update`, as [When the lock changes](./STUDIO_PROJECT.md#when-the-lock-changes) says. Packages that a package requires are picked by [Resolving requires](#resolving-requires).
 
 A tool, `gcc` or `qemu`, is never picked by its version. The resolved `pipos` package names the version of each, as [Tools a package names](#tools-a-package-names) says, and the lock pins the archives of that version.
+
+### Resolving requires
+
+A resolution picks one version per package name. Two versions of one package never appear in one resolution. It works by name, over every requirement at once, and reads `requires` from the index entries alone. An archive's `sdk.json` must hold the same `requires`, by [What must equal the index entry](#what-must-equal-the-index-entry), so the resolver downloads nothing to read them.
+
+A requirement names a package and says which versions of it fit. There are two kinds:
+
+| Requirement | Stated by | Fits a version when |
+|---|---|---|
+| The root | The project: `pipos` with `target.abi`. `robco sdk install`: the package of its argument. | For a project, rules 1 to 4 above. For `robco sdk install`, the form of its argument, by [robco sdk install](./STUDIO_CLI.md#robco-sdk-install), and rule 4. |
+| A `requires` entry | The index entry of a picked version | Rules 2, 3 and 4, with the entry's `abi` |
+
+The resolver keeps a set of requirements and one pick per name. It runs in passes:
+
+1. The set holds the root requirement alone.
+2. For each name that a requirement of the set names, the pick is the highest version in the index that fits every requirement of the set on that name.
+3. The resolver adds to the set each `requires` entry of each picked version.
+4. When step 3 added a requirement, it goes back to step 2. Otherwise the passes end.
+
+A requirement stays in the set once added, even when a later pass passes over the version that stated it. So a pick only ever moves to a lower version, or to none, as the set grows. The set can hold only the root and `requires` entries of the index, so there are at most as many passes as that number, plus one. Each pass reads the whole set and every pick at once, so the result does not depend on the order of the index, of a `requires` array, or of the passes.
+
+When the passes end, the resolution holds the root package and each package that a picked version requires, and each package those require, by name. A name in the set that no such chain reaches is left out. The lock lists the packages sorted by name in byte order, by [How the tool writes the lock](./STUDIO_PROJECT.md#how-the-tool-writes-the-lock). Each package of the resolution meets every requirement that a package of the resolution states on it.
+
+| Case | Result |
+|---|---|
+| A requirement names a package that the index does not hold at any version | `sdk: no package` |
+| At step 2, no version of a name fits every requirement on it | `sdk: no package` |
+
+At a failure the passes stop. When several names fail in one pass, the detail names the first in byte order. The detail has this form:
+
+```text
+sdk: no package: <name>: <requirement>, <requirement>
+```
+
+It lists every requirement of the set on that name. The root comes first, as `robco.toml abi <abi>` or `command line <argument>`. Each `requires` entry follows as `<package> <version> abi <abi>`, the package and version that state it, sorted by package name and then by version. When a version met every requirement on the name but for rule 4, the detail ends with `; <version> needs a newer tool: <format> <value>`, for the highest such version and the first of its formats by name that the tool does not know.
+
+The example `requires` index at the end of [Examples](#examples) shows two paths that require one package.
 
 ## Hashes
 
@@ -1171,3 +1208,22 @@ An index with both packages and both tools. The URLs and hashes are placeholders
 ```
 
 `boot.json` has its example in [TESTING.md](./TESTING.md#bootjson).
+
+A `requires` index, for [Resolving requires](#resolving-requires). `app` requires `net` and `ui`, and both require `log` at different ABIs. The entries show only the fields the resolver reads. `url`, `size` and `sha256` are left out.
+
+```json
+[
+  {"name": "app", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "net", "abi": "1.0"}, {"name": "ui", "abi": "1.0"}], "formats": {}},
+  {"name": "net", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "log", "abi": "1.4"}], "formats": {}},
+  {"name": "ui", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "log", "abi": "1.5"}], "formats": {}},
+  {"name": "log", "version": "1.4.0", "abi": "1.4", "requires": [], "formats": {}},
+  {"name": "log", "version": "1.5.2", "abi": "1.5", "requires": [], "formats": {}}
+]
+```
+
+`robco sdk install app` on this index picks `app` 1.0.0, `log` 1.5.2, `net` 1.0.0 and `ui` 1.0.0. `log` 1.5.2 meets both `abi 1.4` and `abi 1.5`. Without the `log` 1.5.2 entry, no version of `log` meets both, and the command fails with:
+
+```text
+sdk: no package: log: net 1.0.0 abi 1.4, ui 1.0.0 abi 1.5
+```
+

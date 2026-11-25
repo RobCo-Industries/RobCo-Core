@@ -272,9 +272,9 @@ The command then does this, in order, and stops at the first failure:
 | Step | Work | Fails with |
 |---|---|---|
 | 1 | It checks the command line and the place of the cache, and reads the index. | `usage`, 2. `cache: path`, 4. An `index:` code, 4. |
-| 2 | It resolves the package, then each package of its `requires` in the order of that array, and each of those the same way. A package that comes twice is taken once, at its first place. | `sdk: no package`, `package: format`, 4 |
+| 2 | It resolves the package and the packages it requires, by [Resolving requires](./SDK_PACKAGE.md#resolving-requires), with the argument as the root. | `sdk: no package`, `package: format`, 4 |
 | 3 | When `pipos` is among those packages, it adds the two tools that package names, for the running host, as [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names) says: `gcc`, then `qemu`. | `sdk: no tool`, `index: host`, 4 |
-| 4 | It takes the packages in the order of step 2 and then the tools. One that the cache holds is skipped, once its record equals the hash of the index entry. Any other is downloaded, checked and installed, by the rules of [Hashes](./SDK_PACKAGE.md#hashes), [The archive](./SDK_PACKAGE.md#the-archive) and [Tool archives](./SDK_PACKAGE.md#tool-archives). | A `package:` code, `tool: hash`, `tool: archive`, 4. `io: write`, 9. |
+| 4 | It takes the packages of step 2 sorted by name in byte order, and then the tools. One that the cache holds is skipped, once its record equals the hash of the index entry. Any other is downloaded, checked and installed, by the rules of [Hashes](./SDK_PACKAGE.md#hashes), [The archive](./SDK_PACKAGE.md#the-archive) and [Tool archives](./SDK_PACKAGE.md#tool-archives). | A `package:` code, `tool: hash`, `tool: archive`, 4. `io: write`, 9. |
 
 It reads no `robco.toml` and writes no `robco.lock`. It downloads no firmware file. A second run with the same arguments skips everything and ends with 0. A failure leaves nothing of the failed item behind and leaves the items installed before it in place.
 
@@ -282,7 +282,7 @@ The `result` line adds:
 
 | Key | Type | Present | Value |
 |---|---|---|---|
-| `packages` | array of objects | When `ok` | `name`, `version` and `state` of each package, in the order of step 2 |
+| `packages` | array of objects | When `ok` | `name`, `version` and `state` of each package, sorted by name in byte order |
 | `tools` | array of objects | When `ok` | `name`, `version`, `host` and `state` of each tool, `gcc` first |
 
 `state` is `installed` when this run put it into the cache and `present` when the cache already held it.
@@ -331,7 +331,7 @@ The `result` line adds:
 | 3 | Delete `build/NAME.HTP` when it is there | No | Yes | Yes | Yes | `io: write`, 9 |
 | 4 | Find and read the scenario files, then read the golden images, by [robco test](#robco-test) | No | No | No | Yes | A `test:` code, 3. `io: read`, 9. |
 | 5 | Read `robco.lock`, by [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock). When the file is there, check it for [a stale lock](./STUDIO_PROJECT.md#a-stale-lock), as far as the manifest and the lock alone can tell. | No | Yes | Yes | Yes | `io: read`, 9. `lock: syntax`, `lock: format`, `lock: unknown key`, `lock: entry`, `lock: stale`, 3. |
-| 6 | Resolve: read the index and pick the `pipos` package, each package it requires and the two tools it names, by [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules) | Always | Without a lock | Without a lock | Without a lock | An `index:` code, `sdk: no package`, `sdk: no tool`, 4 |
+| 6 | Resolve: read the index and pick the `pipos` package and the packages it requires, by [Resolving requires](./SDK_PACKAGE.md#resolving-requires), then the two tools it names, by [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names) | Always | Without a lock | Without a lock | Without a lock | An `index:` code, `sdk: no package`, `sdk: no tool`, 4 |
 | 7 | Install each package of the lock, or of the resolution, that the cache lacks. The packages come sorted by name in byte order. | Yes | Yes | Yes | Yes | An `index:` code, 4. `lock: missing`, `lock: hash`, 3. A `package:` code, 4. `io: write`, 9. |
 | 8 | Read `sdk.json` of each of those packages in the cache. With a lock from step 5: finish the stale check with what the packages require, then check the locked tools against the `pipos` package, step 4 of [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins). | No | Yes | Yes | Yes | `package: manifest`, `package: format`, 4. `lock: stale`, `lock: tool`, 3. |
 | 9 | Install the tools that the cache lacks: `gcc`, and then `qemu` where the column says so | No | `gcc` | `gcc`, `qemu` | `gcc`, `qemu` | An `index:` code, 4. `lock: missing`, `lock: hash`, 3. `tool: hash`, `tool: archive`, 4. `io: write`, 9. |

@@ -414,14 +414,14 @@ A build never moves a pin. Only `robco update` does, and only when a person runs
 
 A lock that parses is stale when one of these holds for the current manifest:
 
-1. A `[[package]]` entry no longer fits, by rules 1 to 3 of [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules). A change to `target.abi` or `target.platform` does this. The lock has no `abi` key, so the ABI of a locked `pipos` package is the first two parts of its `version`, which its `sdk.json` must equal.
+1. A `[[package]]` entry no longer fits a requirement on it: the manifest's, by rules 1 to 3 of [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules), or a `requires` entry of another listed package, by rules 2 and 3. A change to `target.abi` or `target.platform` does this, and so does a listed package that requires a higher ABI of another. [Resolving requires](./SDK_PACKAGE.md#resolving-requires) has the requirements. The lock has no `abi` key, so the ABI of a locked `pipos` package is the first two parts of its `version`, which its `sdk.json` must equal.
 2. The manifest needs a package that the lock does not list: `pipos` for `target.platform = "pipos"`, and each package that a listed package `requires`.
 3. The lock lists a package that the manifest does not need.
 4. The lock does not list both tools, `gcc` and `qemu`, or a `[[tool]]` entry has no archive for the running host.
 
 The tool checks for a stale lock before it installs, downloads or compiles anything. It fails with `lock: stale: <detail>`. The detail names the first package or tool that fails, in the order of the list above and then by `name`, and the message ends with `run robco update`. The tool writes no `build/NAME.HTP` and leaves `robco.lock` as it is. An older tape is already gone: the command deleted it right after it read the manifest.
 
-The check needs the manifest and the lock only, with one exception: what a listed package `requires` is in that package's `sdk.json`. The tool checks the parts of items 2 and 3 that depend on `requires` right after it has installed the listed packages, before it installs a tool or compiles, and fails the same way. Rule 4 of the fit rules, the formats, is not a matter of a stale lock: a locked package that uses a format the tool does not know fails with `package: format` when the tool reads its `sdk.json`.
+The check needs the manifest and the lock only, with one exception: what a listed package `requires` is in that package's `sdk.json`. The tool checks the parts of items 1, 2 and 3 that depend on `requires` right after it has installed the listed packages, before it installs a tool or compiles, and fails the same way. Rule 4 of the fit rules, the formats, is not a matter of a stale lock: a locked package that uses a format the tool does not know fails with `package: format` when the tool reads its `sdk.json`.
 
 A `[[tool]]` entry that the project does not need cannot exist in a lock that passes [Reading the lock](#reading-the-lock): the lock holds no tool but `gcc` and `qemu`, each at most once, and the project needs both. A `[[tool]]` at a version that the locked package does not name fails with `lock: tool`, by [What the lock pins](#what-the-lock-pins).
 
@@ -429,7 +429,7 @@ A lock that is not stale but names a package version or a tool archive that the 
 
 ### robco update
 
-`robco update --index LOCATION` resolves every package and tool again from the index, as if no lock existed. It picks the newest package that fits, by [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules), installs and checks it, then writes a new `robco.lock` in place of the old one. It needs `--index`, as [Where the index is](./SDK_PACKAGE.md#where-the-index-is) says.
+`robco update --index LOCATION` resolves every package and tool again from the index, as if no lock existed. It picks the packages by [Resolving requires](./SDK_PACKAGE.md#resolving-requires), installs and checks it, then writes a new `robco.lock` in place of the old one. It needs `--index`, as [Where the index is](./SDK_PACKAGE.md#where-the-index-is) says.
 
 Its steps and their order are in [The steps of update, build, run and test](./STUDIO_CLI.md#the-steps-of-update-build-run-and-test). What sets it apart:
 

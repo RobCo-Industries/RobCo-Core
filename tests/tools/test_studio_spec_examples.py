@@ -895,6 +895,90 @@ def test_resolver_decides_from_the_index_alone():
     assert all("formats" in e for e in index["packages"])
 
 
+def vkey(version):
+    return [int(x) for x in version.split(".")]
+
+
+def resolve_requires(entries, root_name, root_fits, root_text):
+    """The passes of "Resolving requires". Returns {name: entry} or the error line."""
+    root = ("root", root_name, None)
+    reqs = {root}
+    while True:
+        picks, failed = {}, []
+        for name in sorted({r[1] for r in reqs}):
+            on = [r for r in reqs if r[1] == name]
+            ok = [e for e in entries if e["name"] == name
+                  and all(root_fits(e) if r[0] == "root" else fits_requires(e, r[2]) for r in on)]
+            if ok:
+                picks[name] = max(ok, key=lambda e: vkey(e["version"]))
+            else:
+                failed.append(name)
+        if failed:
+            name = failed[0]
+            listed = sorted((r for r in reqs if r[1] == name and r[0] != "root"),
+                            key=lambda r: (r[0][0].encode(), vkey(r[0][1])))
+            parts = [f"{s[0]} {s[1]} abi {abi}" for s, _, abi in listed]
+            if root[1] == name:
+                parts.insert(0, root_text)
+            return f"sdk: no package: {name}: " + ", ".join(parts)
+        added = {((e["name"], e["version"]), q["name"], q["abi"])
+                 for e in picks.values() for q in e.get("requires", [])} - reqs
+        if not added:
+            break
+        reqs |= added
+    reached, todo = set(), [root_name]
+    while todo:
+        name = todo.pop()
+        if name not in reached:
+            reached.add(name)
+            todo += [q["name"] for q in picks[name].get("requires", [])]
+    return {n: picks[n] for n in sorted(reached)}
+
+
+def versions(picks):
+    return {n: e["version"] for n, e in picks.items()}
+
+
+def fits_requires(entry, abi):
+    """Rules 2, 3 and 4, with the abi of a requires entry."""
+    if "abi" not in entry:
+        return False
+    have, want = vkey(entry["abi"]), vkey(abi)
+    known = set(entry["formats"]) <= KNOWN_FORMATS and set(entry["formats"].values()) <= {1}
+    return have[0] == want[0] and have[1] >= want[1] and known
+
+
+def test_requires_example_resolves_by_name_over_every_requirement():
+    text = section(PACKAGE, "Examples", "##")
+    entries = next(json.loads(b) for b in blocks(text, "json") if b.lstrip().startswith("["))
+    wanted = next(b for b in blocks(text, "text") if "no package: log" in b).strip()
+    any_app = lambda e: set(e["formats"]) <= KNOWN_FORMATS
+    picks = resolve_requires(entries, "app", any_app, "command line app")
+    got = versions(picks)
+    assert got == {"app": "1.0.0", "log": "1.5.2", "net": "1.0.0", "ui": "1.0.0"}
+    assert list(got) == sorted(got, key=str.encode)
+    # The order of the index and of a requires array does not count.
+    flipped = [dict(e, requires=e["requires"][::-1]) for e in entries[::-1]]
+    assert versions(resolve_requires(flipped, "app", any_app, "command line app")) == got
+    # Each picked package meets every requirement the picked packages state.
+    for e in picks.values():
+        for q in e["requires"]:
+            assert fits_requires(picks[q["name"]], q["abi"])
+    # Without log 1.5.2, net and ui disagree, and the detail names both.
+    short = [e for e in entries if (e["name"], e["version"]) != ("log", "1.5.2")]
+    assert resolve_requires(short, "app", any_app, "command line app") == wanted
+    assert resolve_requires(short[::-1], "app", any_app, "command line app") == wanted
+    # A package the index does not hold at all.
+    assert resolve_requires(entries, "nope", any_app, "command line nope") == \
+        "sdk: no package: nope: command line nope"
+    # The index example has one path: the passes pick what resolve() picks.
+    index = package_json('"packages"')
+    picks = resolve_requires(index["packages"], "pipos", lambda e: fits(e, "pipos", "1.3"),
+                             "robco.toml abi 1.3")
+    assert {n: e["version"] for n, e in picks.items()} == \
+        {p["name"]: p["version"] for p in resolve(index, "pipos", "1.3")[0]}
+
+
 def test_order_of_checks_names_a_known_code_for_every_step():
     codes = set(error_codes())
     text = section(CLI, "Order of checks")
