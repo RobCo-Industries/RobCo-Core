@@ -755,7 +755,7 @@ Restore users is the way back in when every password is lost. It copies bytes an
 
 ### Maintenance image markers
 
-The image prints `boot`, `handoff`, `ready`, then:
+The image prints `boot`, `handoff`, `config`, `ready`, then one `tool` per tool result. `config` comes before `ready`, as in the second stage:
 
 | Event | Keys | Meaning |
 |---|---|---|
