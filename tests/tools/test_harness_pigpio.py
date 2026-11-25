@@ -135,3 +135,20 @@ def test_play_keeps_a_log():
     io.play([(0.0, 5, 1), (0.002, 5, 0), (0.004, None, None)])
     assert [t for t, _ in io.log] == [0.0, 0.002, 0.004]
     assert all(real >= t for t, real in io.log)
+
+
+def test_play_lateness_counts_a_slow_write(monkeypatch):
+    # A fake clock that only moves when the write blocks for 7 ms.
+    clock = [0.0]
+
+    class SlowQemu(FakeQemu):
+        def writel(self, addr, val):
+            clock[0] += 0.007
+            super().writel(addr, val)
+
+    monkeypatch.setattr(pigpio.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(pigpio.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + max(s, 1e-6)))
+    io = PiGpio(SlowQemu(), "raspi0")
+    late = io.play([(0.0, 5, 1), (0.010, 5, 0)])
+    assert late >= 0.007
+    assert late == pytest.approx(pigpio.slip(io.log)[0])

@@ -150,7 +150,7 @@ class PiGpio:
         self.release(pin)
 
     def play(self, schedule):
-        """Applies (t, pin, level) changes at their times. Returns the seconds it ran late at most.
+        """Applies (t, pin, level) changes at their times. Returns slip(self.log)[0]: the latest write.
 
         self.log keeps (planned t, real t) of every entry, both from the
         start of the play: see slip().
@@ -167,10 +167,11 @@ class PiGpio:
                     time.sleep(min(t - now - SPIN_S, SPIN_S))
                 else:
                     time.sleep(0)  # lets the harness threads run, so they do not take the GIL late
-            late = max(late, now - t)
             if pin is not None:
                 self.set(pin, level)
-            self.log.append((t, time.perf_counter() - t0))
+            real = time.perf_counter() - t0  # after the write: when the pin really changed
+            self.log.append((t, real))
+            late = max(late, real - t)
         return late
 
     def bounce(self, pin, count, period_s, settle=False):
@@ -179,7 +180,7 @@ class PiGpio:
     def turn(self, pin_a, pin_b, detents, state_s, lengths=(1, 1, 1, 1), bounce=None):
         """Turns a dial at rest (both lines high) by `detents`, positive is clockwise.
 
-        Returns the most the schedule ran late, in seconds.
+        Returns the latest write, in seconds, as play() does.
         """
         return self.play(quad_schedule(self._pin(pin_a), self._pin(pin_b), detents, state_s,
                                        lengths, bounce))
