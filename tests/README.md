@@ -434,6 +434,27 @@ either way: tests about the keep-alive pass `keepalive=` themselves. `Qemu` obje
 builds itself, such as the canary's, have no keep-alive. Neither has
 `Qemu.run_to_exit()`, which runs without QMP, nor `python3 -m harness.run`.
 
+## QEMU outlives no test process
+
+`Qemu.start()` starts QEMU in its own process group and a small shell
+watcher next to it. The watcher blocks on a pipe from the test process.
+When that process dies, by a timeout, a signal, `SIGKILL` or an exit
+that skips `close()`, the pipe closes and the watcher kills QEMU's group.
+`close()` kills and reaps the watcher first, then stops and reaps QEMU.
+
+```mermaid
+flowchart LR
+    T[test process] -- pipe --> W[watcher]
+    T -- starts --> Q[QEMU group]
+    W -- kill at end of file --> Q
+```
+
+Each VM's temp folder holds `qemu.pid`: the QEMU pid, its start time,
+the test process pid and the process group. At session start the plugin
+calls `sweep_stale()`. It kills a QEMU only when the test process is
+gone, the pid still leads that group and started at that time. It never
+matches QEMU by name, so your own QEMU is safe.
+
 ## The harness in a project
 
 A project with RobCo-Core in `external/robco-core` enables the plugin

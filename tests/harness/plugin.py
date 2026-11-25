@@ -26,10 +26,15 @@ import subprocess
 import pytest
 
 from .boot import BOARDS
-from .qemu import have_machine
+from .qemu import have_machine, sweep_stale
 from .sdimage import have_mtools
 
 DEFAULT_BOARDS = ["raspi0", "raspi2b"]
+
+
+def pytest_sessionstart(session):
+    """Stop the QEMU processes a dead earlier run left. Only its own."""
+    sweep_stale()
 
 
 def pytest_addoption(parser):

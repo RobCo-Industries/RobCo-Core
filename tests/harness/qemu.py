@@ -27,6 +27,18 @@ KEEPALIVE_TIMEOUT = 1.0
 KEEPALIVE_MAX_UNANSWERED = 8
 
 
+# Each VM's temp folder holds this file: "<qemu pid> <start time> <owner
+# pid> <pgid>". sweep_stale() reads it. See tests/README.md, "QEMU
+# outlives no test process".
+PIDFILE = "qemu.pid"
+TMP_PREFIX = "qh"
+# A watcher per VM: it blocks on a pipe from the test process and, at end
+# of file, kills QEMU's process group. The test process dying for any
+# reason, SIGKILL included, closes the pipe. close() kills the watcher
+# first, so it never signals a group that is gone.
+WATCHER = 'read _ ; kill -s KILL -- "-$1" 2>/dev/null'
+
+
 def keepalive_default():
     """False when ROBCO_QEMU_KEEPALIVE is 0, off, no or false. On otherwise."""
     return os.environ.get(KEEPALIVE_ENV, "1").strip().lower() not in ("0", "off", "no", "false")
@@ -34,6 +46,84 @@ def keepalive_default():
 
 class QemuError(RuntimeError):
     pass
+
+
+def process_start(pid):
+    """When `pid` started, in seconds since the epoch, or None if it is gone.
+
+    Linux reads /proc, so the CI container needs no ps. macOS asks ps.
+    Both are good to about a second.
+    """
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            ticks = int(f.read().rpartition(")")[2].split()[19])
+        with open("/proc/stat") as f:
+            btime = next(int(x.split()[1]) for x in f if x.startswith("btime "))
+        return btime + ticks / os.sysconf("SC_CLK_TCK")
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return None
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+    out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                         text=True, env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"}).stdout.strip()
+    try:
+        return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return None
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def sweep_stale(tmp=None, slack=2.0):
+    """Kill the QEMU of each VM an earlier, dead test process left.
+
+    Reads the pidfile in every qh* folder of `tmp`. Kills a QEMU only when
+    its owner is gone, it still leads the recorded process group and it
+    started at the recorded time, so a reused pid or a developer's own
+    QEMU is never touched. Removes the folders of dead VMs. Returns the
+    killed pids.
+    """
+    tmp = tmp or tempfile.gettempdir()
+    killed = []
+    try:
+        names = [n for n in os.listdir(tmp) if n.startswith(TMP_PREFIX)]
+    except OSError:
+        return killed
+    for name in names:
+        folder = os.path.join(tmp, name)
+        try:
+            with open(os.path.join(folder, PIDFILE)) as f:
+                pid, started, owner, pgid = f.read().split()
+            pid, started, owner, pgid = int(pid), float(started), int(owner), int(pgid)
+        except (OSError, ValueError):
+            continue
+        owner_start = process_start(owner) if owner != os.getpid() else 0.0
+        if owner_start is not None and owner_start <= started + slack:
+            continue  # the owner, or a process that could be it, still runs
+        actual = process_start(pid)
+        if actual is not None:
+            try:
+                same = os.getpgid(pid) == pgid and abs(actual - started) <= slack
+            except OSError:
+                same = False
+            if not same:
+                continue  # the pid now names another process: not ours
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed.append(pid)
+            except OSError:
+                continue
+        shutil.rmtree(folder, ignore_errors=True)
+    return killed
 
 
 def have_machine(binary, machine):
@@ -68,8 +158,9 @@ class Qemu:
         self.serial_count = serial_count
         self.null_serial = null_serial  # False when the caller adds its own -serial
         self.timeout = timeout
-        self.tmpdir = tempfile.mkdtemp(prefix="qh")
+        self.tmpdir = tempfile.mkdtemp(prefix=TMP_PREFIX)
         self.proc = None
+        self._watcher = None
         self._qmp = None
         self._qmp_buf = b""  # bytes read past the last complete QMP line
         self._qmp_seq = 0
@@ -128,6 +219,7 @@ class Qemu:
                                      stdout=err, stderr=err, start_new_session=True)
         err.close()
         try:
+            self._start_watcher()
             if qt_listener:
                 try:
                     self._qt, _ = qt_listener.accept()
@@ -144,6 +236,29 @@ class Qemu:
             if qt_listener:
                 qt_listener.close()
         return self
+
+    def _start_watcher(self):
+        """Tie QEMU's life to this process and write the pidfile."""
+        started = time.time()
+        self._watcher = subprocess.Popen(
+            ["/bin/sh", "-c", WATCHER, "qemu-watcher", str(self.proc.pid)],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        tmp = os.path.join(self.tmpdir, PIDFILE + ".tmp")
+        with open(tmp, "w") as f:
+            f.write(f"{self.proc.pid} {started:.3f} {os.getpid()} {self.proc.pid}\n")
+        os.replace(tmp, os.path.join(self.tmpdir, PIDFILE))
+
+    def _stop_watcher(self):
+        w, self._watcher = self._watcher, None
+        if w is None:
+            return
+        try:
+            w.kill()
+        except OSError:
+            pass
+        w.wait()
+        w.stdin.close()
 
     def _connect_qmp(self):
         deadline = time.monotonic() + self.timeout
@@ -202,6 +317,7 @@ class Qemu:
             except OSError:
                 pass
         try:
+            self._stop_watcher()
             if self.proc:
                 self._stop_proc()
         finally:
