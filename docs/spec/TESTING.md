@@ -153,6 +153,8 @@ A project test can drive the Pi's own button and dial lines. Boot with `qtest=Tr
 | `bounce(pin, count, period_s, settle=False)` | A button that chatters, then rests released or pressed |
 | `turn(pin_a, pin_b, detents, state_s, lengths=(1, 1, 1, 1), bounce=None)` | A dial turn from rest, both lines high. `lengths` scales each Gray state. |
 | `slip(log)` | The latest write and the most a state was cut short, in seconds |
+| `pressed_span(schedule, log, press)` | The longest time from the first press to the real end of the last press, in seconds |
+| `one_sample_at_most(span_s, missed, jitter_s, tick_s)` | True when no two tick samples can fall inside the span |
 | `quad_schedule()`, `bounce_schedule()`, `quad_states()`, `level_writes()` | The pure parts behind the above, tested in `tests/tools/test_harness_pigpio.py` |
 
 ## Canary suite

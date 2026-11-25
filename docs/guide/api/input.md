@@ -491,6 +491,15 @@ with boot(img, board, qtest=True, gpio_high=[5, 6, 16, 23, 24]) as vm:
 
 `tests/target/test_input_gpio.py` runs the buttons, repeat, the guard, the dial and its limit this way on all four boards. Timing comes from the host, so each test names its allowance.
 
+The QEMU tick is not exact. Gaps between callbacks are often 12 to 13 ms and reach 55 ms under host load. Each timed run reads the guest's `ticks` command before and after, so its numbers cover that run only. The missed count never resets, so the test subtracts the count read before the run. A run is tried again, then skipped with its numbers, only when they show the guest could not see what the test claims. Any other wrong result fails.
+
+| Check | It counts the run when |
+|---|---|
+| A glitch or a chatter burst gives nothing | No tick was missed and the burst, from its first press to the real end of its last, is shorter than 10 ms less the tick jitter |
+| A tap gives one press and one release | No tick gap reached half the hold |
+| Repeats stay between 6 and 8 | The real hold, give or take three tick gaps, stays between 800 and 1100 ms |
+| A slow dial turn counts each detent | No tick gap reached the shortest state, less the time the host cut and the bounce |
+
 ### Pending hardware validation
 
 QEMU proves the logic with levels driven from outside, not real contacts, pulls or edges. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
