@@ -42,11 +42,18 @@ TMP_PREFIX = "qh"
 # No moment exists with QEMU up and no watcher: the watcher starts first,
 # and QEMU cannot join a group whose leader is gone. The group number
 # cannot name a stranger: a group id stays taken while its leader lives,
-# and the watcher outlives QEMU. It ignores SIGTERM, so close() can
-# SIGTERM the group and the watcher stays. close() reaps QEMU first, then
-# closes the pipe and reaps the watcher. See tests/README.md, "QEMU
-# outlives no test process".
-WATCHER = "trap '' TERM; read _ ; kill -s KILL 0"
+# and the watcher outlives QEMU. close() signals QEMU's own pid, never
+# the group, so the watcher gets nothing from it. close() reaps QEMU
+# first, then closes the pipe and reaps the watcher.
+#
+# The watcher ignores SIGINT, SIGHUP and SIGTERM, so a signal sent to the
+# whole group from outside leaves it in place. Only SIGKILL stops it
+# alone. With preexec_fn the child ignores them before the exec. With
+# process_group= the shell's trap does it, and the watcher prints one
+# byte after its trap: start() waits for that byte before QEMU starts.
+# See tests/README.md, "QEMU outlives no test process".
+WATCHER_SIGNALS = (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)
+WATCHER = "trap '' INT HUP TERM; echo; read _ ; kill -s KILL 0"
 
 # Popen(process_group=) exists from Python 3.11. Older ones call
 # os.setpgid() from preexec_fn: same call, same child, before the exec.
@@ -56,13 +63,21 @@ USE_PROCESS_GROUP = (sys.version_info >= (3, 11)
                      and os.environ.get(PGID_FALLBACK_ENV, "") != "1")
 
 
-def _group_kwargs(pgid):
-    """Popen arguments that put the child in group `pgid`, 0 for a new one."""
+def _group_kwargs(pgid, ignore=()):
+    """Popen arguments that put the child in group `pgid`, 0 for a new one.
+
+    The preexec_fn form also sets the signals in `ignore` to SIG_IGN in
+    the child before the exec. An ignored signal stays ignored across
+    the exec. The process_group form cannot: the caller must ignore them
+    in the child some other way.
+    """
     if USE_PROCESS_GROUP:
         return {"process_group": pgid}
 
     def join():
         os.setpgid(0, pgid)
+        for sig in ignore:
+            signal.signal(sig, signal.SIG_IGN)
     return {"preexec_fn": join}
 
 
@@ -349,17 +364,26 @@ class Qemu:
 
         Same session as this process: setpgid() joins only a group of
         the caller's session. Popen returns after the exec, so the group
-        exists before QEMU starts.
+        exists before QEMU starts. The watcher prints one byte once its
+        trap is set. Waiting for it closes the window where a signal to
+        the group would still kill the watcher.
         """
         self._started = time.time()
         try:
             self._watcher = subprocess.Popen(
                 ["/bin/sh", "-c", WATCHER, "qemu-watcher"],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                **_group_kwargs(0))
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                **_group_kwargs(0, WATCHER_SIGNALS))
         except (OSError, subprocess.SubprocessError) as e:
             # No watcher, no guarantee that QEMU dies with this process.
             raise QemuError(f"cannot start the QEMU watcher with /bin/sh: {e}") from e
+        out = self._watcher.stdout
+        try:
+            ready, _, _ = select.select([out], [], [], self.timeout)
+            if not ready or not os.read(out.fileno(), 1):
+                raise QemuError("the QEMU watcher did not get ready")
+        finally:
+            out.close()
 
     def _write_pidfile(self):
         """Record the VM for sweep_stale(). A failure only warns: the
@@ -454,32 +478,24 @@ class Qemu:
             finally:
                 shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _signal_group(self, sig):
-        # The group is the watcher's. The watcher is our child and not yet
-        # reaped, so its pid, and the group id, name no other process.
-        # QEMU may exit at any time, for example after a guest power-off.
-        # macOS then reports EPERM for the group, not ESRCH.
-        if self.proc.poll() is not None or self._watcher is None:
-            return
-        try:
-            os.killpg(self._watcher.pid, sig)
-        except OSError:
-            pass  # gone, or not ours to signal: the wait below decides
-
     def _stop_proc(self):
-        """Stop and reap QEMU. Safe when it has already exited."""
-        self._signal_group(signal.SIGTERM)
+        """Stop and reap QEMU. Safe when it has already exited.
+
+        Signals QEMU's own pid, never the group: the watcher must stay to
+        kill QEMU if this process dies during a wait. Popen skips the
+        signal once QEMU is reaped, so the pid names no stranger. QEMU's
+        children, if any, die when the watcher kills the group.
+        """
         try:
+            self.proc.terminate()
             self.proc.wait(3)
             return
         except subprocess.TimeoutExpired:
             pass
-        self._signal_group(signal.SIGKILL)
-        try:
-            self.proc.wait(3)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait()
+        except OSError:
+            pass  # exited between the poll and the signal
+        self.proc.kill()
+        self.proc.wait()
 
     def __enter__(self):
         return self.start()

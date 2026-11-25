@@ -123,8 +123,11 @@ CHILD = textwrap.dedent("""
 """)
 
 
-@pytest.mark.parametrize("how", ["kill", "term", "exit"])
+@pytest.mark.parametrize("how", ["kill", "term", "int", "hup", "exit"])
 def test_qemu_dies_with_its_test_process(fake, how):
+    # "int" and "hup": what a terminal sends the test process on Ctrl-C
+    # and on close. QEMU's group is not the terminal's, so only the test
+    # process gets them.
     code = CHILD.format(tests=TESTS, binary=str(fake), how=how)
     child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
     try:
@@ -134,6 +137,10 @@ def test_qemu_dies_with_its_test_process(fake, how):
             child.kill()
         elif how == "term":
             child.terminate()
+        elif how == "int":
+            child.send_signal(signal.SIGINT)
+        elif how == "hup":
+            child.send_signal(signal.SIGHUP)
         child.wait(5)
         assert gone(pid), f"QEMU stand-in {pid} outlived its test process ({how})"
     finally:
@@ -155,6 +162,80 @@ def test_qemu_dies_when_test_process_dies_in_close(stubborn):
         child.kill()
         child.wait(5)
         assert gone(pid, timeout=2.0), f"QEMU stand-in {pid} outlived a kill during close()"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+
+
+@pytest.fixture
+def deaf(tmp_path):
+    """A fake QEMU that ignores SIGINT, SIGHUP and SIGTERM."""
+    yield write_fake(tmp_path / "deaf", "trap '' INT HUP TERM\nexec sleep 600")
+    kill_stand_ins(tmp_path / "deaf")
+
+
+EARLY_CLOSE = textwrap.dedent("""
+    import os, sys
+    sys.path.insert(0, {tests!r})
+    from harness import qemu
+    # Test-only: a watcher slow to set up widens the window before its trap.
+    qemu.WATCHER = "sleep 0.2; " + qemu.WATCHER
+    q = qemu.Qemu({binary!r}, "none", qmp=False).start()
+    pids = os.path.join(os.path.dirname({binary!r}), "pids")
+    while not os.path.exists(pids) or len(open(pids).read().split()) < {count}:
+        pass  # the stand-in has recorded its pid: well inside the window
+    print("closing", flush=True)
+    q.close()
+""")
+
+
+def test_qemu_dies_when_test_process_dies_in_early_close(stubborn):
+    # close() at once after start(), before a slow watcher could set any
+    # trap. The test process dies while close() waits on a QEMU that
+    # ignores SIGTERM. The watcher must still be there to kill QEMU.
+    for i in range(30):
+        code = EARLY_CLOSE.format(tests=TESTS, binary=str(stubborn), count=i + 1)
+        child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        try:
+            assert child.stdout.readline().strip() == "closing"
+            pid = stand_in_pids(stubborn, count=i + 1)[i]
+            time.sleep(0.3)  # close() now waits on the stand-in
+            child.kill()
+            child.wait(5)
+            assert gone(pid, timeout=2.0), f"run {i}: QEMU stand-in {pid} outlived its test process"
+        finally:
+            child.kill()
+            child.wait()
+            child.stdout.close()
+
+
+GROUP_SIGNAL = textwrap.dedent("""
+    import os, sys, time
+    sys.path.insert(0, {tests!r})
+    from harness.qemu import Qemu
+    q = Qemu({binary!r}, "none", qmp=False).start()
+    print(q._watcher.pid, flush=True)
+    time.sleep(600)
+""")
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_watcher_survives_a_signal_to_its_group(deaf, sig):
+    # Someone signals the whole VM group. QEMU ignores it here. The
+    # watcher must survive and still kill QEMU when the test process dies.
+    code = GROUP_SIGNAL.format(tests=TESTS, binary=str(deaf))
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        watcher = int(child.stdout.readline())
+        (pid,) = stand_in_pids(deaf)
+        os.killpg(watcher, sig)
+        time.sleep(0.3)
+        os.kill(watcher, 0)  # raises if the watcher died
+        assert not gone(pid, timeout=0.0)
+        child.kill()
+        child.wait(5)
+        assert gone(pid, timeout=2.0), f"QEMU stand-in {pid} outlived its test process"
     finally:
         child.kill()
         child.wait()

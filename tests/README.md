@@ -443,9 +443,12 @@ signal, `SIGKILL` or an exit that skips `close()`, the pipe closes and
 the watcher kills its group: QEMU and itself.
 
 The order leaves no gap. QEMU never runs without a watcher, since it
-can only join a live group. `close()` stops and reaps QEMU first, then
-closes the pipe and reaps the watcher. A test process killed while
-`close()` waits for a slow QEMU still takes QEMU with it.
+can only join a live group. `close()` sends `SIGTERM` to QEMU's own pid,
+waits 3 seconds, then sends `SIGKILL` to that pid. It never signals the
+group, so the watcher gets nothing from `close()`. It then reaps QEMU,
+closes the pipe and reaps the watcher. The watcher kills the group on
+its way out, which takes any child QEMU left. A test process killed
+while `close()` waits for a slow QEMU still takes QEMU with it.
 
 The child calls `setpgid()` before the exec. Python 3.11 and later pass
 `process_group` to `Popen`. Older ones call `os.setpgid()` from
@@ -455,8 +458,15 @@ child, QEMU never runs and `start()` raises `QemuError`. Set
 run once with each form.
 
 The group id never names a stranger. A group id stays taken while its
-leader lives, and the watcher outlives QEMU. The watcher ignores
-`SIGTERM`, so `close()` can send it to the whole group.
+leader lives, and the watcher outlives QEMU.
+
+The watcher ignores `SIGINT`, `SIGHUP` and `SIGTERM`, so a signal sent
+to the whole group from outside leaves it in place. In the `preexec_fn`
+form the child sets them to ignored before the exec, and an ignored
+signal stays ignored across it. The `process_group` form has no hook in
+the child, so the shell's `trap` does it. The watcher then prints one
+byte, and `start()` waits for that byte before it starts QEMU. Both
+forms run the trap and the wait, which costs about a millisecond.
 
 ```mermaid
 sequenceDiagram
@@ -464,17 +474,45 @@ sequenceDiagram
     participant W as watcher
     participant Q as QEMU
     T->>W: start, new group, pipe
+    W->>T: one byte after its trap
     T->>Q: start in the watcher's group
     alt close()
-        T->>Q: SIGTERM to the group, then SIGKILL
+        T->>Q: SIGTERM to QEMU, then SIGKILL
         T->>T: reap QEMU
         T->>W: close the pipe
         W->>W: kill its group, exit
+        T->>T: reap the watcher
     else test process dies
         T--)W: pipe closes
         W->>Q: SIGKILL to its group
     end
 ```
+
+The table lists each moment in the life of a VM, what can die there,
+and what is left to stop QEMU. "Dies" covers any end of the test
+process: `SIGKILL`, `SIGTERM`, a `pytest-timeout` kill or an exit that
+skips `close()`.
+
+| Moment or event | Who can die | What stops QEMU |
+| --- | --- | --- |
+| Before the watcher starts | Test process | No QEMU yet |
+| Watcher started, trap not set | Test process | No QEMU yet. The pipe closes and the watcher exits |
+| Watcher ready, QEMU not started | Test process | No QEMU yet. The watcher kills its group and exits |
+| Both running | Test process | The watcher, at end of file on its pipe |
+| `close()` before its `SIGTERM` | Test process | The watcher |
+| `close()` after its `SIGTERM`, during its waits | Test process, QEMU | The watcher, since `close()` never signals it |
+| After QEMU is reaped | Test process, watcher | Nothing left to stop |
+| `SIGINT` from a terminal | Test process | QEMU's group is not the terminal's foreground group, so only pytest gets it. pytest runs `close()`, or dies and the watcher acts |
+| `SIGHUP` when the terminal closes | Test process | Same as `SIGINT`. A `SIGHUP` that does reach the group leaves the watcher, which ignores it |
+| `SIGTERM` or `SIGINT` to the whole group | QEMU | The watcher ignores both and stays |
+| `pytest-timeout` kills the test process | Test process | The watcher |
+| `pytest-timeout` thread method, process lives | Nothing | The fixture's `close()`, or the watcher when the session ends |
+| Outside `SIGKILL` to the watcher alone | Watcher | Nothing while the test process lives |
+
+The last row is the one gap: QEMU runs on with no watcher. `close()`
+still stops it: it signals QEMU's own pid, reaps it, then reaps the dead
+watcher. If the test process dies first, the next session's sweep kills
+that QEMU, since its pidfile names a dead owner.
 
 Each VM's temp folder holds `qemu.pid`: the QEMU pid, its start time,
 the test process pid and the process group, which is the watcher's pid. At session start the plugin
