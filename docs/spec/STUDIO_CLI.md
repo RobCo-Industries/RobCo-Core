@@ -492,7 +492,7 @@ Left out on purpose: FAT32, a card for a real device, a card with Deitrix, and a
 | `--headless` | None | | Required in version 1. Without it the command fails with `usage`: the run in a window comes later. |
 | `--expect` | `TEXT`, 1 to 200 bytes, with no line feed | None | The text to wait for. See [What --expect matches](#what---expect-matches). |
 | `--timeout` | Whole seconds, 1 to 3600 | 60 | The time limit of the run |
-| `--board` | A board name | `raspi0` | The QEMU machine |
+| `--board` | One board name | `raspi0` | The QEMU machine. Only `robco test` takes a list. The name is checked against `boot.json` at step 12 of [the steps](#the-steps-of-update-build-run-and-test), so a value with a comma fails there with `run: board`. |
 
 The command takes every step of [The steps of update, build, run and test](#the-steps-of-update-build-run-and-test), in that order. It installs the `qemu` tool at step 9, once the lock or the resolution has named its version. A failure before step 14 ends the command with that failure's code, and no QEMU starts.
 
