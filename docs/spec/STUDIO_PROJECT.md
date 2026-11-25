@@ -281,6 +281,15 @@ Only `build/NAME.HTP` must be byte-equal on every host system and in every proje
 
 A tool reports the first error it finds as `manifest: <code>: <detail>` and builds nothing.
 
+"First" has a fixed meaning, so two tools report the same code for the same manifest. The tool follows the six steps of [Order of checks](./STUDIO_CLI.md#order-of-checks):
+
+1. A manifest that is absent fails with `project: none`, and one that the host does not let the tool read with `io: read`. Neither is a `manifest:` code.
+2. `syntax`.
+3. `format`.
+4. `unknown key`, for the first unknown key or table in the order of the file, and for a `build.backend` other than `robco`.
+5. Each key of `[project]`, then of `[target]`, then of `[build]`, in the order of its table. For one key: `missing` when it is required and absent, `type` when its TOML type is wrong, then the code of its value: `name`, `title`, `version`, `kind`, `subtype`, `path` for an `icon` that breaks a path rule, `platform`, `abi`, `sources` for the count of patterns, and `path` for a pattern that breaks a path rule. A missing `subtype` in a holotape is `subtype`, not `missing`.
+6. The checks that look at files: the icon file, `path` and `icon`, then each pattern of `sources` in the order written, `path` and `sources`.
+
 | Code | When |
 |---|---|
 | `syntax` | The file is not TOML 1.1 or not UTF-8 |

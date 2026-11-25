@@ -144,7 +144,7 @@ One place has no `abi` field to read: `robco.lock`, which holds a name, a versio
 - A format in `formats` that the tool does not know, by its name or by its value, fails with `package: format` and names the format. Studio links its format code when it is built, so it never guesses. A tool of this spec knows the seven names of the table above, each with the value `1`.
 - A field the tool does not know is ignored. A new field that changes how a package must be read raises `format`.
 - A required field that is missing or has the wrong type, and a value outside the form its table gives, fail with `package: manifest`.
-- The checks come in this order: the file parses, `format`, `formats`, then each field in the order of the table of [sdk.json](#sdkjson), then [what must equal the index entry](#what-must-equal-the-index-entry), then the hashes of [Hashes](#hashes).
+- The checks come in this order: the file parses, `format`, `formats`, then each field in the order of the table of [sdk.json](#sdkjson), then [what must equal the index entry](#what-must-equal-the-index-entry), then the hashes of [Hashes](#hashes). [Order of checks](./STUDIO_CLI.md#order-of-checks) has the same steps for every file a tool reads.
 
 ### What must equal the index entry
 

@@ -827,3 +827,30 @@ def test_resolver_decides_from_the_index_alone():
     assert resolve(index, "pipos", "1.4") is None
     assert resolve(index, "templates", "0.1") is None
     assert all("formats" in e for e in index["packages"])
+
+
+def test_order_of_checks_names_a_known_code_for_every_step():
+    codes = set(error_codes())
+    text = section(CLI, "Order of checks")
+    rows = [r for r in text.split("\n") if r.startswith("| ") and not r.startswith("| File")
+            and not r.startswith("|---")]
+    assert len(rows) == 7
+    seen = set()
+    for row in rows:
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        assert len(cells) == 7, row
+        for cell in cells[1:]:
+            for code in re.findall(r"`((?:%s): [a-z][a-z ]*[a-z])`" % "|".join(CODE_PREFIXES), cell):
+                assert code in codes, code
+                seen.add(code)
+        # Steps 2 and 3 always fail with a code, and step 3 with the format code of the file.
+        assert "`" in cells[2] and "format`" in cells[3], row
+    # Every code of a file that is refused when it is read has its place in the table.
+    read_codes = {c for c in codes if c.split(":")[0] in ("manifest", "templates")
+                  or c in ("lock: syntax", "lock: format", "lock: unknown key", "lock: entry",
+                           "index: syntax", "index: format", "index: entry", "index: duplicate",
+                           "test: syntax", "test: format", "test: unknown key", "project: none")}
+    value_codes = {"manifest: name", "manifest: version", "manifest: title", "manifest: kind",
+                   "manifest: subtype", "manifest: platform", "manifest: abi"}
+    read_codes -= value_codes | {"templates: none"}    # no package installed: no file is read
+    assert read_codes <= seen, sorted(read_codes - seen)

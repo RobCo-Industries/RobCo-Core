@@ -109,6 +109,33 @@ Every failure has one code. This table maps each code to its exit code, includin
 
 `test: failed` gives exit code 7 in place of 1 when QEMU failed in a scenario, as [Exit codes](#exit-codes) says.
 
+### Order of checks
+
+A tool reads seven kinds of file. It checks every one in the same six steps and reports the first failure, so two tools give the same code for the same bad file.
+
+1. The file is there, and the host lets the tool read it.
+2. The bytes parse: they are UTF-8, and TOML 1.1 with a table at the top or JSON with an object at the top.
+3. `format` is present, is a positive integer, and is one the tool knows.
+4. No key is unknown, in the files that refuse unknown keys.
+5. Each key or field, in the order of the tables of its spec: a required one is present, then its type is right, then its value has the form and the limits its table gives.
+6. The rules that need another file, the file system or the index.
+
+`format` comes before unknown keys and before every value, so a file of a later format reports its format and nothing else: a tool cannot tell a key of a later format from a mistake. `format` cannot come before step 2, since a tool must parse a file to read it.
+
+The code of each step, per file:
+
+| File | 1. Not there, or not readable | 2. Does not parse | 3. `format` | 4. Unknown key | 5. A key or a field | 6. Then |
+|---|---|---|---|---|---|---|
+| `robco.toml` | Absent: `project: none`. Not readable: `io: read`. | `manifest: syntax` | `manifest: format` | `manifest: unknown key`. A `build.backend` other than `robco` fails here. | `manifest: missing`, `manifest: type`, then the code of the value. The tables come in the order `[project]`, `[target]`, `[build]`. | The icon file, `manifest: path` and `manifest: icon`. Then each pattern of `sources` in order, `manifest: path` and `manifest: sources`. |
+| `robco.lock` | Absent: no error. Not readable: `io: read`. | `lock: syntax` | `lock: format` | `lock: unknown key` | `lock: entry` | `lock: stale`. Then, where the lock is used, `lock: hash`, `lock: tool` and `lock: missing`. |
+| A scenario file | A file name that breaks the rule: `test: name`. A `SCENARIO` with no file: `test: none`. Not readable: `io: read`. | `test: syntax` | `test: format` | `test: unknown key` | `timeout_ms`, then `step`, then each step in order. In a step: `test: missing`, `test: step`, `test: type`, `test: value`. | `test: golden` |
+| The index | `index: location`, `index: read` | `index: syntax` | `index: format` | Ignored | `index: entry` | `index: duplicate`. Then, where an entry is used, `index: host` and the `sdk:` codes. |
+| `sdk.json` | Absent from the archive: `package: archive` | `package: manifest` | `package: format`, for `format` and then for `formats` | Ignored | `package: manifest` | What must equal the index entry, `package: manifest`. Then the hashes, `package: hash`. |
+| `flags.json`, `boot.json` | Absent from a `pipos` package: `package: manifest`, at the install | `package: manifest` | `package: format` | Ignored | `package: manifest` | For `boot.json`, a board it does not list: `run: board` |
+| `templates.json` | `templates: manifest` | `templates: manifest` | `templates: format` | `templates: manifest` | `templates: manifest` | `templates: token` |
+
+The tool reads `robco.toml`, `robco.lock` and the scenario files at the start of a command, the index when it must resolve or download, `sdk.json` at an install and whenever it uses an installed package, `flags.json` when it builds, `boot.json` when it starts QEMU and `templates.json` in `robco new`. Each spec has the details: [Errors](./STUDIO_PROJECT.md#errors), [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), [Scenario files](#scenario-files), [Reading the index](./SDK_PACKAGE.md#reading-the-index), [Reading sdk.json](./SDK_PACKAGE.md#reading-sdkjson), [Reading flags.json](./SDK_PACKAGE.md#reading-flagsjson), [boot.json](./TESTING.md#bootjson) and [templates.json](./SDK_PACKAGE.md#templatesjson).
+
 ## JSON lines
 
 With `--json` a command writes one JSON object per line on standard output.
@@ -390,7 +417,7 @@ The command first installs the locked `qemu` tool where the cache lacks it, by t
 
 The tool boots the machine from the `pipos` package that the lock names, `PKG`, and the `qemu` tool that the lock names.
 
-1. It reads `PKG/boot.json`, by the rules of [boot.json](./TESTING.md#bootjson). A `--board` that the file does not list fails with `run: board`, and the detail lists the boards. The mode is the board's `default_mode`.
+1. It reads `PKG/boot.json`, by the rules of [boot.json](./TESTING.md#bootjson). A file that is not JSON, or that breaks a reader rule of that section, fails with `package: manifest` and names the file. A `format` other than `1` fails with `package: format`. A `--board` that the file does not list fails with `run: board`, and the detail lists the boards. The mode is the board's `default_mode`.
 2. The program is the board's `qemu` value in `bin/` of the `qemu` tool folder, with `.exe` on Windows. A missing program fails with `tool: program`.
 3. It makes a new, empty folder for the run in the system's temporary folder, and writes [the simulator card](#the-simulator-card) there as `sd.img`.
 4. It builds the command line in the order of [boot.json](./TESTING.md#bootjson): `{stub}` is `PKG/boot/fwstub.bin`, `{image}` is `PKG/boot/PIPOS.IMG` and `{sd}` is the card. It attaches QMP once, no qtest, both serial ports and the card, and no other device. It adds no `-seed` option: [the key of a run](./SDK_PACKAGE.md#the-key-of-a-run) must come from random numbers that nobody fixed.
@@ -545,6 +572,8 @@ An `exit` step may only be the last step. A scenario without one passes when its
 | `test: step` | A step holds two action keys, holds `timeout_ms` where it is not allowed, or is an `exit` step that is not the last. Also more than 256 steps. |
 | `test: value` | A value is outside its limits: a number, a text, a key name or a golden name |
 | `test: name` | The file's name breaks the name rule |
+
+The tool checks a file in the steps of [Order of checks](#order-of-checks). After `format` and the unknown keys it checks `timeout_ms`, then `step`, then each step in the order of the file. In one step the order is: no action key, `test: missing`. Two action keys, a `timeout_ms` that is not allowed, or an `exit` step that is not the last, `test: step`. A wrong type, `test: type`. A value outside its limits, `test: value`.
 
 A scenario names no board, no package and no tape. It must pass on every board, and `--board` picks the one a run uses.
 
