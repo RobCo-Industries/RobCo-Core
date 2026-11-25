@@ -369,7 +369,7 @@ Seal never writes `abi_version`, and a Studio build does not pack. The startup c
 
 ### C functions
 
-`rimg_seal()` and `rimg_pack()` follow the steps above. They go into `include/robco/rimg.h` and `src/lib/rimg.c`, beside `rimg_validate()`, and touch no hardware. These are their declarations:
+`rimg_seal()` and `rimg_pack()` follow the steps above. Their declarations go into `include/robco/rimg.h`, beside `rimg_validate()`. Their code goes into a new file, `src/lib/rimg_seal.c`, beside `src/lib/rimg.c`, so a program that only validates links no sealing code. They touch no hardware. These are their declarations:
 
 ```c
 /* Icon file formats, as rimg.py --icon-format. */
