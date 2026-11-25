@@ -289,7 +289,7 @@ Sealing fills in the fields that only exist once the image is linked and writes 
 | Implementation | State |
 |---|---|
 | `seal()` and `pack()` in `tools/rimg.py`, behind the `seal` and `pack` commands | Exists |
-| `rimg_seal()` and `rimg_pack()` in C, beside `rimg_validate()` | To be written. Their signatures are not fixed yet. |
+| `rimg_seal()` and `rimg_pack()` in C, beside `rimg_validate()` | To be written, with the signatures of [C functions](#c-functions) |
 
 Both give the same bytes for the same inputs and fail with the same code at the same step. The [test vectors](#test-vectors) prove it. The code is a `rimg_err_t` value and its `@RC` name, as in [Validation](#validation).
 
@@ -301,17 +301,17 @@ An implementation writes nothing when a step fails. It returns the whole sealed 
 |---|---|---|---|
 | Image, for seal | Bytes | The raw output of `objcopy` | See the steps |
 | Payload, for pack | Bytes | Code linked for `load_addr + 0x60`, or `load_addr + 0x120` with META | See the steps |
-| `name` | Text or absent | ASCII, 0 to 16 bytes. Absent leaves the header's `name` as it is. | `version` when longer than 16 bytes |
-| `image_version` | `X.Y.Z` or absent | Exactly three parts, each one or more decimal digits. X at most 65535, Y and Z at most 255. Stored as `(X << 16) \| (Y << 8) \| Z`. | A usage error, before any step |
+| `name` | Text or absent | ASCII, 0 to 16 bytes. Absent leaves the header's `name` as it is. | `version` when not ASCII or longer than 16 bytes |
+| `image_version` | `X.Y.Z` or absent | Exactly three parts, each one or more of the ASCII digits `0` to `9`. X at most 65535, Y and Z at most 255. Stored as `(X << 16) \| (Y << 8) \| Z`. | A usage error, before any step |
 | `title` | Text or absent | ASCII, 0 to 64 bytes, no NUL. Stored NUL-padded to 64 bytes. | `version` |
 | `icon` | File bytes and a format, or absent | See [Icon decoding](#icon-decoding) | See there |
 | `magic`, for pack | `BOOT`, `ROM1` or `ROBCO78` | | `magic` |
-| `subtype`, `load_addr`, `mem_size`, for pack | Unsigned 32-bit integers | `mem_size` absent means the file size | See the steps |
-| `abi_version`, for pack | `MAJOR.MINOR` or absent | Two parts of decimal digits, each at most 65535. Absent means the ABI major of the magic, minor 0. | A usage error, before any step |
+| `subtype`, `load_addr`, `mem_size`, for pack | Integers | Each from 0 to `0xFFFFFFFF`. `mem_size` absent means the file size. | `bounds`, at pack step 2 |
+| `abi_version`, for pack | `MAJOR.MINOR` or absent | Two parts, each one or more of the ASCII digits `0` to `9`, each at most 65535. Absent means the ABI major of the magic, minor 0. | A usage error, before any step |
 | `meta`, for pack | Yes, no or absent | Absent follows the magic: yes for `ROM1` and `ROBCO78`, no for `BOOT` | See the steps |
-| `entry`, for pack | Unsigned integer | Byte offset into the payload. Default 0. | See the steps |
+| `entry`, for pack | Integer | Byte offset into the payload. Default 0. | `size`, at pack step 4 |
 
-`rimg.py` does not handle some inputs outside these types. A `name` that is not ASCII, or a `subtype`, `load_addr` or `mem_size` outside 32 bits, stops it with an unhandled Python error and exit code 1. The vectors leave these cases out.
+A usage error is not a `rimg_err_t` code. `rimg.py` exits 64 for it. The C functions take `image_version` and `abi_version` as numbers, so the caller parses the text and reports the error itself.
 
 ### Icon decoding
 
@@ -339,7 +339,7 @@ The result is the 128 bytes of the META icon layout.
 | 3 | `magic` is one of the three magics. | `magic` |
 | 4 | `hdr_version` is 1 and `hdr_size` is 64. | `version` |
 | 5 | If `file_size` is 0, set it to the image length. Else it must equal the image length. | `size` |
-| 6 | If `name` is given: it is at most 16 bytes. Write it NUL-padded to all 16 bytes of the field. | `version` |
+| 6 | If `name` is given: every byte is below `0x80` and it is at most 16 bytes. Write it NUL-padded to all 16 bytes of the field. | `version` |
 | 7 | If `image_version` is given, write it. | |
 | 8 | If `title` or `icon` is given, `flags` bit 0 is set. | `version` |
 | 9 | If `title` or `icon` is given, the image is at least `0x120` bytes. | `size` |
@@ -354,15 +354,96 @@ Seal never changes the stub, `flags`, `load_addr`, `mem_size`, `abi_version`, `s
 | Step | Action | Code on failure |
 |---|---|---|
 | 1 | `magic` is one of the three magics. | `magic` |
-| 2 | Resolve `meta`. Without META, a `title` or `icon` is refused. | `version` |
-| 3 | `entry` is a multiple of 4, and `entry + 4` is at most the payload length. An empty payload always fails here. | `size` |
-| 4 | The code offset is `0x60`, plus `0xC0` with META. The file size is the code offset plus the payload length. | |
-| 5 | Start from that many zero bytes. Word 0 is `0xEA000000 \| (((code offset + entry - 8) >> 2) & 0x00FFFFFF)`, a `b` to the entry. A target more than 32 MiB away fails. | `version` |
-| 6 | Write the header: the magic, `hdr_version` 1, `hdr_size` 64, `flags` 1 with META or 0 without, `load_addr`, `file_size`, `mem_size` or the file size, `crc32` 0, `abi_version`, `image_version` or 0, `subtype`, 16 NUL bytes of `name`, `reserved` 0. The META block stays zero. | |
-| 7 | Copy the payload to the code offset. | |
-| 8 | Seal the result with `name`, `title` and `icon` and no `image_version`, by the seal steps. | That step's code |
+| 2 | `subtype`, `load_addr` and, if given, `mem_size` are each from 0 to `0xFFFFFFFF`, checked in that order. | `bounds` |
+| 3 | Resolve `meta`. Without META, a `title` or `icon` is refused. | `version` |
+| 4 | `entry` is at least 0 and a multiple of 4, and `entry + 4` is at most the payload length. An empty payload always fails here. | `size` |
+| 5 | The code offset is `0x60`, plus `0xC0` with META. The file size is the code offset plus the payload length. | |
+| 6 | Start from that many zero bytes. Word 0 is `0xEA000000 \| (((code offset + entry - 8) >> 2) & 0x00FFFFFF)`, a `b` to the entry. A target more than 32 MiB away fails. | `version` |
+| 7 | Write the header: the magic, `hdr_version` 1, `hdr_size` 64, `flags` 1 with META or 0 without, `load_addr`, `file_size`, `mem_size` or the file size, `crc32` 0, `abi_version`, `image_version` or 0, `subtype`, 16 NUL bytes of `name`, `reserved` 0. The META block stays zero. | |
+| 8 | Copy the payload to the code offset. | |
+| 9 | Seal the result with `name`, `title` and `icon` and no `image_version`, by the seal steps. | That step's code |
 
 `rimg.py pack` on the command line checks `entry` before step 1 and exits 64, a usage error, where the function returns `size`. The C function returns `size`.
+
+Seal never writes `abi_version`, and a Studio build does not pack. The startup code writes the project's target ABI into the header when it is compiled. See [Startup code](./SDK_PACKAGE.md#startup-code).
+
+### C functions
+
+`rimg_seal()` and `rimg_pack()` follow the steps above. They go into `include/robco/rimg.h` and `src/lib/rimg.c`, beside `rimg_validate()`, and touch no hardware. These are their declarations:
+
+```c
+/* Icon file formats, as rimg.py --icon-format. */
+typedef enum rimg_icon_format {
+    RIMG_ICON_AUTO = 0,     /* 128 bytes is raw, any other length is PBM */
+    RIMG_ICON_RAW  = 1,     /* exactly 128 bytes in the META layout */
+    RIMG_ICON_PBM  = 2,     /* a 32x32 PBM, P1 or P4 */
+} rimg_icon_format_t;
+
+/*
+ * Seal inputs. A NULL pointer, or a has_ flag of 0, is an absent input.
+ *   name           NUL-terminated text.
+ *   image_version  (X << 16) | (Y << 8) | Z, already parsed by the caller.
+ *   title          NUL-terminated text.
+ *   icon           The icon file's bytes, icon_len of them. The function
+ *                  decodes them by icon_format before any step.
+ */
+typedef struct rimg_seal_opts {
+    const char        *name;
+    int                has_image_version;
+    uint32_t           image_version;
+    const char        *title;
+    const uint8_t     *icon;
+    size_t             icon_len;
+    rimg_icon_format_t icon_format;
+} rimg_seal_opts_t;
+
+/*
+ * Pack inputs. seal holds name, image_version, title and icon. Pack writes
+ * image_version into the header at step 7, 0 when absent, and seals with
+ * the rest. The numbers are signed and 64 bits wide so that step 2 and
+ * step 4 see a value out of range, as rimg.py does.
+ *   magic        NUL-terminated: "BOOT", "ROM1" or "ROBCO78".
+ *   abi_version  (MAJOR << 16) | MINOR. Absent: the ABI major of the magic, minor 0.
+ *   meta         -1 follows the magic, 0 no META block, 1 a META block.
+ */
+typedef struct rimg_pack_opts {
+    rimg_seal_opts_t seal;
+    const char      *magic;
+    int64_t          subtype;
+    int64_t          load_addr;
+    int              has_mem_size;
+    int64_t          mem_size;
+    int              has_abi_version;
+    uint32_t         abi_version;
+    int              meta;
+    int64_t          entry;
+} rimg_pack_opts_t;
+
+/*
+ * Seals the len bytes at image into out, which holds len bytes and does
+ * not overlap image. Runs icon decoding, then seal steps 1 to 12.
+ * Returns RIMG_OK, or the code of the first failed step. On a failure the
+ * bytes of out are undefined and the caller writes no file.
+ * A NULL image, opts or out returns RIMG_E_IO before any step.
+ */
+int rimg_seal(const void *image, size_t len, const rimg_seal_opts_t *opts, void *out);
+
+/*
+ * Packs payload_len bytes into out, which holds out_cap bytes and does not
+ * overlap payload. Runs icon decoding, then pack steps 1 to 9.
+ * Returns RIMG_OK and sets *out_len to the image length, or the code of
+ * the first failed step. On a failure *out_len and the bytes of out are
+ * undefined. A NULL opts, out or out_len, a NULL payload with a non-zero
+ * payload_len, or an out_cap below payload_len + 0x120, returns
+ * RIMG_E_IO before any step.
+ */
+int rimg_pack(const void *payload, size_t payload_len, const rimg_pack_opts_t *opts,
+              void *out, size_t out_cap, size_t *out_len);
+```
+
+An `icon_format` outside the enum returns `RIMG_E_IO`, as an unknown `--icon-format` does in `rimg.py`.
+
+Both functions decode the PBM themselves. A C host test then runs every vector as it stands: it reads the `icon` file named in `vectors.ini` and passes its bytes with its `icon_format`. The caller parses only `image_version` and `abi_version`, by the rules of [Inputs](#inputs).
 
 ## Test vectors
 
