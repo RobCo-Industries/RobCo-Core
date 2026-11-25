@@ -447,6 +447,13 @@ can only join a live group. `close()` stops and reaps QEMU first, then
 closes the pipe and reaps the watcher. A test process killed while
 `close()` waits for a slow QEMU still takes QEMU with it.
 
+The child calls `setpgid()` before the exec. Python 3.11 and later pass
+`process_group` to `Popen`. Older ones call `os.setpgid()` from
+`preexec_fn`. If the watcher's group is gone, the call fails in the
+child, QEMU never runs and `start()` raises `QemuError`. Set
+`ROBCO_QEMU_PGID_FALLBACK=1` to force the older form. The orphan tests
+run once with each form.
+
 The group id never names a stranger. A group id stays taken while its
 leader lives, and the watcher outlives QEMU. The watcher ignores
 `SIGTERM`, so `close()` can send it to the whole group.

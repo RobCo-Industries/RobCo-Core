@@ -19,6 +19,24 @@ from harness.qemu import Qemu, sweep_stale
 TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+@pytest.fixture(autouse=True, params=["process_group", "preexec_fn"])
+def group_form(request, monkeypatch):
+    """Run every test with each way of setting the process group.
+
+    Python 3.11 and later use Popen(process_group=). Older ones fall back
+    to preexec_fn. The environment variable reaches the child tests' VMs.
+    """
+    fallback = request.param == "preexec_fn"
+    if not fallback and sys.version_info < (3, 11):
+        pytest.skip("Popen(process_group=) needs Python 3.11")
+    monkeypatch.setattr(qemu_mod, "USE_PROCESS_GROUP", not fallback)
+    if fallback:
+        monkeypatch.setenv(qemu_mod.PGID_FALLBACK_ENV, "1")
+    else:
+        monkeypatch.delenv(qemu_mod.PGID_FALLBACK_ENV, raising=False)
+    return request.param
+
+
 def write_fake(folder, body="exec sleep 600"):
     """A fake QEMU binary in `folder`: it records its pid, then runs `body`."""
     folder.mkdir(exist_ok=True)
@@ -387,6 +405,30 @@ def test_vm_without_a_watcher_does_not_start(monkeypatch, fake):
         q.start()
     assert not (fake.parent / "pids").exists(), "QEMU started without a watcher"
     assert not os.path.exists(q.tmpdir)
+
+
+def test_group_form_matches_the_python(group_form):
+    assert qemu_mod._group_kwargs(0).keys() == {group_form}
+
+
+def test_vm_without_a_watcher_group_does_not_start(monkeypatch, fake):
+    # The watcher dies and is reaped before QEMU starts: its group is
+    # gone, setpgid() fails in the child and QEMU never runs.
+    real = Qemu._start_watcher
+
+    def start_then_lose(self):
+        real(self)
+        self._watcher.kill()
+        self._watcher.wait()
+    monkeypatch.setattr(Qemu, "_start_watcher", start_then_lose)
+    before = open_fds()
+    q = Qemu(str(fake), "none", qmp=False)
+    with pytest.raises(qemu_mod.QemuError, match="cannot start QEMU"):
+        q.start()
+    assert q.proc is None or q.proc.poll() is not None
+    assert not (fake.parent / "pids").exists(), "QEMU ran outside the watcher's group"
+    assert not os.path.exists(q.tmpdir)
+    assert open_fds() == before
 
 
 def test_vm_starts_when_the_pidfile_cannot_be_written(monkeypatch, fake, capsys):

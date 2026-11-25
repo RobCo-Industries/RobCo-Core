@@ -48,6 +48,23 @@ TMP_PREFIX = "qh"
 # outlives no test process".
 WATCHER = "trap '' TERM; read _ ; kill -s KILL 0"
 
+# Popen(process_group=) exists from Python 3.11. Older ones call
+# os.setpgid() from preexec_fn: same call, same child, before the exec.
+# Set ROBCO_QEMU_PGID_FALLBACK=1 to force the older form, for its tests.
+PGID_FALLBACK_ENV = "ROBCO_QEMU_PGID_FALLBACK"
+USE_PROCESS_GROUP = (sys.version_info >= (3, 11)
+                     and os.environ.get(PGID_FALLBACK_ENV, "") != "1")
+
+
+def _group_kwargs(pgid):
+    """Popen arguments that put the child in group `pgid`, 0 for a new one."""
+    if USE_PROCESS_GROUP:
+        return {"process_group": pgid}
+
+    def join():
+        os.setpgid(0, pgid)
+    return {"preexec_fn": join}
+
 
 def keepalive_default():
     """False when ROBCO_QEMU_KEEPALIVE is 0, off, no or false. On otherwise."""
@@ -300,10 +317,13 @@ class Qemu:
             self._start_watcher()
             err = open(self.stderr_path, "wb")
             try:
-                # Python 3.11 or later. The CI image has 3.12.
                 self.proc = subprocess.Popen(self.command_line(), stdin=subprocess.DEVNULL,
                                              stdout=err, stderr=err,
-                                             process_group=self._watcher.pid)
+                                             **_group_kwargs(self._watcher.pid))
+            except (OSError, subprocess.SubprocessError) as e:
+                # A missing binary, or setpgid() failed in the child:
+                # either way QEMU never ran.
+                raise QemuError(f"cannot start QEMU: {e}") from e
             finally:
                 err.close()
             self._write_pidfile()
@@ -336,7 +356,7 @@ class Qemu:
             self._watcher = subprocess.Popen(
                 ["/bin/sh", "-c", WATCHER, "qemu-watcher"],
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                process_group=0)
+                **_group_kwargs(0))
         except (OSError, subprocess.SubprocessError) as e:
             # No watcher, no guarantee that QEMU dies with this process.
             raise QemuError(f"cannot start the QEMU watcher with /bin/sh: {e}") from e

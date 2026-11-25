@@ -11,7 +11,7 @@ Every command on this page was run as written. The function reference is in [API
 | `arm-none-eabi-gcc` and binutils | Any recent release. CI uses Ubuntu 24.04's `gcc-arm-none-eabi`. | Building images |
 | `qemu-system-arm` and `qemu-system-aarch64` | 10.1.x. The tests are verified on 10.1.2. | Running images |
 | mtools (`mformat`, `mcopy`, `mmd`) | Any | SD card images in tests |
-| Python 3 with `venv` | Any 3.x supported by pytest 8. CI uses 3.12. | Sealing images and the test harness |
+| Python 3 with `venv` | 3.9 or later, as Pillow 11 needs. CI uses 3.12. | Sealing images and the test harness |
 | GNU make, git, a host C compiler | Any | Build, submodules, host unit tests |
 
 Older QEMU releases model the `raspi` machines differently. Ubuntu's packaged QEMU is 8.x, which is too old. The CI container in [ci/README.md](../../ci/README.md) holds the exact versions.
