@@ -459,7 +459,7 @@ Each `SDIMAGE_FILES` pair is `source:destination`, the destination relative to t
 
 ## Put it on an SD card
 
-Not yet validated on hardware. The steps below come from [BOARD_SUPPORT.md](../spec/BOARD_SUPPORT.md#configtxt), not from a run on a real board.
+These steps booted `examples/hello` on a Pi Zero W 1.1 on 2026-11-24: the hello lines and the echo came back over the PL011. See [the result](../HARDWARE_VALIDATION.md#zero-w-11-exampleshello-2026-11-24). No other board has run them yet, and HDMI was not checked.
 
 Build the boot directory with `tools/mkbootdir.sh`:
 
@@ -503,7 +503,7 @@ Connect a 3.3 V USB serial adapter. Never use a 5 V adapter.
 | 8 | GPIO14, TXD | RX |
 | 10 | GPIO15, RXD | TX |
 
-Open the adapter at 115200 baud, 8N1, no flow control, then power the Pi. On a Pi 3 or Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` muxes GPIO14 and GPIO15 to the PL011 itself, but whether that is enough is pending hardware validation, so start with a Pi Zero or Pi 1. The fallbacks are in [the UART policy](../spec/BOARD_SUPPORT.md#uart-policy).
+Open the adapter at 115200 baud, 8N1, no flow control, then power the Pi. On a Pi 3 or Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` muxes GPIO14 and GPIO15 to the PL011 itself, but whether that is enough is pending hardware validation, so start with a Pi Zero or Pi 1. A Zero W 1.1 worked this way. The fallbacks are in [the UART policy](../spec/BOARD_SUPPORT.md#uart-policy).
 
 ## Where to go next
 

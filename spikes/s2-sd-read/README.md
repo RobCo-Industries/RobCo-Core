@@ -33,8 +33,12 @@ The script writes a test image with a known sector 0. It fails unless the `ev=re
 Same layout as spike 1 (see `../s1-uart-hello/README.md`):
 
 ```sh
-../../tools/mkbootdir.sh build/s2.img sdboot --kernel-name s2.img
+make -C ../../examples/hello
+../../tools/mkbootdir.sh ../../examples/hello/build/hello.img sdboot --kernel-name s2.img
+cp build/s2.img sdboot/s2.img
 ```
+
+`tools/mkbootdir.sh` rejects the unsealed spike image, so it packs the sealed hello image under the spike's name, and `cp` replaces it.
 
 No `.dtb` files and no `overlays/` folder. Wiring is the same as spike 1.
 
