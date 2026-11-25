@@ -475,6 +475,194 @@ The `result` line adds:
 | `tape_rc` | integer | Always | The `rc` of that marker when one came, else 0 |
 | `ms` | integer | Always | Milliseconds from `cont` to the end of the run. 0 for `not_run`. |
 
+## robco test
+
+`robco test [SCENARIO...] [--update-golden] [--board BOARD] [--index LOCATION] [--json]` builds the tape and runs scenarios against it, each in a machine of its own.
+
+| Argument or option | Meaning |
+|---|---|
+| `SCENARIO` | The name of a scenario: the file `tests/SCENARIO.toml`. With none, every `tests/*.toml`, sorted by the byte value of the name. |
+| `--update-golden` | Writes golden images in place of comparing them. See [Golden images](#golden-images). |
+| `--board` | As for `robco run`. Default `raspi0`. |
+
+The command does these in order:
+
+1. It reads `robco.toml`, finds the scenario files and reads every one. The first file that breaks a rule of [Scenario files](#scenario-files) ends the command with its `test: ...` code. No scenario file at all, or a `SCENARIO` with no file, fails with `test: none`. A test run that found nothing to run never passes.
+2. Without `--update-golden`, it reads every golden image the scenarios name. A missing image, or one that breaks the format rule, fails with `test: golden` and names it.
+3. It installs the locked `qemu` tool where the cache lacks it, and does everything `robco build` does.
+4. It runs the scenarios one after another, in the order of step 1. Each gets a fresh copy of [the simulator card](#the-simulator-card) and a new QEMU, started as [Starting QEMU](#starting-qemu) says. A scenario that fails does not stop the next one.
+5. It ends with the code that [Exit codes](#exit-codes) gives for the outcomes. When a scenario did not pass, the error is `test: failed`, and the detail counts the scenarios that failed.
+
+### Scenario files
+
+A scenario is a file `tests/NAME.toml` in the project. `NAME` is 1 to 32 characters from `a` to `z`, `0` to `9`, `_` and `-`, and it is the scenario's name. A `.toml` file in `tests/` with another name fails with `test: name`. Folders inside `tests/` are not searched.
+
+The file is TOML 1.0 in UTF-8. Its keys:
+
+| Key | Type | Required | Default | Limits | Meaning |
+|---|---|---|---|---|---|
+| `format` | integer | Yes | | `1` for this spec | The format version, outside any table |
+| `timeout_ms` | integer | No | `120000` | 1000 to 3600000 | The time limit of the whole scenario, from `cont` |
+| `step` | array of tables | Yes | | 1 to 256 steps | The steps, in order, each written as `[[step]]` |
+
+Each step holds exactly one action key, and `timeout_ms` where the table allows it:
+
+| Action key | Type | Limits | The step | Passes when | `timeout_ms` |
+|---|---|---|---|---|---|
+| `expect` | string | 1 to 200 bytes, none below `0x20` and none equal to `0x7F` | Waits for a line of the PL011 that holds the text | Such a line comes | Allowed. Default `10000`, 1 to 600000. |
+| `press` | string | A key name | Presses the key and holds it | The machine answers `ok` | Not allowed |
+| `release` | string | A key name | Releases the key | The machine answers `ok` | Not allowed |
+| `tap` | string | A key name | Presses the key, then releases it | The machine answers `ok` twice | Not allowed |
+| `dial` | integer | -1000000 to 1000000, not 0 | Turns the dial by that many detents | The machine answers `ok` | Not allowed |
+| `sleep_ms` | integer | 1 to 60000 | Waits that long on the host's clock | Always | Not allowed |
+| `screen` | string | A golden name: 1 to 32 characters from `a` to `z`, `0` to `9`, `_` and `-` | Takes one capture of the screen and compares it with the golden image of that name | The two are equal | Not allowed |
+| `exit` | integer | 0 to 255 | Waits for the tape to end | The runner's `done` marker has `result=exit` and this `rc` | Allowed, as for `expect` |
+
+A key name is one of `up`, `down`, `left`, `right`, `select`, `back` and `dial_push`.
+
+An `exit` step may only be the last step. A scenario without one passes when its last step passes, and the tool then stops the machine while the tape still runs.
+
+| Error | When |
+|---|---|
+| `test: syntax` | The file is not TOML 1.0 or not UTF-8. The detail has the line. |
+| `test: format` | `format` is missing, is not a positive integer, or is larger than the tool knows. For a larger value the message asks for a newer tool. |
+| `test: unknown key` | A key or a table this spec does not define, at the top or in a step |
+| `test: type` | A key has the wrong TOML type |
+| `test: missing` | `step` is absent or empty, or a step holds no action key |
+| `test: step` | A step holds two action keys, holds `timeout_ms` where it is not allowed, or is an `exit` step that is not the last. Also more than 256 steps. |
+| `test: value` | A value is outside its limits: a number, a text, a key name or a golden name |
+| `test: name` | The file's name breaks the name rule |
+
+A scenario names no board, no package and no tape. It must pass on every board, and `--board` picks the one a run uses.
+
+Left out on purpose: loops, conditions, variables, steps that read the script channel, text typed as characters, GPIO lines, and a scenario that runs two machines.
+
+### What a step does
+
+An `expect` step searches the lines of the PL011 in order. The scenario keeps a place in the stream, which starts at the first line of the boot. The step takes the first line at or after that place that holds the text, by the match rule of [What --expect matches](#what---expect-matches), and moves the place to the line after it. So a line that came before the step began still counts, and two `expect` steps never take the same line.
+
+A key step sends one line on the script channel, the mini UART, as the suite's own tests do, and waits for the status line:
+
+| Step | Lines sent, each ended by a line feed |
+|---|---|
+| `press = "select"` | `key select 1` |
+| `release = "select"` | `key select 0` |
+| `tap = "select"` | `key select 1`, then after its `ok`, `key select 0` |
+| `dial = -3` | `dial -3` |
+
+The [script backend](../guide/api/input.md#script-backend) defines these lines and their answers. The tool sends one line at a time. The answer is the next line of the mini UART that is `ok`, or starts with `ok ` or with `err`. Other lines are passed over. Only the line `ok` passes the step. `ok dropped`, any `err` line, or no answer within 10 s fails it. The kernel reads the script channel only while the tape sleeps or reads input, as [What the kernel gives a ROM](./SDK_PACKAGE.md#what-the-kernel-gives-a-rom) says, so a key sent to a tape that does neither fails at that limit.
+
+A `screen` step sends QMP `screendump` once, with a file in the run's folder, reads the PPM that QEMU writes, and compares. It takes one capture and never tries again.
+
+An `exit` step waits for the runner's `done` marker. It fails at once when the marker has another result or another `rc`.
+
+### What ends a scenario
+
+A scenario passes when every step passed. It fails at the first step that fails, and the steps after it do not run. A step fails by its own rule in the table of [Scenario files](#scenario-files), or by one of these:
+
+| Event | Fails | `reason` |
+|---|---|---|
+| The step's own limit passes | That step | `timeout` |
+| The scenario's limit passes | The step that is running | `timeout` |
+| The tool reads a line that holds a marker with `ev=exception` or `ev=panic` | The step that is running, whatever its action | `guest` |
+| The tool reads the kernel's `ev=ready` marker, and no `done` marker came before it | The step that is running, whatever its action | `guest` |
+| QEMU exits, a connection closes or QMP fails | The step that is running | `simulator` |
+| An `expect` step reaches the runner's `done` marker before a line that holds its text | That step | `ended` |
+| An `exit` step finds a `done` marker with another result or another `rc` | That step | `status` |
+| The machine answers a key step with anything but `ok`, or not at all | That step | `script` |
+| A `screen` step finds another size, or another pixel | That step | `size` or `pixels` |
+
+The tool reads the PL011 from `cont` until the last step has passed. When a line of the third or fourth row comes while no step runs, the next step fails with it before it does anything else.
+
+A `done` marker fails no step but an `expect` step. A tape may end while a key step or a `sleep_ms` step runs: the kernel's main loop then answers the script channel, and an `exit` step that follows finds the marker.
+
+### Golden images
+
+| Property | Value |
+|---|---|
+| Path | `tests/golden/SCENARIO/NAME.png`, with `SCENARIO` the scenario's name and `NAME` the value of the `screen` step |
+| Format | PNG, 8 bits per channel, colour type 2, which is RGB with no alpha and no palette. Any other PNG fails with `test: golden`. |
+| Source | A capture of QEMU, written by `robco test --update-golden` or by the suite's own test harness. Never drawn or edited by hand. |
+| Boards | One image for every board |
+
+The comparison:
+
+1. The tool decodes the capture, a binary PPM, `P6` with a maximum value of 255, into rows of RGB pixels.
+2. It decodes the golden image into rows of RGB pixels.
+3. The two have the same width and the same height. Otherwise the step fails with the reason `size`.
+4. Every pixel has the same three values. Otherwise the step fails with the reason `pixels`, and reports the first pixel that differs, reading rows from the top and each row from the left, and how many pixels differ.
+
+There is no tolerance, no mask and no scaling. The bytes of the two files are never compared: two PNG writers give different files for the same pixels.
+
+When a `screen` step fails, the tool writes the capture to `build/test/SCENARIO/NAME.png`, so a person can look at it. It empties `build/test/SCENARIO/` when the scenario starts.
+
+With `--update-golden`, a `screen` step compares nothing. It keeps the capture and passes. When the whole scenario has passed, the tool writes each capture to its golden path, as a PNG in the format above, and creates the folders it needs. A scenario that fails writes no golden image. A person looks at the new files before committing them.
+
+Left out on purpose: a tolerance, a region to leave out, and an image per board. A screen that shows a clock or a random value cannot be compared in version 1.
+
+### Time
+
+A scenario may rely on order and never on durations.
+
+| A scenario may assume | A scenario may not assume |
+|---|---|
+| Steps run in order, and a step starts after the one before it passed | How much time passes between two steps |
+| An `expect` step has seen every line up to the one it took | That a line comes within a given time on every host |
+| A capture shows the screen as it was at some moment after the step before it passed | That a capture shows a given frame of an animation |
+| `sleep_ms` waits at least that long on the host's clock | That the machine ran for that long |
+
+The reasons:
+
+- Each capture stops the machine for a few milliseconds, because QEMU holds its main lock while it writes the image. [K5](https://github.com/RobCo-Industries/RobCo-Studio/blob/main/docs/spikes/K5.md) measured about 3 to 6 ms per capture, and stalls of up to 300 ms when the image went to a slow disk. The machine's clock does not slow down: the machine runs fewer instructions.
+- The machine's speed is the host's speed. A loaded host runs the tape more slowly.
+- Every command to QEMU and every line on the script channel takes time that the tape does not see.
+
+So a tape that is to be tested logs a line after each frame it presents, and its scenario waits for that line before a `screen` step. The capture then shows that frame, however slow the host is. The [holotape-c template](./SDK_PACKAGE.md#the-holotape-c-template) does this. A time limit is a bound for a broken run, never a measure: a scenario that needs its limits to be tight is wrong.
+
+### Lines of robco test
+
+A `scenario` line:
+
+| Key | Type | Value |
+|---|---|---|
+| `name` | string | The scenario's name |
+| `state` | string | `start` or `done` |
+| `board` | string | The board |
+| `outcome` | string | Empty for `start`. For `done`: `passed`, `failed`, or `simulator` when QEMU failed. |
+| `failed_step` | integer | The number of the step that failed, counting from 1. 0 for `start` and for `passed`. |
+| `updated` | integer | The number of golden images written. 0 without `--update-golden`. |
+| `ms` | integer | Milliseconds from `cont` to the end. 0 for `start`. |
+
+A `check` line, one per step that ran:
+
+| Key | Type | Value |
+|---|---|---|
+| `scenario` | string | The scenario's name |
+| `index` | integer | The number of the step, counting from 1 |
+| `action` | string | The step's action key |
+| `ok` | boolean | The step passed |
+| `reason` | string | Empty when `ok`. Else `timeout`, `guest`, `ended`, `simulator`, `script`, `status`, `size` or `pixels`. |
+| `detail` | string | Text for a person. For `script` the answer line. For `status` the `done` marker. For `size` both sizes. |
+| `ms` | integer | Milliseconds the step took |
+
+A `check` line with the reason `pixels` adds five keys:
+
+| Key | Type | Value |
+|---|---|---|
+| `x`, `y` | integer | The first pixel that differs, with 0, 0 at the top left |
+| `want` | string | The golden image's pixel, as `#rrggbb` in lower case hex |
+| `got` | string | The capture's pixel, in the same form |
+| `count` | integer | How many pixels differ |
+
+The `serial` lines of a scenario come between its two `scenario` lines. The `result` line adds:
+
+| Key | Type | Present | Value |
+|---|---|---|---|
+| `scenarios` | integer | Always | How many scenarios ran. 0 when the command failed before the first. |
+| `passed` | integer | Always | How many passed |
+| `failed` | integer | Always | How many did not |
+| `updated` | integer | Always | How many golden images were written |
+
 ## Examples
 
 Each block is the whole standard output of one command with `--json`. Hashes are placeholders.
@@ -574,6 +762,80 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 {"v":1,"kind":"error","code":"run: unmatched","detail":"the tape ended and no line held \"never\"","exit":1}
 {"v":1,"kind":"result","command":"run","ok":false,"exit":1,"outcome":"ended","board":"raspi0","line":"@RC stage=runner ev=done result=exit rc=3","tape_result":"exit","tape_rc":3,"ms":2211}
 ```
+
+`robco test --json` in the same project. The lines of the install and of the build and most serial lines are cut:
+
+```json
+{"v":1,"kind":"step","step":"card","item":"","state":"start"}
+{"v":1,"kind":"step","step":"card","item":"","state":"done"}
+{"v":1,"kind":"scenario","name":"start","state":"start","board":"raspi0","outcome":"","failed_step":0,"updated":0,"ms":0}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"start"}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"done"}
+{"v":1,"kind":"serial","t_ms":931,"text":"tape: ready"}
+{"v":1,"kind":"check","scenario":"start","index":1,"action":"expect","ok":true,"reason":"","detail":"","ms":931}
+{"v":1,"kind":"check","scenario":"start","index":2,"action":"screen","ok":true,"reason":"","detail":"","ms":6}
+{"v":1,"kind":"check","scenario":"start","index":3,"action":"tap","ok":true,"reason":"","detail":"","ms":4}
+{"v":1,"kind":"serial","t_ms":948,"text":"@RC stage=runner ev=done result=exit rc=0"}
+{"v":1,"kind":"check","scenario":"start","index":4,"action":"exit","ok":true,"reason":"","detail":"","ms":7}
+{"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi0","outcome":"passed","failed_step":0,"updated":0,"ms":948}
+{"v":1,"kind":"result","command":"test","ok":true,"exit":0,"scenarios":1,"passed":1,"failed":0,"updated":0}
+```
+
+The same run after someone changed the golden image. Only the end is shown:
+
+```json
+{"v":1,"kind":"check","scenario":"start","index":2,"action":"screen","ok":false,"reason":"pixels","detail":"tests/golden/start/ready.png differs, capture kept as build/test/start/ready.png","ms":6,"x":12,"y":8,"want":"#000000","got":"#33e066","count":412}
+{"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi0","outcome":"failed","failed_step":2,"updated":0,"ms":937}
+{"v":1,"kind":"error","code":"test: failed","detail":"1 of 1 scenarios failed","exit":1}
+{"v":1,"kind":"result","command":"test","ok":false,"exit":1,"scenarios":1,"passed":0,"failed":1,"updated":0}
+```
+
+A scenario file that uses every kind of step, `tests/moves.toml`:
+
+```toml
+format = 1
+timeout_ms = 60000
+
+[[step]]
+expect = "game: title"
+timeout_ms = 20000
+
+[[step]]
+screen = "title"
+
+[[step]]
+tap = "select"
+
+[[step]]
+expect = "game: level 1"
+
+[[step]]
+press = "right"
+
+[[step]]
+sleep_ms = 300
+
+[[step]]
+release = "right"
+
+[[step]]
+dial = -3
+
+[[step]]
+expect = "game: cursor x=4"
+
+[[step]]
+screen = "moved"
+
+[[step]]
+tap = "back"
+
+[[step]]
+exit = 0
+timeout_ms = 5000
+```
+
+Its golden images are `tests/golden/moves/title.png` and `tests/golden/moves/moved.png`.
 
 ## Left out of version 1
 
