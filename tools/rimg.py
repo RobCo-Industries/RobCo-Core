@@ -148,9 +148,14 @@ def read_file(path):
         raise RimgError(E_IO, f"{path}: {e}")
 
 
+def ascii_digits(text):
+    """True for one or more of the ASCII digits 0 to 9, and nothing else."""
+    return text != "" and all("0" <= c <= "9" for c in text)
+
+
 def parse_version(text):
     parts = text.split(".")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+    if len(parts) != 3 or not all(ascii_digits(p) for p in parts):
         raise ValueError(f"bad version {text!r}, expected X.Y.Z")
     major, minor, patch = (int(p) for p in parts)
     if major > 0xFFFF or minor > 0xFF or patch > 0xFF:
@@ -286,7 +291,10 @@ def seal(data, name=None, image_version=None, title=None, icon=None):
         raise RimgError(E_SIZE, f"header file_size {h['file_size']} but the file has"
                                 f" {len(data)} bytes")
     if name is not None:
-        raw = name.encode("ascii")
+        try:
+            raw = name.encode("ascii")
+        except UnicodeEncodeError:
+            raise RimgError(E_VERSION, "name is not ASCII")
         if len(raw) > 16:
             raise RimgError(E_VERSION, "name is longer than 16 bytes")
         struct.pack_into("16s", data, HDR_OFFSET + 0x2C, raw)
@@ -338,6 +346,9 @@ def pack(payload, magic, subtype, load_addr, name=None, image_version=0, abi_ver
     """
     if magic not in MAGICS:
         raise RimgError(E_MAGIC, f"magic {magic!r} not known")
+    for key, value in (("subtype", subtype), ("load_addr", load_addr), ("mem_size", mem_size)):
+        if value is not None and not 0 <= value <= 0xFFFFFFFF:
+            raise RimgError(E_BOUNDS, f"{key} {value:#x} is outside 0 to 0xffffffff")
     if meta is None:
         meta = HAS_META[magic]
     if not meta and (title is not None or icon is not None):
@@ -362,7 +373,7 @@ def pack(payload, magic, subtype, load_addr, name=None, image_version=0, abi_ver
 
 def parse_abi(text):
     parts = text.split(".")
-    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+    if len(parts) != 2 or not all(ascii_digits(p) for p in parts):
         raise ValueError(f"bad ABI version {text!r}, expected MAJOR.MINOR")
     major, minor = (int(p) for p in parts)
     if major > 0xFFFF or minor > 0xFFFF:
