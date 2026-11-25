@@ -255,7 +255,7 @@ A format 1 tool builds `holotape` only. Any other value of `kind` fails with `ma
 | META `title` | `project.title`, NUL-padded to 64 bytes |
 | META `icon` | From `project.icon`, or as the startup code wrote it |
 
-The tool seals the image with the rules of [Sealing and packing](./IMAGE_FORMAT.md#sealing-and-packing). A build that fails any step writes no `build/NAME.HTP`. It deletes an older one first, so a failed build never leaves a stale tape behind.
+The tool seals the image with the rules of [Sealing and packing](./IMAGE_FORMAT.md#sealing-and-packing). A build that fails any step writes no `build/NAME.HTP`. `robco build`, `robco run` and `robco test` delete an older one as soon as they have read the manifest, which gives `NAME`, and before they read the lock. So a command that fails after that never leaves an older tape behind. [The steps of update, build, run and test](./STUDIO_CLI.md#the-steps-of-update-build-run-and-test) has the order.
 
 ```mermaid
 flowchart LR
@@ -386,12 +386,12 @@ The lock at the end of [Examples](#examples) is in this layout, byte for byte. I
 
 ### What the lock pins
 
-The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock in place, the tool:
+The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock in place, the tool does these in order. [The steps of update, build, run and test](./STUDIO_CLI.md#the-steps-of-update-build-run-and-test) fixes the place of each among the other steps of a command.
 
-1. Installs or finds each listed package at its exact version.
-2. Checks each archive against its `sha256`, as [SDK_PACKAGE.md](./SDK_PACKAGE.md#hashes) says. A mismatch fails the build with `lock: hash` and names the package. The tool never replaces a pinned package with another version or another archive on its own.
-3. Checks that the pinned packages still fit the manifest by the rules of [SDK_PACKAGE.md](./SDK_PACKAGE.md#version-and-abi-rules).
-4. Checks, once the `pipos` package is installed and before it installs or starts any tool, that each `[[tool]]` entry has the `version` that the package's `sdk.json` names for it. A difference fails the build with `lock: tool` and names the tool and both versions. The message ends with `run robco update`. The tool changes nothing. Only a lock edited by hand can fail here, since the tool writes both from one resolution.
+1. It checks that the pinned packages still fit the manifest, by the rules of [SDK_PACKAGE.md](./SDK_PACKAGE.md#version-and-abi-rules). A lock that fails is [stale](#a-stale-lock). This check comes before any install or download.
+2. It finds each listed package in the cache at its exact version, or installs it. The tool never replaces a pinned package with another version or another archive on its own. An item that the cache lacks and the index no longer lists fails with `lock: missing`, as [A stale lock](#a-stale-lock) says.
+3. It checks each archive against its `sha256`, as [Hashes](./SDK_PACKAGE.md#hashes) says. A mismatch fails the command with `lock: hash` and names the package or the tool. The tool changes nothing.
+4. It checks, once the `pipos` package is installed and before it installs or starts any tool, that each `[[tool]]` entry has the `version` that the package's `sdk.json` names for it. A difference fails the command with `lock: tool` and names the tool and both versions. The message ends with `run robco update`. The tool changes nothing. Only a lock edited by hand can fail here, since the tool writes both from one resolution.
 
 So every tool a command installs or starts passed three checks: its name is `gcc` or `qemu`, by [Reading the lock](#reading-the-lock), the locked `pipos` package names it at that version, by step 4, and its archive has the hash the lock pins.
 
@@ -401,7 +401,7 @@ A resolution writes the `[[tool]]` entries from the package it picked: for each 
 
 | Event | What the tool does |
 |---|---|
-| No `robco.lock` | Resolves from the index and writes the lock. |
+| No `robco.lock` | Resolves from the index, installs what the command needs, and then writes the lock. A command that fails before that writes no lock. |
 | A lock whose packages fit the manifest | Uses it unchanged. |
 | A stale lock | Fails with `lock: stale`. It changes nothing. |
 | A lock that does not parse, a `format` the tool refuses, an unknown key or a bad entry | Fails with `lock: syntax`, `lock: format`, `lock: unknown key` or `lock: entry`, by [Reading the lock](#reading-the-lock). It changes nothing. |
@@ -419,7 +419,7 @@ A lock that parses is stale when one of these holds for the current manifest:
 3. The lock lists a package that the manifest does not need.
 4. The lock does not list both tools, `gcc` and `qemu`, or a `[[tool]]` entry has no archive for the running host.
 
-The tool checks for a stale lock before it installs, downloads or compiles anything. It fails with `lock: stale: <detail>`. The detail names the first package or tool that fails, in the order of the list above and then by `name`, and the message ends with `run robco update`. The tool writes no `build/NAME.HTP`, deletes an older one, and leaves `robco.lock` as it is.
+The tool checks for a stale lock before it installs, downloads or compiles anything. It fails with `lock: stale: <detail>`. The detail names the first package or tool that fails, in the order of the list above and then by `name`, and the message ends with `run robco update`. The tool writes no `build/NAME.HTP` and leaves `robco.lock` as it is. An older tape is already gone: the command deleted it right after it read the manifest.
 
 The check needs the manifest and the lock only, with one exception: what a listed package `requires` is in that package's `sdk.json`. The tool checks the parts of items 2 and 3 that depend on `requires` right after it has installed the listed packages, before it installs a tool or compiles, and fails the same way. Rule 4 of the fit rules, the formats, is not a matter of a stale lock: a locked package that uses a format the tool does not know fails with `package: format` when the tool reads its `sdk.json`.
 
@@ -429,9 +429,18 @@ A lock that is not stale but names a package version or a tool archive that the 
 
 ### robco update
 
-`robco update [--index LOCATION]` resolves every package and tool again from the index, as if no lock existed. It picks the newest package that fits, by [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules), installs and checks it, then writes a new `robco.lock` in place of the old one. It builds nothing and touches nothing under `build/`. It needs `--index`, as [Where the index is](./SDK_PACKAGE.md#where-the-index-is) says.
+`robco update --index LOCATION` resolves every package and tool again from the index, as if no lock existed. It picks the newest package that fits, by [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules), installs and checks it, then writes a new `robco.lock` in place of the old one. It needs `--index`, as [Where the index is](./SDK_PACKAGE.md#where-the-index-is) says.
 
-`robco update` fails with the code of the first error it meets and then leaves the old `robco.lock` as it is. It writes the new lock to a temporary file in the project root and renames it over the old one, so a failure never leaves half a lock.
+Its steps and their order are in [The steps of update, build, run and test](./STUDIO_CLI.md#the-steps-of-update-build-run-and-test). What sets it apart:
+
+| Rule | Detail |
+|---|---|
+| The old lock | The command does not read it. A lock that is stale, does not parse, holds a bad entry or cannot be read is replaced like any other. So `robco update` is the way out of every `lock:` error. |
+| What it installs | Each package of the resolution that the cache lacks. No tool: the next `robco build` installs `gcc`, and the next `robco run` or `robco test` installs `qemu`. |
+| What it needs of the tools | The index lists both at the version the package names, with an archive for the running host. Otherwise the resolution fails with `sdk: no tool` or `index: host`. |
+| What it leaves alone | `robco.toml`, and everything under `build/`. It builds nothing. |
+
+`robco update` fails with the code of the first error it meets and then leaves the old `robco.lock` as it is. It writes the new lock to a temporary file in the project root and renames it over the old one, so a failure never leaves half a lock. The first build of a project writes its lock the same way.
 
 ## Examples
 

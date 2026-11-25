@@ -86,7 +86,7 @@ Every failure has one code. This table maps each code to its exit code, includin
 | `usage` | 2 | [Options](#options) | The command line is wrong |
 | `project: none` | 3 | [The project folder](#the-project-folder) | The current folder holds no `robco.toml` |
 | `manifest: syntax`, `manifest: format`, `manifest: unknown key`, `manifest: type`, `manifest: missing`, `manifest: name`, `manifest: version`, `manifest: title`, `manifest: kind`, `manifest: subtype`, `manifest: platform`, `manifest: abi`, `manifest: path`, `manifest: icon`, `manifest: sources` | 3 | [Errors](./STUDIO_PROJECT.md#errors) | `robco.toml` is refused |
-| `lock: syntax`, `lock: format`, `lock: unknown key`, `lock: entry`, `lock: stale`, `lock: hash`, `lock: missing`, `lock: tool` | 3 | [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins) | `robco.lock` is refused, or no longer matches what it pins |
+| `lock: syntax`, `lock: format`, `lock: unknown key`, `lock: entry`, `lock: stale`, `lock: hash`, `lock: missing`, `lock: tool` | 3 | [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), [A stale lock](./STUDIO_PROJECT.md#a-stale-lock), [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins) | `robco.lock` is refused, or no longer matches what it pins |
 | `new: name`, `new: template`, `new: exists` | 3 | [robco new](#robco-new) | The name, the template or the folder is refused |
 | `run: board` | 3 | [Starting QEMU](#starting-qemu) | The package has no such board |
 | `test: none`, `test: name`, `test: syntax`, `test: format`, `test: unknown key`, `test: type`, `test: missing`, `test: step`, `test: value`, `test: golden` | 3 | [Scenario files](#scenario-files) | A scenario file or a golden image is refused |
@@ -94,7 +94,7 @@ Every failure has one code. This table maps each code to its exit code, includin
 | `index: location`, `index: read`, `index: syntax`, `index: format`, `index: entry`, `index: duplicate`, `index: host` | 4 | [Reading the index](./SDK_PACKAGE.md#reading-the-index) | The index has no location, could not be fetched or opened, is not valid, or has no archive for this host |
 | `sdk: no package`, `sdk: no tool` | 4 | [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules) | Nothing in the index fits |
 | `tool: hash` | 4 | [Hashes](./SDK_PACKAGE.md#hashes) | A tool archive fails its check |
-| `tool: program` | 4 | [robco build](#robco-build) | An installed tool folder lacks a program the command must start |
+| `tool: program` | 4 | [robco build](#robco-build), [Starting QEMU](#starting-qemu) | An installed tool folder lacks a program the command must start |
 | `firmware: hash` | 4 | [Firmware pins](./SDK_PACKAGE.md#firmware-pins) | A firmware file fails its check |
 | `cache: path` | 4 | [The cache folder](./SDK_PACKAGE.md#the-cache-folder) | `ROBCO_CACHE` is not an absolute path |
 | `templates: none`, `templates: format`, `templates: manifest`, `templates: token` | 4 | [robco new](#robco-new), [templates.json](./SDK_PACKAGE.md#templatesjson) | No `templates` package is installed, or the installed one is refused |
@@ -127,14 +127,14 @@ The code of each step, per file:
 | File | 1. Not there, or not readable | 2. Does not parse | 3. `format` | 4. Unknown key | 5. A key or a field | 6. Then |
 |---|---|---|---|---|---|---|
 | `robco.toml` | Absent: `project: none`. Not readable: `io: read`. | `manifest: syntax` | `manifest: format` | `manifest: unknown key`. A `build.backend` other than `robco` fails here. | `manifest: missing`, `manifest: type`, then the code of the value. The tables come in the order `[project]`, `[target]`, `[build]`. | The icon file, `manifest: path` and `manifest: icon`. Then each pattern of `sources` in order, `manifest: path` and `manifest: sources`. |
-| `robco.lock` | Absent: no error. Not readable: `io: read`. | `lock: syntax` | `lock: format` | `lock: unknown key` | `lock: entry` | `lock: stale`. Then, where the lock is used, `lock: hash`, `lock: tool` and `lock: missing`. |
+| `robco.lock` | Absent: no error. Not readable: `io: read`. | `lock: syntax` | `lock: format` | `lock: unknown key` | `lock: entry` | `lock: stale`. Then `lock: missing`, `lock: hash` and `lock: tool`, at steps 7 to 9 of [The steps of update, build, run and test](#the-steps-of-update-build-run-and-test). |
 | A scenario file | A file name that breaks the rule: `test: name`. A `SCENARIO` with no file: `test: none`. Not readable: `io: read`. | `test: syntax` | `test: format` | `test: unknown key` | `timeout_ms`, then `step`, then each step in order. In a step: `test: missing`, `test: step`, `test: type`, `test: value`. | `test: golden` |
 | The index | `index: location`, `index: read` | `index: syntax` | `index: format` | Ignored | `index: entry` | `index: duplicate`. Then, where an entry is used, `index: host` and the `sdk:` codes. |
 | `sdk.json` | Absent from the archive: `package: archive` | `package: manifest` | `package: format`, for `format` and then for `formats` | Ignored | `package: manifest` | What must equal the index entry, `package: manifest`. Then the hashes, `package: hash`. |
 | `flags.json`, `boot.json` | Absent from a `pipos` package: `package: manifest`, at the install | `package: manifest` | `package: format` | Ignored | `package: manifest` | For `boot.json`, a board it does not list: `run: board` |
 | `templates.json` | `templates: manifest` | `templates: manifest` | `templates: format` | `templates: manifest` | `templates: manifest` | `templates: token` |
 
-The tool reads `robco.toml`, `robco.lock` and the scenario files at the start of a command, the index when it must resolve or download, `sdk.json` at an install and whenever it uses an installed package, `flags.json` when it builds, `boot.json` when it starts QEMU and `templates.json` in `robco new`. Each spec has the details: [Errors](./STUDIO_PROJECT.md#errors), [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), [Scenario files](#scenario-files), [Reading the index](./SDK_PACKAGE.md#reading-the-index), [Reading sdk.json](./SDK_PACKAGE.md#reading-sdkjson), [Reading flags.json](./SDK_PACKAGE.md#reading-flagsjson), [boot.json](./TESTING.md#bootjson) and [templates.json](./SDK_PACKAGE.md#templatesjson).
+[The steps of update, build, run and test](#the-steps-of-update-build-run-and-test) says when a command reads each file: `robco.toml` first, then the scenario files, then `robco.lock`, the index when it must resolve or download, `sdk.json` at an install and whenever it uses an installed package, `flags.json` when it builds and `boot.json` before it starts QEMU. `robco new` reads `templates.json`. Each spec has the details of one file: [Errors](./STUDIO_PROJECT.md#errors), [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), [Scenario files](#scenario-files), [Reading the index](./SDK_PACKAGE.md#reading-the-index), [Reading sdk.json](./SDK_PACKAGE.md#reading-sdkjson), [Reading flags.json](./SDK_PACKAGE.md#reading-flagsjson), [boot.json](./TESTING.md#bootjson) and [templates.json](./SDK_PACKAGE.md#templatesjson).
 
 ## JSON lines
 
@@ -299,7 +299,7 @@ Then it writes:
 2. It writes each file of the template there, at its `path`, with the folders the path needs. A `substitute` file gets every `@NAME@` replaced by `NAME`. Every other byte is the package's byte.
 3. It removes an empty `NAME` folder if there is one, and renames the new folder to `NAME`.
 
-A failure at any step removes the new folder and reports `io: write`. So the command leaves either the whole project or nothing. It writes no `robco.lock` and no `build/`: the first `robco build` resolves and writes the lock.
+A failure at any step removes the new folder and reports `io: write`. So the command leaves either the whole project or nothing. It writes no `robco.lock` and no `build/`: the first `robco build`, `robco run` or `robco test` in the project resolves and writes the lock, and needs `--index` for it.
 
 The `result` line adds:
 
@@ -310,21 +310,81 @@ The `result` line adds:
 | `path` | string | When `ok` | The folder written, relative to the current folder: `NAME` |
 | `files` | array of strings | When `ok` | The paths written, relative to `path`, sorted in byte order |
 
+## The steps of update, build, run and test
+
+`robco update`, `robco build`, `robco run` and `robco test` share one list of steps. A command takes the steps that its column marks, in the order of the table, and stops at the first step that fails. No command takes a step out of this order, and no section of this spec gives another one.
+
+| Step | Work | `update` | `build` | `run` | `test` | Fails with |
+|---|---|---|---|---|---|---|
+| 1 | Check the command line, by [Options](#options) | Yes | Yes | Yes | Yes | `usage`, 2 |
+| 2 | Read `robco.toml`, in the six steps of [Order of checks](#order-of-checks) | Yes | Yes | Yes | Yes | `project: none`, 3. `io: read`, 9. A `manifest:` code, 3. |
+| 3 | Delete `build/NAME.HTP` when it is there | No | Yes | Yes | Yes | `io: write`, 9 |
+| 4 | Find and read the scenario files, then read the golden images, by [robco test](#robco-test) | No | No | No | Yes | A `test:` code, 3. `io: read`, 9. |
+| 5 | Read `robco.lock`, by [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock). When the file is there, check it for [a stale lock](./STUDIO_PROJECT.md#a-stale-lock), as far as the manifest and the lock alone can tell. | No | Yes | Yes | Yes | `io: read`, 9. `lock: syntax`, `lock: format`, `lock: unknown key`, `lock: entry`, `lock: stale`, 3. |
+| 6 | Resolve: read the index and pick the `pipos` package, each package it requires and the two tools it names, by [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules) | Always | Without a lock | Without a lock | Without a lock | An `index:` code, `sdk: no package`, `sdk: no tool`, 4 |
+| 7 | Install each package of the lock, or of the resolution, that the cache lacks. The packages come sorted by name in byte order. | Yes | Yes | Yes | Yes | An `index:` code, 4. `lock: missing`, `lock: hash`, 3. A `package:` code, 4. `io: write`, 9. |
+| 8 | Read `sdk.json` of each of those packages in the cache. With a lock from step 5: finish the stale check with what the packages require, then check the locked tools against the `pipos` package, step 4 of [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins). | No | Yes | Yes | Yes | `package: manifest`, `package: format`, 4. `lock: stale`, `lock: tool`, 3. |
+| 9 | Install the tools that the cache lacks: `gcc`, and then `qemu` where the column says so | No | `gcc` | `gcc`, `qemu` | `gcc`, `qemu` | An `index:` code, 4. `lock: missing`, `lock: hash`, 3. `tool: hash`, 4. `io: write`, 9. |
+| 10 | Write `robco.lock`, when step 6 resolved, by [How the tool writes the lock](./STUDIO_PROJECT.md#how-the-tool-writes-the-lock) | Yes | Without a lock | Without a lock | Without a lock | `io: write`, 9 |
+| 11 | Build the tape, by [robco build](#robco-build) | No | Yes | Yes | Yes | `package: manifest`, `package: format`, `tool: program`, 4. A `build:` code, 5. `io: write`, 9. |
+| 12 | Read `boot.json`, check the boards and find the QEMU program, steps 1 and 2 of [Starting QEMU](#starting-qemu) | No | No | Yes | Yes | `package: manifest`, `package: format`, 4. `run: board`, 3. `tool: program`, 4. |
+| 13 | Write [the simulator card](#the-simulator-card) | No | No | Yes | Yes | `io: write`, 9 |
+| 14 | Start QEMU and read the machine: once for `run`, by [What ends a run](#what-ends-a-run), and once per scenario and board for `test`, by [robco test](#robco-test) | No | No | Yes | Yes | `sim: start`, `sim: died`, `sim: qmp`, 7. For `run`: `run: unmatched`, `run: tape`, 1. `run: timeout`, 6. `guest: fault`, `guest: runner`, 8. For `test`: `test: failed`, 1 or 7. |
+
+The number after each code is the exit code of the command, as [Error codes](#error-codes) maps it. Any step that reads or writes a file may also fail with `io: read` or `io: write`, 9, when the host refuses. Any step may fail with `internal`, 10.
+
+What the order means:
+
+- Step 3 comes right after the manifest, because the manifest gives `NAME`. A command that fails at step 2 deletes nothing. A command that fails at any later step leaves no `build/NAME.HTP`, so a failed command never leaves an older tape behind. `robco update` never touches `build/`.
+- A command installs no tool before step 9. The version of `gcc` and of `qemu` comes from the lock of step 5 or from the resolution of step 6, and step 8 has checked it against the `pipos` package. A project fresh from `robco new` has no lock, so `robco run` and `robco test` resolve at step 6 like `robco build`, and only then install `qemu`.
+- `robco build` never installs `qemu`. `robco update` installs the packages, since step 7 is what checks them, and no tool.
+- Steps 7 and 9 read the index only when the cache lacks an item, by [Where the index is](./SDK_PACKAGE.md#where-the-index-is). With a lock, the item to download is the index entry with the name, the version and the hash that the lock pins. Without such an entry the step fails with `lock: missing`.
+- The lock is written at step 10, after every install of the command passed its checks. A command that fails before step 10 writes no lock: a first build that fails leaves the project without one, and a `robco update` that fails leaves the old one as it is.
+- Steps 12 to 14 come after the build. A `--board` that the package does not list fails at step 12, with the tape built.
+
+A command that runs again with nothing changed takes the same steps:
+
+| It reads | It writes | It never writes |
+|---|---|---|
+| `robco.toml`, `robco.lock`, the sources and the icon, the scenario files and the golden images for `test`, and `sdk.json`, `flags.json` and `boot.json` of the locked package | `build/`, and the folder of each run in the system's temporary folder | `robco.toml`, the sources, the scenario files, `robco.lock` when step 5 found one, and the cache when it holds every locked item |
+
+Such a command reads no index and needs no `--index` and no network: step 6 does not run, and steps 7 and 9 find every item in the cache. Step 11 compiles, links and seals every time. Only an install is ever skipped, so the `step` lines of two runs are the same. `robco test --update-golden` is the one command that writes under `tests/golden/`.
+
+The `step` lines of `--json` follow the same order: `resolve` at step 6, then `download`, `verify` and `install` at steps 7 and 9, `compile`, `link`, `objcopy` and `seal` at step 11, `card` at step 13 and `boot` at step 14.
+
+```mermaid
+flowchart TB
+    A["1. Command line"] --> B["2. Read robco.toml"]
+    B --> C["3. Delete the older tape"]
+    C --> D["4. test: scenario files, golden images"]
+    D --> E{"5. robco.lock there?"}
+    E -- "Yes" --> S{"Stale?"}
+    S -- "Yes" --> X["lock: stale, exit 3"]
+    S -- "No" --> G["7. Install the packages"]
+    E -- "No, or update" --> F["6. Resolve from the index"]
+    F --> G
+    G --> H["8. Read sdk.json, check the lock against it"]
+    H --> I["9. Install gcc, and qemu for run and test"]
+    I --> J["10. Write robco.lock after a resolution"]
+    J --> K["11. Build the tape"]
+    K --> L["12. Read boot.json, find QEMU"]
+    L --> M["13. Write the card"]
+    M --> N["14. Start QEMU"]
+```
+
 ## robco build
 
-`robco build [--index LOCATION] [--json]` builds the tape of the project in the current folder. It does these in order and stops at the first failure:
+`robco build [--index LOCATION] [--json]` builds the tape of the project in the current folder. It takes steps 1 to 11 of [The steps of update, build, run and test](#the-steps-of-update-build-run-and-test). Step 11, the build itself, does these in order and stops at the first failure:
 
 | Order | Work | Errors |
 |---|---|---|
-| 1 | Read `robco.toml` | `project: none`, `io: read`, `manifest: ...` |
-| 2 | Read `robco.lock`, by [Reading the lock](./STUDIO_PROJECT.md#reading-the-lock), or resolve and write it when there is none, by [When the lock changes](./STUDIO_PROJECT.md#when-the-lock-changes) | `lock: ...`, `index: ...`, `sdk: ...`, `io: read`, `io: write` |
-| 3 | Install each locked package where the cache lacks it. Then check the locked tools against the `pipos` package, step 4 of [What the lock pins](./STUDIO_PROJECT.md#what-the-lock-pins). Then install the locked `gcc` tool where the cache lacks it. A build never downloads `qemu`. | `package: ...`, `tool: hash`, `index: ...`, `lock: hash`, `lock: missing`, `lock: tool` |
-| 4 | Find `arm-none-eabi-gcc` and `arm-none-eabi-objcopy` in `bin/` of the locked `gcc` tool, with `.exe` on Windows | `tool: program` |
-| 5 | Compile the startup code and each source, steps 1 and 2 of [Build order](./SDK_PACKAGE.md#build-order), in the order of the [source list](./STUDIO_PROJECT.md#source-order) | `build: compile`, with the source |
-| 6 | Link, step 3 | `build: link` |
-| 7 | `objcopy`, step 4 | `build: objcopy` |
-| 8 | Seal and validate, by [Sealing and packing](./IMAGE_FORMAT.md#sealing-and-packing) | `build: seal`, with the `@RC` name of the code, such as `size` |
-| 9 | Write `build/NAME.HTP` and `build/NAME.elf` | `io: write` |
+| 1 | Read `flags.json` of the locked `pipos` package, by [Reading flags.json](./SDK_PACKAGE.md#reading-flagsjson) | `package: manifest`, `package: format` |
+| 2 | Find `arm-none-eabi-gcc` and `arm-none-eabi-objcopy` in `bin/` of the locked `gcc` tool, with `.exe` on Windows | `tool: program` |
+| 3 | Compile the startup code and each source, steps 1 and 2 of [Build order](./SDK_PACKAGE.md#build-order), in the order of the [source list](./STUDIO_PROJECT.md#source-order) | `build: compile`, with the source |
+| 4 | Link, step 3 | `build: link` |
+| 5 | `objcopy`, step 4 | `build: objcopy` |
+| 6 | Seal and validate, by [Sealing and packing](./IMAGE_FORMAT.md#sealing-and-packing) | `build: seal`, with the `@RC` name of the code, such as `size` |
+| 7 | Write `build/NAME.HTP` and `build/NAME.elf` | `io: write` |
 
 A program that exits with a code other than 0 fails its step. Each line a program prints becomes a `diagnostic` line with `--json`. [What a holotape build produces](./STUDIO_PROJECT.md#what-a-holotape-build-produces) says what is left after a failure.
 
@@ -411,7 +471,7 @@ Left out on purpose: FAT32, a card for a real device, a card with Deitrix, and a
 | `--timeout` | Whole seconds, 1 to 3600 | 60 | The time limit of the run |
 | `--board` | A board name | `raspi0` | The QEMU machine |
 
-The command first installs the locked `qemu` tool where the cache lacks it, by the rules of step 3 of [robco build](#robco-build), and then does everything `robco build` does. A failure there ends the command with that failure's code, and no QEMU starts.
+The command takes every step of [The steps of update, build, run and test](#the-steps-of-update-build-run-and-test), in that order. It installs the `qemu` tool at step 9, once the lock or the resolution has named its version. A failure before step 14 ends the command with that failure's code, and no QEMU starts.
 
 ### Starting QEMU
 
@@ -525,12 +585,12 @@ The `result` line adds:
 | `--update-golden` | Writes golden images in place of comparing them. See [Golden images](#golden-images). |
 | `--board` | As for `robco run`. Default `raspi0`. |
 
-The command does these in order:
+The command takes every step of [The steps of update, build, run and test](#the-steps-of-update-build-run-and-test), in that order. Its own parts of that list are these:
 
-1. It reads `robco.toml`, finds the scenario files and reads every one. The first file that breaks a rule of [Scenario files](#scenario-files) ends the command with its `test: ...` code. No scenario file at all, or a `SCENARIO` with no file, fails with `test: none`. A test run that found nothing to run never passes.
-2. Without `--update-golden`, it reads every golden image the scenarios name. A missing image, or one that breaks the format rule, fails with `test: golden` and names it.
-3. It installs the locked `qemu` tool where the cache lacks it, and does everything `robco build` does.
-4. It runs the scenarios one after another, in the order of step 1. Each gets a fresh copy of [the simulator card](#the-simulator-card) and a new QEMU, started as [Starting QEMU](#starting-qemu) says. A scenario that fails does not stop the next one.
+1. At step 4, after it has read `robco.toml`, it finds the scenario files and reads every one. The first file that breaks a rule of [Scenario files](#scenario-files) ends the command with its `test: ...` code. No scenario file at all, or a `SCENARIO` with no file, fails with `test: none`. A test run that found nothing to run never passes.
+2. Still at step 4, without `--update-golden`, it reads every golden image the scenarios name. A missing image, or one that breaks the format rule, fails with `test: golden` and names it.
+3. At steps 5 to 13 it reads the lock or resolves, installs the packages, `gcc` and `qemu`, builds the tape and writes the card. It installs `qemu` at step 9, never before the lock or the resolution has named its version.
+4. At step 14 it runs the scenarios one after another, in the order of part 1. Each gets a fresh copy of [the simulator card](#the-simulator-card) and a new QEMU, started as [Starting QEMU](#starting-qemu) says. A scenario that fails does not stop the next one.
 5. It ends with the code that [Exit codes](#exit-codes) gives for the outcomes. When a scenario did not pass, the error is `test: failed`, and the detail counts the scenarios that failed.
 
 ### Scenario files
