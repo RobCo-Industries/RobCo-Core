@@ -11,12 +11,14 @@ State today: neither the tool nor any project file exists. No code reads or writ
 | `robco.toml` | The manifest. What to build and for what. | The author |
 | `robco.lock` | The exact packages and tools a build used | The tool |
 | `src/` | C sources, by convention. The manifest names the files. | The author |
+| `tests/*.toml` | Scenario files. See [Scenario files](./STUDIO_CLI.md#scenario-files). | The author |
+| `tests/golden/` | Golden images of the scenarios | The tool, when a person asks for it |
 | `build/` | Every output and every intermediate file | The tool |
 | `build/gen/` | Generated C files | The tool |
 
 The project root is the folder that holds `robco.toml`. A tool looks for `robco.toml` in the current folder only. It does not search parent folders.
 
-A tool writes only under `build/` and to `robco.lock`. It never changes `robco.toml` during a build. `build/` may be deleted at any time. A project under version control commits `robco.toml` and `robco.lock` and ignores `build/`.
+A tool writes only under `build/` and to `robco.lock`. `robco test --update-golden` also writes under `tests/golden/`, and nothing else does. A tool never changes `robco.toml` during a build. `build/` may be deleted at any time. A project under version control commits `robco.toml` and `robco.lock` and ignores `build/`.
 
 ## robco.toml
 
@@ -87,7 +89,52 @@ For `pipos`, MAJOR must be 1, the Pip-OS ABI major in [PIPOS_ABI.md](./PIPOS_ABI
 | `backend` | string | No | `"robco"` | `robco` | Who runs the build. `robco`: the tool compiles, links and seals itself. |
 | `sources` | array of strings | No | `["src/*.c"]` | 1 to 256 patterns, each a path pattern | The C files to compile |
 
-A pattern is a path whose last component may hold `*`, which matches any run of characters other than `/`, including none. No other wildcard exists. Every other component is literal. The tool expands each pattern, keeps only regular files, drops repeats and sorts the list by byte value of the path. A pattern that matches nothing fails with `manifest: sources` and the pattern. Only files ending in `.c` compile. Any other match fails with `manifest: sources`.
+A pattern is a path whose last component may hold `*`, which matches any run of characters other than `/`, including none. No other wildcard exists. Every other component is literal. The tool expands each pattern and keeps only regular files. A pattern that matches nothing fails with `manifest: sources` and the pattern. Only files ending in `.c` compile. Any other match fails with `manifest: sources`. [Source order](#source-order) says in which order the files compile and link.
+
+### Source order
+
+The source list is the order of the link, and the link order is one of the things that decide the bytes of the tape. The tool builds the list in three steps:
+
+1. It takes the patterns of `sources` in the order the manifest writes them.
+2. It expands each pattern. A pattern without `*` gives one path, as written. A pattern with `*` gives every match, sorted by the byte value of the path.
+3. It appends the paths of each pattern to the list. A path that is already in the list is skipped and keeps its first place.
+
+Step 2 of [Build order](./SDK_PACKAGE.md#build-order) compiles the list in this order, and step 3 links the objects in the same order, after the startup code.
+
+| Manifest | Source list |
+|---|---|
+| `sources` absent, so `["src/*.c"]` | Every `.c` file of `src/`, sorted by path |
+| `["main.c", "game.c", "logic.c", "draw.c"]` | Those four files, in that order |
+| `["src/main.c", "src/*.c"]` | `src/main.c`, then the other `.c` files of `src/`, sorted by path |
+
+So a project states its order by naming its files one by one, and gets the sorted order wherever it writes a pattern. The list never depends on the host system, on the order in which a file system lists a folder, or on a locale.
+
+A path without `*` must spell the file name as the folder holds it, byte for byte. A name that differs only in case fails with `manifest: sources`, also on a file system that would open the file anyway. A manifest that builds on one system then builds on every system.
+
+The reason for this rule: the sealed tape of Culvert was measured equal across systems and build paths with the sources linked in the order of its Makefile, `main.c game.c logic.c draw.c`. [K2](https://github.com/RobCo-Industries/RobCo-Studio/blob/main/docs/spikes/K2.md) names the link order as a condition, and no other order was measured. A build that keeps the written order links what the Makefile links, so nothing new has to be measured. A rule that sorted every list would have changed Culvert's link order in one of the two builds.
+
+#### A project that also builds with a Makefile
+
+A project may keep a Makefile that includes `pipos-app.mk` beside its `robco.toml`, as Culvert does in Deitrix. Both builds give the same tape only when both files say the same things:
+
+| Makefile | `robco.toml` | Rule |
+|---|---|---|
+| `SRCS` | `build.sources` | The same files in the same order, each named one by one, with no `*` |
+| `ABI` | `target.abi` | The same `MAJOR.MINOR`. Both files state it. See [The target ABI in pipos-app.mk](./PIPOS_ABI.md#the-target-abi-in-pipos-appmk). |
+| `NAME`, `TITLE`, `VERSION`, `ICON` | `project.name`, `project.title`, `project.version`, `project.icon` | The same values |
+| `KIND`, `SUBTYPE` | `project.kind`, `project.subtype` | `holotape`, and the same subtype |
+| `CFLAGS_EXTRA` | No key | Empty. Format 1 has no key for extra flags. |
+
+Each source path is relative to the folder that holds both files, and Make runs in that folder. The compiler is the one the package names, in both builds. See [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names).
+
+A job that compares the two builds checks these, in this order, and fails at the first that does not hold:
+
+1. The `sources` array of the `result` line of `robco build --json` equals the words of `SRCS` as Make expands it, in order. The failure message prints both lists.
+2. The `abi` field of that line equals the Makefile's `ABI`.
+3. The `gcc` field of that line equals the release of the compiler that the Makefile build ran.
+4. The two `NAME.HTP` files have the same SHA-256.
+
+Checks 1 to 3 come first so that a difference between the tapes has a named cause. The job compares no object, no archive and no ELF, as [What must be equal](#what-must-be-equal) says. [robco build](./STUDIO_CLI.md#robco-build) defines the `result` line.
 
 ### Keys reserved for later formats
 
@@ -291,7 +338,29 @@ backend = "robco"
 sources = ["src/*.c"]
 ```
 
-The lock file that a build of it writes. The hashes are placeholders: no package is built yet.
+Culvert, a project that also builds with a Makefile. Its folder, `holotapes/culvert` in Deitrix, holds `Makefile`, `robco.toml`, `icon.pbm`, four `.c` files and their headers. The Makefile says `SRCS := main.c game.c logic.c draw.c` today. It will also say `ABI := 1.4`, the ABI its tape carries today. By [A project that also builds with a Makefile](#a-project-that-also-builds-with-a-makefile), the manifest holds:
+
+```toml
+format = 1
+
+[project]
+name = "CULVERT"
+title = "Culvert"
+version = "1.0.0"
+kind = "holotape"
+subtype = "game"
+icon = "icon.pbm"
+
+[target]
+platform = "pipos"
+abi = "1.4"
+
+[build]
+backend = "robco"
+sources = ["main.c", "game.c", "logic.c", "draw.c"]
+```
+
+The lock file that a build of the first example writes. The hashes are placeholders: no package is built yet.
 
 ```toml
 format = 1

@@ -617,12 +617,28 @@ The target promises one thing: the code calls nothing newer than the target. On 
 | Rule | Detail |
 |---|---|
 | The macro | `PIPOS_ABI_TARGET`. The build defines it to `(MAJOR << 16) \| MINOR` of the project's ABI, such as `0x00010003` for 1.3. Studio passes it with the `abi_define` field of `flags.json`, as [SDK_PACKAGE.md](./SDK_PACKAGE.md#flagsjson) says. |
-| Not defined | The headers define it to the ABI they implement. A build that does not set it sees every call, as today. |
+| Not defined | The headers define it to the ABI they implement. A build that does not set it sees every call, as today. A Makefile build sets it with the `ABI` variable of [pipos-app.mk](#the-target-abi-in-pipos-appmk). |
 | Larger than the headers' ABI | A compile error that names both versions |
 | What is hidden | The `pip_*` wrapper of each call added after the target, and its syscall number. A call added in 1.1 is visible when `PIPOS_ABI_TARGET >= 0x00010001`. |
 | What stays visible | Struct layouts, every field included, since a struct is the same size on every kernel of the major. Error codes. Constants that come with a newer call, such as `PIP_HW_TAPE`, `PIP_EV_TAPE` and the `PIP_HOLO_EV_*` bits of 1.4, because an image ignores bits and events it does not know. |
 | A use of a hidden call | Fails at compile time, with an error that names the call and the ABI that added it |
 | The image header | The startup code, compiled with the same define, writes the same value into `abi_version`. See [Startup code](./SDK_PACKAGE.md#startup-code). The loader checks only its major. |
+
+### The target ABI in pipos-app.mk
+
+`pipos-app.mk` takes the project's ABI in one optional variable, `ABI`. No Makefile sets it yet, and `pipos-app.mk` does not read it yet.
+
+| Rule | Detail |
+|---|---|
+| The variable | `ABI := MAJOR.MINOR`, decimal, with the limits of `target.abi` in [STUDIO_PROJECT.md](./STUDIO_PROJECT.md#target), such as `ABI := 1.3` |
+| What it does | `pipos-app.mk` passes `-DPIPOS_ABI_TARGET=<abi>` to the compile of `crt0.S` and to the compile of every file of `SRCS`. `<abi>` is `0x` and 8 lower case hex digits, `(MAJOR << 16) \| MINOR`, such as `0x00010003`. |
+| The library | `libpip.a` is never compiled with the define. It holds the wrapper of every call of the headers' ABI, and it is the same archive for every project and every target. |
+| Not set | No define is passed. The headers use their own ABI, and the tape has the same bytes as before this variable existed. |
+| A bad value | Make stops before it compiles anything, with a message that names `ABI`: a value that is not `MAJOR.MINOR`, a part above 65535, or a major other than 1 |
+| Larger than the headers' ABI | The compile error of the table above |
+| A change of the value | Rebuilds the startup code and every source, as a change of `NAME` or of a flag does |
+
+A project that also has a `robco.toml` sets `ABI` to the value of `target.abi`, so that both builds write the same `abi_version`. See [A project that also builds with a Makefile](./STUDIO_PROJECT.md#a-project-that-also-builds-with-a-makefile).
 
 ## Changes
 
