@@ -6,7 +6,7 @@ Every repo in the suite tests with the same harness from RobCo-Core. QEMU 10.1.2
 
 | Layer | What runs | Where |
 |---|---|---|
-| 1. Host tests | C unit tests built for the host from the real sources: klibc, CRC, `rimg`, boot info, tick maths, allocator, partitions, FatFs over a file, input queue and decoders, audio notes, sequencer and PCM engine, date and time, INI. 18 files, about 180 tests. Later: game logic, UI layout. | `tests/host/` |
+| 1. Host tests | C unit tests built for the host from the real sources: klibc, CRC, `rimg`, boot info, tick maths, allocator, partitions, FatFs over a file, input queue and decoders, audio notes, sequencer and PCM engine, date and time, INI, the SD protocol over SPI and the holotape slot against a card model. 18 files, about 180 tests. Later: game logic, UI layout. | `tests/host/` |
 | 2. Tool tests | pytest for the host tools, the Makefile, the docs checker, and the file system against mtools | `tests/tools/` |
 | 3. Serial tests | Boot an image in QEMU and assert on `@RC` markers and text. 17 files, each run on every board. | `tests/target/` |
 | 4. Screen tests | Console cell grid dumped over the UART, plus QMP `screendump` compared with golden images | `tests/target/`, `tests/golden/` |
@@ -226,11 +226,17 @@ flowchart LR
 
 | Where | What it covers |
 |---|---|
-| QEMU | SPI0 register use, FIFO polling and the byte path, with `w25q32` on bus `spi`. The EMMC volume and its removal through QMP. |
-| Host model | A C card model behind the SPI transfer call. It answers CMD0, CMD8, ACMD41, CMD58, CMD17 and CMD24 with R1 and R7 replies, start tokens, data CRC and busy. It must also inject a pulled card, timeouts, CRC errors and a write protected card. |
+| QEMU | SPI0 register use, FIFO polling and the byte path, with `w25q32` on bus `spi`. The EMMC volume and its removal through QMP. `tests/target/test_holo.py` runs `examples/holo` with card detect driven through qtest: with no card the slot stays off, and with detect low attach fails by the CMD0 timeout and leaves power and bus off. |
+| Host model | `tests/host/sdcard_model.c`, used by `test_sdspi.c` and `test_holo.c`. See below. |
 | Hardware | Chip select 0 and 1 sharing the bus, the card releasing DO when deselected, the 74 clock start at 400 kHz, the rate switch, power and voltage, card detect and real removal. |
 
 QEMU gives no data on CRC checks, CMD59, write busy or card timing, because no card model reaches SPI0.
+
+The host card model is an SDHC or SDSC card with a backing array. It answers CMD0, CMD8, CMD9, CMD10, CMD16, CMD17, CMD55, ACMD41, CMD58 and CMD59 with R1, R3 and R7 replies, start and error tokens and data CRC16. It checks CRC7 on CMD0 and CMD8, and on every command once CMD59 turned checks on. It refuses version 1 and MMC cards the way they answer CMD8. Hooks inject each fault: no answer, a wrong CMD8 echo, ACMD41 never ready, a bad data CRC, a data error token, no start token, an unknown CSD, a card that vanishes after N bytes, and SD mode garbage after a command sent without the start clocks.
+
+The model also checks the driver and counts each break as a violation: a command before 74 clocks with CS high, MOSI low while CS is high or while the card sends, CS low again or the bus off without 8 clocks after CS rose, a clock over 400 kHz before ACMD41 finished, a bad CRC7, a write command, power on with no card, the bus on before the power, the power off before the bus, and power on less than 100 ms after it went off. `test_holo.c` runs the slot on the real `spi0.c` over a fake controller and GPIO, with the ILI9341 driver and its panel model on CE0, and counts any display byte sent while `HOLO_BUS` is high.
+
+What stays for hardware: real cards and their timing, the slow start and the off time of the supply, the bus buffer, card detect and lock tab polarity, contact bounce, the 9.62 MHz rate through the buffer, and a pulled card on the real board.
 
 ## Canary suite
 

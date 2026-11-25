@@ -200,6 +200,11 @@ $(HOST_BUILD)/tft_tool: tests/host/tft_tool.c src/drv/tft_ili9341.c examples/tft
 
 # test_gpiox.c includes the driver source to run it on a fake bus.
 $(HOST_BUILD)/test_gpiox: src/drv/gpiox_pca9554.c
+
+# test_sdspi.c includes the SD card model. test_holo.c includes it too,
+# with the slot, SPI0 and ILI9341 drivers on a fake controller and GPIO.
+$(HOST_BUILD)/test_sdspi: tests/host/sdcard_model.c
+$(HOST_BUILD)/test_holo: tests/host/sdcard_model.c src/drv/holo.c src/drv/spi0.c src/drv/tft_ili9341.c
 endif
 
 # GCC warnings without a host GCC: compile only, never link, with the

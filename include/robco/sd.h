@@ -19,6 +19,9 @@
 #define SD_ERR_BUSY     (-15)   /* the card stayed busy in ACMD41 */
 #define SD_ERR_CMD      (-16)   /* an identification command failed */
 #define SD_ERR_CSD      (-17)   /* unknown CSD layout */
+#define SD_ERR_OLD      (-18)   /* version 1 SD or MMC card: not supported over SPI */
+#define SD_ERR_AGAIN    (-19)   /* holotape slot: card not settled or off time not over */
+#define SD_ERR_BUS      (-20)   /* holotape slot: SPI0 or GPIO failed, or bad config */
 
 typedef enum {
     SD_TYPE_NONE = 0,
@@ -48,7 +51,7 @@ typedef struct {
  */
 int sd_init(void);
 
-/* Name of an sd_init() result, for example "ok" or "nocard". */
+/* Name of an SD_ERR_* or BLK_ERR_* code, for example "ok" or "nocard". */
 const char *sd_strerror(int err);
 
 /* The "sd0" block device after a successful sd_init(), NULL otherwise. */
