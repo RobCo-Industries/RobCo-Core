@@ -63,6 +63,7 @@ def test_storage_card_pulled_and_replaced(board, example_image, need_mtools, tmp
         assert cmd(vm, "sdinit")["rc"] == "ok", vm.serial
         assert cmd(vm, "mount ro", "mount")["rc"] == "ok", vm.serial
         assert changes(vm) == n0 + 3, vm.serial
+        # Unmounting the card made "ram" the default volume: name the card.
         m = cmd(vm, "cat sd:/NAME.TXT", "cat")
         assert (m["rc"], m["crc"]) == ("ok", crc(b"card B, a holotape")), vm.serial
         m = cmd(vm, "cat sd:/GAMES/BIG.BIN", "cat")
@@ -72,7 +73,6 @@ def test_storage_card_pulled_and_replaced(board, example_image, need_mtools, tmp
         assert cmd(vm, "probe")["rc"] == "ok", vm.serial
         m = cmd(vm, "cat ram:/R.BIN", "cat")
         assert (m["rc"], m["crc"]) == ("ok", crc(pattern(3000, 5))), vm.serial
-        # Unmounting the card made "ram" the default volume.
         assert cmd(vm, "eject")["rc"] == "ok", vm.serial
         assert cmd(vm, "cat sd:/GAMES/BIG.BIN", "cat")["rc"] == "novol", vm.serial
         assert not events(vm, "error"), vm.serial
