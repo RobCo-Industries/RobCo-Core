@@ -313,6 +313,168 @@ The `result` line adds:
 
 `robco update` writes `step` lines for `resolve`, `download`, `verify` and `install`, and a `result` line with no added key.
 
+## The simulator card
+
+`robco run` and `robco test` boot the machine from a card image that the tool builds for each run. It is the card of a real device, less the firmware files, with the runner ROM in place of Deitrix.
+
+| Property | Value |
+|---|---|
+| Size | 16 MiB, 16,777,216 bytes |
+| Sector 0 | An MBR with one partition entry at offset `0x1BE`: status `0x00`, first CHS `FE FF FF`, type `0x0E`, last CHS `FE FF FF`, first sector 2048, 30,720 sectors. Bytes 510 and 511 are `55 AA`. Every other byte of sectors 0 to 2047 is 0. |
+| Volume | FAT16, made by the suite's own FatFs: `fs_mkfs()` with `FS_MKFS_FAT` and a cluster of 512 bytes |
+| Dates | The library's fixed time, 2026-01-01 00:00:00, on every file and folder. The tool sets no clock. |
+| Entries | Created in the order of the table below, which fixes the order inside each folder |
+
+The files, in the order the tool creates them:
+
+| Order | Path on the card | Bytes from | Read by |
+|---|---|---|---|
+| 1 | `/PIPOS.IMG` | The package, `boot/PIPOS.IMG` | Nothing in QEMU. A real device's firmware loads it. |
+| 2 | `/config.txt` | The package, `boot/config.txt` | Nothing in QEMU |
+| 3 | `/PIPBOY/` | A folder | |
+| 4 | `/PIPBOY/PIPOS.CFG` | The tool: the text below | The kernel |
+| 5 | `/PIPBOY/ROM1.ROM` | The package, `boot/RUNNER.ROM` | The kernel |
+| 6 | `/PIPBOY/RUNNER.CFG` | The tool: the text of [RUNNER.CFG](./SDK_PACKAGE.md#runnercfg) | The runner ROM |
+| 7 | `/PIPBOY/HOLO/` | A folder | |
+| 8 | `/PIPBOY/HOLO/NAME.HTP` | The project, `build/NAME.HTP` | The kernel, for the runner ROM |
+
+`NAME` is `project.name`. The card holds nothing else: no firmware file, no save folder and no other tape. The kernel creates `/PIPBOY/SAVE` when the tape first saves.
+
+`/PIPBOY/PIPOS.CFG` is exactly this text: 11 lines, each ended by one line feed, 113 bytes in all.
+
+```
+[display]
+scheme = green
+line_delay_ms = 0
+backend = hdmi
+
+[audio]
+volume = 100
+beep = no
+
+[holotape]
+slot = off
+```
+
+| Key | Value | Why |
+|---|---|---|
+| `display.scheme` | `green` | The default colours of a tape follow the scheme. A fixed scheme keeps golden images right. |
+| `display.line_delay_ms` | `0` | No pause between the boot lines, so the tape starts as soon as the kernel is up. The package's own `boot/PIPOS.CFG` pauses 150 ms per line. |
+| `display.backend` | `hdmi` | QEMU has no SPI panel. The screen a capture reads is the HDMI one. |
+| `audio.volume` | `100` | A fixed level in the audio trace |
+| `audio.beep` | `no` | No power-on beep in the audio trace, so every sound in it is the tape's |
+| `holotape.slot` | `off` | QEMU has no card on SPI0. The tape is on the boot card. |
+
+The tool writes all six keys even where the value is the kernel's default, so a later kernel with other defaults gives the same run.
+
+The same package and the same tape give the same card image, byte for byte, on every system. The files always fit: the kernel, the ROM and the tape are each at most 4 MiB. Each run, and each scenario of `robco test`, starts from a fresh copy of the card. What a tape saves is gone when the run ends.
+
+Left out on purpose: FAT32, a card for a real device, a card with Deitrix, and a card that keeps its saves between runs.
+
+## robco run
+
+`robco run --headless [--expect TEXT] [--timeout SECONDS] [--board BOARD] [--index LOCATION] [--json]` builds the tape, boots it in QEMU on the runner ROM and reads the machine's serial lines until the run ends.
+
+| Option | Value | Default | Meaning |
+|---|---|---|---|
+| `--headless` | None | | Required in version 1. Without it the command fails with `usage`: the run in a window comes later. |
+| `--expect` | `TEXT`, 1 to 200 bytes, with no line feed | None | The text to wait for. See [What --expect matches](#what---expect-matches). |
+| `--timeout` | Whole seconds, 1 to 3600 | 60 | The time limit of the run |
+| `--board` | A board name | `raspi0` | The QEMU machine |
+
+The command first installs the locked `qemu` tool where the cache lacks it, by the rules of step 3 of [robco build](#robco-build), and then does everything `robco build` does. A failure there ends the command with that failure's code, and no QEMU starts.
+
+### Starting QEMU
+
+The tool boots the machine from the `pipos` package that the lock names, `PKG`, and the `qemu` tool that the lock names.
+
+1. It reads `PKG/boot.json`, by the rules of [boot.json](./TESTING.md#bootjson). A `--board` that the file does not list fails with `run: board`, and the detail lists the boards. The mode is the board's `default_mode`.
+2. The program is the board's `qemu` value in `bin/` of the `qemu` tool folder, with `.exe` on Windows. A missing program fails with `tool: program`.
+3. It makes a new, empty folder for the run in the system's temporary folder, and writes [the simulator card](#the-simulator-card) there as `sd.img`.
+4. It builds the command line in the order of [boot.json](./TESTING.md#bootjson): `{stub}` is `PKG/boot/fwstub.bin`, `{image}` is `PKG/boot/PIPOS.IMG` and `{sd}` is the card. It attaches QMP once, no qtest, both serial ports and the card, and no other device.
+5. QMP and both serial ports use TCP on `127.0.0.1`, on every system.
+6. It starts QEMU so that QEMU dies when the tool dies, connects to QMP and to both serial ports, and only then sends QMP `cont`. The time limit of the run starts at `cont`.
+7. While the machine runs, it sends QMP `query-status` every 20 ms. [QEMU keep-alive](./TESTING.md#qemu-keep-alive) says why: without it QEMU 10.1 at times leaves a `raspi0` or `raspi1ap` machine halted for ever.
+
+| Failure | Error |
+|---|---|
+| QEMU does not start, or a connection is not made within 10 s | `sim: start` |
+| QEMU exits, or one of its three connections closes, before the run ends | `sim: died` |
+| QMP answers a command with an error, or does not answer within 10 s | `sim: qmp` |
+
+A read that waits on a silent machine is not a closed connection. A machine that prints nothing for a while is still running.
+
+When the run ends, the tool stops QEMU and removes the run's folder before it exits. No QEMU process outlives the command, however the command ends.
+
+### Serial lines
+
+The tool reads the PL011, the first serial port, as lines.
+
+| Rule | Detail |
+|---|---|
+| A line | The bytes up to a line feed, without the line feed and without one carriage return before it |
+| A long line | Cut at 4096 bytes. The rest starts a new line. |
+| An unfinished line | It is not a line until its line feed comes. When the run ends, the bytes still waiting are written as one last line and are never matched. |
+| As text | UTF-8, with U+FFFD in place of each byte that is not valid |
+
+Without `--json` the command writes each line on standard output as it comes, ended by one line feed. With `--json` it writes one `serial` line per line. The mini UART carries the script channel and is never printed.
+
+### What --expect matches
+
+`TEXT` matches a line when the bytes of `TEXT` occur in the bytes of the line. The match is exact and case-sensitive. `TEXT` is plain text and never a pattern: no character in it is special. Only whole lines of the PL011 are searched.
+
+Left out on purpose: regular expressions, a match across two lines, and a match on the script channel.
+
+### What ends a run
+
+The tool handles each whole line in this order, and the first rule that holds ends the run:
+
+| Order | Rule | Outcome | Exit | Error |
+|---|---|---|---|---|
+| 1 | The line is written out, as [Serial lines](#serial-lines) says | | | |
+| 2 | `--expect` is given and `TEXT` matches the line | `matched` | 0 | None |
+| 3 | The line holds a marker with `ev=exception` or `ev=panic` | `guest` | 8 | `guest: fault`, with the line |
+| 4 | The line holds the runner's `done` marker with `result=config` | `guest` | 8 | `guest: runner`, with the line |
+| 5 | The line holds the runner's `done` marker with another result, and `--expect` is given | `ended` | 1 | `run: unmatched` |
+| 6 | The same, without `--expect`, and the result is `exit` | `ended` | 0 | None |
+| 7 | The same, without `--expect`, and the result is not `exit` | `ended` | 1 | `run: tape`, with the result |
+| 8 | The line holds the kernel's `ev=ready` marker, and no `done` marker came before | `guest` | 8 | `guest: runner`, with the line |
+
+Between lines, two more things end the run:
+
+| Event | Outcome | Exit | Error |
+|---|---|---|---|
+| The time limit passes | `timeout` | 6 | `run: timeout` |
+| QEMU exits or a connection closes | `simulator` | 7 | `sim: died` |
+
+[When a run is over](./SDK_PACKAGE.md#when-a-run-is-over) says how to find a marker in a line. Rule 2 comes before the others, so `--expect` can wait for any line, a marker included. The exit status of the tape is not the exit code of the command: it is `tape_rc` in the `result` line.
+
+```mermaid
+flowchart TB
+    L["A whole line"] --> P["Write it out"]
+    P --> M{"--expect matches?"}
+    M -- Yes --> OK["matched, 0"]
+    M -- No --> F{"exception or panic?"}
+    F -- Yes --> G["guest, 8"]
+    F -- No --> D{"runner done?"}
+    D -- "result=config" --> G
+    D -- "other result" --> E["ended: 1 with --expect,<br/>else 0 for exit, 1 otherwise"]
+    D -- No --> R{"kernel ready,<br/>no done before?"}
+    R -- Yes --> G
+    R -- No --> N["Next line, or the time limit, or QEMU gone"]
+```
+
+The `result` line adds:
+
+| Key | Type | Present | Value |
+|---|---|---|---|
+| `outcome` | string | Always | `matched`, `ended`, `timeout`, `simulator` or `guest`. `not_run` when the command failed before `cont`. |
+| `board` | string | Always | The board |
+| `line` | string | Always | The line that ended the run, by rules 2 to 8. Empty for `timeout`, `simulator` and `not_run`. |
+| `tape_result` | string | Always | The `result` of the runner's `done` marker when one came, else empty |
+| `tape_rc` | integer | Always | The `rc` of that marker when one came, else 0 |
+| `ms` | integer | Always | Milliseconds from `cont` to the end of the run. 0 for `not_run`. |
+
 ## Examples
 
 Each block is the whole standard output of one command with `--json`. Hashes are placeholders.
@@ -389,6 +551,28 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 {"v":1,"kind":"diagnostic","program":"gcc","text":"src/main.c:12:5: error: 'x' undeclared (first use in this function)"}
 {"v":1,"kind":"error","code":"build: compile","detail":"src/main.c","exit":5}
 {"v":1,"kind":"result","command":"build","ok":false,"exit":5}
+```
+
+`robco run --headless --expect "tape: ready" --json`. The lines of the install and of the build are cut here, and so are the serial lines between the first and the last:
+
+```json
+{"v":1,"kind":"step","step":"card","item":"","state":"start"}
+{"v":1,"kind":"step","step":"card","item":"","state":"done"}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"start"}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"done"}
+{"v":1,"kind":"serial","t_ms":41,"text":"@RC stage=pipos ev=boot midr=0x410fb767 soc=bcm2835 base=0x20000000 board_rev=0x00900092 mem=0x1c000000 entry_mode=svc"}
+{"v":1,"kind":"serial","t_ms":902,"text":"@RC stage=runner ev=run tape=PIPES.HTP"}
+{"v":1,"kind":"serial","t_ms":931,"text":"tape: ready"}
+{"v":1,"kind":"result","command":"run","ok":true,"exit":0,"outcome":"matched","board":"raspi0","line":"tape: ready","tape_result":"","tape_rc":0,"ms":931}
+```
+
+`robco run --headless --expect "never" --json`, where the tape returns 3. Only the end is shown:
+
+```json
+{"v":1,"kind":"serial","t_ms":2210,"text":"@RC stage=pipos ev=holo_exit status=3"}
+{"v":1,"kind":"serial","t_ms":2211,"text":"@RC stage=runner ev=done result=exit rc=3"}
+{"v":1,"kind":"error","code":"run: unmatched","detail":"the tape ended and no line held \"never\"","exit":1}
+{"v":1,"kind":"result","command":"run","ok":false,"exit":1,"outcome":"ended","board":"raspi0","line":"@RC stage=runner ev=done result=exit rc=3","tape_result":"exit","tape_rc":3,"ms":2211}
 ```
 
 ## Left out of version 1
