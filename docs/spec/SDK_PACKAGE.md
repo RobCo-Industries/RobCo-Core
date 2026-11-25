@@ -74,8 +74,8 @@ flowchart LR
 |---|---|---|---|
 | `format` | integer | Yes | `1` for this spec |
 | `name` | string | Yes | The package name. Equals the name in the file name and in the index. |
-| `version` | string | Yes | `X.Y.Z`, decimal, each part from 0 to 65535. Equals the version in the file name and in the index. |
-| `abi` | string | For `pipos` | The ABI the package implements, `MAJOR.MINOR`. Equals the first two parts of `version`. |
+| `version` | string | Yes | `X.Y.Z`, decimal, each part from 0 to 65535 with no leading zero: `1.3.0`, never `1.03.0`. Equals the version in the file name and in the index. |
+| `abi` | string | For `pipos` | The ABI the package implements, `MAJOR.MINOR`, each part from 0 to 65535 with no leading zero. Equals the first two parts of `version`. See [Which package carries which field](#which-package-carries-which-field). |
 | `built_from` | array of objects | Yes | One per repository that went into the package |
 | `formats` | object | Yes | The format versions the package uses. See below. |
 | `requires` | array of objects | No | Other packages this one needs. Empty by default. |
@@ -120,14 +120,45 @@ A `pipos` package carries `rimg`, `flags`, `boot` and `runner`. A `templates` pa
 | `size` | integer | The size in bytes |
 | `sha256` | string | 64 lower case hex digits |
 
-`files` is sorted by `path` in byte order.
+`files` is sorted by `path` in byte order, and the order is required. A reader checks that each `path` is greater than the one before it, compared byte by byte as UTF-8. A list out of order, or one path twice, fails with `package: manifest` and names the path. The order makes two builds of one package write the same `sdk.json`, and lets a reader find a path that comes twice in one pass. No other array of `sdk.json` has a required order but `tools`.
+
+### Which package carries which field
+
+| Field | `pipos` | `templates` | Any other package |
+|---|---|---|---|
+| `abi` | Required | Must be absent | Optional |
+| `tools` | Required | Must be absent | Must be absent |
+| `firmware` | Required | Must be absent | Optional |
+
+A required field that is absent, and a field that is present where it must be absent, fail with `package: manifest` and name the field.
+
+A tool never works out an ABI from a version. Where `abi` is required and absent, the package is refused: in `sdk.json` with `package: manifest`, in an index entry with `index: entry`. Where `abi` is present in a `pipos` package, it must equal the first two parts of `version`, as text: `1.3` for `1.3.0`. Another value fails with the same two codes. A package without `abi` fits no project and no `requires` entry, by [Version and ABI rules](#version-and-abi-rules).
+
+One place has no `abi` field to read: `robco.lock`, which holds a name, a version and a hash. There the ABI of a locked `pipos` package is the first two parts of its version, which this rule makes equal to its `abi`. [A stale lock](./STUDIO_PROJECT.md#a-stale-lock) uses it.
 
 ### Reading sdk.json
 
-- A larger `format` fails with `package: format` and asks for a newer tool.
-- A format in `formats` with a value the tool does not know fails with `package: format` and names the format. Studio links its format code when it is built, so it never guesses.
+- An archive with no `sdk.json` at its root fails with `package: archive`, by [The archive](#the-archive).
+- An `sdk.json` that is not UTF-8, is not JSON, or whose top value is not an object fails with `package: manifest`. The same code covers `flags.json` and `boot.json`: `package: manifest` means that a file of the package was read and is not valid, and the detail names the file. A file that could not be fetched or opened never gets this code.
+- A missing `format`, one that is not a positive integer, and one larger than the tool knows fail with `package: format`. For a larger one the message asks for a newer tool.
+- A format in `formats` that the tool does not know, by its name or by its value, fails with `package: format` and names the format. Studio links its format code when it is built, so it never guesses. A tool of this spec knows the seven names of the table above, each with the value `1`.
 - A field the tool does not know is ignored. A new field that changes how a package must be read raises `format`.
-- A required field that is missing or has the wrong type fails with `package: manifest`.
+- A required field that is missing or has the wrong type, and a value outside the form its table gives, fail with `package: manifest`.
+- The checks come in this order: the file parses, `format`, `formats`, then each field in the order of the table of [sdk.json](#sdkjson), then [what must equal the index entry](#what-must-equal-the-index-entry), then the hashes of [Hashes](#hashes).
+
+### What must equal the index entry
+
+An index entry says what a package is before anyone downloads it, and the resolver decides on that alone. So the package must be what its entry says. When an install has read `sdk.json`, it compares these fields with the index entry it fetched the archive for:
+
+| Field | Equal means |
+|---|---|
+| `name`, `version` | The same text, byte for byte |
+| `abi` | The same text, or absent in both |
+| `requires` | The same entries in the same order. An absent `requires` equals an empty array. |
+| `tools` | The same entries in the same order, or absent in both |
+| `formats` | The same names, each with the same value. The order of names does not count. |
+
+A field that differs fails the install with `package: manifest` and names the field. The package does not enter the cache. A package that is already in the cache was checked when it was installed, and a build with a lock checks its archive hash, so this comparison runs at an install only.
 
 ### Layout of pipos
 
@@ -200,7 +231,7 @@ Rules for the tool:
 | Comparing versions | As strings, byte for byte. Tool versions have no order. |
 | The index has no tool with that name and version | Fails with `sdk: no tool` and names the tool and the version |
 | That tool has no archive for the running host | Fails with `index: host` |
-| `tools` of an installed `sdk.json` differs from `tools` of its index entry | Fails the install with `package: manifest` |
+| `tools` of an installed `sdk.json` differs from `tools` of its index entry | Fails the install with `package: manifest`, by [What must equal the index entry](#what-must-equal-the-index-entry) |
 | `tools` is absent in a `pipos` package, has another length, another order or another name | Fails with `package: manifest` |
 | A package other than `pipos` carries `tools` | Fails with `package: manifest` |
 
@@ -288,7 +319,7 @@ Only the sealed tape, `build/NAME.HTP`, must be byte-equal across host systems a
 
 ### Reading flags.json
 
-A `flags.json` with a larger `format` fails with `package: format`. An unknown field is ignored.
+A `flags.json` that is not UTF-8 JSON with an object at the top fails with `package: manifest`. A `format` that is missing, is not a positive integer or is larger than the tool knows fails with `package: format`. A required field that is missing or has the wrong type fails with `package: manifest` and names the field. An unknown field is ignored. The checks come in that order, and then field by field in the order of the table.
 
 ## The runner ROM
 
@@ -632,7 +663,7 @@ It is a package like any other: the rules of [The archive](#the-archive), [sdk.j
 | `sdk.json` | The manifest |
 | `templates.json` | The list of templates |
 | `<id>/` | The files of the template `<id>`, laid out as they go into a new project |
-| `LICENSES/` | The licence texts |
+| `LICENSES/MIT.txt` | The licence text, RobCo-Reel's `LICENSE` |
 
 The archive holds nothing else.
 
@@ -666,8 +697,9 @@ A file:
 
 | Case | Error |
 |---|---|
-| A larger `format` | `templates: format`, and the message asks for a newer tool |
-| The file is missing, is not JSON, or a required field is missing or has the wrong type | `templates: manifest` |
+| The file is missing, is not UTF-8 JSON, or its top value is not an object | `templates: manifest` |
+| `format` is missing, is not a positive integer, or is larger than the tool knows | `templates: format`. For a larger one the message asks for a newer tool. |
+| A required field other than `format` is missing or has the wrong type | `templates: manifest` |
 | A field this spec does not define | `templates: manifest`, with its name. This file is new, so it starts strict. |
 | Two templates with the same `id`, a list that is not sorted, or a value outside its limits | `templates: manifest` |
 | A `path` that breaks a path rule, or two paths of one template that differ only in case | `templates: manifest` |
@@ -792,10 +824,11 @@ The index is one JSON file that lists every package and tool a tool may install.
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | Yes | The package name |
-| `version` | string | Yes | `X.Y.Z` |
-| `abi` | string | For `pipos` | As in `sdk.json` |
+| `version` | string | Yes | `X.Y.Z`, in the form `sdk.json` asks for |
+| `abi` | string | For `pipos` | As in `sdk.json`, by [Which package carries which field](#which-package-carries-which-field) |
 | `requires` | array | No | As in `sdk.json` |
 | `tools` | array | For `pipos` | As in `sdk.json`. See [Tools a package names](#tools-a-package-names). |
+| `formats` | object | Yes | As in `sdk.json`: one integer per format the package carries. The resolver reads it for the fourth rule of [Version and ABI rules](#version-and-abi-rules). |
 | `url` | string | Yes | Where the archive is. `https:` or, for a local index, a path relative to the index file. |
 | `size` | integer | Yes | The archive size in bytes |
 | `sha256` | string | Yes | The archive's SHA-256 |
@@ -804,8 +837,8 @@ The index is one JSON file that lists every package and tool a tool may install.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | Yes | `gcc` or `qemu` |
-| `version` | string | Yes | The version, compared as a string. For `gcc` it is the full xPack release. |
+| `name` | string | Yes | `gcc` or `qemu`. An entry with another name is skipped, as [Reading the index](#reading-the-index) says. |
+| `version` | string | Yes | The version, compared as a string. For `gcc` it is the full xPack release. 1 to 64 bytes from `0x21` to `0x7E`, with no `"` and no `\`. |
 | `archives` | object | Yes | Host name to an archive object |
 
 An archive object:
@@ -817,7 +850,14 @@ An archive object:
 | `sha256` | string | Yes | Its SHA-256 |
 | `root` | string | Yes | The folder inside the archive that holds `bin/`. Empty when `bin/` is at the top. |
 
-The host names are `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64` and `windows-x64`. A tool that has no archive for the running host fails with `index: host`.
+A host name has 1 to 32 characters from `a` to `z`, `0` to `9` and `-`, and starts with a letter. This spec defines five: `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64` and `windows-x64`. A tool finds its own host among them.
+
+| Key of `archives` | What the tool does |
+|---|---|
+| One of the five names | Reads the archive object |
+| Another name in the form above | The same. It is a host that a later tool knows. The tool checks its archive object like the others, keeps it, and writes its hash into the lock with the rest, so a lock written today works on that host later. |
+| A key in another form | Fails with `index: entry` and names the key |
+| No key for the running host, in a tool the command needs | Fails with `index: host` |
 
 ### Where the index is
 
@@ -835,7 +875,20 @@ The lock records `LOCATION` as given. Studio's CI passes a local fixture index. 
 
 ### Reading the index
 
-A larger `format` fails with `index: format`. An unknown field is ignored. An entry with a missing field fails with `index: entry` and names it. Two entries with the same name and version fail with `index: duplicate`.
+| Case | Result |
+|---|---|
+| The command must read the index and has no `--index`, or the location has a refused scheme | `index: location` |
+| A local file that is missing or cannot be read, or a download that fails | `index: read`. The index could not be fetched or opened. |
+| The bytes are there and are not UTF-8, are not JSON, or the top value is not an object | `index: syntax`. The index was fetched or opened, and it is not valid. |
+| `format` is missing, is not a positive integer, or is larger than the tool knows | `index: format`. For a larger one the message asks for a newer tool. |
+| A field the tool does not know, at the top, in an entry or in an archive object | Ignored |
+| `packages` or `tools` is missing or is not an array, an entry is not an object, a field of an entry or of an archive object is missing, has the wrong type or breaks the form its table gives, or a `pipos` entry breaks a rule of [Which package carries which field](#which-package-carries-which-field) | `index: entry`, with the place, such as `packages[2].formats` |
+| A `tools` entry whose `name` is a string other than `gcc` and `qemu` | The entry is skipped whole. See below. |
+| Two `packages` entries with the same `name` and `version`, or two `tools` entries that were not skipped with the same `name` and `version` | `index: duplicate` |
+
+The checks come in the order of the table: the location, the read, the syntax, `format`, then every entry of `packages` in the order of the array and every entry of `tools` in the order of the array, each field in the order of its table, and the duplicates last. The tool reports the first failure.
+
+A skipped tool entry does not exist for this tool. No other field of it is checked. It is never resolved, never installed, never listed by `robco sdk list` and never written to a lock. It cannot be reached from a lock either: a lock may hold only `gcc` and `qemu`, as [Keys](./STUDIO_PROJECT.md#keys) says, and the tool installs a tool only when the locked `pipos` package names it. The reason for skipping in place of refusing: an index serves every version of the tool, and a later index may list a tool that only a later version needs. Refusing it would break every older version for a tool they never use. A change that an older version must not miss raises `format` of the index.
 
 ## Version and ABI rules
 
@@ -846,13 +899,17 @@ A `pipos` package fits a project when:
 1. The project's `target.platform` is `pipos`.
 2. The package's ABI major equals the project's ABI major.
 3. The package's ABI minor is at least the project's ABI minor.
-4. Every format in the package's `formats` is one the tool knows.
+4. Every format in the package's `formats` is one the tool knows, by its name and by its value.
 
 So a project with `abi = "1.3"` fits `pipos` 1.3.x and 1.4.x, and not 1.2.x or 2.0.x. A tape built for 1.3 loads on any 1.x kernel, because a Pip-OS loader checks only the ABI major. On a kernel older than 1.3, a call added after that kernel's minor returns `-PIP_ENOSYS`. See [Calls newer than the target ABI](./PIPOS_ABI.md#calls-newer-than-the-target-abi).
 
 A `requires` entry fits by the same rules 2 and 3, with its `abi` as the project's.
 
-No package fits: the tool fails with `sdk: no package` and names the platform and ABI.
+A resolver applies all four rules to the index entries alone. It downloads no archive to decide. Rule 4 reads `formats` of the entry, which the archive's `sdk.json` must equal, by [What must equal the index entry](#what-must-equal-the-index-entry). An index entry without `formats` is refused with `index: entry` when the index is read, so a resolver never meets one.
+
+A version that fails rule 4 is passed over like one that fails rule 2 or 3. So when the newest `pipos` uses a format that this tool does not know, the tool picks the newest version it can read, and pins that one.
+
+No package fits: the tool fails with `sdk: no package` and names the platform and ABI. When a version passed rules 1 to 3 and failed rule 4, the detail also names the newest such version and the format it uses, and asks for a newer tool.
 
 When several versions of a package fit, the tool picks the highest version by the order above. The lock then pins it. A newer package that appears in the index later changes nothing until `robco update`, as [When the lock changes](./STUDIO_PROJECT.md#when-the-lock-changes) says. A `requires` entry is resolved by the same rule.
 
@@ -959,6 +1016,33 @@ A tool never retries a mismatch from another location, and never installs a file
 }
 ```
 
+`sdk.json` of a `templates` package. It has no `abi`, no `tools` and no `firmware`.
+
+```json
+{
+  "format": 1,
+  "name": "templates",
+  "version": "0.1.0",
+  "built_from": [
+    {"repo": "RobCo-Reel", "commit": "3333333333333333333333333333333333333333"}
+  ],
+  "formats": {"templates": 1, "project": 1, "scenario": 1},
+  "requires": [],
+  "licences": [
+    {"paths": [""], "spdx": "MIT"}
+  ],
+  "files": [
+    {"path": "LICENSES/MIT.txt", "size": 1071, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"},
+    {"path": "holotape-c/icon.pbm", "size": 2120, "sha256": "0000000000000000000000000000000000000000000000000000000000000002"},
+    {"path": "holotape-c/robco.toml", "size": 229, "sha256": "0000000000000000000000000000000000000000000000000000000000000003"},
+    {"path": "holotape-c/src/main.c", "size": 1400, "sha256": "0000000000000000000000000000000000000000000000000000000000000004"},
+    {"path": "holotape-c/tests/golden/start/ready.png", "size": 1900, "sha256": "0000000000000000000000000000000000000000000000000000000000000005"},
+    {"path": "holotape-c/tests/start.toml", "size": 105, "sha256": "0000000000000000000000000000000000000000000000000000000000000006"},
+    {"path": "templates.json", "size": 520, "sha256": "0000000000000000000000000000000000000000000000000000000000000007"}
+  ]
+}
+```
+
 `flags.json`. The architecture flags are those of RobCo-Core's `mk/robco.mk` today. The other values show the shape. `pipos-app.mk` will write the real ones.
 
 ```json
@@ -988,7 +1072,7 @@ A tool never retries a mismatch from another location, and never installs a file
 }
 ```
 
-An index with one package and both tools. The URLs and hashes are placeholders.
+An index with both packages and both tools. The URLs and hashes are placeholders. A resolver for a project with `abi = "1.3"` on this index picks `pipos` 1.3.0, and writes the lock of [STUDIO_PROJECT.md](./STUDIO_PROJECT.md#examples).
 
 ```json
 {
@@ -1003,9 +1087,19 @@ An index with one package and both tools. The URLs and hashes are placeholders.
         {"name": "gcc", "version": "15.2.1-1.1"},
         {"name": "qemu", "version": "10.1.2"}
       ],
+      "formats": {"rimg": 1, "flags": 1, "boot": 1, "runner": 1},
       "url": "https://example.invalid/robco/pipos-1.3.0.zip",
       "size": 812345,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "name": "templates",
+      "version": "0.1.0",
+      "requires": [],
+      "formats": {"templates": 1, "project": 1, "scenario": 1},
+      "url": "https://example.invalid/robco/templates-0.1.0.zip",
+      "size": 20480,
+      "sha256": "000000000000000000000000000000000000000000000000000000000000000a"
     }
   ],
   "tools": [

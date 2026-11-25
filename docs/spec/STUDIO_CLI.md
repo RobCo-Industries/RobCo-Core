@@ -90,8 +90,8 @@ Every failure has one code. This table maps each code to its exit code, includin
 | `new: name`, `new: template`, `new: exists` | 3 | [robco new](#robco-new) | The name, the template or the folder is refused |
 | `run: board` | 3 | [Starting QEMU](#starting-qemu) | The package has no such board |
 | `test: none`, `test: name`, `test: syntax`, `test: format`, `test: unknown key`, `test: type`, `test: missing`, `test: step`, `test: value`, `test: golden` | 3 | [Scenario files](#scenario-files) | A scenario file or a golden image is refused |
-| `package: archive`, `package: format`, `package: manifest`, `package: hash` | 4 | [SDK_PACKAGE.md](./SDK_PACKAGE.md#the-archive) | A package is refused |
-| `index: location`, `index: read`, `index: format`, `index: entry`, `index: duplicate`, `index: host` | 4 | [The index](./SDK_PACKAGE.md#the-index) | The index is refused, or has no archive for this host |
+| `package: archive`, `package: format`, `package: manifest`, `package: hash` | 4 | [The archive](./SDK_PACKAGE.md#the-archive), [Reading sdk.json](./SDK_PACKAGE.md#reading-sdkjson) | A package is refused: its archive, a format it uses, one of its files `sdk.json`, `flags.json` and `boot.json`, or a hash |
+| `index: location`, `index: read`, `index: syntax`, `index: format`, `index: entry`, `index: duplicate`, `index: host` | 4 | [Reading the index](./SDK_PACKAGE.md#reading-the-index) | The index has no location, could not be fetched or opened, is not valid, or has no archive for this host |
 | `sdk: no package`, `sdk: no tool` | 4 | [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules) | Nothing in the index fits |
 | `tool: hash` | 4 | [Hashes](./SDK_PACKAGE.md#hashes) | A tool archive fails its check |
 | `tool: program` | 4 | [robco build](#robco-build) | An installed tool folder lacks a program the command must start |
@@ -225,9 +225,11 @@ Packages come first, then tools. Each group is sorted by `name`, then by `versio
 
 | Argument | Picks |
 |---|---|
-| `PACKAGE` | The highest version of that package in the index |
-| `PACKAGE@X.Y` | The highest version whose first two parts are `X.Y`, such as `pipos@1.4` |
+| `PACKAGE` | The highest version of that package in the index, among those whose `formats` the tool knows |
+| `PACKAGE@X.Y` | The highest version whose first two parts are `X.Y`, such as `pipos@1.4`, among those whose `formats` the tool knows |
 | `PACKAGE@X.Y.Z` | That version |
+
+The command reads `formats` from the index entry, as [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules) says, and downloads nothing to pick. A `PACKAGE@X.Y.Z` whose entry uses a format the tool does not know fails with `package: format` before any download.
 
 Any other form after `@` fails with `usage`. A package that the index does not list at a version that matches fails with `sdk: no package`. `gcc` and `qemu` are tools, not packages, so `robco sdk install gcc` fails with `sdk: no package`.
 

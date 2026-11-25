@@ -311,17 +311,62 @@ def package_json(marker):
     return found[0]
 
 
+VERSION = r"(?:0|[1-9]\d{0,4})\.(?:0|[1-9]\d{0,4})\.(?:0|[1-9]\d{0,4})"
+HOST = r"[a-z][a-z0-9-]{0,31}"
+KNOWN_FORMATS = {"rimg", "flags", "boot", "runner", "templates", "project", "scenario"}
+
+
+def index_entry(name):
+    return next(e for e in package_json('"packages"')["packages"] if e["name"] == name)
+
+
 def test_sdk_json_and_index_name_the_same_tools():
-    sdk = package_json('"built_from"')
+    sdk = package_json('"firmware"')
     index = package_json('"packages"')
     tools = sdk["tools"]
     assert [t["name"] for t in tools] == ["gcc", "qemu"]
     assert all(set(t) == {"name", "version"} for t in tools)
-    assert index["packages"][0]["tools"] == tools
+    assert index_entry("pipos")["tools"] == tools
     offered = {(t["name"], t["version"]) for t in index["tools"]}
     assert {(t["name"], t["version"]) for t in tools} <= offered
     assert sdk["formats"] == {"rimg": 1, "flags": 1, "boot": 1, "runner": 1}
     assert [f["path"] for f in sdk["files"]] == sorted(f["path"] for f in sdk["files"])
+
+
+def test_sdk_json_examples_equal_their_index_entries():
+    """The fields of "What must equal the index entry", and "Which package carries which field"."""
+    for marker, name in (('"firmware"', "pipos"), ('"RobCo-Reel"', "templates")):
+        sdk = package_json(marker)
+        entry = index_entry(name)
+        assert sdk["format"] == 1 and sdk["name"] == name
+        for field in ("name", "version", "abi", "tools", "formats"):
+            assert sdk.get(field) == entry.get(field), (name, field)
+        assert sdk.get("requires", []) == entry.get("requires", [])
+        assert re.fullmatch(VERSION, sdk["version"])
+        assert set(sdk["formats"]) <= KNOWN_FORMATS and set(sdk["formats"].values()) == {1}
+        for field in ("abi", "tools", "firmware"):
+            assert (field in sdk) == (name == "pipos"), (name, field)
+        if name == "pipos":
+            assert sdk["abi"] == sdk["version"].rsplit(".", 1)[0]
+        paths = [f["path"] for f in sdk["files"]]
+        assert all(a.encode() < b.encode() for a, b in zip(paths, paths[1:])), "sorted, none twice"
+        assert set(entry) <= {"name", "version", "abi", "requires", "tools", "formats", "url", "size",
+                              "sha256"}
+        assert {"name", "version", "formats", "url", "size", "sha256"} <= set(entry)
+    # The templates package holds the files that templates.json lists, and nothing else.
+    templates = package_json('"substitute"')
+    listed = {f"{t['id']}/{f['path']}" for t in templates["templates"] for f in t["files"]}
+    paths = {f["path"] for f in package_json('"RobCo-Reel"')["files"]}
+    assert paths == listed | {"templates.json", "LICENSES/MIT.txt"}
+    index = package_json('"packages"')
+    keys = [(e["name"], e["version"]) for e in index["packages"]]
+    assert len(keys) == len(set(keys))
+    for tool in index["tools"]:
+        assert tool["name"] in ("gcc", "qemu")
+        assert re.fullmatch(r'[!-~]{1,64}', tool["version"]) and not set('"\\') & set(tool["version"])
+        for host, archive in tool["archives"].items():
+            assert re.fullmatch(HOST, host), host
+            assert set(archive) == {"url", "size", "sha256", "root"}
 
 
 def section(text, heading, level="###"):
@@ -340,7 +385,7 @@ def test_sdk_json_lists_the_files_of_the_layout_table():
     assert len(headers) == 10 and "pip.h" in headers and "pipos.h" not in headers
     assert "include/pipos/*.h" in paths
     paths = (paths - {"include/pipos/*.h", "sdk.json"}) | {f"include/pipos/{h}" for h in headers}
-    sdk = package_json('"built_from"')
+    sdk = package_json('"firmware"')
     listed = [f["path"] for f in sdk["files"]]
     assert set(listed) == paths and len(listed) == len(paths)
     assert listed == sorted(listed, key=str.encode), "files is sorted by path in byte order"
@@ -358,13 +403,13 @@ def test_sdk_json_lists_the_files_of_the_layout_table():
 
 def test_lock_example_pins_the_tools_the_package_names():
     lock = next(tomllib.loads(b) for b in blocks(PROJECT, "toml") if "[[package]]" in b)
-    sdk = package_json('"built_from"')
+    sdk = package_json('"firmware"')
     assert {t["name"]: t["version"] for t in lock["tool"]} == \
         {t["name"]: t["version"] for t in sdk["tools"]}
 
 
 def test_templates_json_example_is_sorted_and_matches_the_file_table():
-    doc = package_json('"templates"')
+    doc = package_json('"substitute"')
     assert doc["format"] == 1
     ids = [t["id"] for t in doc["templates"]]
     assert ids == sorted(ids) == ["holotape-c"]
