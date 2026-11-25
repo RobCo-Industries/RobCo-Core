@@ -29,17 +29,30 @@ $(error CONFIG_H is not set)
 endif
 
 BUILD   ?= build
+# The files this fragment links or generates. The rules below use these
+# names, so the spelling check removes exactly what the rules make.
+ROBCO_LIB := $(BUILD)/librobco.a
+ROBCO_LDS := $(BUILD)/image.ld
+ROBCO_ELF := $(BUILD)/$(IMAGE).elf
+ROBCO_MAP := $(BUILD)/$(IMAGE).map
+ROBCO_IMG := $(BUILD)/$(IMAGE).img
+ROBCO_OUTPUTS := $(ROBCO_LIB) $(ROBCO_LDS) $(ROBCO_ELF) $(ROBCO_MAP) $(ROBCO_IMG) $(ROBCO_IMG).tmp
 # gcc names the object in each .d file as the rule spelled BUILD, so
 # `BUILD=build` and an absolute BUILD for the same folder miss each other's
 # header dependencies. $(BUILD)/.spelling records the spelling of the last
-# run. When it changes, the objects and .d files under $(BUILD)/obj and
-# $(BUILD)/robco are deleted, so they build again in the new spelling.
+# run. When it changes, the fragment deletes the .o and .d files under
+# $(BUILD)/obj and $(BUILD)/robco and every file in ROBCO_OUTPUTS, so all of
+# them build again in the new spelling. It keeps every other file in
+# $(BUILD), such as the sdimage outputs sd.img and sdstage/.
 # Deleted rather than made older: GNU make 3.81 sees mtimes in whole seconds.
+# For the same reason the linked outputs go too: rebuilt objects can share
+# one second with the old archive, and 3.81 would keep the old image.
 ROBCO_SPELLING := $(BUILD)/.spelling
 ifneq ($(strip $(BUILD)),)
 ifneq ($(shell cat '$(ROBCO_SPELLING)' 2>/dev/null),$(BUILD))
 $(shell mkdir -p '$(BUILD)' && \
   find '$(BUILD)/obj' '$(BUILD)/robco' \( -name '*.o' -o -name '*.d' \) -type f -exec rm -f {} + 2>/dev/null; \
+  rm -f $(foreach f,$(ROBCO_OUTPUTS),'$(f)'); \
   printf '%s\n' '$(BUILD)' > '$(ROBCO_SPELLING)')
 endif
 endif
@@ -62,8 +75,8 @@ endif
 
 # --no-warn-rwx-segments needs binutils 2.39 or later.
 ROBCO_LD_RWX := $(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)
-ROBCO_LDFLAGS := $(ROBCO_ARCHFLAGS) -nostdlib -T $(BUILD)/image.ld \
-                 -Wl,--gc-sections -Wl,-u,_start -Wl,-Map,$(BUILD)/$(IMAGE).map $(ROBCO_LD_RWX)
+ROBCO_LDFLAGS := $(ROBCO_ARCHFLAGS) -nostdlib -T $(ROBCO_LDS) \
+                 -Wl,--gc-sections -Wl,-u,_start -Wl,-Map,$(ROBCO_MAP) $(ROBCO_LD_RWX)
 
 # Every .c and .S under src/<dir>/ goes into librobco.a. Sorted for a stable
 # archive order. --gc-sections drops what the image does not use.
@@ -83,21 +96,21 @@ ROBCO_SLOT_DEF := $(if $(strip $(SLOT_END)),-DROBCO_SLOT_END=$(SLOT_END))
 PROJ_OBJS  := $(addprefix $(BUILD)/obj/,$(addsuffix .o,$(basename $(SRCS))))
 
 .PHONY: all clean
-all: $(BUILD)/$(IMAGE).img
+all: $(ROBCO_IMG)
 
-$(BUILD)/$(IMAGE).img: $(BUILD)/$(IMAGE).elf $(ROBCO_CORE)/tools/rimg.py
+$(ROBCO_IMG): $(ROBCO_ELF) $(ROBCO_CORE)/tools/rimg.py
 	$(OBJCOPY) -O binary $< $@.tmp
 	$(PYTHON) $(ROBCO_CORE)/tools/rimg.py seal $@.tmp
 	mv $@.tmp $@
 
-$(BUILD)/$(IMAGE).elf: $(PROJ_OBJS) $(BUILD)/librobco.a $(BUILD)/image.ld
-	$(CC) $(ROBCO_LDFLAGS) -o $@ $(PROJ_OBJS) $(BUILD)/librobco.a -lgcc
+$(ROBCO_ELF): $(PROJ_OBJS) $(ROBCO_LIB) $(ROBCO_LDS)
+	$(CC) $(ROBCO_LDFLAGS) -o $@ $(PROJ_OBJS) $(ROBCO_LIB) -lgcc
 
-$(BUILD)/librobco.a: $(ROBCO_OBJS)
+$(ROBCO_LIB): $(ROBCO_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
-$(BUILD)/image.ld: $(ROBCO_CORE)/ld/image.ld.S $(CONFIG_H)
+$(ROBCO_LDS): $(ROBCO_CORE)/ld/image.ld.S $(CONFIG_H)
 	@mkdir -p $(dir $@)
 	$(CC) -E -P -undef -x c -DLINK_ADDR=$(LINK_ADDR) -include $(CONFIG_H) $(ROBCO_SLOT_DEF) -o $@ $<
 

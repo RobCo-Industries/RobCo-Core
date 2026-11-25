@@ -91,6 +91,30 @@ def test_spelling_switch_twice(deptest):
     assert make_q(REL) == 1, "the header change did not reach the object"
 
 
+def test_spelling_switch_relinks_the_image(deptest):
+    """A new spelling links the image again from the rebuilt objects.
+
+    GNU make 3.81 compares mtimes in whole seconds. Objects rebuilt in the
+    same second as the old archive and image look no newer than them. The
+    test stamps the old outputs one hour ahead, which covers that case and
+    does not depend on the clock.
+    """
+    img = os.path.join(deptest, "hello.img")
+    r = make(f"BUILD={REL}", "EXTRA_CFLAGS=-O2")
+    assert r.returncode == 0, r.stderr
+    with open(img, "rb") as f:
+        old = f.read()
+    later = time.time() + 3600
+    for name in ("librobco.a", "image.ld", "hello.elf", "hello.map", "hello.img"):
+        os.utime(os.path.join(deptest, name), (later, later))
+    # -O1 changes the code, so the image must change once it is relinked.
+    r = make(f"BUILD={deptest}", "EXTRA_CFLAGS=-O1")
+    assert r.returncode == 0, r.stderr
+    with open(img, "rb") as f:
+        assert f.read() != old, "the new spelling kept the image of the old objects"
+    assert make_q(deptest, "all") == 0
+
+
 def test_build_outside_the_project(deptest, tmp_path):
     out = str(tmp_path / "out")
     obj = os.path.join(out, OBJ)
