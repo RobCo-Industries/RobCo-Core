@@ -20,8 +20,12 @@ make -C ../.. venv        # once, for the screen check
 Same layout as spike 1 (see `../s1-uart-hello/README.md`):
 
 ```sh
-../../tools/mkbootdir.sh build/s3.img sdboot --kernel-name s3.img
+make -C ../../examples/hello
+../../tools/mkbootdir.sh ../../examples/hello/build/hello.img sdboot --kernel-name s3.img
+cp build/s3.img sdboot/s3.img
 ```
+
+`tools/mkbootdir.sh` rejects the unsealed spike image, so it packs the sealed hello image under the spike's name, and `cp` replaces it.
 
 Connect HDMI and the UART adapter as in spike 1.
 

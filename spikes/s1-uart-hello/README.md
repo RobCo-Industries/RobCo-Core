@@ -15,11 +15,15 @@ make                      # build/s1.elf and build/s1.img
 
 ## SD card
 
-Build the boot directory, then copy its files to the root of a FAT32 partition:
+The spike images predate the sealed image format, so `tools/mkbootdir.sh` rejects them. Build the boot directory around the sealed `examples/hello` image instead, then put the spike image in its place:
 
 ```sh
-../../tools/mkbootdir.sh build/s1.img sdboot --kernel-name s1.img
+make -C ../../examples/hello
+../../tools/mkbootdir.sh ../../examples/hello/build/hello.img sdboot --kernel-name s1.img
+cp build/s1.img sdboot/s1.img
 ```
+
+`config.txt` then says `kernel=s1.img`, and the firmware loads the spike. Copy the files in `sdboot/` to the root of a FAT32 partition.
 
 `tools/mkbootdir.sh` fetches `bootcode.bin`, `start.elf` and `fixup.dat` with `tools/fetch_firmware.sh`, which pins one firmware release and checks each file's SHA-256. It adds the image and a `config.txt` with the settings from [BOARD_SUPPORT.md](../../docs/spec/BOARD_SUPPORT.md#configtxt). It never writes to a device.
 
