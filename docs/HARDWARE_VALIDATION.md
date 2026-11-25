@@ -98,7 +98,13 @@ This run does not show: any write, since `w`, `v` and `s` were not sent; an SDSC
 
 Same board, card, adapter and firmware tag `1.20260915` as the hello run. No DTB on the card. The image is `examples/umode`, default variant, built from RobCo-Core `4249632`, as `UMODE.IMG`, with `config.txt` from `tools/mkbootdir.sh`. The variants `build/kfault`, `build/ksvc` and `build/kmmu` were not run.
 
-The serial output has 164 lines. It starts with `@RC stage=umode ev=boot canary_addr=0x0000fc50`. It runs every task once with `mmu=0`, prints `@RC stage=umode ev=mmu on=1`, runs every task again with `mmu=1`, and ends with:
+The serial output has 164 lines. It starts with `@RC stage=umode ev=boot canary_addr=0x0000fc50`. It runs two passes of `ev=task` lines, then prints `@RC stage=umode ev=done`.
+
+- With `mmu=0`, 18 tasks: `return`, `exit`, `regs`, `badptr`, `priv`, `undef`, `rdkern`, `rdperiph`, `spin`, `svcspin`, `thumb`, `init`, `psr`, `cpsid`, `stubsvc`, `killexit`, `afterkill` and `killfirst`.
+- Then `@RC stage=umode ev=mmu on=1`.
+- With `mmu=1`, 24 tasks: the same 18 and the six protection cases `wrkern`, `wrro`, `jump`, `jumpkern`, `stack` and `peek`.
+
+`run_pass(0)` skips the cases marked `need_mmu`, because without the MMU nothing is protected. The `mmu=0` lines show it: `rdkern` returned `1526644958` and `rdperiph` returned `1757775`, where the `mmu=1` pass faulted. The case `thumb2` ran in neither pass. It needs Thumb-2, which ARM1176 does not have, so both passes skip it. The nested tasks `wrshared`, `rdunmap`, `pabt` and `badmap` also ran only with `mmu=1`. `tasks=42` counts the `ev=task` lines only, 18 plus 24. The run ends with:
 
 ```
 @RC stage=umode ev=done tasks=42 ticks=448 canary=ok
@@ -119,7 +125,7 @@ The fault lines with the MMU on:
 @RC stage=umode ev=task name=peek mmu=1 reason=fault code=0 type=data_abort pc=0x00400180 thumb=0 addr=0x01000000 status=0x0000000d ticks=357 canary=ok
 ```
 
-The lines for privileged and ignored instructions, the same with `mmu=0` and `mmu=1`:
+The lines for privileged and ignored instructions with `mmu=1`. The `mmu=0` lines differ only in `mmu` and `ticks`:
 
 ```
 @RC stage=umode ev=task name=priv mmu=1 reason=fault code=0 type=undef pc=0x00400100 thumb=0 addr=0x00000000 status=0x00000000 ticks=241 canary=ok
@@ -137,7 +143,7 @@ The lines for privileged and ignored instructions, the same with `mmu=0` and `mm
 
 #### Each task
 
-Each task runs one short program from `examples/umode/user/prog.S`, at `0x00400000` plus 0x40 times its slot.
+Each task runs one short program from `examples/umode/user/prog.S`, at `0x00400000` plus 0x40 times its slot. `wrkern`, `wrro`, `jump`, `jumpkern`, `stack` and `peek` ran only with `mmu=1`. The other rows ran in both passes. With `mmu=0`, `rdkern` and `rdperiph` returned a value and did not fault.
 
 | Task | What it does | What the line shows |
 |---|---|---|
@@ -176,9 +182,9 @@ On this board, this run confirms:
 - The fault status values are the ones the checklist expected, with bit 11 on writes.
 - A USR jump into the privileged-only kernel image is a prefetch abort at the target, status `0xd`. A task cannot fetch kernel code on this CPU.
 - `mrc p15` traps as undefined in USR mode, and `cpsid`, `cpsie` and `msr cpsr_c` are ignored.
-- The tasks, faults, kills and nested tasks leave kernel memory unchanged, and the tick keeps running across all 42 tasks.
+- The tasks, faults, kills and nested tasks leave kernel memory unchanged, and the tick keeps running across all 42 tasks: 18 with the MMU off and 24 with it on.
 
-This run does not show: the variants `build/kfault`, `build/ksvc` and `build/kmmu`; the `examples/mmu` variants `build/fault_ro` and `build/fault_unmapped`; the UART echo after the run, since no input was sent; Thumb-2, which ARM1176 does not have; any Cortex-A7 or A53 board; any other commit; a second run.
+This run does not show: the variants `build/kfault`, `build/ksvc` and `build/kmmu`; the `examples/mmu` variants `build/fault_ro` and `build/fault_unmapped`; the UART echo after the run, since no input was sent; the `thumb2` case, skipped because ARM1176 has no Thumb-2; any protection with the MMU off, since that pass protects nothing; any Cortex-A7 or A53 board; any other commit; a second run.
 
 ## Serial adapter only
 
