@@ -335,8 +335,11 @@ def _connect_unix(path, qemu, timeout):
             time.sleep(0.02)
 
 
-def boot_args(image, board, mode="auto", sd=None):
-    """QEMU arguments (after -M) for a firmware-like boot of `image`."""
+def boot_args(image, board, mode="auto", sd=None, stub=None):
+    """QEMU arguments (after -M) for a firmware-like boot of `image`.
+
+    stub is the firmware stub's path. None builds it with fwstub_path().
+    """
     b = BOARDS[board]
     if mode == "auto":
         mode = b.auto_mode
@@ -345,7 +348,8 @@ def boot_args(image, board, mode="auto", sd=None):
     if mode == "hyp" and b.auto_mode == "svc":
         raise ValueError(f"{board} has no HYP mode")
     flags = FLAG_HYP if (mode == "hyp" and not b.a64) else 0
-    stub = fwstub_path()
+    if stub is None:
+        stub = fwstub_path()
     args = ["-device", f"loader,file={stub},addr=0x0,force-raw=on",
             "-device", f"loader,file={os.fspath(image)},addr={KERNEL_ADDR:#x},force-raw=on"]
     args += loader_words(PARAMS_ADDR, [PARAMS_MAGIC, b.mach_id, b.mem, flags])

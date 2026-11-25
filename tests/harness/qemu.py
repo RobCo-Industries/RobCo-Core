@@ -348,6 +348,10 @@ def have_machine(binary, machine):
     return any(line.split()[:1] == [machine] for line in out.splitlines())
 
 
+# Arguments every QEMU run passes right after -M <machine>.
+COMMON_ARGS = ["-display", "none", "-monitor", "none", "-no-user-config"]
+
+
 def loader_words(addr, words, entry=None):
     """-device loader args poking 32-bit words at addr, optionally setting CPU0's PC."""
     args = []
@@ -415,8 +419,7 @@ class Qemu:
     # -- lifecycle -------------------------------------------------------
 
     def command_line(self):
-        cmd = [self.binary, "-M", self.machine, "-display", "none",
-               "-monitor", "none", "-no-user-config"]
+        cmd = [self.binary, "-M", self.machine] + COMMON_ARGS
         if self.serial_count:
             for p in self.serial_paths:
                 cmd += ["-serial", f"file:{p}"]
