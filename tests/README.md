@@ -556,6 +556,11 @@ The sweep is a courtesy, so no error in it stops a session. It never
 kills a process whose start time it cannot read, for example where `ps`
 may not run, and leaves that pidfile in place with one line on stderr.
 
+The sweep trusts a folder and its pidfile only when both belong to you,
+neither is a symbolic link and no group or other user may write them.
+The harness creates the folder with mode 0700 and the pidfile with mode
+0600. The sweep also kills only a process that runs as you.
+
 A zombie counts as dead. In a container whose process 1 reaps no child,
 such as the CI one, a dead orphan stays a zombie and `os.kill(pid, 0)`
 still finds it. The harness reads the state from `/proc` on Linux and

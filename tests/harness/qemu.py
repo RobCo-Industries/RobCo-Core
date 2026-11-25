@@ -13,6 +13,7 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -238,11 +239,67 @@ def sweep_stale(tmp=None, slack=2.0):
     return killed
 
 
+def _owned(st, uid, kind):
+    """True when stat result `st` is of `kind` (stat.S_ISDIR or S_ISREG),
+    owned by `uid` and not writable by group or others."""
+    return (kind(st.st_mode) and st.st_uid == uid
+            and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+
+
+def _read_own_pidfile(folder):
+    """The pidfile's text, or None when the folder or the file is not
+    provably this user's own. Follows no symbolic link, and reads from the
+    descriptor it checked, so nothing can swap the file in between.
+    Raises FileNotFoundError when the folder holds no pidfile.
+
+    os.getuid() is POSIX only: this harness does not run on Windows.
+    """
+    uid = os.getuid()
+    if not _owned(os.lstat(folder), uid, stat.S_ISDIR):
+        return None
+    fd = os.open(os.path.join(folder, PIDFILE), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not _owned(os.fstat(fd), uid, stat.S_ISREG):
+            return None
+        with os.fdopen(fd, encoding="utf-8") as f:
+            fd = None
+            return f.read(4096)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _run_ps_uid(pid):
+    """Run ps for the user id of `pid`. Tests replace it."""
+    return subprocess.run(["ps", "-o", "uid=", "-p", str(pid)], capture_output=True,
+                          text=True, timeout=PS_TIMEOUT,
+                          env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"})
+
+
+def _process_uid(pid):
+    """The user id that owns `pid`, or None when it cannot be read.
+    Linux reads the owner of /proc/<pid>, macOS asks ps."""
+    try:
+        return os.stat(f"{PROC}/{pid}").st_uid
+    except FileNotFoundError:
+        if os.path.isdir(f"{PROC}/self"):
+            return None
+    except OSError:
+        return None
+    try:
+        r = _run_ps_uid(pid)
+        return int(r.stdout.strip()) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return None
+
+
 def _sweep_one(folder, slack):
     """Judge one VM folder. Returns the killed pid, "skipped" or None."""
     try:
-        with open(os.path.join(folder, PIDFILE)) as f:
-            tag, pid, started, owner, pgid = f.read().split()
+        text = _read_own_pidfile(folder)
+        if text is None:
+            return "skipped"  # not provably ours: someone else may have made it
+        tag, pid, started, owner, pgid = text.split()
         if tag != PIDFILE_TAG:
             return "skipped"  # an older form: its start time is not QEMU's
         pid, started, owner, pgid = int(pid), float(started), int(owner), int(pgid)
@@ -273,6 +330,8 @@ def _sweep_one(folder, slack):
         same = False
     if not same:
         return None  # the pid now names another process: not ours
+    if _process_uid(pid) != os.getuid():
+        return "skipped"  # another user's process, or one we cannot read
     try:
         os.kill(pid, signal.SIGKILL)
     except OSError:
@@ -470,7 +529,11 @@ class Qemu:
         started = "-" if started is None else f"{started:.3f}"
         tmp = os.path.join(self.tmpdir, PIDFILE + ".tmp")
         try:
-            with open(tmp, "w") as f:
+            # 0600 whatever the umask: the sweep trusts no pidfile that
+            # group or others may write.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as f:
                 f.write(f"{PIDFILE_TAG} {self.proc.pid} {started} {os.getpid()} "
                         f"{self._watcher.pid}\n")
             os.replace(tmp, os.path.join(self.tmpdir, PIDFILE))

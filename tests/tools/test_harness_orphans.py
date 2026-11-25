@@ -6,6 +6,7 @@ A stand-in script plays QEMU: it writes its pid next to itself and sleeps.
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -506,6 +507,7 @@ def stale_vm(tmp, started_offset=0.0, owner=None, tag=qemu_mod.PIDFILE_TAG):
     with open(os.path.join(folder, qemu_mod.PIDFILE), "w") as f:
         f.write(f"{head}{proc.pid} {started + started_offset:.3f} "
                 f"{owner or dead_pid()} {proc.pid}\n")
+    os.chmod(os.path.join(folder, qemu_mod.PIDFILE), 0o600)
     return proc, folder
 
 
@@ -784,3 +786,77 @@ def test_vm_starts_when_the_pidfile_cannot_be_written(monkeypatch, fake, capsys)
         assert "cannot write" in capsys.readouterr().err
     finally:
         q.close()
+
+
+# -- the sweep trusts only this user's own folders ------------------------
+
+def _link_folder(tmp, folder):
+    real = os.path.join(tmp, "real")
+    os.rename(folder, real)
+    os.symlink(real, os.path.join(tmp, qemu_mod.TMP_PREFIX + "link"))
+
+
+def _link_pidfile(tmp, folder):
+    pidfile = os.path.join(folder, qemu_mod.PIDFILE)
+    elsewhere = os.path.join(tmp, "elsewhere")
+    os.rename(pidfile, elsewhere)
+    os.symlink(elsewhere, pidfile)
+
+
+def _open_folder(tmp, folder):
+    os.chmod(folder, 0o777)
+
+
+def _open_pidfile(tmp, folder):
+    os.chmod(os.path.join(folder, qemu_mod.PIDFILE), 0o666)
+
+
+@pytest.mark.parametrize("forge", [_link_folder, _link_pidfile, _open_folder, _open_pidfile])
+def test_sweep_skips_a_folder_not_provably_ours(tmp_path, capsys, forge):
+    if not ps_works():
+        pytest.skip(NO_START)
+    proc, folder = stale_vm(tmp_path)
+    try:
+        forge(str(tmp_path), folder)
+        assert sweep_stale(str(tmp_path)) == []
+        assert proc.poll() is None
+        assert capsys.readouterr().err.count("could not check") == 1
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_owned_rejects_another_user():
+    st = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 4242, 0, 0, 0, 0, 0))
+    assert qemu_mod._owned(st, 4242, stat.S_ISREG)
+    assert not qemu_mod._owned(st, 4243, stat.S_ISREG)
+    assert not qemu_mod._owned(st, 4242, stat.S_ISDIR)
+
+
+def test_sweep_spares_another_users_process(monkeypatch, tmp_path, no_kill):
+    if not ps_works():
+        pytest.skip(NO_START)
+    monkeypatch.setattr(qemu_mod, "_process_uid", lambda pid: os.getuid() + 1)
+    proc, folder = stale_vm(tmp_path)
+    try:
+        assert sweep_stale(str(tmp_path)) == []
+        assert proc.poll() is None and os.path.exists(folder)
+        assert all(sig == 0 for _, sig in no_kill)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_process_uid_is_ours():
+    assert qemu_mod._process_uid(os.getpid()) == os.getuid()
+
+
+def test_pidfile_is_private_under_a_loose_umask(fake):
+    old = os.umask(0)
+    try:
+        with Qemu(str(fake), "none", qmp=False) as q:
+            st = os.lstat(os.path.join(q.tmpdir, qemu_mod.PIDFILE))
+            assert stat.S_IMODE(st.st_mode) == 0o600
+            assert stat.S_IMODE(os.lstat(q.tmpdir).st_mode) == 0o700
+    finally:
+        os.umask(old)
