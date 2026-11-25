@@ -106,14 +106,51 @@ static int burst(int argc, char *argv[], input_script_reply_t *reply)
 }
 
 /*
+ * Tick timing since the last "ticks": the longest gap between two tick
+ * callbacks, and the spread of their lateness against the tick's grid,
+ * both in us. The guest samples the GPIO lines on these callbacks.
+ */
+static volatile uint32_t tick_last_lo, tick_gap_max, tick_ref;
+static volatile int32_t tick_late_min, tick_late_max;
+static volatile int tick_fresh = 1;
+
+static void tick_timing(void)
+{
+    uint32_t now = timer_now_lo();
+    /* A constant plus this callback's lateness: count * period is the grid. */
+    uint32_t off = now - tick_count() * (1000000u / TICK_HZ);
+    int32_t late;
+
+    if (tick_fresh) {
+        tick_ref = off;
+        tick_late_min = 0;
+        tick_late_max = 0;
+        tick_gap_max = 0;
+        tick_fresh = 0;
+    } else if (now - tick_last_lo > tick_gap_max) {
+        tick_gap_max = now - tick_last_lo;
+    }
+    tick_last_lo = now;
+    late = (int32_t)(off - tick_ref);
+    if (late < tick_late_min) {
+        tick_late_min = late;
+    }
+    if (late > tick_late_max) {
+        tick_late_max = late;
+    }
+}
+
+/*
  * Project commands on the script channel. "board" answers two lines,
- * then ok. "totals" answers "dial0=<n> dial1=<n> dropped=<n>". "burst"
+ * then ok. "totals" answers "dial0=<n> dial1=<n> dropped=<n>". "ticks"
+ * answers "count=<n> missed=<n> maxgap=<us> jitter=<us>": tick_count(),
+ * tick_missed() and the tick timing above since the last "ticks". "burst"
  * is above. Other arguments and unknown commands answer err.
  */
 static int script_command(int argc, char *argv[], input_script_reply_t *reply, void *ctx)
 {
     const robco_board_t *b = ctx;
-    char line[64];
+    char line[96];
 
     if (k_strcmp(argv[0], "burst") == 0) {
         return burst(argc, argv, reply);
@@ -122,6 +159,14 @@ static int script_command(int argc, char *argv[], input_script_reply_t *reply, v
         k_snprintf(line, sizeof(line), "dial0=%d dial1=%d dropped=%u",
                    (int)input_dial_total(0), (int)input_dial_total(1), input_dropped());
         reply->write(line);
+        return 0;
+    }
+    if (k_strcmp(argv[0], "ticks") == 0) {
+        k_snprintf(line, sizeof(line), "count=%u missed=%u maxgap=%u jitter=%u",
+                   (unsigned)tick_count(), (unsigned)tick_missed(), (unsigned)tick_gap_max,
+                   (unsigned)(tick_late_max - tick_late_min));
+        reply->write(line);
+        tick_fresh = 1;
         return 0;
     }
     if (k_strcmp(argv[0], "board") != 0) {
@@ -158,6 +203,7 @@ void robco_main(void)
     mini = uart_mini_init(115200);
     irq_init();
     tick_init(TICK_HZ);
+    tick_register(tick_timing);
     irq_cpu_enable();
 
     input_init();
