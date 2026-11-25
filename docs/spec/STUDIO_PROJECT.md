@@ -11,18 +11,58 @@ State today: neither the tool nor any project file exists. No code reads or writ
 | `robco.toml` | The manifest. What to build and for what. | The author |
 | `robco.lock` | The exact packages and tools a build used | The tool |
 | `src/` | C sources, by convention. The manifest names the files. | The author |
+| `tests/*.toml` | Scenario files. See [Scenario files](./STUDIO_CLI.md#scenario-files). | The author |
+| `tests/golden/` | Golden images of the scenarios, one per screen for every board. See [Golden images](./STUDIO_CLI.md#golden-images). | The tool, when a person asks for it |
 | `build/` | Every output and every intermediate file | The tool |
 | `build/gen/` | Generated C files | The tool |
 
 The project root is the folder that holds `robco.toml`. A tool looks for `robco.toml` in the current folder only. It does not search parent folders.
 
-A tool writes only under `build/` and to `robco.lock`. It never changes `robco.toml` during a build. `build/` may be deleted at any time. A project under version control commits `robco.toml` and `robco.lock` and ignores `build/`.
+A tool writes only under `build/` and to `robco.lock`. `robco test --update-golden` also writes under `tests/golden/`, and nothing else does. A tool never changes `robco.toml` during a build. `build/` may be deleted at any time. A project under version control commits `robco.toml` and `robco.lock` and ignores `build/`.
 
 ## robco.toml
 
 ### Syntax
 
-`robco.toml` is TOML 1.0, encoded as UTF-8. A file that does not parse as TOML 1.0 fails with `manifest: syntax` and the line number.
+`robco.toml` is TOML 1.1, encoded as UTF-8. A file that does not parse as TOML 1.1 fails with `manifest: syntax` and the line number. `robco.lock` is TOML 1.1 too, and fails with `lock: syntax`.
+
+#### TOML 1.1 and a reader built on a 1.0 parser
+
+TOML 1.1 reads every TOML 1.0 file with the same meaning. It adds four forms that TOML 1.0 refuses:
+
+| Added in TOML 1.1 | Example | In these files |
+|---|---|---|
+| An inline table may span lines and may end with a comma | The example below | A table of the manifest may be written this way |
+| The escape `\xHH` in a basic string, for the characters up to U+00FF | `title = "Pi\x70es"` | Any string value |
+| The escape `\e` in a basic string, for U+001B | `"\e"` | Parses. No key takes a control character, so the value then fails its own rule, such as `manifest: title`. |
+| A time or a date and time without seconds | `08:30` | Parses. No key takes a time, so it fails with `manifest: type`. |
+
+A reader built on a TOML 1.0 parser does not follow this spec:
+
+- It reads every file that uses none of the four forms, and reads it right.
+- It refuses a file that uses one of them with `manifest: syntax`, where this spec asks for the file to be read, or to fail with another code. So two tools would disagree on the same project.
+- A reader must therefore use a TOML 1.1 parser. A test of a reader holds a manifest with each of the four forms.
+
+A tool writes only the forms that TOML 1.0 and 1.1 share. That covers `robco.lock`, by [How the tool writes the lock](#how-the-tool-writes-the-lock), and the files of a template. So any TOML 1.0 program reads what the tool writes. The rule above is about what a reader accepts from a person.
+
+This manifest uses the first two forms, and it writes `format` after other keys, which [Format version](#format-version) allows. It means the same as the first manifest of [Examples](#examples), and a TOML 1.0 parser refuses it:
+
+```toml
+project = {
+    name = "PIPES",
+    title = "Pi\x70es",
+    version = "1.0.0",
+    kind = "holotape",
+    subtype = "game",
+    icon = "icon.pbm",
+}
+target = { platform = "pipos", abi = "1.3" }
+format = 1
+
+[build]
+backend = "robco"
+sources = ["src/*.c"]
+```
 
 Every path in the manifest follows these rules:
 
@@ -36,13 +76,17 @@ A path that breaks a rule fails with `manifest: path` and the key.
 
 ### Format version
 
-The first key of the file is `format`, outside any table.
+`format` is a key outside any table.
 
 | Key | Type | Required | Value |
 |---|---|---|---|
 | `format` | integer | Yes | `1` for this spec |
 
 A tool reads every format version it knows. A manifest with a larger `format` fails with `manifest: format`, and the message asks for a newer tool. A missing `format`, or one that is not a positive integer, fails with `manifest: format`.
+
+The order of keys carries no meaning, in a table and outside one. `format` need not be the first key of the file, and no key need come before another. TOML itself sets one limit: a key outside any table stands above the first table header. A `format` written below a header such as `[build]` belongs to that table. The file then has no `format` of its own and fails with `manifest: format`.
+
+`format` is still the first thing a tool checks. Once the file has parsed, the tool checks `format` before any other rule, so a manifest of a later format reports `manifest: format` and never an unknown key or a bad value of that later format.
 
 A change to this spec that an older tool would build wrongly raises `format`. A new optional key with a default that keeps old builds the same does not.
 
@@ -84,14 +128,78 @@ For `pipos`, MAJOR must be 1, the Pip-OS ABI major in [PIPOS_ABI.md](./PIPOS_ABI
 
 | Key | Type | Required | Default | Limits | Meaning |
 |---|---|---|---|---|---|
-| `backend` | string | No | `"robco"` | `robco` | Who runs the build. `robco`: the tool compiles, links and seals itself. |
+| `backend` | string | No | `"robco"` | Exactly `robco` | Who runs the build. `robco`: the tool compiles, links and seals itself. |
 | `sources` | array of strings | No | `["src/*.c"]` | 1 to 256 patterns, each a path pattern | The C files to compile |
 
-A pattern is a path whose last component may hold `*`, which matches any run of characters other than `/`, including none. No other wildcard exists. Every other component is literal. The tool expands each pattern, keeps only regular files, drops repeats and sorts the list by byte value of the path. A pattern that matches nothing fails with `manifest: sources` and the pattern. Only files ending in `.c` compile. Any other match fails with `manifest: sources`.
+`backend` has one value in format 1. Any other string fails with `manifest: unknown key`, and the detail is `build.backend = "<value>"`, with the value written as a TOML basic string. `make` is reserved for a later format and fails the same way, so the whole error line is:
+
+```
+manifest: unknown key: build.backend = "make"
+```
+
+The code is `unknown key` and not a code of its own because a format 1 tool knows no other backend, as it knows no other key. The comparison is exact: `Robco` and `robco ` fail. A `backend` that is not a string fails with `manifest: type`.
+
+A pattern is a path whose last component may hold `*`, which matches any run of characters other than `/`, including none. No other wildcard exists. Every other component is literal. The tool expands each pattern and keeps only regular files. A pattern that matches nothing fails with `manifest: sources` and the pattern. Only files ending in `.c` compile. Any other match fails with `manifest: sources`. [Source order](#source-order) says in which order the files compile and link.
+
+`sources` holds 1 to 256 patterns. The limit counts the entries of the array as the manifest writes them, before a pattern is expanded and before a path that comes twice is dropped. Both ends fail with `manifest: sources`, and the detail gives the count:
+
+| `sources` | Result |
+|---|---|
+| Absent | The default, `["src/*.c"]` |
+| `[]` | `manifest: sources`, with the detail `build.sources holds 0 patterns, 1 to 256 allowed` |
+| 1 to 256 entries | Read |
+| 257 entries or more | `manifest: sources`, with the count in the same detail |
+
+The tool makes this check on the manifest alone, before it looks at a file. The source list that the patterns expand to has no limit of its own: one pattern may match more than 256 files.
+
+### Source order
+
+The source list is the order of the link, and the link order is one of the things that decide the bytes of the tape. The tool builds the list in three steps:
+
+1. It takes the patterns of `sources` in the order the manifest writes them.
+2. It expands each pattern. A pattern without `*` gives one path, as written. A pattern with `*` gives every match, sorted by the byte value of the path.
+3. It appends the paths of each pattern to the list. A path that is already in the list is skipped and keeps its first place.
+
+Step 2 of [Build order](./SDK_PACKAGE.md#build-order) compiles the list in this order, and step 3 links the objects in the same order, after the startup code.
+
+| Manifest | Source list |
+|---|---|
+| `sources` absent, so `["src/*.c"]` | Every `.c` file of `src/`, sorted by path |
+| `["main.c", "game.c", "logic.c", "draw.c"]` | Those four files, in that order |
+| `["src/main.c", "src/*.c"]` | `src/main.c`, then the other `.c` files of `src/`, sorted by path |
+
+So a project states its order by naming its files one by one, and gets the sorted order wherever it writes a pattern. The list never depends on the host system, on the order in which a file system lists a folder, or on a locale.
+
+A path without `*` must spell the file name as the folder holds it, byte for byte. A name that differs only in case fails with `manifest: sources`, also on a file system that would open the file anyway. A manifest that builds on one system then builds on every system.
+
+The reason for this rule: the sealed tape of Culvert was measured equal across systems and build paths with the sources linked in the order of its Makefile, `main.c game.c logic.c draw.c`. [K2](https://github.com/RobCo-Industries/RobCo-Studio/blob/main/docs/spikes/K2.md) names the link order as a condition, and no other order was measured. A build that keeps the written order links what the Makefile links, so nothing new has to be measured. A rule that sorted every list would have changed Culvert's link order in one of the two builds.
+
+#### A project that also builds with a Makefile
+
+A project may keep a Makefile that includes `pipos-app.mk` beside its `robco.toml`, as Culvert does in Deitrix. Both builds give the same tape only when both files say the same things:
+
+| Makefile | `robco.toml` | Rule |
+|---|---|---|
+| `SRCS` | `build.sources` | The same files in the same order, each named one by one, with no `*` |
+| `ABI` | `target.abi` | The same `MAJOR.MINOR`. Both files state it. See [The target ABI in pipos-app.mk](./PIPOS_ABI.md#the-target-abi-in-pipos-appmk). |
+| `NAME`, `TITLE`, `VERSION`, `ICON` | `project.name`, `project.title`, `project.version`, `project.icon` | The same values |
+| `KIND`, `SUBTYPE` | `project.kind`, `project.subtype` | `holotape`, and the same subtype |
+| `CFLAGS_EXTRA` | No key | Empty. Format 1 has no key for extra flags. |
+
+Each source path is relative to the folder that holds both files, and Make runs in that folder. The compiler is the one the package names, in both builds. See [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names).
+
+A job that compares the two builds checks these, in this order, and fails at the first that does not hold:
+
+1. The `sources` array of the `result` line of `robco build --json` equals the words of `SRCS` as Make expands it, in order. The failure message prints both lists.
+2. The `abi` field of that line equals the Makefile's `ABI`.
+3. The `gcc` field of that line equals the release of the compiler that the Makefile build ran.
+4. The two `NAME.HTP` files have the same SHA-256.
+
+Checks 1 to 3 come first so that a difference between the tapes has a named cause. The job compares no object, no archive and no ELF, as [What must be equal](#what-must-be-equal) says. [robco build](./STUDIO_CLI.md#robco-build) defines the `result` line.
 
 ### Keys reserved for later formats
 
-These keys are named so no project uses them for something else. A format 1 tool refuses each one as an unknown key.
+These keys are named so no project uses them for something else. A format 1 tool refuses each one with `manifest: unknown key`. The detail is the dotted name of the key, and for the first row `build.backend = "make"`.
 
 | Key | Purpose |
 |---|---|
@@ -147,7 +255,7 @@ A format 1 tool builds `holotape` only. Any other value of `kind` fails with `ma
 | META `title` | `project.title`, NUL-padded to 64 bytes |
 | META `icon` | From `project.icon`, or as the startup code wrote it |
 
-The tool seals the image with the rules of [Sealing and packing](./IMAGE_FORMAT.md#sealing-and-packing). A build that fails any step writes no `build/NAME.HTP`. It deletes an older one first, so a failed build never leaves a stale tape behind.
+The tool seals the image with the rules of [Sealing and packing](./IMAGE_FORMAT.md#sealing-and-packing). A build that fails any step writes no `build/NAME.HTP`. `robco build`, `robco run` and `robco test` delete an older one as soon as they have read the manifest, which gives `NAME`, and before they read the lock. So a command that fails after that never leaves an older tape behind. [The steps of update, build, run and test](./STUDIO_CLI.md#the-steps-of-update-build-run-and-test) has the order.
 
 ```mermaid
 flowchart LR
@@ -173,11 +281,20 @@ Only `build/NAME.HTP` must be byte-equal on every host system and in every proje
 
 A tool reports the first error it finds as `manifest: <code>: <detail>` and builds nothing.
 
+"First" has a fixed meaning, so two tools report the same code for the same manifest. The tool follows the six steps of [Order of checks](./STUDIO_CLI.md#order-of-checks):
+
+1. A manifest that is absent fails with `project: none`, and one that the host does not let the tool read with `io: read`. Neither is a `manifest:` code.
+2. `syntax`.
+3. `format`.
+4. `unknown key`, for the first unknown key or table in the order of the file, and for a `build.backend` other than `robco`.
+5. Each key of `[project]`, then of `[target]`, then of `[build]`, in the order of its table. For one key: `missing` when it is required and absent, `type` when its TOML type is wrong, then the code of its value: `name`, `title`, `version`, `kind`, `subtype`, `path` for an `icon` that breaks a path rule, `platform`, `abi`, `sources` for the count of patterns, and `path` for a pattern that breaks a path rule. A missing `subtype` in a holotape is `subtype`, not `missing`.
+6. The checks that look at files: the icon file, `path` and `icon`, then each pattern of `sources` in the order written, `path` and `sources`.
+
 | Code | When |
 |---|---|
-| `syntax` | The file is not TOML 1.0 or not UTF-8 |
+| `syntax` | The file is not TOML 1.1 or not UTF-8 |
 | `format` | `format` is missing, not a positive integer, or larger than the tool knows |
-| `unknown key` | A key or table this spec does not define |
+| `unknown key` | A key or table this spec does not define, or a `build.backend` other than `robco` |
 | `type` | A key has the wrong TOML type |
 | `missing` | A required key is absent |
 | `name` | `project.name` breaks a name rule |
@@ -189,7 +306,7 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 | `abi` | `target.abi` is not `MAJOR.MINOR`, out of range, or the wrong major |
 | `path` | A path breaks a path rule |
 | `icon` | The icon file is missing or breaks the icon rules |
-| `sources` | A pattern matches nothing, or matches a file that is not `.c` |
+| `sources` | `build.sources` is empty or holds more than 256 patterns, a pattern matches nothing or matches a file that is not `.c`, or a path spells a file name in another case |
 
 ## robco.lock
 
@@ -197,7 +314,7 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 
 ### Syntax and format version
 
-`robco.lock` is TOML 1.0 in UTF-8. Its first key is `format`, an integer, `1` for this spec. The format rules are those of the manifest: a larger value fails with `lock: format`, and an unknown key fails with `lock: unknown key`.
+`robco.lock` is TOML 1.1 in UTF-8. `format` is an integer outside any table, `1` for this spec. The format rules are those of the manifest: a reader gives the order of keys no meaning, checks `format` before any other rule, fails a larger value, a missing one and one that is not a positive integer with `lock: format`, and fails an unknown key with `lock: unknown key`.
 
 ### Keys
 
@@ -205,45 +322,90 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 |---|---|---|---|
 | `format` | integer | Yes | `1` |
 | `index` | string | Yes | The index the packages came from, as the tool was given it: a URL or a local path. For the record only. |
-| `[[package]]` | array of tables | Yes, one or more | One entry per package |
-| `[[tool]]` | array of tables | Yes, one or more | One entry per downloaded tool |
+| `[[package]]` | array of tables | No | One entry per package. A package the project needs and the lock lacks makes the lock [stale](#a-stale-lock). |
+| `[[tool]]` | array of tables | No | One entry per tool: at most two, one named `gcc` and one named `qemu`. A lock without both is stale. |
 
 Each `[[package]]`:
 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | Yes | The package name, such as `pipos` |
-| `version` | string | Yes | The exact version, `X.Y.Z` |
+| `name` | string | Yes | The package name, such as `pipos`: 1 to 32 characters from `a` to `z`, `0` to `9` and `-`, starting with a letter. No two entries have the same name. |
+| `version` | string | Yes | The exact version, `X.Y.Z`, each part from 0 to 65535 with no leading zero |
 | `sha256` | string | Yes | The SHA-256 of the package archive. 64 lower case hex digits. |
 
 Each `[[tool]]`:
 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | string | Yes | `gcc` or `qemu` |
-| `version` | string | Yes | The upstream version, such as `15.2.1` |
-| `[tool.archives]` | table | Yes | One key per host, such as `linux-x64`. Each value is the SHA-256 of that host's archive. |
+| `name` | string | Yes | `gcc` or `qemu`, and nothing else. No two entries have the same name. |
+| `version` | string | Yes | The version that the locked `pipos` package names for this tool, such as `15.2.1-1.1`. 1 to 64 bytes from `0x21` to `0x7E`, with no `"` and no `\`. See [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names). |
+| `[tool.archives]` | table | Yes | One key per host, such as `linux-x64`, and at least one. Each key is a host name in the form of [The index](./SDK_PACKAGE.md#the-index). Each value is the SHA-256 of that host's archive, 64 lower case hex digits. |
 
-The lock lists the archives of every host the index offers, not only the host that wrote it. A lock written on macOS then works unchanged on Windows and Linux.
+The lock lists the archives of every host the index offers, not only the host that wrote it, and that includes a host name this version of the tool does not know. A lock written on macOS then works unchanged on Windows and Linux.
 
-Entries are sorted by `name`. A tool writes the file with the keys in the order of the tables above, so the same resolution gives the same bytes.
+A lock names no tool but `gcc` and `qemu`. Format 1 knows no other tool, and no package of format 1 can name one: `tools` of a `pipos` package holds exactly those two. A `[[tool]]` with another name can therefore never be right, whatever the manifest says, so it makes the lock invalid and not stale: `lock: entry`, with the detail `tool.name = "<value>"`. A tool walks the `[[tool]]` entries only after this check, so it never tries to install a tool that no package named.
+
+### Reading the lock
+
+| Case | Result |
+|---|---|
+| The project root has no `robco.lock` | No error. [When the lock changes](#when-the-lock-changes) says what the command does. |
+| The file exists, and the host refuses to open or to read it | `io: read`, with the path. Exit code 9. The code is not a `lock:` code, since the tool has read nothing of the lock. |
+| The bytes are not UTF-8 or not TOML 1.1 | `lock: syntax`, with the line |
+| `format` is missing, is not a positive integer, or is larger than the tool knows | `lock: format`. For a larger one the message asks for a newer tool. |
+| A key or a table that this spec does not define, at the top, in an entry or under one | `lock: unknown key`, with its dotted name, such as `tool.arch` |
+| A required key is missing, a key has the wrong TOML type, a value breaks the form its table gives, two entries have the same `name`, a `[[tool]]` has a name other than `gcc` and `qemu`, or `[tool.archives]` is empty | `lock: entry`, with the key and for a bad value the value, such as `package.sha256` or `tool.name = "gdb"`. The message ends with `run robco update`. |
+| The lock is stale | `lock: stale`, by [A stale lock](#a-stale-lock) |
+
+The checks come in the order of the table, and the tool reports the first failure. So a lock of a later format reports `lock: format`, whatever else it holds: a tool cannot tell an unknown key of a later format from a mistake. In the sixth row the tool checks `index` first, then each `[[package]]` in the order of the file, key by key in the order of the tables of [Keys](#keys), then each `[[tool]]` the same way.
+
+A failure to write `robco.lock`, or to rename the temporary file over it, is `io: write`, with the path. No `lock:` code means a failure of the host's file system.
+
+### How the tool writes the lock
+
+Two tools that resolve the same index for the same manifest write the same bytes. A writer follows this layout exactly:
+
+| Rule | Detail |
+|---|---|
+| Encoding | UTF-8, with no byte order mark |
+| Line end | One line feed, on every system. No carriage return. |
+| End of the file | The last line ends with one line feed, and nothing follows it |
+| Spaces | One space on each side of every `=`. No space at the start or the end of a line, and no tab. |
+| Comments | None |
+| Blank lines | Exactly one before each `[[package]]`, each `[[tool]]` and each `[tool.archives]` header. None anywhere else. |
+| First lines | `format = 1`, then `index`, with no blank line between them |
+| Packages | Every `[[package]]` block, sorted by `name` in byte order. In a block: `name`, `version`, `sha256`. |
+| Tools | After the last package, every `[[tool]]` block, sorted by `name` in byte order, so `gcc` then `qemu`. In a block: `name`, `version`, then `[tool.archives]`. |
+| Archives | One line per host, sorted by host name in byte order. The key is the host name, written bare, with no quotes. |
+| Strings | Basic strings in double quotes, on one line. A writer escapes `\` as `\\`, `"` as `\"`, and each character below U+0020 and U+007F as `\u00` and two lower case hex digits. It writes every other character as itself, in UTF-8. Only `index` can hold a character that needs an escape: the forms of the other values leave none. |
+| Numbers | `format` is the only one: decimal digits with no sign |
+
+A reader does not ask for this layout. It reads any TOML 1.1 file that holds the keys, by [Reading the lock](#reading-the-lock). The layout binds a writer only.
+
+The lock at the end of [Examples](#examples) is in this layout, byte for byte. It is what a resolution of the index example of [SDK_PACKAGE.md](./SDK_PACKAGE.md#examples) writes for the first manifest, with the index location `https://example.invalid/robco/index.json`.
 
 ### What the lock pins
 
-The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock in place, the tool:
+The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock in place, the tool does these in order. [The steps of update, build, run and test](./STUDIO_CLI.md#the-steps-of-update-build-run-and-test) fixes the place of each among the other steps of a command.
 
-1. Installs or finds each listed package at its exact version.
-2. Checks each archive against its `sha256`, as [SDK_PACKAGE.md](./SDK_PACKAGE.md#hashes) says. A mismatch fails the build with `lock: hash` and names the package. The tool never replaces a pinned package with another version or another archive on its own.
-3. Checks that the pinned packages still fit the manifest by the rules of [SDK_PACKAGE.md](./SDK_PACKAGE.md#version-and-abi-rules).
+1. It checks that the pinned packages still fit the manifest, by the rules of [SDK_PACKAGE.md](./SDK_PACKAGE.md#version-and-abi-rules). A lock that fails is [stale](#a-stale-lock). This check comes before any install or download.
+2. It finds each listed package in the cache at its exact version, or installs it. The tool never replaces a pinned package with another version or another archive on its own. An item that the cache lacks and the index no longer lists fails with `lock: missing`, as [A stale lock](#a-stale-lock) says.
+3. It checks each item against the hash the lock pins, as [Hashes](./SDK_PACKAGE.md#hashes) says. For an item it downloads, the archive must have that hash. For an item the cache holds, the record of [What the cache records](./SDK_PACKAGE.md#what-the-cache-records) must equal it. A cached item that differs fails the command with `lock: hash` and names the package or the tool. The tool changes nothing.
+4. It checks, once the `pipos` package is installed and before it installs or starts any tool, that each `[[tool]]` entry has the `version` that the package's `sdk.json` names for it. A difference fails the command with `lock: tool` and names the tool and both versions. The message ends with `run robco update`. The tool changes nothing. Only a lock edited by hand can fail here, since the tool writes both from one resolution.
+
+So every tool a command installs or starts passed three checks: its name is `gcc` or `qemu`, by [Reading the lock](#reading-the-lock), the locked `pipos` package names it at that version, by step 4, and its archive has the hash the lock pins, by step 3.
+
+A resolution writes the `[[tool]]` entries from the package it picked: for each of `gcc` and `qemu`, the version the package names and the SHA-256 of every archive the index lists for that version.
 
 ### When the lock changes
 
 | Event | What the tool does |
 |---|---|
-| No `robco.lock` | Resolves from the index and writes the lock. |
+| No `robco.lock` | Resolves from the index, installs what the command needs, and then writes the lock. A command that fails before that writes no lock. |
 | A lock whose packages fit the manifest | Uses it unchanged. |
 | A stale lock | Fails with `lock: stale`. It changes nothing. |
-| A lock that does not parse, or a larger `format` | Fails with `lock: syntax` or `lock: format`. |
+| A lock that does not parse, a `format` the tool refuses, an unknown key or a bad entry | Fails with `lock: syntax`, `lock: format`, `lock: unknown key` or `lock: entry`, by [Reading the lock](#reading-the-lock). It changes nothing. |
+| A `[[tool]]` version that the installed `pipos` package does not name | Fails with `lock: tool`. It changes nothing. See [What the lock pins](#what-the-lock-pins). |
 | `robco update` | Resolves again and writes a new lock. See below. |
 
 A build never moves a pin. Only `robco update` does, and only when a person runs it.
@@ -252,20 +414,33 @@ A build never moves a pin. Only `robco update` does, and only when a person runs
 
 A lock that parses is stale when one of these holds for the current manifest:
 
-1. A `[[package]]` entry no longer fits, by the rules of [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules). A change to `target.abi` or `target.platform` does this.
+1. A `[[package]]` entry no longer fits a requirement on it: the manifest's, by rules 1 to 3 of [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules), or a `requires` entry of another listed package, by rules 2 and 3. A change to `target.abi` or `target.platform` does this, and so does a listed package that requires a higher ABI of another. [Resolving requires](./SDK_PACKAGE.md#resolving-requires) has the requirements. The lock has no `abi` key, so the ABI of a locked `pipos` package is the first two parts of its `version`, which its `sdk.json` must equal.
 2. The manifest needs a package that the lock does not list: `pipos` for `target.platform = "pipos"`, and each package that a listed package `requires`.
 3. The lock lists a package that the manifest does not need.
 4. The lock does not list both tools, `gcc` and `qemu`, or a `[[tool]]` entry has no archive for the running host.
 
-The tool checks for a stale lock before it installs, downloads or compiles anything. It fails with `lock: stale: <detail>`. The detail names the first package or tool that fails, in the order of the list above and then by `name`, and the message ends with `run robco update`. The tool writes no `build/NAME.HTP`, deletes an older one, and leaves `robco.lock` as it is.
+The tool checks for a stale lock before it installs, downloads or compiles anything. It fails with `lock: stale: <detail>`. The detail names the first package or tool that fails, in the order of the list above and then by `name`, and the message ends with `run robco update`. The tool writes no `build/NAME.HTP` and leaves `robco.lock` as it is. An older tape is already gone: the command deleted it right after it read the manifest.
 
-A lock that is not stale but names a package version or a tool archive that the index no longer lists still pins it. The tool installs it from `<cache>` if it is there. If it must download it and the index has no entry with that name, version and hash, it fails with `lock: missing` and names it.
+The check needs the manifest and the lock only, with one exception: what a listed package `requires` is in that package's `sdk.json`. The tool checks the parts of items 1, 2 and 3 that depend on `requires` right after it has installed the listed packages, before it installs a tool or compiles, and fails the same way. Rule 4 of the fit rules, the formats, is not a matter of a stale lock: a locked package that uses a format the tool does not know fails with `package: format` when the tool reads its `sdk.json`.
+
+A `[[tool]]` entry that the project does not need cannot exist in a lock that passes [Reading the lock](#reading-the-lock): the lock holds no tool but `gcc` and `qemu`, each at most once, and the project needs both. A `[[tool]]` at a version that the locked package does not name fails with `lock: tool`, by [What the lock pins](#what-the-lock-pins).
+
+A lock that is not stale but names a package version or a tool archive that the index no longer lists still pins it. The tool uses it from `<cache>` if it is there. If it must download it and the index has no entry with that name, version and hash, it fails with `lock: missing` and names it. For a tool, the hash is the one of the running host.
 
 ### robco update
 
-`robco update [--index LOCATION]` resolves every package and tool again from the index, as if no lock existed. It picks the newest package that fits, by [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules), installs and checks it, then writes a new `robco.lock` in place of the old one. It builds nothing and touches nothing under `build/`. It needs `--index`, as [Where the index is](./SDK_PACKAGE.md#where-the-index-is) says.
+`robco update --index LOCATION` resolves every package and tool again from the index, as if no lock existed. It picks the packages by [Resolving requires](./SDK_PACKAGE.md#resolving-requires), installs and checks it, then writes a new `robco.lock` in place of the old one. It needs `--index`, as [Where the index is](./SDK_PACKAGE.md#where-the-index-is) says.
 
-`robco update` fails with the code of the first error it meets and then leaves the old `robco.lock` as it is. It writes the new lock to a temporary file in the project root and renames it over the old one, so a failure never leaves half a lock.
+Its steps and their order are in [The steps of update, build, run and test](./STUDIO_CLI.md#the-steps-of-update-build-run-and-test). What sets it apart:
+
+| Rule | Detail |
+|---|---|
+| The old lock | The command does not read it. A lock that is stale, does not parse, holds a bad entry or cannot be read is replaced like any other. So `robco update` is the way out of every `lock:` error. |
+| What it installs | Each package of the resolution that the cache lacks. No tool: the next `robco build` installs `gcc`, and the next `robco run` or `robco test` installs `qemu`. |
+| What it needs of the tools | The index lists both at the version the package names, with an archive for the running host. Otherwise the resolution fails with `sdk: no tool` or `index: host`. |
+| What it leaves alone | `robco.toml`, and everything under `build/`. It builds nothing. |
+
+`robco update` fails with the code of the first error it meets and then leaves the old `robco.lock` as it is. It writes the new lock to a temporary file in the project root and renames it over the old one, so a failure never leaves half a lock. The first build of a project writes its lock the same way.
 
 ## Examples
 
@@ -291,7 +466,31 @@ backend = "robco"
 sources = ["src/*.c"]
 ```
 
-The lock file that a build of it writes. The hashes are placeholders: no package is built yet.
+Culvert, a project that also builds with a Makefile. Its folder, `holotapes/culvert` in Deitrix, holds `Makefile`, `robco.toml`, `icon.pbm`, four `.c` files and their headers. The Makefile says `SRCS := main.c game.c logic.c draw.c` today. It will also say `ABI := 1.4`, the ABI its tape carries today. By [A project that also builds with a Makefile](#a-project-that-also-builds-with-a-makefile), the manifest holds:
+
+```toml
+format = 1
+
+[project]
+name = "CULVERT"
+title = "Culvert"
+version = "1.0.0"
+kind = "holotape"
+subtype = "game"
+icon = "icon.pbm"
+
+[target]
+platform = "pipos"
+abi = "1.4"
+
+[build]
+backend = "robco"
+sources = ["main.c", "game.c", "logic.c", "draw.c"]
+```
+
+Deitrix adds two things for this: the line `ABI := 1.4` in `holotapes/culvert/Makefile`, and `holotapes/culvert/robco.toml` with the content above. It changes no source file and no order. A later change of the ABI changes both files in one commit.
+
+The lock file that a build of the first example writes. The hashes are placeholders: no package is built yet.
 
 ```toml
 format = 1
@@ -304,7 +503,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000001"
 
 [[tool]]
 name = "gcc"
-version = "15.2.1"
+version = "15.2.1-1.1"
 
 [tool.archives]
 linux-arm64 = "0000000000000000000000000000000000000000000000000000000000000002"
@@ -322,7 +521,3 @@ linux-x64 = "0000000000000000000000000000000000000000000000000000000000000007"
 macos-arm64 = "0000000000000000000000000000000000000000000000000000000000000008"
 windows-x64 = "0000000000000000000000000000000000000000000000000000000000000009"
 ```
-
-## Open points
-
-Only one point is still open, the choice of tool versions when the tool resolves. See [Open points](./SDK_PACKAGE.md#open-points).
