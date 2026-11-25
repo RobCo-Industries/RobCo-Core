@@ -617,13 +617,14 @@ def test_v23_spi0_byte_rate(machine, tmp_path):
               keepalive=False, timeout=30) as vm:
         # Done means the PC sits in the completion loop at 0x8038 with R02 at
         # zero. R02 alone is also zero before the stub reaches the image.
-        r = vm.qmp.registers()
+        # raspi3b starts in its AArch64 shim, with no R15 in the dump.
+        r = vm.qmp.registers_a32()
         while not (r["R15"] == 0x8038 and r["R02"] == 0):
             if time.monotonic() - start > 20:
                 pytest.fail(f"{machine}: SPI loop not done after 20 s: "
                             f"PC={r['R15']:#x} R02={r['R02']:#x}")
             time.sleep(0.05)
-            r = vm.qmp.registers()
+            r = vm.qmp.registers_a32()
     wall = time.monotonic() - start
     print(f"{machine}: 2 MiB through SPI0 in {wall:.2f} s")
     assert wall < 10, wall

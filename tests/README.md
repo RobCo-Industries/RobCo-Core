@@ -130,6 +130,10 @@ temporary directory outside the repository and builds it there.
   the image with r0 = 0, r1 = machine id, r2 = 0x100. `a64_shim.py`
   holds the AArch64 words that drop raspi3b to AArch32 first. All four
   raspi3b cores run them, so the stub parks cores 1 to 3 as on raspi2b.
+  Until the shim ends, `info registers` on raspi3b shows `PC` and `X00`
+  to `X30`, with no `R15`. To read `R15` or `PSR` right after start,
+  call `registers_a32()`, not `registers()`. It waits up to 5 s for
+  AArch32 state and fails with the last dump if CPU0 never gets there.
 - `host/`: host unit tests, `rc_test.h`, the file-backed block device
   `blk_file.c` and `fs_tool.c`.
 - `target/`: tests that boot real images. `--board NAME` picks boards
