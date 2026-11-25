@@ -148,6 +148,7 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 | GPIO input | An undriven pin reads 0 and pulls change nothing (V12, V19). There are no input lines, edge and level events are not modelled and no GPIO interrupt comes. A qtest write to GPSET0/1 or GPCLR0/1 sets the level of any pin (V19). | `test_input_gpio.py` drives buttons and the dial through `pigpio.py` on every board, and checks the stuck-line guard with every line low. Real contacts, pulls and edges run on the hardware checklist. |
 | PWM audio | Not modelled. Reading PWM data-aborts on `raspi0` and `raspi1ap` (V7). On `raspi2b` and `raspi3b` writes are dropped. | Host tests for the notes, the sequencer and the PCM engine. The audio driver probes PWM and falls back to the trace backend, which the target test checks. PCM on the trace backend runs the real timer channel 3 IRQ. Sound runs on the hardware checklist. |
 | Real SPI signalling | QEMU ignores the rate, the mode and chip select. | `test_spi.py` checks the data path with the flash model. Rates, modes and chip select levels run on the hardware checklist. |
+| SD card in SPI mode | No SD card model attaches to SPI0 (V20). SPI0 has no chip select lines (V21). | A host-side card model tests the driver. See [SD card over SPI](#sd-card-over-spi). |
 | Watchdog countdown | `bcm2835_powermgt` resets at the PM_RSTC write and does not count PM_WDOG. A reset clears PM_RSTS to `0x1000`. | `tests/host/test_wdog.c` checks every register write. `test_wdog.py` checks that an armed watchdog resets the board and skips the kick, stop, reboot and halt cases by name. They run on the hardware checklist. |
 | SPI TFT | No model | The display interface is the same for HDMI and TFT, so HDMI goldens cover drawing. The TFT runs on the hardware checklist. |
 | I2C timing | Every transfer finishes at once. No clock stretching. | The bus rate, timeouts and clock stretching run on the hardware checklist. |
@@ -205,6 +206,32 @@ A bad run can still change the guest's state. A dial turn tried again may have l
 
 `tests/target/conftest.py` counts host timing skips per board in each session. A skip counts against its test's board parameter. Tests with no board share one bucket. Each board allows 1 skip. A session fails when any one board goes over, even if the other boards skip none. Its summary lists each counted skip with its board and numbers, and names the boards over the limit. Other skips, such as a board QEMU lacks, do not count. On a loaded machine, `--timing-skips-max=N` allows N skips per board. `make test-target` passes `-rs`, so the log shows every skip reason. Project tests get this rule only by copying the target conftest, since `harness.plugin` does not include it.
 
+### SD card over SPI
+
+The holotape slot puts a second SD card on SPI0 with chip select 1, next to the display on chip select 0. QEMU 10.1.2 cannot run that setup.
+
+- No card attaches to SPI0 (V20). `-device ssi-sd,bus=spi` fails with "expects a pluggable device type". `sd-card-spi` exists but lands on the EMMC SD bus.
+- SPI0 drives no chip select lines (V21). Two devices on bus `spi` both answer every byte, and the controller ORs their replies. A flash never sees a CS edge, so only its first command works.
+- A read-only image is refused as an SD card (V22). Write protect cannot be tested with a read-only image.
+- The EMMC card can be pulled and put back at run time with QMP `eject` and `blockdev-change-medium` (V22). The present state register follows. SPI0 has no card detect, and GPIO input cannot be injected (V12).
+- A guest moves 2 MiB through the SPI0 FIFO in about 2 s (V23). A block by block read of 2 MiB adds a few percent of command, token and CRC bytes.
+
+```mermaid
+flowchart LR
+    D[SD over SPI driver] --> T{Where}
+    T -->|QEMU| Q[SPI0 FIFO and register use with the flash model]
+    T -->|Host model| H[Commands, CRC, tokens, busy, errors, removal]
+    T -->|Hardware| W[CS lines, rate, 74 clocks, DO release, power, card detect]
+```
+
+| Where | What it covers |
+|---|---|
+| QEMU | SPI0 register use, FIFO polling and the byte path, with `w25q32` on bus `spi`. The EMMC volume and its removal through QMP. |
+| Host model | A C card model behind the SPI transfer call. It answers CMD0, CMD8, ACMD41, CMD58, CMD17 and CMD24 with R1 and R7 replies, start tokens, data CRC and busy. It must also inject a pulled card, timeouts, CRC errors and a write protected card. |
+| Hardware | Chip select 0 and 1 sharing the bus, the card releasing DO when deselected, the 74 clock start at 400 kHz, the rate switch, power and voltage, card detect and real removal. |
+
+QEMU gives no data on CRC checks, CMD59, write busy or card timing, because no card model reaches SPI0.
+
 ## Canary suite
 
 `tests/canary/` checks the QEMU behaviour the harness relies on. Run it after any QEMU upgrade. A canary failure means QEMU changed, not our code.
@@ -228,6 +255,10 @@ A bad run can still change the guest's state. A dial turn tried again may have l
 | V17 | QEMU's `pca9554` model answers on I2C bus 1 with the data sheet registers. qtest `set_irq_in` drives its input pins. | The GPIO expander target test |
 | V18 | `raspi3b` resets cores 1 to 3 at `0x0` in AArch64 EL3. With A32 code there they spin on the EL3 vector at `0x200`. With `boot()` they sit in the stub's AArch32 `wfi` loop. | Parking the spare `raspi3b` cores |
 | V19 | The GPIO device has no input lines. A qtest write to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV0/1 bit, input pins included, in both banks. A write to GPLEV changes nothing. A pull-up leaves an undriven pin at 0. The event detect registers read 0 and GPU IRQ 49 never goes pending. An output pin reads back its level. With the guest running, one write takes under 5 ms at the median and guest timer time follows host time within 5 %. | `pigpio.py` and the GPIO button and dial target tests |
+| V20 | No SD card can sit on SPI0. `ssi-sd` is not user creatable, and `sd-card-spi` plugs only into an SD bus. | Testing an SD driver in SPI mode on a host model, not in QEMU |
+| V21 | SPI0 drives no chip select lines. Every device on bus `spi` gets every byte, whatever the CS field says, and the replies are ORed. Each device needs its own `cs=` index. | Never putting two devices on the bus in one test |
+| V22 | A read-only drive is refused as an SD card. QMP `eject` and `blockdev-change-medium` work on the `sd0` drive, and EMMC present state bits 16 and 18 follow them. | Card removal tests on the EMMC path |
+| V23 | Guest code moves 2 MiB through the SPI0 FIFO, one byte at a time, in about 2 s on every board | Test time budgets for SPI drivers |
 
 V4 and V8 are not checked.
 

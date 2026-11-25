@@ -94,6 +94,98 @@ On this board, with this SDHC card, this run confirms:
 
 This run does not show: any write, since `w`, `v` and `s` were not sent; an SDSC card; the no-card case; retries on an old card; FAT through RobCo-Core; whether the block CRCs match a read on a computer; the GPIO function of pins 34 to 39 and 48 to 53 before and after `sd_init()`; any other board.
 
+### Zero W 1.1, `examples/umode`, 2026-11-25
+
+Same board, card, adapter and firmware tag `1.20260915` as the hello run. No DTB on the card. The image is `examples/umode`, default variant, built from RobCo-Core `4249632`, as `UMODE.IMG`, with `config.txt` from `tools/mkbootdir.sh`. The variants `build/kfault`, `build/ksvc` and `build/kmmu` were not run.
+
+The serial output has 164 lines. It starts with `@RC stage=umode ev=boot canary_addr=0x0000fc50`. It runs two passes of `ev=task` lines, then prints `@RC stage=umode ev=done`.
+
+- With `mmu=0`, 18 tasks: `return`, `exit`, `regs`, `badptr`, `priv`, `undef`, `rdkern`, `rdperiph`, `spin`, `svcspin`, `thumb`, `init`, `psr`, `cpsid`, `stubsvc`, `killexit`, `afterkill` and `killfirst`.
+- Then `@RC stage=umode ev=mmu on=1`.
+- With `mmu=1`, 24 tasks: the same 18 and the six protection cases `wrkern`, `wrro`, `jump`, `jumpkern`, `stack` and `peek`.
+
+`run_pass(0)` skips the cases marked `need_mmu`, because without the MMU nothing is protected. The `mmu=0` lines show it: `rdkern` returned `1526644958` and `rdperiph` returned `1757775`, where the `mmu=1` pass faulted. The case `thumb2` ran in neither pass. It needs Thumb-2, which ARM1176 does not have, so both passes skip it. The nested tasks `wrshared`, `rdunmap`, `pabt` and `badmap` also ran only with `mmu=1`. `tasks=42` counts the `ev=task` lines only, 18 plus 24. The run ends with:
+
+```
+@RC stage=umode ev=done tasks=42 ticks=448 canary=ok
+```
+
+Every one of the 116 lines with a `canary` field says `canary=ok`. No `ev=exception` and no `ev=error` line came.
+
+The fault lines with the MMU on:
+
+```
+@RC stage=umode ev=task name=rdkern mmu=1 reason=fault code=0 type=data_abort pc=0x00400180 thumb=0 addr=0x0000fc50 status=0x0000000d ticks=244 canary=ok
+@RC stage=umode ev=task name=wrkern mmu=1 reason=fault code=0 type=data_abort pc=0x004001c0 thumb=0 addr=0x0000fc50 status=0x0000080d ticks=245 canary=ok
+@RC stage=umode ev=task name=rdperiph mmu=1 reason=fault code=0 type=data_abort pc=0x00400200 thumb=0 addr=0x20003004 status=0x0000000d ticks=247 canary=ok
+@RC stage=umode ev=task name=wrro mmu=1 reason=fault code=0 type=data_abort pc=0x00400240 thumb=0 addr=0x00400800 status=0x0000080d ticks=248 canary=ok
+@RC stage=umode ev=task name=jump mmu=1 reason=fault code=0 type=prefetch_abort pc=0xe0000000 thumb=0 addr=0xe0000000 status=0x00000005 ticks=249 canary=ok
+@RC stage=umode ev=task name=jumpkern mmu=1 reason=fault code=0 type=prefetch_abort pc=0x00008000 thumb=0 addr=0x00008000 status=0x0000000d ticks=251 canary=ok
+@RC stage=umode ev=task name=stack mmu=1 reason=fault code=0 type=data_abort pc=0x004002c0 thumb=0 addr=0x00fffffc status=0x0000080d ticks=252 canary=ok
+@RC stage=umode ev=task name=peek mmu=1 reason=fault code=0 type=data_abort pc=0x00400180 thumb=0 addr=0x01000000 status=0x0000000d ticks=357 canary=ok
+```
+
+The lines for privileged and ignored instructions with `mmu=1`. The `mmu=0` lines differ only in `mmu` and `ticks`:
+
+```
+@RC stage=umode ev=task name=priv mmu=1 reason=fault code=0 type=undef pc=0x00400100 thumb=0 addr=0x00000000 status=0x00000000 ticks=241 canary=ok
+@RC stage=umode ev=task name=psr mmu=1 reason=exit code=-133234096 type=none pc=0x00400474 thumb=0 addr=0x00000000 status=0x00000000 ticks=318 canary=ok
+@RC stage=umode ev=task name=cpsid mmu=1 reason=killed code=1 type=none pc=0x00400488 thumb=0 addr=0x00000000 status=0x00000000 ticks=350 canary=ok
+```
+
+#### How to read the status
+
+`status` is the DFSR for a data abort and the IFSR for a prefetch abort. The library sets SCTLR.XP on ARM1176, so the CPU uses the ARMv6 short-descriptor format. Bits [10] and [3:0] give the fault, as `src/arch/exceptions.c` and the [memory guide](./guide/api/memory.md#mmu-mmuh) list it: `0x5` translation fault on a section, `0xd` permission fault on a section, `0x9` or `0xb` a domain fault. The library maps only 1 MiB sections in domain 0, and DACR sets domain 0 to client. So the AP bits are checked and no domain fault is expected. Bit 11 of the DFSR is set by the CPU when the abort came from a write. The IFSR has no such bit.
+
+- `0x0000000d`: permission fault, section, read. On `jumpkern` it is a permission fault on an instruction fetch.
+- `0x0000080d`: permission fault, section, write. Bit 11 is set.
+- `0x00000005`: translation fault, section. Nothing maps that address.
+
+#### Each task
+
+Each task runs one short program from `examples/umode/user/prog.S`, at `0x00400000` plus 0x40 times its slot. `wrkern`, `wrro`, `jump`, `jumpkern`, `stack` and `peek` ran only with `mmu=1`. The other rows ran in both passes. With `mmu=0`, `rdkern` and `rdperiph` returned a value and did not fault.
+
+| Task | What it does | What the line shows |
+|---|---|---|
+| `rdkern` | `ldr r0, [r0]` with r0 the kernel's canary address | The kernel's privileged-only RAM refuses a USR read |
+| `wrkern` | `str r1, [r0]` to the same address | It refuses a USR write. The canary kept its value. |
+| `rdperiph` | `ldr r0, [r0]` from the system timer, `0x20003004` | The privileged-only device section refuses a USR read |
+| `wrro` | `str r1, [r0]` to `0x00400800`, in its own read-only code region | AP `110`, read-only for both, refuses the write. This needs the APX bit, so XP is on. |
+| `jump` | `bx r0` to `0xe0000000` | A prefetch abort at the target, and the IFAR gives the jump address |
+| `jumpkern` | The same `bx r0` to `0x8000`, the kernel image | A prefetch abort at the kernel's first instruction. See below. |
+| `stack` | Pushes until `sp` leaves its megabyte at `0x01000000` | The first push below it writes `0x00fffffc`, in privileged-only RAM, and faults |
+| `peek` | `ldr r0, [r0]` from `0x01000000`, the data region of the earlier tasks, which it does not list | The region is privileged-only again after the earlier task ended |
+| `priv` | `mrc p15` read of SCTLR | Undefined instruction in USR mode |
+| `psr` | `cpsid i`, `cpsie f`, `msr cpsr_c, #0xdf`, then a call whose handler writes `0xffffffff` to the saved status | Bits [8:0] of the exit code are `0x50`: USR, ARM, IRQs on, FIQ masked. The three instructions changed nothing, and the handler's write was sanitised. |
+| `cpsid` | `cpsid if`, `msr cpsr_c, #0xd0`, then spins | The watchdog still kills it: IRQs stayed on |
+
+#### Against the checklist and QEMU
+
+The "User mode" row asked for `0xd` or `0x80d` on permission faults and `0x5` on the unmapped jump. Each line gives that, with bit 11 set on the three writes and clear on the reads. `mrc p15` traps, `cpsid` and `msr cpsr_c` are ignored, and the IFAR gives `0xe0000000`.
+
+`tests/target/test_umode.py` expects, for `raspi0`, the same task order, results, `pc` and `addr` values, fault status bits [10] and [3:0], bit 11, `ev=errors`, `ev=refused_after`, `ev=stale`, `ev=premapped`, `ev=usermap`, the nested tasks and `ev=done tasks=42`. All 164 lines meet those checks except one.
+
+The one difference: `jumpkern`. On real ARM1176 the USR fetch from the kernel image is refused with a prefetch abort at `0x8000`, status `0xd`. QEMU 10.1 on `raspi0` lets the task fetch, runs the boot code in USR mode, and stops at the first privileged instruction with `type=undef`.
+
+Some fields differ from run to run or from build to build. They are not differences in behaviour:
+
+- `ticks` on every line, and `ticks` on `ev=done`. The test checks only that they rise and pass the watchdog limits.
+- `code` of `rdperiph` with `mmu=0`, `1757775`. It is the system timer value at that moment.
+- `pc` of a killed task: `spin`, `svcspin`, `cpsid`, `killfirst` and the inner `spin` and `kill`. It is where the tick found the task. The test checks only the range of its slot.
+- `canary_addr` and the `addr` of `rdkern`, `wrkern` and `ev=refused_after`. They depend on the build.
+
+The test checks only bits [8:0] of the `psr` exit code. This run did not compare its upper bits, `0xf80f0200`, with QEMU. The raw status values were not compared with QEMU either, only the bits the test checks.
+
+On this board, this run confirms:
+
+- Real ARM1176 enforces the section permissions the library sets with XP on: privileged-only RAM, privileged-only device memory, and read-only for both.
+- The fault status values are the ones the checklist expected, with bit 11 on writes.
+- A USR jump into the privileged-only kernel image is a prefetch abort at the target, status `0xd`. A task cannot fetch kernel code on this CPU.
+- `mrc p15` traps as undefined in USR mode, and `cpsid`, `cpsie` and `msr cpsr_c` are ignored.
+- The tasks, faults, kills and nested tasks leave kernel memory unchanged, and the tick keeps running across all 42 tasks: 18 with the MMU off and 24 with it on.
+
+This run does not show: the variants `build/kfault`, `build/ksvc` and `build/kmmu`; the `examples/mmu` variants `build/fault_ro` and `build/fault_unmapped`; the UART echo after the run, since no input was sent; the `thumb2` case, skipped because ARM1176 has no Thumb-2; any protection with the MMU off, since that pass protects nothing; any Cortex-A7 or A53 board; any other commit; a second run.
+
 ## Serial adapter only
 
 | Component | Boards | Run | Look for |
@@ -105,8 +197,8 @@ This run does not show: any write, since `w`, `v` and `s` were not sent; an SDSC
 | `mmu_disable()` | All | `examples/mmu` | `ev=mmu_off` with SCTLR M, C and I clear, then `ev=mbox phase=after` |
 | SMP bit | Pi 2, Pi 3, Zero 2 W | `examples/mmu` | `smp=1` on the `ev=mmu` line. `0` means the firmware locked the register: check data cache coherence again. |
 | MMU faults, XP bit | Pi Zero or Pi 1 | `examples/mmu` variants `build/fault_ro` and `build/fault_unmapped` | A data abort with `dfar=0x01c00000`, status `0xd` and bit 11 set, then `dfar=0x60000000`, status `0x5` |
-| User mode | All | `examples/umode` | One `ev=task` line per case and `ev=done` with `canary=ok`. QEMU enforces the MMU permissions, so the protection itself is tested. Check here what QEMU cannot prove: the real fault status values per CPU (`status=` on the `rdkern`, `wrkern`, `rdperiph`, `wrro`, `jump` and `stack` lines, expected `0xd` or `0x80d` for permission faults and `0x5` for the unmapped jump), that `mrc p15` and the undefined instruction trap in USR mode on the real cores, that `cpsid` and `msr cpsr_c` are ignored in USR mode on real silicon, and that the IFAR read gives the jump address on ARM1176 |
-| User-mode jump into kernel code | Pi Zero or Pi 1 | `examples/umode` | The `jumpkern` line: `type=prefetch_abort pc=0x00008000 addr=0x00008000 status=0x0000000d`. QEMU runs the kernel code instead and stops at `type=undef pc=0x00008078`. If real silicon does that too, the task can fetch kernel code on ARM1176. |
+| User mode | All | `examples/umode` | One `ev=task` line per case and `ev=done` with `canary=ok`. QEMU enforces the MMU permissions, so the protection itself is tested. Check here what QEMU cannot prove: the real fault status values per CPU (`status=` on the `rdkern`, `wrkern`, `rdperiph`, `wrro`, `jump` and `stack` lines, expected `0xd` or `0x80d` for permission faults and `0x5` for the unmapped jump), that `mrc p15` and the undefined instruction trap in USR mode on the real cores, that `cpsid` and `msr cpsr_c` are ignored in USR mode on real silicon, and that the IFAR read gives the jump address on ARM1176. Done on a Zero W 1.1 only, default variant, on 2026-11-25: see [results](#zero-w-11-examplesumode-2026-11-25). Open on every other board. |
+| User-mode jump into kernel code | Pi Zero or Pi 1 | `examples/umode` | The `jumpkern` line: `type=prefetch_abort pc=0x00008000 addr=0x00008000 status=0x0000000d`. QEMU runs the kernel code instead and stops at `type=undef pc=0x00008078`. Done on a Zero W 1.1 on 2026-11-25: the board gave the prefetch abort line, so real ARM1176 refuses the fetch. See [results](#zero-w-11-examplesumode-2026-11-25). Open on a Pi 1. |
 | User-mode kernel faults | All | `examples/umode` variants `build/kfault` and `build/ksvc` | One `ev=exception` line, `type=undef` then `type=svc`, with an SVC-mode `spsr` |
 | Audio probe | All | `examples/audio` | `ev=backend name=pwm probe_pwm=ok err=0` and the expected pins |
 | Mini UART script channel | Pi 3 or Zero 2 W first | `examples/input`, with the adapter on GPIO 14 and 15 at ALT5 and `core_freq` fixed in `config.txt` | `ready`, then `ok` answers at 115200 baud |

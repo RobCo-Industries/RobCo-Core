@@ -491,3 +491,139 @@ def test_v19_gpio_level_while_guest_runs(binary, machine, raw_image):
         time.sleep(0.5)
         c1, t1 = q.readl(clo), time.perf_counter()
         assert abs((c1 - c0) / ((t1 - t0) * 1e6) - 1) < 0.05
+
+# V20 to V23: what QEMU offers a future SD card driver in SPI mode on SPI0.
+SPI_MACHINES = [(ARM, m) for m in ARM_MACHINES] + [(A64, "raspi3b")]
+SPI_IDS = [m for _, m in SPI_MACHINES]
+
+
+def periph(machine):
+    return BASE.get(machine, 0x3F000000)
+
+
+@pytest.mark.parametrize("binary,machine", SPI_MACHINES, ids=SPI_IDS)
+def test_v20_no_sd_card_on_spi0(binary, machine, tmp_path):
+    """V20: ssi-sd cannot be created, and sd-card-spi only plugs into an SD bus, not SPI0."""
+    need(binary, machine)
+    rc, err = Qemu.run_to_exit(binary, machine, ["-S", "-device", "ssi-sd,bus=spi"])
+    assert rc != 0, err
+    assert "pluggable device type" in err, err
+    img = tmp_path / "card.img"
+    img.write_bytes(bytes(1 << 20))
+    rc, err = Qemu.run_to_exit(binary, machine, [
+        "-S", "-drive", f"if=none,id=hd,file={img},format=raw",
+        "-device", "sd-card-spi,drive=hd,bus=spi"])
+    assert rc != 0, err
+    args = ["-S", "-drive", f"if=none,id=hd,file={img},format=raw",
+            "-device", "sd-card-spi,drive=hd,id=c1"]
+    with Qemu(binary, machine, args) as q:
+        tree = q.hmp("info qtree")
+    spi = tree[tree.index("dev: bcm2835-spi"):]
+    spi = spi[:spi.index("\n  dev: ")]
+    assert "bus: spi" in spi and "dev: " not in spi.split("bus: spi", 1)[1], spi
+    sdhci = tree[tree.index("dev: generic-sdhci"):]
+    assert 'dev: sd-card-spi, id "c1"' in sdhci, sdhci
+
+
+def spi_xfer(q, base, csbits, data):
+    q.writel(base, 0x30 | csbits)
+    q.writel(base, 0x80 | csbits)
+    out = []
+    for b in data:
+        q.writel(base + 4, b)
+        out.append(q.readl(base + 4))
+    status = q.readl(base)
+    q.writel(base, 0x30 | csbits)
+    return out, status
+
+
+@pytest.mark.parametrize("binary,machine", SPI_MACHINES, ids=SPI_IDS)
+def test_v21_spi0_ignores_chip_select(binary, machine):
+    """V21: SPI0 drives no CS lines. Every device on "spi" gets every byte, replies OR."""
+    need(binary, machine)
+    rc, err = Qemu.run_to_exit(binary, machine, ["-S", "-device", "w25q32,bus=spi",
+                                                 "-device", "m25p80,bus=spi"])
+    assert rc != 0 and "CS index '0x0' in use" in err, err
+    base = periph(machine) + 0x204000
+    args = ["-device", "w25q32,bus=spi,cs=0", "-device", "m25p80,bus=spi,cs=1"]
+    for cs in (0, 1, 2):
+        with Qemu(binary, machine, args, qtest=True) as q:
+            out, status = spi_xfer(q, base, cs, [0x9F, 0, 0, 0])
+            assert status & 3 == cs  # the CS field is stored
+            # JEDEC IDs EF 40 16 (w25q32) and 20 20 14 (m25p80), ORed.
+            assert out == [0, 0xEF, 0x60, 0x16], (cs, [hex(b) for b in out])
+            # No CS edge between commands: the flashes never see a new one.
+            assert spi_xfer(q, base, cs, [0x9F, 0, 0, 0])[0] == [0, 0, 0, 0]
+
+
+@pytest.mark.parametrize("binary,machine", SPI_MACHINES, ids=SPI_IDS)
+def test_v22_sd_read_only_and_eject(binary, machine, tmp_path):
+    """V22: a read-only drive is refused as an SD card. QMP eject and change-medium work."""
+    need(binary, machine)
+    img = tmp_path / "card.img"
+    img.write_bytes(bytes(1 << 20))
+    for args in (["-drive", f"if=sd,file={img},format=raw,readonly=on"],
+                 ["-drive", f"if=none,id=hd,file={img},format=raw,readonly=on",
+                  "-device", "sd-card-spi,drive=hd"]):
+        rc, err = Qemu.run_to_exit(binary, machine, ["-S"] + args)
+        assert rc != 0 and "Cannot use read-only drive as SD card" in err, err
+    present = periph(machine) + 0x300024  # EMMC present state
+    with Qemu(binary, machine, ["-drive", f"if=sd,file={img},format=raw"], qtest=True) as q:
+        drive = [b for b in q.execute("query-block") if b["device"] == "sd0"][0]
+        assert drive["removable"] and "inserted" in drive
+        assert q.readl(present) & 0x50000 == 0x50000  # inserted, stable
+        q.execute("eject", id=drive["qdev"], force=True)
+        assert q.readl(present) & 0x50000 == 0
+        q.execute("blockdev-change-medium", id=drive["qdev"], filename=str(img), format="raw")
+        assert q.readl(present) & 0x50000 == 0x50000
+
+
+SPI_READ_LOOP = """.global _start
+_start: ldr r0, =BASE
+ mov r1, #0x30
+ str r1, [r0]
+ mov r1, #0x80
+ str r1, [r0]
+ ldr r2, =COUNT
+ mov r3, #0
+1: str r3, [r0, #4]
+2: ldr r1, [r0]
+ tst r1, #0x20000
+ beq 2b
+ ldr r1, [r0, #4]
+ subs r2, r2, #1
+ bne 1b
+3: b 3b
+"""
+
+
+@pytest.mark.parametrize("machine", ["raspi0", "raspi1ap", "raspi2b", "raspi3b"])
+def test_v23_spi0_byte_rate(machine, tmp_path):
+    """V23: guest code moves 2 MiB through the SPI0 FIFO, one byte at a time, in under 10 s."""
+    need(A64 if machine == "raspi3b" else ARM, machine)
+    gcc = shutil.which("arm-none-eabi-gcc")
+    objcopy = shutil.which("arm-none-eabi-objcopy")
+    if gcc is None or objcopy is None:
+        pytest.skip("arm-none-eabi-gcc not installed")
+    from harness.boot import boot
+    src, elf, img = tmp_path / "k.S", tmp_path / "k.elf", tmp_path / "kernel.img"
+    src.write_text(SPI_READ_LOOP.replace("BASE", hex(periph(machine) + 0x204000))
+                   .replace("COUNT", str(2 << 20)))
+    subprocess.run([gcc, "-nostdlib", "-Wl,-Ttext=0x8000", "-Wl,--build-id=none",
+                    "-o", str(elf), str(src)], check=True)
+    subprocess.run([objcopy, "-O", "binary", str(elf), str(img)], check=True)
+    start = time.monotonic()
+    with boot(str(img), machine, extra_args=["-device", "w25q32,bus=spi"],
+              keepalive=False, timeout=30) as vm:
+        # Done means the PC sits in the completion loop at 0x8038 with R02 at
+        # zero. R02 alone is also zero before the stub reaches the image.
+        r = vm.qmp.registers()
+        while not (r["R15"] == 0x8038 and r["R02"] == 0):
+            if time.monotonic() - start > 20:
+                pytest.fail(f"{machine}: SPI loop not done after 20 s: "
+                            f"PC={r['R15']:#x} R02={r['R02']:#x}")
+            time.sleep(0.05)
+            r = vm.qmp.registers()
+    wall = time.monotonic() - start
+    print(f"{machine}: 2 MiB through SPI0 in {wall:.2f} s")
+    assert wall < 10, wall
