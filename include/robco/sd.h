@@ -22,6 +22,7 @@
 #define SD_ERR_OLD      (-18)   /* version 1 SD or MMC card: not supported over SPI */
 #define SD_ERR_AGAIN    (-19)   /* holotape slot: card not settled or off time not over */
 #define SD_ERR_BUS      (-20)   /* holotape slot: SPI0 or GPIO failed, or bad config */
+#define SD_ERR_SLOW     (-21)   /* SPI stepped init: the CSD or CID token never fit in a step */
 
 /* A stepped call has more work: call it again. Positive, so `rc < 0` stays "failed". */
 #define SD_PENDING      1

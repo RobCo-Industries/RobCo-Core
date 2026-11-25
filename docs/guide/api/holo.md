@@ -94,6 +94,27 @@ A step never waits. Before `HOLO_POWER_MS` ran, or during the 1 ms pause between
 
 The bound: one step clocks at most `SDSPI_STEP_BYTES`, 64 bytes, at 400 kHz. That is about 1.3 ms of wire time. The largest step is a CMD9 or CMD10 with its data block, 31 bytes on the card model, about 0.63 ms of fake time. Card detect is read before each step and in every polled byte, so a pulled card ends the attach within one step.
 
+#### The token wait after CMD9 and CMD10
+
+After CMD9 and CMD10 the card sends some bytes of `0xFF`, then a start token, then its CSD or CID. A read cannot pause in the middle: CS goes high between two steps, and a card may drop a read whose CS rose. So the token wait lives inside one step, and each form has its own budget:
+
+| Form | Token budget | A late token |
+|---|---|---|
+| `holo_attach()`, `sdspi_card_init()` | `SDSPI_TOKEN_US`, 100 ms | `SD_ERR_CMD` |
+| `holo_attach_step()`, `sdspi_init_step()` | `SDSPI_STEP_TOKEN_BYTES`, 29 bytes, token included | The step ends cleanly and the next one sends the command again |
+
+A stepped attach sends CMD9, then CMD10, up to `SDSPI_TOKEN_TRIES` times each, 4, with `SDSPI_RETRY_US` between two tries. After the last try it returns `SD_ERR_SLOW`, with the bus and the power off. The card is not dead: its token comes later than a step can hold. A caller that accepts a stall of up to 100 ms per register calls `holo_attach()` after `HOLO_OFF_MS`. A caller that does not leaves the card unattached and reports it.
+
+The other waits of the init keep their budget in both forms:
+
+| Wait | Before steps | Blocking now | Stepped now |
+|---|---|---|---|
+| R1 after a command, Ncr | 9 bytes | 9 bytes | 9 bytes |
+| CMD0 until idle | 100 ms, 101 tries | 100 ms, 101 tries | 100 ms, 101 tries, one per step |
+| ACMD41 until ready | 1 s, 1001 tries | 1 s, 1001 tries | 1 s, 1001 tries, one per step |
+| Token after CMD9 or CMD10 | 100 ms | 100 ms | 29 bytes per try, 4 tries |
+| Busy after a command | none: the init sends no R1b command | none | none |
+
 `holo_detach()` ends a running attach. So does `holo_poll()` when it sees card detect high. A `holo_poll()` with the card still in leaves the attach alone. Either way the next step returns `BLK_ERR_NOMEDIA`.
 
 These pairs are never split across two steps:
@@ -229,6 +250,7 @@ Never call `holo_*` or the block device from an interrupt handler. A read takes 
 | `SD_ERR_CMD` | `cmd` | A command got an error R1, no R1, or a bad CSD or CID block |
 | `SD_ERR_CSD` | `csd` | Unknown CSD layout |
 | `SD_ERR_BUS` | `bus` | An SPI or GPIO call failed, or `holo_init()` did not run |
+| `SD_ERR_SLOW` | `slow` | From `holo_attach_step()` only: the CSD or CID token never fit in a step, see [the token wait](#the-token-wait-after-cmd9-and-cmd10). `holo_attach()` may still attach the card. |
 
 | Code | From a block read |
 |---|---|
@@ -262,9 +284,11 @@ Every error turns the bus and the power off and detaches. Call `holo_attach()` a
 | `SDSPI_R1_BYTES` | `9u` | Bytes polled for an R1 |
 | `SDSPI_INIT_US` | `1000000u` | ACMD41 tries until the card leaves idle |
 | `SDSPI_TOKEN_US` | `100000u` | Wait for a start token |
-| `SDSPI_RETRY_US` | `1000u` | Pause between two CMD0 or two ACMD41 tries |
-| `SDSPI_NCX_BYTES` | `16u` | Bytes polled for the CSD or CID token. Ncx is 8 at most. |
+| `SDSPI_RETRY_US` | `1000u` | Pause between two CMD0, ACMD41, CMD9 or CMD10 tries |
 | `SDSPI_STEP_BYTES` | `64u` | Bytes one init step clocks, at most |
+| `SDSPI_STEP_TOKEN_BYTES` | `29u` | Bytes a step polls for the CSD or CID token, token included: what is left of a step |
+| `SDSPI_BLOCKING_TOKEN_BYTES` | `400064u` | Byte cap of the 100 ms token wait, against a stuck clock |
+| `SDSPI_TOKEN_TRIES` | `4u` | CMD9 or CMD10 sends in the stepped init before `SD_ERR_SLOW` |
 
 ```c
 typedef struct {
@@ -286,6 +310,7 @@ typedef struct {
     int result;
     uint32_t hz;
     unsigned tries;
+    uint32_t token_bytes;
     uint64_t deadline;
     uint64_t wake_us;
 } sdspi_card_t;
@@ -308,6 +333,12 @@ uint32_t sdspi_init_wait_us(const sdspi_card_t *c);
 The same init in steps. `sdspi_init_start()` clocks nothing and returns `SD_PENDING`, or `SD_ERR_BUS` for bad arguments. Each `sdspi_init_step()` sets `SDSPI_INIT_HZ`, runs one phase and returns `SD_PENDING`, `0` when the card is ready, or `SD_ERR_*`. The last step sets `hz`. After a final result a step returns it again.
 
 The phases are the start clocks with the first CMD0, then one per command: CMD0 again until idle, CMD8, CMD59, CMD55 with ACMD41 until ready, CMD58, CMD9, CMD10 and CMD16 on SDSC. A step clocks `SDSPI_STEP_BYTES` at most and ends with CS high and 8 clocks. `sdspi_init_wait_us()` returns how long to wait before the next step: `SDSPI_RETRY_US` after a failed try, `0` otherwise. A step run sooner still runs and spends one of the tries.
+
+```c
+void sdspi_init_set_blocking(sdspi_card_t *c);
+```
+
+Called after `sdspi_init_start()`, it gives the steps the blocking token budget, 100 ms after CMD9 and CMD10. A step may then clock more than `SDSPI_STEP_BYTES`, and a late token gives `SD_ERR_CMD`, never `SD_ERR_SLOW`. `sdspi_card_init()` calls it, and so does `holo_attach()`.
 
 ```c
 int sdspi_card_read(sdspi_card_t *c, uint64_t lba, uint8_t *buf);

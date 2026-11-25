@@ -1008,6 +1008,62 @@ TEST(stepped_attach_step_bound)
     }
 }
 
+/*
+ * Late CSD and CID tokens. holo_attach() waits up to 100 ms for them, as
+ * before the stepped attach. A step holds a token after 28 bytes of 0xFF
+ * at most: later, the step retries, then fails with SD_ERR_SLOW, slot off.
+ */
+static const unsigned late_nac[] = { 0, 2, 8, 15, 16, 17, 28, 29, 40, 600 };
+
+TEST(blocking_attach_late_token)
+{
+    unsigned i;
+
+    for (i = 0; i < sizeof(late_nac) / sizeof(late_nac[0]); i++) {
+        world(SDM_SDHC, 1);
+        sd.nac = late_nac[i];
+        settle();
+        CHECK_EQ(holo_attach(), 0);
+        CHECK(holo_blkdev() != NULL);
+        CHECK_EQ(level[BUS], 0);
+        NO_VIOLATION();
+    }
+}
+
+TEST(stepped_attach_late_token)
+{
+    unsigned i;
+    int rc;
+
+    for (i = 0; i < sizeof(late_nac) / sizeof(late_nac[0]); i++) {
+        unsigned n = late_nac[i];
+        int fits = n + 1u <= SDSPI_STEP_TOKEN_BYTES;
+
+        world(SDM_SDHC, 1);
+        sd.nac = n;
+        settle();
+        stats_reset();
+        CHECK_EQ(holo_attach_start(), 0);
+        rc = drive(0, 100000u);
+        CHECK_EQ(rc, fits ? 0 : SD_ERR_SLOW);
+        CHECK_EQ(busy_steps, fits ? 10u : 8u + SDSPI_TOKEN_TRIES);
+        CHECK_EQ(sd.cmds[9], fits ? 1u : SDSPI_TOKEN_TRIES);
+        CHECK(max_bytes <= SDSPI_STEP_BYTES);
+        CHECK(max_ns <= STEP_US_MAX * 1000ull);
+        CHECK_EQ(bus_left_on, 0);
+        CHECK_EQ(holo_attach_step(), rc);
+        if (!fits) {
+            SLOT_OFF();
+            CHECK(holo_blkdev() == NULL);
+            /* The caller that accepts the stall falls back to the blocking attach. */
+            wait_ms(HOLO_OFF_MS);
+            CHECK_EQ(holo_attach(), 0);
+            CHECK(holo_blkdev() != NULL);
+        }
+        NO_VIOLATION();
+    }
+}
+
 /* The power wait is a deadline: steps before it return at once. */
 TEST(stepped_attach_power_wait_never_blocks)
 {

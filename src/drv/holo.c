@@ -55,6 +55,7 @@ enum { AT_IDLE, AT_POWER, AT_CARD };
 static int at_state;        /* AT_IDLE once a result is final */
 static int at_result;       /* what a step returns in AT_IDLE */
 static uint64_t power_at;   /* when the supply went on */
+static int at_blocking;     /* holo_attach(): the old token budget */
 
 static int cd_reads_low(void)
 {
@@ -347,6 +348,7 @@ int holo_attach_start(void)
     }
     set_power(1);
     power_at = timer_now_us();
+    at_blocking = 0;
     at_state = AT_POWER;
     at_result = SD_PENDING;
     return 0;
@@ -380,6 +382,9 @@ int holo_attach_step(void)
     }
     if (prepare(SDSPI_INIT_HZ) < 0) {
         return attach_end(SD_ERR_BUS);
+    }
+    if (at_blocking) {
+        sdspi_init_set_blocking(&card);
     }
     set_bus(1);
     rc = sdspi_init_step(&card);
@@ -419,6 +424,7 @@ int holo_attach(void)
     if (rc != 0) {
         return rc;
     }
+    at_blocking = 1;
     for (;;) {
         rc = holo_attach_step();
         if (rc != SD_PENDING) {

@@ -303,7 +303,7 @@ Use the Pip-Boy HAT with its slot fitted, or the slot's parts wired as in its sp
 | Hot removal mid-read | All | `examples/holo`, `r 0 64` repeated, pull the card during a read | `ev=read rc=nomedia` or `rc=io`, never a hang, then `ev=removed`, `pwr=0 bus=0`. Insert it again: `a` works after the debounce. Open. |
 | SDSC card | All, with a card of 2 GB or less | `examples/holo`: `a`, `i`, `r 0 1` | `type=sdsc` and the right size and data. Open. |
 | Lock tab | All | `examples/holo`: `p` with the tab on, then off | `locked=1` with the tab on, `locked=0` off, and the device stays read-only either way. Open. |
-| Stepped attach | All | `examples/holo`: insert a card, `g`, `i`, `r 0 1`, `d`, then `g` again after 100 ms | `ev=steps rc=ok`, and the same card and data as with `a`. Record `steps` and `max_us`. Expect `max_us` near 1.3 ms or less at 400 kHz, and `steps` about 10 plus the passes that wait. Open. |
+| Stepped attach | All | `examples/holo`: insert a card, `g`, `i`, `r 0 1`, `d`, then `g` again after 100 ms | `ev=steps rc=ok`, and the same card and data as with `a`. Record `steps` and `max_us`. Expect `max_us` near 1.3 ms or less at 400 kHz, and `steps` about 10 plus the passes that wait. Record each card's token delay after CMD9 and CMD10, in bytes of `0xFF`: above 28 the stepped attach gives `slow`. Open. |
 | Timing margin | All | `examples/holo` with a scope on SCLK and MISO at U4 and J1 | Setup time at 9.62 MHz. Under 10 ns, lower `hz` to 4.8 MHz. Open. |
 
 ## SPI device

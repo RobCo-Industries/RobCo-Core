@@ -208,7 +208,10 @@ static int single(const sdspi_card_t *c, unsigned idx, uint32_t arg, uint8_t *r,
     return rc;
 }
 
-/* A command followed by a data block, CID or CSD, in one transaction. */
+/*
+ * A command followed by a data block, CID or CSD, in one transaction. The
+ * token wait is the init's budget: token_bytes, and SDSPI_TOKEN_US.
+ */
 static int reg_read(const sdspi_card_t *c, unsigned idx, uint8_t *out)
 {
     int rc;
@@ -216,7 +219,7 @@ static int reg_read(const sdspi_card_t *c, unsigned idx, uint8_t *out)
     c->ops->cs(c->ops->ctx, 0);
     rc = command(c, idx, 0, NULL, 0);
     if (rc == 0) {
-        rc = data_block(c, out, 16, SDSPI_TOKEN_US, SDSPI_NCX_BYTES);
+        rc = data_block(c, out, 16, SDSPI_TOKEN_US, c->token_bytes);
     } else if (rc > 0) {
         rc = SD_ERR_CMD;
     }
@@ -325,6 +328,23 @@ static int retry(sdspi_card_t *c, int err)
     return SD_PENDING;
 }
 
+/*
+ * A CSD or CID read ended. A token later than the stepped budget ends the
+ * step cleanly; the next step sends the command again, SDSPI_TOKEN_TRIES
+ * times in all, then gives SD_ERR_SLOW. The blocking budget gets one try.
+ */
+static int reg_result(sdspi_card_t *c, int rc)
+{
+    if (rc != E_TIMEOUT || c->token_bytes > SDSPI_STEP_TOKEN_BYTES) {
+        return init_err(rc);
+    }
+    if (--c->tries == 0) {
+        return SD_ERR_SLOW;
+    }
+    c->wake_us = now(c) + RETRY_US;
+    return SD_PENDING;
+}
+
 /* The last step: the data rate, and the card is ready. */
 static int finish(sdspi_card_t *c)
 {
@@ -428,25 +448,27 @@ static int run_phase(sdspi_card_t *c)
         }
         in->ocr = ocr;
         in->type = (ocr & OCR_CCS) ? SD_TYPE_SDHC : SD_TYPE_SDSC;
+        c->tries = SDSPI_TOKEN_TRIES;
         c->phase = PH_CSD;
         return SD_PENDING;
 
     case PH_CSD:
         rc = reg_read(c, 9, r);
         if (rc != 0) {
-            return init_err(rc);
+            return reg_result(c, rc);
         }
         in->capacity_blocks = parse_csd(r);
         if (in->capacity_blocks == 0) {
             return SD_ERR_CSD;
         }
+        c->tries = SDSPI_TOKEN_TRIES;
         c->phase = PH_CID;
         return SD_PENDING;
 
     case PH_CID:
         rc = reg_read(c, 10, r);
         if (rc != 0) {
-            return init_err(rc);
+            return reg_result(c, rc);
         }
         parse_cid(in, r);
         if (in->type == SD_TYPE_SDSC) {
@@ -479,6 +501,7 @@ int sdspi_init_start(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz)
     c->tries = 0;
     c->deadline = 0;
     c->wake_us = 0;
+    c->token_bytes = SDSPI_STEP_TOKEN_BYTES;
     c->phase = PH_END;
     c->result = SD_ERR_BUS;
     if (ops == NULL || ops->xfer == NULL || ops->cs == NULL || ops->set_hz == NULL ||
@@ -514,6 +537,13 @@ int sdspi_init_step(sdspi_card_t *c)
     return rc;
 }
 
+void sdspi_init_set_blocking(sdspi_card_t *c)
+{
+    if (c != NULL) {
+        c->token_bytes = SDSPI_BLOCKING_TOKEN_BYTES;
+    }
+}
+
 uint32_t sdspi_init_wait_us(const sdspi_card_t *c)
 {
     uint64_t t;
@@ -530,6 +560,7 @@ int sdspi_card_init(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz)
     int rc = sdspi_init_start(c, ops, hz);
     uint32_t w;
 
+    sdspi_init_set_blocking(c);
     while (rc == SD_PENDING) {
         w = sdspi_init_wait_us(c);
         if (w > 0) {
@@ -576,7 +607,7 @@ int sdspi_card_read(sdspi_card_t *c, uint64_t lba, uint8_t *buf)
     c->ops->cs(c->ops->ctx, 0);
     rc = command(c, 17, (uint32_t)addr, NULL, 0);
     if (rc == 0) {
-        rc = data_block(c, buf, BLK_SECTOR_SIZE, SDSPI_TOKEN_US, SDSPI_TOKEN_US * 4u + 64u);
+        rc = data_block(c, buf, BLK_SECTOR_SIZE, SDSPI_TOKEN_US, SDSPI_BLOCKING_TOKEN_BYTES);
     }
     deselect(c);
     return rc == 0 ? 0 : read_err(rc);

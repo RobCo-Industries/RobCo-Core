@@ -18,6 +18,7 @@ const char *sd_strerror(int err)
     case SD_ERR_OLD:     return "old";
     case SD_ERR_AGAIN:   return "again";
     case SD_ERR_BUS:     return "bus";
+    case SD_ERR_SLOW:    return "slow";
     default:             return blk_strerror(err);
     }
 }
