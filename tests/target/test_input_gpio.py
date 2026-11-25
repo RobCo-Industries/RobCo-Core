@@ -52,8 +52,41 @@ JITTER_TRIES = 3
 LEAD_S = 3 * TICK_S
 
 
+def judged(missed, within_bound):
+    """True when a timed run counts: no tick was missed during it and its own bound held.
+
+    Every timing check goes through here. The window runs from the "ticks"
+    call that opens it to the one that closes it. The guest keeps the
+    tick on a fixed grid, and a callback late by a whole period or more
+    adds to tick_missed() (src/drv/tick.c).
+
+    Before the first callback: "ticks" resets the gap and the spread at
+    the next callback, so the gap that ends there is lost. A stall of a
+    period or more there makes that callback late by a period or more,
+    which `missed` counts. A shorter stall makes it late by less than a
+    period, so it runs within two periods of the call. The run starts
+    LEAD_S, three periods, after the call, so that stall ends before the
+    run. It also becomes the spread's reference, so the spread grows too.
+
+    Between callbacks: a stall shorter than a period shows in the gap
+    and the spread. A longer one also counts in `missed`.
+
+    After the last callback: a stall still running when the closing
+    "ticks" comes leaves its timer interrupt pending. The guest takes it
+    before it reads and parses the command line, so the late callback
+    updates `missed` and the gap before the reply. A level change made
+    during that stall is still held when sampling resumes, and a turn
+    ends at rest for SETTLE_S, so no state is lost past the window.
+
+    So no stall hides from both `missed` and the gap. A gap-only bound
+    still needs `missed == 0`: a miss at the first callback clears no
+    count, but its lost gap is not measured.
+    """
+    return missed == 0 and within_bound
+
+
 def timing_ok(short_s, missed, jitter_s, state_s=LIMIT_STATE_S):
-    return missed == 0 and jitter_s < 2 * (state_s - short_s) - 2 * TICK_S
+    return judged(missed, jitter_s < 2 * (state_s - short_s) - 2 * TICK_S)
 
 
 def markers(vm, name):
@@ -129,7 +162,7 @@ def short_pulses(vm, io, schedule, excused):
         n = len(gpio_events(vm))
         missed, _, jitter, _ = timed(vm, lambda: io.play(schedule))
         span = pressed_span(schedule, io.log, 0)
-        if one_sample_at_most(span, missed, jitter, TICK_S):
+        if judged(missed, one_sample_at_most(span, missed, jitter, TICK_S)):
             return
         time.sleep(SETTLE_S)
         excused.update(range(n, len(gpio_events(vm))))
@@ -152,7 +185,7 @@ def held_tap(vm, io, name, hold_s=HOLD_S):
 
         missed, gap, _, _ = timed(vm, run)
         got = gpio_events(vm)[n:]
-        if gap < hold_s / 2:
+        if judged(missed, gap < hold_s / 2):
             return got
     hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms, {missed} ticks missed")
 
@@ -181,7 +214,7 @@ def turn_ok(vm, io, detents, state_s, lengths=(1, 1, 1, 1), bounce=None, excused
         _, short = slip(io.log)
         time.sleep(SETTLE_S)
         got = total(vm) - t0
-        if gap < long_s - short - bounce_s:
+        if judged(missed, gap < long_s - short - bounce_s):
             return got, gpio_events(vm)[n:]
         if excused is not None:
             excused.append(got)
@@ -239,7 +272,7 @@ def test_gpio_repeat(board, example_image):
 
             missed, gap, _, held = timed(vm, run)
             ev = wait_events(vm, n + 2)[n:]
-            if held - 3 * gap >= 0.8 and held + 3 * gap < 1.1:
+            if judged(missed, held - 3 * gap >= 0.8 and held + 3 * gap < 1.1):
                 break
         else:
             hosttiming.skip(f"held {held * 1000:.1f} ms, a tick gap of "
@@ -353,9 +386,9 @@ def test_gpio_dial_at_the_limit(board, example_image):
             missed, gap, _, _ = timed(vm, lambda: io.play(wiggle))
             _, short = slip(io.log)
             time.sleep(SETTLE_S)
-            if gap < SLOW_STATE_S - short:
+            if judged(missed, gap < SLOW_STATE_S - short):
                 break
         else:
-            hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms")
+            hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms, {missed} ticks missed")
         assert len(gpio_events(vm)) == n, vm.serial
         no_exception(vm)
