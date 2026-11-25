@@ -9,8 +9,7 @@ below names its margin.
 import re
 import time
 
-import pytest
-
+from harness import hosttiming
 from harness.boot import boot
 from harness.pigpio import PiGpio, bounce_schedule, one_sample_at_most, pressed_span, slip
 
@@ -134,7 +133,7 @@ def short_pulses(vm, io, schedule, excused):
             return
         time.sleep(SETTLE_S)
         excused.update(range(n, len(gpio_events(vm))))
-    pytest.skip(f"machine too busy: pressed for up to {span * 1000:.1f} ms, "
+    hosttiming.skip(f"pressed for up to {span * 1000:.1f} ms, "
                 f"{missed} ticks missed, tick jitter {jitter * 1000:.1f} ms")
 
 
@@ -155,7 +154,7 @@ def held_tap(vm, io, name, hold_s=HOLD_S):
         got = gpio_events(vm)[n:]
         if gap < hold_s / 2:
             return got
-    pytest.skip(f"machine too busy: a tick gap of {gap * 1000:.1f} ms, {missed} ticks missed")
+    hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms, {missed} ticks missed")
 
 
 def turn_ok(vm, io, detents, state_s, lengths=(1, 1, 1, 1), bounce=None, settle_s=0.0):
@@ -176,7 +175,7 @@ def turn_ok(vm, io, detents, state_s, lengths=(1, 1, 1, 1), bounce=None, settle_
         time.sleep(SETTLE_S)
         if gap < long_s - short - bounce_s:
             return total(vm) - t0, gpio_events(vm)[n:]
-    pytest.skip(f"machine too busy: a tick gap of {gap * 1000:.1f} ms, a state cut by "
+    hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms, a state cut by "
                 f"{short * 1000:.1f} ms, {missed} ticks missed")
 
 
@@ -233,7 +232,7 @@ def test_gpio_repeat(board, example_image):
             if held - 3 * gap >= 0.8 and held + 3 * gap < 1.1:
                 break
         else:
-            pytest.skip(f"machine too busy: held {held * 1000:.1f} ms, a tick gap of "
+            hosttiming.skip(f"held {held * 1000:.1f} ms, a tick gap of "
                         f"{gap * 1000:.1f} ms, {missed} ticks missed")
         assert ev[0] == ("key", "up", 1) and ev[-1] == ("key", "up", 0), vm.serial
         reps = [e for e in ev if e == ("key", "up", 2)]
@@ -327,7 +326,7 @@ def test_gpio_dial_at_the_limit(board, example_image):
                     if timing_ok(short, missed, jitter):
                         break
                 else:
-                    pytest.skip(f"machine too busy: a state cut by {short * 1000:.1f} ms, "
+                    hosttiming.skip(f"a state cut by {short * 1000:.1f} ms, "
                                 f"{missed} ticks missed, tick jitter {jitter * 1000:.1f} ms")
                 assert got == detents, (lengths, short, missed, jitter, vm.serial)
         # Two transitions out and back: a correct phase gives no event.
@@ -341,6 +340,6 @@ def test_gpio_dial_at_the_limit(board, example_image):
             if gap < SLOW_STATE_S - short:
                 break
         else:
-            pytest.skip(f"machine too busy: a tick gap of {gap * 1000:.1f} ms")
+            hosttiming.skip(f"a tick gap of {gap * 1000:.1f} ms")
         assert len(gpio_events(vm)) == n, vm.serial
         no_exception(vm)
