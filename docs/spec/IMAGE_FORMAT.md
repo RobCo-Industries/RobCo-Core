@@ -281,3 +281,120 @@ Runs validation steps 1 to 6. Step 2 also checks that the META flag matches the 
 Prints `ok` or the `@RC` error name. The exit code is the error code from the table above, so 0 on success. A file shorter than `0x60` bytes gives `io`. Bad usage exits 64.
 
 `tools/rimg.py` replaces `mkbootimg.py` and `sign_payload.py` from MFBootAgent. Images carry no signature.
+
+## Sealing and packing
+
+Sealing fills in the fields that only exist once the image is linked and writes the CRC. Packing wraps a raw payload into a complete image, then seals it. Two implementations follow these rules:
+
+| Implementation | State |
+|---|---|
+| `seal()` and `pack()` in `tools/rimg.py`, behind the `seal` and `pack` commands | Exists |
+| `rimg_seal()` and `rimg_pack()` in C, beside `rimg_validate()` | To be written. Their signatures are not fixed yet. |
+
+Both give the same bytes for the same inputs and fail with the same code at the same step. The [test vectors](#test-vectors) prove it. The code is a `rimg_err_t` value and its `@RC` name, as in [Validation](#validation).
+
+An implementation writes nothing when a step fails. It returns the whole sealed file when every step passes.
+
+### Inputs
+
+| Input | Type | Rule | Code when broken |
+|---|---|---|---|
+| Image, for seal | Bytes | The raw output of `objcopy` | See the steps |
+| Payload, for pack | Bytes | Code linked for `load_addr + 0x60`, or `load_addr + 0x120` with META | See the steps |
+| `name` | Text or absent | ASCII, 0 to 16 bytes. Absent leaves the header's `name` as it is. | `version` when longer than 16 bytes |
+| `image_version` | `X.Y.Z` or absent | Exactly three parts, each one or more decimal digits. X at most 65535, Y and Z at most 255. Stored as `(X << 16) \| (Y << 8) \| Z`. | A usage error, before any step |
+| `title` | Text or absent | ASCII, 0 to 64 bytes, no NUL. Stored NUL-padded to 64 bytes. | `version` |
+| `icon` | File bytes and a format, or absent | See [Icon decoding](#icon-decoding) | See there |
+| `magic`, for pack | `BOOT`, `ROM1` or `ROBCO78` | | `magic` |
+| `subtype`, `load_addr`, `mem_size`, for pack | Unsigned 32-bit integers | `mem_size` absent means the file size | See the steps |
+| `abi_version`, for pack | `MAJOR.MINOR` or absent | Two parts of decimal digits, each at most 65535. Absent means the ABI major of the magic, minor 0. | A usage error, before any step |
+| `meta`, for pack | Yes, no or absent | Absent follows the magic: yes for `ROM1` and `ROBCO78`, no for `BOOT` | See the steps |
+| `entry`, for pack | Unsigned integer | Byte offset into the payload. Default 0. | See the steps |
+
+`rimg.py` does not handle some inputs outside these types. A `name` that is not ASCII, or a `subtype`, `load_addr` or `mem_size` outside 32 bits, stops it with an unhandled Python error and exit code 1. The vectors leave these cases out.
+
+### Icon decoding
+
+The icon is decoded before any other step. The decoding follows the `--icon` rules of [seal](#seal). The codes are:
+
+| Case | Code |
+|---|---|
+| Format `raw`, or `auto` with a 128-byte file: the file is not 128 bytes | `size` |
+| Format `pbm` with a 128-byte file | `io` |
+| The file does not start with `P1` or `P4`, or its header does not parse | `io` |
+| The PBM is not 32x32 | `size` |
+| `P4`: the height is not followed by one whitespace byte | `io` |
+| `P4`: not exactly 128 bytes after that byte | `size` |
+| `P1`: a character other than `0`, `1`, whitespace or a comment | `io` |
+| `P1`: not exactly 1024 pixels | `size` |
+
+The result is the 128 bytes of the META icon layout.
+
+### Seal steps
+
+| Step | Action | Code on failure |
+|---|---|---|
+| 1 | The image is at least `0x60` bytes. | `io` |
+| 2 | Bits 27 to 24 of word 0 are `1010`, an ARM `b` with any condition. | `magic` |
+| 3 | `magic` is one of the three magics. | `magic` |
+| 4 | `hdr_version` is 1 and `hdr_size` is 64. | `version` |
+| 5 | If `file_size` is 0, set it to the image length. Else it must equal the image length. | `size` |
+| 6 | If `name` is given: it is at most 16 bytes. Write it NUL-padded to all 16 bytes of the field. | `version` |
+| 7 | If `image_version` is given, write it. | |
+| 8 | If `title` or `icon` is given, `flags` bit 0 is set. | `version` |
+| 9 | If `title` or `icon` is given, the image is at least `0x120` bytes. | `size` |
+| 10 | Write the title into META bytes `0x00` to `0x3F` if given. Write the icon into META bytes `0x40` to `0xBF` if given. The other part stays as it is. | `version` for a bad title |
+| 11 | Compute the CRC over the whole image with the `crc32` field read as zero, and write it. | |
+| 12 | Run [validation](#validation) steps 1 to 6 on the result. Step 1 accepts the three magics. Step 3 compares with the image length. Step 4 uses the slot of the subtype from [Subtypes](#subtypes). Step 5 uses the ABI major of the magic. Step 2 also checks that `flags` bit 0 is set for `ROM1` and `ROBCO78` and clear for `BOOT`. | That step's code |
+
+Seal never changes the stub, `flags`, `load_addr`, `mem_size`, `abi_version`, `subtype`, `reserved` or the code bytes. Step 12 catches what the startup code got wrong: a data tape fails there with `bounds`, because subtype 2 has no slot.
+
+### Pack steps
+
+| Step | Action | Code on failure |
+|---|---|---|
+| 1 | `magic` is one of the three magics. | `magic` |
+| 2 | Resolve `meta`. Without META, a `title` or `icon` is refused. | `version` |
+| 3 | `entry` is a multiple of 4, and `entry + 4` is at most the payload length. An empty payload always fails here. | `size` |
+| 4 | The code offset is `0x60`, plus `0xC0` with META. The file size is the code offset plus the payload length. | |
+| 5 | Start from that many zero bytes. Word 0 is `0xEA000000 \| (((code offset + entry - 8) >> 2) & 0x00FFFFFF)`, a `b` to the entry. A target more than 32 MiB away fails. | `version` |
+| 6 | Write the header: the magic, `hdr_version` 1, `hdr_size` 64, `flags` 1 with META or 0 without, `load_addr`, `file_size`, `mem_size` or the file size, `crc32` 0, `abi_version`, `image_version` or 0, `subtype`, 16 NUL bytes of `name`, `reserved` 0. The META block stays zero. | |
+| 7 | Copy the payload to the code offset. | |
+| 8 | Seal the result with `name`, `title` and `icon` and no `image_version`, by the seal steps. | That step's code |
+
+`rimg.py pack` on the command line checks `entry` before step 1 and exits 64, a usage error, where the function returns `size`. The C function returns `size`.
+
+## Test vectors
+
+`tests/vectors/rimg/` holds the vectors that every sealer must reproduce byte for byte.
+
+| File | Content |
+|---|---|
+| `vectors.ini` | One section per vector |
+| `*.in` | The input of each vector: an image for seal, a payload for pack |
+| `*.out` | The expected output of each vector that succeeds |
+| `icon_*` | Icon files that vectors name |
+| `generate.py` | Writes every other file |
+
+`vectors.ini` is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), so a C host test reads it with the library's own parser. Each section is `[vector ID]`. Its keys:
+
+| Key | Meaning |
+|---|---|
+| `op` | `seal` or `pack` |
+| `input` | The input file, in the same folder |
+| `magic`, `subtype`, `load_addr`, `mem_size`, `entry` | Pack inputs. Numbers are C literals, decimal or `0x` hex. |
+| `name`, `image_version`, `abi_version`, `title` | Inputs as text. A quoted empty value is an empty text, which is not the same as an absent key. |
+| `meta` | `yes` or `no`. Absent follows the magic. |
+| `icon`, `icon_format` | The icon file and its format. `icon_format` absent means `auto`. |
+| `expect` | `ok` or the `@RC` name of the code |
+| `output` | The expected file. Present only when `expect` is `ok`. |
+
+A key that is absent is an input that is not given. A vector that expects a failure expects that code and no output.
+
+`generate.py` builds every input byte by byte and runs it through `tools/rimg.py`, which writes the outputs and the codes. `tests/tools/test_rimg_vectors.py` checks three things:
+
+1. `tools/rimg.py` gives every expected output and code.
+2. `generate.py` run again writes the same files, byte for byte.
+3. The `seal` and `pack` commands give the same bytes as the functions for every vector that succeeds.
+
+A change to `rimg.py` that changes a vector is a change to this spec. The vectors cover each code a sealer returns: `io`, `magic`, `version`, `size`, `bounds` and `abi`. Seal computes the CRC, so it never returns `crc`.
