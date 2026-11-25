@@ -430,12 +430,13 @@ int rimg_seal(const void *image, size_t len, const rimg_seal_opts_t *opts, void 
 
 /*
  * Packs payload_len bytes into out, which holds out_cap bytes and does not
- * overlap payload. Runs icon decoding, then pack steps 1 to 9.
+ * overlap payload. Runs icon decoding, then pack steps 1 to 9, with the
+ * size and capacity checks below at step 5.
  * Returns RIMG_OK and sets *out_len to the image length, or the code of
- * the first failed step. On a failure *out_len and the bytes of out are
- * undefined. A NULL opts, out or out_len, a NULL payload with a non-zero
- * payload_len, or an out_cap below payload_len + 0x120, returns
- * RIMG_E_IO before any step.
+ * the first failed check. On a failure *out_len is 0 and the bytes of out
+ * are undefined. A NULL opts, out or out_len, a NULL payload with a
+ * non-zero payload_len, or a meta other than -1, 0 or 1, returns
+ * RIMG_E_IO before any step. *out_len is 0 then too, if out_len is not NULL.
  */
 int rimg_pack(const void *payload, size_t payload_len, const rimg_pack_opts_t *opts,
               void *out, size_t out_cap, size_t *out_len);
@@ -443,7 +444,25 @@ int rimg_pack(const void *payload, size_t payload_len, const rimg_pack_opts_t *o
 
 An `icon_format` outside the enum returns `RIMG_E_IO`, as an unknown `--icon-format` does in `rimg.py`.
 
-Both functions decode the PBM themselves. A C host test then runs every vector as it stands: it reads the `icon` file named in `vectors.ini` and passes its bytes with its `icon_format`. The caller parses only `image_version` and `abi_version`, by the rules of [Inputs](#inputs).
+`rimg_pack()` writes an image of exactly this many bytes:
+
+| META block, as resolved at step 3 | Image length |
+|---|---|
+| No | `payload_len + 0x60` |
+| Yes | `payload_len + 0x120` |
+
+Step 3 resolves `meta` from the options alone: 1 means yes, 0 means no, and -1 means yes for `ROM1` and `ROBCO78` and no for `BOOT`. A caller computes the length by this rule before it allocates. No call returns it. The other headers in `include/robco/` state sizes as rules and take no NULL buffer as a size query, so `rimg.h` does the same.
+
+Step 5 runs two checks, in this order, after steps 1 to 4 pass:
+
+1. `payload_len` is at most `0xFFFFFFFF` minus the code offset, so the length fits the 32-bit `file_size`. Else the code is `RIMG_E_SIZE`. The C function compares `payload_len` with that difference and never adds first, so the sum cannot wrap on a 32-bit target. `rimg.py` cannot build such a payload, and no vector covers this case.
+2. `out_cap` is at least the image length. Else the code is `RIMG_E_IO`. A larger `out_cap` is fine: the function writes only the image length and reports it in `*out_len`.
+
+So a buffer that is too small fails after the checks of steps 1 to 4, and their codes come first. `rimg_seal()` has no capacity check: `out` holds `len` bytes, and seal step 5 fails with `RIMG_E_SIZE` when `len` is above `0xFFFFFFFF`, since `file_size` cannot equal it.
+
+Either function may write into `out` before a later step fails. The caller then treats `out` as garbage and writes no file.
+
+Both functions decode the PBM themselves. A C host test then runs every vector as it stands: it reads the `icon` file named in `vectors.ini` and passes its bytes with its `icon_format`. The caller parses only `image_version` and `abi_version`, by the rules of [Inputs](#inputs). It maps the other keys straight to the options: `meta` `yes` to 1, `no` to 0 and absent to -1, a quoted empty `name` or `title` to an empty text, not NULL, and each number to its `int64_t` field. It sizes `out` by the rule above, or by the input length for seal, and compares `*out_len` bytes of `out` with `output`, or the code with `expect`.
 
 ## Test vectors
 
