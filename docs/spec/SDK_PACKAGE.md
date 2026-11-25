@@ -432,11 +432,11 @@ The runner is `pip_main()` of one C file. It runs these steps once, in order, an
 | Step | Action | On failure it prints `ev=done` with |
 |---|---|---|
 | 1 | `file_open("/PIPBOY/RUNNER.CFG")` | `result=config why=open`, `rc` the value returned |
-| 2 | `file_read` into a buffer of 256 bytes until it returns 0 or the buffer is full, then `file_close` | `result=config why=read`, `rc` the negative value returned |
+| 2 | `file_read` into a buffer of 256 bytes until it returns 0 or the buffer is full, then `file_close`, also after a read that failed. The value `file_close` returns is not checked. | `result=config why=read`, `rc` the negative value returned |
 | 3 | The file holds 1 to 255 bytes | `result=config why=size rc=0` |
 | 4 | `pip_ini_get(buf, n, "run", "tape", name, 13)`, as [What the runner accepts](#what-the-runner-accepts) says | `result=config why=parse`, `rc` the negative value returned |
 | 5 | The value has 1 to 12 bytes, each from `0x21` to `0x7E` | `result=config why=name rc=0` |
-| 6 | `rand`, twice. The key is the first value, then the second, each as 8 lower case hex digits. See [The key of a run](#the-key-of-a-run). | `result=config why=rand`, `rc` the negative value returned |
+| 6 | `rand`, twice. The key is the first value, then the second, each as 8 lower case hex digits. See [The key of a run](#the-key-of-a-run). | `result=config why=rand`, `rc` the negative value of the first call that failed |
 | 7 | Print `ev=run` with the value and the key | |
 | 8 | `holo_launch(value, "")` | |
 | 9 | Print `ev=done` with the result of step 8 and the key | |
@@ -547,6 +547,8 @@ A tool reads the PL011 line by line, as [Serial lines](./STUDIO_CLI.md#serial-li
 | A runner line | The whole line, from its first byte to its last, is one of the three lines of [Runner markers](#runner-markers): the same parts in the same order, one space between them, a value of the right form in each, and nothing before or after. A line that holds `stage=runner` in any other shape is text. |
 | A kernel marker | The line contains the four bytes `@RC `. The marker runs from the first of them to the end of the line. A tape may leave a line unfinished, so a kernel marker does not always start its line. The tool splits the marker at spaces into `key=value` pairs, at the first `=` of each, and takes the first pair of each name. |
 | Text | Every other line |
+
+The table is read from the top. A line in the shape of a runner line is a runner line, and never a kernel marker, though it holds `@RC ` too. The comparison is on bytes: every byte of a runner line is ASCII.
 
 A tool then keeps one value, the key of the run, and follows these rules:
 

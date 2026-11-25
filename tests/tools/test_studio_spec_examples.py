@@ -1,9 +1,13 @@
 """The examples in the Studio specs are valid under the rules the specs state.
 
 Covers docs/spec/STUDIO_CLI.md, STUDIO_PROJECT.md and SDK_PACKAGE.md: the
-JSON lines of each command, the error code table, the scenario files, the
-manifests, the package files and the runner ROM's marker lines. No tool
-reads these formats yet, so this test is the only reader of the examples.
+JSON lines of each command, the error code table and the order of checks,
+the scenario files, the manifests, the lock and its writer, the package
+files, the index and its resolver, RUNNER.CFG and the runner ROM's marker
+lines with the key of a run. It also holds the boot.json example of
+TESTING.md and the PBM number rule of IMAGE_FORMAT.md to their rules. No
+tool reads these formats yet, so this test is the only reader of the
+examples.
 """
 
 import json
