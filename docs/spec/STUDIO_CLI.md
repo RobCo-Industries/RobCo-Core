@@ -339,7 +339,7 @@ The `result` line adds:
 | 11 | Build the tape, by [robco build](#robco-build) | No | Yes | Yes | Yes | `package: manifest`, `package: format`, `tool: program`, 4. A `build:` code, 5. `io: write`, 9. |
 | 12 | Read `boot.json`, check the boards and find the QEMU program, steps 1 and 2 of [Starting QEMU](#starting-qemu) | No | No | Yes | Yes | `package: manifest`, `package: format`, 4. `run: board`, 3. `tool: program`, 4. |
 | 13 | Write [the simulator card](#the-simulator-card) | No | No | Yes | Yes | `io: write`, 9 |
-| 14 | Start QEMU and read the machine: once for `run`, by [What ends a run](#what-ends-a-run), and once per scenario and board for `test`, by [robco test](#robco-test) | No | No | Yes | Yes | `sim: start`, `sim: died`, `sim: qmp`, 7. For `run`: `run: unmatched`, `run: tape`, 1. `run: timeout`, 6. `guest: fault`, `guest: runner`, 8. For `test`: `test: failed`, 1 or 7. |
+| 14 | Start QEMU and read the machine: once for `run`, by [What ends a run](#what-ends-a-run), and once per scenario and board for `test`, by [robco test](#robco-test) | No | No | Yes | Yes | For `run`: `sim: start`, `sim: died`, `sim: qmp`, 7. `run: unmatched`, `run: tape`, 1. `run: timeout`, 6. `guest: fault`, `guest: runner`, 8. For `test`: `test: failed`, 1 or 7. |
 
 The number after each code is the exit code of the command, as [Error codes](#error-codes) maps it. Any step that reads or writes a file may also fail with `io: read` or `io: write`, 9, when the host refuses. Any step may fail with `internal`, 10.
 
@@ -357,9 +357,21 @@ A command that runs again with nothing changed takes the same steps:
 
 | It reads | It writes | It never writes |
 |---|---|---|
-| `robco.toml`, `robco.lock`, the sources and the icon, the scenario files and the golden images for `test`, and `sdk.json`, `flags.json` and `boot.json` of the locked package | `build/`, and the folder of each run in the system's temporary folder | `robco.toml`, the sources, the scenario files, `robco.lock` when step 5 found one, and the cache when it holds every locked item |
+| `robco.toml`, `robco.lock`, the sources and the icon, the scenario files and the golden images for `test`, `sdk.json`, `flags.json` and `boot.json` of the locked package, and the `.robco-archive` record of each locked item | `build/`, and the folder of each run in the system's temporary folder | `robco.toml`, the sources, the scenario files, `robco.lock` when step 5 found one, and the cache when it holds every locked item |
 
 Such a command reads no index and needs no `--index` and no network: step 6 does not run, and steps 7 and 9 find every item in the cache. Step 11 compiles, links and seals every time. Only an install is ever skipped, so the `step` lines of two runs are the same. `robco test --update-golden` is the one command that writes under `tests/golden/`.
+
+Without a network, the same steps give these results:
+
+| The cache | `robco.lock` | `--index` | Result |
+|---|---|---|---|
+| Holds every locked item | There | Any, or none | The command works. It reads no index. |
+| Holds every item the resolution picks | None | A local file | The command works. It resolves, downloads nothing and writes the lock. |
+| Any | None | An `https://` location | `index: read`, 4, at step 6 |
+| Lacks an item | There | An `https://` location | `index: read`, 4, at step 7 or 9 |
+| Lacks an item | Any | A local file that lists the archive at an `https://` URL | `package: hash` or `tool: hash`, 4, at step 7 or 9. The detail says that nothing was fetched. |
+| Lacks an item | There | None | `index: location`, 4, at step 7 or 9 |
+| Any | None | None | `index: location`, 4, at step 6 |
 
 The `step` lines of `--json` follow the same order: `resolve` at step 6, then `download`, `verify` and `install` at steps 7 and 9, `compile`, `link`, `objcopy` and `seal` at step 11, `card` at step 13 and `boot` at step 14.
 
@@ -607,7 +619,7 @@ The command takes every step of [The steps of update, build, run and test](#the-
 2. Still at step 4, without `--update-golden`, it reads every golden image the scenarios name, in the order of the scenarios and of their steps. A missing image, or a file that is not a PNG in the format of [Golden images](#golden-images), fails with `test: golden` and names the path. With `--update-golden` it reads no golden image.
 3. At steps 5 to 13 it reads the lock or resolves, installs the packages, `gcc` and `qemu`, builds the tape, checks every board of `--board` against `boot.json` and writes the card. It installs `qemu` at step 9, never before the lock or the resolution has named its version.
 4. At step 14 it makes the runs one after another. Each gets a fresh copy of [the simulator card](#the-simulator-card) and a new QEMU, started as [Starting QEMU](#starting-qemu) says. A run that fails does not stop the next one.
-5. It ends with the code that [Exit codes](#exit-codes) gives for the outcomes. When a run did not pass, the error is `test: failed`, and the detail counts the runs that failed.
+5. It ends with the code that [Exit codes](#exit-codes) gives for the outcomes. When a run did not pass, the error is `test: failed`, and the detail counts the runs that failed. A QEMU that fails in a run is not an error of the command by itself: the run gets the outcome `simulator`, the next run starts, and the command ends with `test: failed` and exit code 7. No `sim:` code ends `robco test`.
 
 ### Scenario files
 
@@ -722,7 +734,7 @@ When a `screen` step fails, the tool writes the capture to `build/test/SCENARIO/
 With `--update-golden` the tool reads no golden image, and a `screen` step compares against what the command itself captured:
 
 1. The first capture that the command takes for a path stands in for the golden image of that path, and its step passes.
-2. Every later capture for the same path is compared with that first capture, by the comparison above. That is the same `screen` step on a later board, and a later `screen` step of the scenario with the same name. A difference fails the step with `size` or `pixels`, as it would against an image. The tool then writes both captures under `build/test/SCENARIO/`, each in the folder of its board.
+2. Every later capture for the same path is compared with that first capture, by the comparison above. That is the same `screen` step on a later board, and a later `screen` step of the scenario with the same name. A difference fails the step with `size` or `pixels`, as it would against an image. The tool then writes both captures under `build/test/SCENARIO/`, each in the folder of its board. When both come from one board, it writes the later one only.
 3. After the last run of a scenario, when the scenario passed on every board, the tool writes the first capture of each path to that path, as a PNG in the format above, and creates the folders it needs. It writes each path once.
 4. When a run of the scenario failed, on any board and for any reason, the tool writes no image of that scenario and leaves the files that are there as they are. The other scenarios are not affected.
 
@@ -791,7 +803,7 @@ A `check` line with the reason `pixels` adds five keys:
 | Key | Type | Value |
 |---|---|---|
 | `x`, `y` | integer | The first pixel that differs, with 0, 0 at the top left |
-| `want` | string | The golden image's pixel, as `#rrggbb` in lower case hex |
+| `want` | string | The golden image's pixel, as `#rrggbb` in lower case hex. With `--update-golden`, the pixel of the first capture of that path. |
 | `got` | string | The capture's pixel, in the same form |
 | `count` | integer | How many pixels differ |
 

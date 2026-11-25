@@ -79,7 +79,7 @@ flowchart LR
     Z --> S["Read sdk.json<br/>check its formats"]
     S --> H2{"Every file's SHA-256<br/>matches sdk.json?"}
     H2 -- No --> X
-    H2 -- Yes --> M["Move the folder into the cache"]
+    H2 -- Yes --> M["Write .robco-archive<br/>move the folder into the cache"]
 ```
 
 ## sdk.json
