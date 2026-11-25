@@ -50,12 +50,67 @@ def test_c_after(tmp_path):
 """
 
 
-def run_inner(tmp_path, ini=None, **env):
+PHASES = """
+import os
+import pytest
+
+OUT = os.environ["TMP_TEST_OUT"]
+
+
+def card(name, tmp_path):
+    (tmp_path / "card.img").write_bytes(bytes(4096))
+    with open(os.path.join(OUT, name), "w") as f:
+        f.write(str(tmp_path))
+
+
+@pytest.fixture
+def broken_setup(tmp_path):
+    card("setup_dir", tmp_path)
+    raise RuntimeError("deliberate")
+
+
+@pytest.fixture
+def broken_teardown(tmp_path):
+    card("teardown_dir", tmp_path)
+    yield
+    raise RuntimeError("deliberate")
+
+
+@pytest.fixture
+def card_fixture(tmp_path):
+    card("fixture_pass_dir", tmp_path)
+
+
+def test_setup_error(broken_setup):
+    pass
+
+
+def test_teardown_error(broken_teardown):
+    pass
+
+
+def test_fixture_pass(card_fixture):
+    pass
+
+
+def test_skip(tmp_path):
+    card("skip_dir", tmp_path)
+    pytest.skip("deliberate")
+
+
+@pytest.mark.xfail(strict=True)
+def test_xfail(tmp_path):
+    card("xfail_dir", tmp_path)
+    assert False
+"""
+
+
+def run_inner(tmp_path, ini=None, inner=INNER, expect="1 failed, 2 passed", **env):
     proj, out = tmp_path / "proj", tmp_path / "out"
     proj.mkdir()
     out.mkdir()
     (proj / "conftest.py").write_text(CONFTEST)
-    (proj / "test_inner.py").write_text(INNER)
+    (proj / "test_inner.py").write_text(inner)
     if ini:
         (proj / "pytest.ini").write_text(ini)
     r = subprocess.run(
@@ -63,10 +118,14 @@ def run_inner(tmp_path, ini=None, **env):
          "--basetemp", str(tmp_path / "base"), "test_inner.py"],
         cwd=proj, env=minimal_env(TMP_TEST_OUT=str(out), **env),
         capture_output=True, text=True)
-    assert "1 failed, 2 passed" in r.stdout, r.stdout + r.stderr
+    assert expect in r.stdout, r.stdout + r.stderr
 
     def read(name):
         return (out / name).read_text()
+
+    if inner is PHASES:
+        return {name: os.path.exists(os.path.join(read(name + "_dir"), "card.img"))
+                for name in ("setup", "teardown", "fixture_pass", "skip", "xfail")}
 
     return {
         "pass_gone_during_run": read("pass_dir_after_test") == "False",
@@ -93,3 +152,23 @@ def test_keep_switch_zero_is_off(tmp_path):
 def test_project_policy_wins(tmp_path):
     got = run_inner(tmp_path, ini="[pytest]\ntmp_path_retention_policy = all\n")
     assert got["pass_kept"] is True and got["fail_kept"] is True
+
+
+def test_errors_in_any_phase_keep_the_folder(tmp_path):
+    got = run_inner(tmp_path, inner=PHASES,
+                    expect="2 passed, 1 skipped, 1 xfailed, 2 errors")
+    assert got == {"setup": True, "teardown": True,
+                   "fixture_pass": False, "skip": False, "xfail": False}
+
+
+def test_pytest_still_has_the_private_names():
+    """The plugin falls back to pytest's own rule without these names.
+
+    That fallback loses setup and teardown failures quietly, so this
+    test fails when pytest renames them.
+    """
+    from _pytest.tmpdir import TempPathFactory, tmppath_result_key  # noqa: F401
+    from harness import plugin
+
+    assert plugin._PYTEST_RESULT_KEY is tmppath_result_key
+    assert "_retention_policy" in TempPathFactory.__init__.__code__.co_names
