@@ -268,7 +268,7 @@ Each `[[tool]]`:
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | Yes | `gcc` or `qemu` |
-| `version` | string | Yes | The upstream version, such as `15.2.1` |
+| `version` | string | Yes | The version that the locked `pipos` package names for this tool, such as `15.2.1-1.1`. See [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names). |
 | `[tool.archives]` | table | Yes | One key per host, such as `linux-x64`. Each value is the SHA-256 of that host's archive. |
 
 The lock lists the archives of every host the index offers, not only the host that wrote it. A lock written on macOS then works unchanged on Windows and Linux.
@@ -282,6 +282,9 @@ The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock
 1. Installs or finds each listed package at its exact version.
 2. Checks each archive against its `sha256`, as [SDK_PACKAGE.md](./SDK_PACKAGE.md#hashes) says. A mismatch fails the build with `lock: hash` and names the package. The tool never replaces a pinned package with another version or another archive on its own.
 3. Checks that the pinned packages still fit the manifest by the rules of [SDK_PACKAGE.md](./SDK_PACKAGE.md#version-and-abi-rules).
+4. Checks, once the `pipos` package is installed, that each `[[tool]]` entry has the `version` that the package's `sdk.json` names for it. A difference fails the build with `lock: tool` and names the tool and both versions. The message ends with `run robco update`. The tool changes nothing. Only a lock edited by hand can fail here, since the tool writes both from one resolution.
+
+A resolution writes the `[[tool]]` entries from the package it picked: for each of `gcc` and `qemu`, the version the package names and the SHA-256 of every archive the index lists for that version.
 
 ### When the lock changes
 
@@ -291,6 +294,7 @@ The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock
 | A lock whose packages fit the manifest | Uses it unchanged. |
 | A stale lock | Fails with `lock: stale`. It changes nothing. |
 | A lock that does not parse, or a larger `format` | Fails with `lock: syntax` or `lock: format`. |
+| A `[[tool]]` version that the installed `pipos` package does not name | Fails with `lock: tool`. It changes nothing. See [What the lock pins](#what-the-lock-pins). |
 | `robco update` | Resolves again and writes a new lock. See below. |
 
 A build never moves a pin. Only `robco update` does, and only when a person runs it.
@@ -373,7 +377,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000001"
 
 [[tool]]
 name = "gcc"
-version = "15.2.1"
+version = "15.2.1-1.1"
 
 [tool.archives]
 linux-arm64 = "0000000000000000000000000000000000000000000000000000000000000002"
@@ -391,7 +395,3 @@ linux-x64 = "0000000000000000000000000000000000000000000000000000000000000007"
 macos-arm64 = "0000000000000000000000000000000000000000000000000000000000000008"
 windows-x64 = "0000000000000000000000000000000000000000000000000000000000000009"
 ```
-
-## Open points
-
-Only one point is still open, the choice of tool versions when the tool resolves. See [Open points](./SDK_PACKAGE.md#open-points).

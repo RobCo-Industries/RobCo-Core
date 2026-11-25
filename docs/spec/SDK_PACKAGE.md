@@ -9,7 +9,7 @@ State today: no package is built and no index exists. Pip-OS ships its SDK as th
 | Name | Kind | Contents | Version |
 |---|---|---|---|
 | `pipos` | Package | Headers, `libpip.a`, `crt0.S`, linker scripts, `flags.json`, kernels, the runner ROM, the firmware stub, `boot.json`, the firmware pins | `MAJOR.MINOR.BUILD`. `MAJOR.MINOR` is the Pip-OS ABI it implements. |
-| `gcc` | Tool | One xPack `arm-none-eabi-gcc` archive per host, from its publisher | The xPack release, such as `15.2.1` |
+| `gcc` | Tool | One xPack `arm-none-eabi-gcc` archive per host, from its publisher | The full xPack release, such as `15.2.1-1.1` |
 | `qemu` | Tool | One QEMU build per host, with its source archive | The QEMU version, such as `10.1.2` |
 
 A package is our archive with an `sdk.json`. A tool is an upstream or separate archive that the index points to by URL and hash. A tool has no `sdk.json`.
@@ -48,7 +48,7 @@ The environment variable `ROBCO_CACHE` overrides the table on every system. Its 
 | Folder | Content |
 |---|---|
 | `<cache>/packages/<name>/<version>/` | An installed package |
-| `<cache>/tools/<name>/<version>/<host>/` | An extracted tool archive, such as `<cache>/tools/gcc/15.2.1/linux-x64/` |
+| `<cache>/tools/<name>/<version>/<host>/` | An extracted tool archive, such as `<cache>/tools/gcc/15.2.1-1.1/linux-x64/` |
 | `<cache>/firmware/<tag>/` | The firmware files of one [firmware pin](#firmware-pins) |
 
 A person may delete `<cache>` at any time. The next command that needs a file downloads it again and checks it as [Hashes](#hashes) says.
@@ -78,6 +78,7 @@ flowchart LR
 | `built_from` | array of objects | Yes | One per repository that went into the package |
 | `formats` | object | Yes | The format versions the package uses. See below. |
 | `requires` | array of objects | No | Other packages this one needs. Empty by default. |
+| `tools` | array of objects | For `pipos` | The compiler and the emulator that go with this package. See [Tools a package names](#tools-a-package-names). |
 | `firmware` | object | For `pipos` | The firmware pins. See [Firmware pins](#firmware-pins). |
 | `licences` | array of objects | Yes | The licence of each part. See [Licences](#licences). |
 | `files` | array of objects | Yes | Every file in the archive but `sdk.json` |
@@ -141,6 +142,45 @@ flowchart LR
 | `boot.json` | The QEMU arguments per board |
 | `docs/` | The API reference |
 | `LICENSES/` | The licence texts |
+
+### Tools a package names
+
+`tools` in the `sdk.json` of `pipos` names the two tools a project must use with this package, at one exact version each. The tool that resolves takes those versions. It never takes the newest version the index lists.
+
+`tools` holds exactly two entries, `gcc` first, then `qemu`:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | Yes | `gcc` or `qemu` |
+| `version` | string | Yes | The version, spelled as the index spells it: the full xPack release for `gcc`, such as `15.2.1-1.1`, and the QEMU version for `qemu`, such as `10.1.2` |
+
+| Entry | What the version says |
+|---|---|
+| `gcc` | The compiler that built `lib/libpip.a`, and the compiler that every project build against this package runs |
+| `qemu` | The emulator that the package's kernel, firmware stub and `boot.json` were tested with |
+
+The reason: the sealed tape is equal across build paths only when the project's objects and `libpip.a` come from the same compiler release. [K2](https://github.com/RobCo-Industries/RobCo-Studio/blob/main/docs/spikes/K2.md) built Culvert with another release of the compiler and got another tape. If the tool took the newest `gcc` of the index, adding a compiler to the index would change the tapes of every project at its next `robco update`, and no package would say which compiler its `libpip.a` came from. `boot.json` and the kernel depend on the emulator in the same way, since the [canary suite](./TESTING.md#canary-suite) proves one QEMU version at a time.
+
+Rules for the tool:
+
+| Case | What the tool does |
+|---|---|
+| Resolving | For the `pipos` package it picked, it takes each tool at the `version` the package names. The index entry of the package carries the same `tools`, so resolving needs no download. |
+| Comparing versions | As strings, byte for byte. Tool versions have no order. |
+| The index has no tool with that name and version | Fails with `sdk: no tool` and names the tool and the version |
+| That tool has no archive for the running host | Fails with `index: host` |
+| `tools` of an installed `sdk.json` differs from `tools` of its index entry | Fails the install with `package: manifest` |
+| `tools` is absent in a `pipos` package, has another length, another order or another name | Fails with `package: manifest` |
+| A package other than `pipos` carries `tools` | Fails with `package: manifest` |
+
+Left out on purpose: a second package that names tools, and a range of versions. One package names both tools, at one version each.
+
+Rules for Pip-OS, which builds the package:
+
+1. Its package job downloads the `linux-x64` archive of the `gcc` release from the publisher and checks it against a SHA-256 pinned in the Pip-OS repository.
+2. It builds `lib/libpip.a` with that compiler and with no other.
+3. It fails when `arm-none-eabi-gcc -dumpfullversion` does not print the part of `version` before the first `-`, such as `15.2.1` for `15.2.1-1.1`.
+4. It writes the two versions into `tools`.
 
 ### Building libpip.a
 
@@ -251,6 +291,7 @@ The index is one JSON file that lists every package and tool a tool may install.
 | `version` | string | Yes | `X.Y.Z` |
 | `abi` | string | For `pipos` | As in `sdk.json` |
 | `requires` | array | No | As in `sdk.json` |
+| `tools` | array | For `pipos` | As in `sdk.json`. See [Tools a package names](#tools-a-package-names). |
 | `url` | string | Yes | Where the archive is. `https:` or, for a local index, a path relative to the index file. |
 | `size` | integer | Yes | The archive size in bytes |
 | `sha256` | string | Yes | The archive's SHA-256 |
@@ -260,7 +301,7 @@ The index is one JSON file that lists every package and tool a tool may install.
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | Yes | `gcc` or `qemu` |
-| `version` | string | Yes | The upstream version |
+| `version` | string | Yes | The version, compared as a string. For `gcc` it is the full xPack release. |
 | `archives` | object | Yes | Host name to an archive object |
 
 An archive object:
@@ -310,6 +351,8 @@ A `requires` entry fits by the same rules 2 and 3, with its `abi` as the project
 No package fits: the tool fails with `sdk: no package` and names the platform and ABI.
 
 When several versions of a package fit, the tool picks the highest version by the order above. The lock then pins it. A newer package that appears in the index later changes nothing until `robco update`, as [When the lock changes](./STUDIO_PROJECT.md#when-the-lock-changes) says. A `requires` entry is resolved by the same rule.
+
+A tool, `gcc` or `qemu`, is never picked by its version. The resolved `pipos` package names the version of each, as [Tools a package names](#tools-a-package-names) says, and the lock pins the archives of that version.
 
 ## Hashes
 
@@ -364,6 +407,10 @@ A tool never retries a mismatch from another location, and never installs a file
   ],
   "formats": {"rimg": 1, "flags": 1, "boot": 1},
   "requires": [],
+  "tools": [
+    {"name": "gcc", "version": "15.2.1-1.1"},
+    {"name": "qemu", "version": "10.1.2"}
+  ],
   "firmware": {
     "repo": "raspberrypi/firmware",
     "tag": "1.20260915",
@@ -436,6 +483,10 @@ An index with one package and both tools. The URLs and hashes are placeholders.
       "version": "1.3.0",
       "abi": "1.3",
       "requires": [],
+      "tools": [
+        {"name": "gcc", "version": "15.2.1-1.1"},
+        {"name": "qemu", "version": "10.1.2"}
+      ],
       "url": "https://example.invalid/robco/pipos-1.3.0.zip",
       "size": 812345,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000001"
@@ -444,13 +495,13 @@ An index with one package and both tools. The URLs and hashes are placeholders.
   "tools": [
     {
       "name": "gcc",
-      "version": "15.2.1",
+      "version": "15.2.1-1.1",
       "archives": {
-        "linux-x64": {"url": "https://example.invalid/gcc-linux-x64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000003", "root": "xpack-arm-none-eabi-gcc-15.2.1-1"},
-        "linux-arm64": {"url": "https://example.invalid/gcc-linux-arm64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000002", "root": "xpack-arm-none-eabi-gcc-15.2.1-1"},
-        "macos-x64": {"url": "https://example.invalid/gcc-macos-x64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000005", "root": "xpack-arm-none-eabi-gcc-15.2.1-1"},
-        "macos-arm64": {"url": "https://example.invalid/gcc-macos-arm64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000004", "root": "xpack-arm-none-eabi-gcc-15.2.1-1"},
-        "windows-x64": {"url": "https://example.invalid/gcc-windows-x64.zip", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000006", "root": "xpack-arm-none-eabi-gcc-15.2.1-1"}
+        "linux-x64": {"url": "https://example.invalid/gcc-linux-x64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000003", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"},
+        "linux-arm64": {"url": "https://example.invalid/gcc-linux-arm64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000002", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"},
+        "macos-x64": {"url": "https://example.invalid/gcc-macos-x64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000005", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"},
+        "macos-arm64": {"url": "https://example.invalid/gcc-macos-arm64.tar.gz", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000004", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"},
+        "windows-x64": {"url": "https://example.invalid/gcc-windows-x64.zip", "size": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000006", "root": "xpack-arm-none-eabi-gcc-15.2.1-1.1"}
       }
     },
     {
@@ -467,11 +518,3 @@ An index with one package and both tools. The URLs and hashes are placeholders.
 ```
 
 `boot.json` has its example in [TESTING.md](./TESTING.md#bootjson).
-
-## Open points
-
-One point is not decided yet.
-
-| Point | Options |
-|---|---|
-| Which version of each tool, `gcc` and `qemu`, the tool picks when it resolves | a. The highest version in the index. b. The package names it, with a new `sdk.json` field such as `tools`, so a package always builds with the compiler it was tested with. |
