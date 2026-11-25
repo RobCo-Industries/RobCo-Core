@@ -230,6 +230,24 @@ TEST(quad_turn_back_with_first_state_missed)
     CHECK_EQ(q.acc, 0);
 }
 
+TEST(quad_two_double_transitions_from_a_detent)
+{
+    input_quad_t q;
+
+    /* Rest 11, dir + from one detent clockwise. */
+    input_quad_init(&q, 4, 0, 1, 1);
+    CHECK_EQ(run(&q, "2013"), 1);
+    /*
+     * 11 [01] 00 [10] 11: a detent counter-clockwise, or out and back.
+     * The old direction says neither: nothing is counted, never +1.
+     */
+    CHECK_EQ(run(&q, "03"), 0);
+    CHECK_EQ(q.pend, 0);
+    CHECK_EQ(q.acc, 0);
+    /* The next detent counts as usual. */
+    CHECK_EQ(run(&q, "1023"), -1);
+}
+
 TEST(quad_phase_recovers_at_rest)
 {
     input_quad_t q;

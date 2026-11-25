@@ -63,8 +63,16 @@ int input_quad_feed(input_quad_t *q, int a, int b)
             q->pend = 1;
             return 0;
         }
-        /* One state was missed mid-detent. Assume the dial kept its last direction. */
-        move = 2 * q->dir;
+        if (q->pend) {
+            /*
+             * Back at the detent after two double transitions: no way to
+             * tell a full detent from a turn out and back. Count nothing.
+             */
+            move = 0;
+        } else {
+            /* One state was missed mid-detent. Assume the dial kept its last direction. */
+            move = 2 * q->dir;
+        }
     } else {
         q->dir = (int8_t)move;
         if (q->pend) {

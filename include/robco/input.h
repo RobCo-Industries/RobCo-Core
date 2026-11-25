@@ -140,7 +140,8 @@ void input_quad_init(input_quad_t *q, unsigned per_detent, int reverse, int a, i
  * in the last direction, or nothing before the first single step. With
  * 4 per detent, a double transition that leaves a detent waits for the
  * next single transition and takes its direction, so a turn back that
- * starts with a missed state still counts. On a rest state the decoder
+ * starts with a missed state still counts; a second double transition
+ * back to the detent counts nothing. On a rest state the decoder
  * rounds to the nearest detent and starts again, so a missed state costs
  * at most one step and never shifts the phase.
  */
