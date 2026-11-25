@@ -109,8 +109,8 @@ _Static_assert(sizeof(rimg_meta_t) == 192, "rimg_meta_t must be 192 bytes");
 | BOOT | 6 | `RIMG_BOOT_PIPOS` | Pip-OS kernel | `0x00008000`-`0x003FFFFF` | `/PIPOS.IMG` |
 | BOOT | 7 | `RIMG_BOOT_EXAMPLE` | Example or test image. The default in `start.S`. | `0x00008000`-`0x000FFFFF` | none, booted directly in tests |
 | ROM1 | 0 | `RIMG_ROM1_SYSTEM` | System ROM, Deitrix | `0x00400000`-`0x007FFFFF` | `/PIPBOY/ROM1.ROM` |
-| ROBCO78 | 0 | `RIMG_HOLO_GAME` | Game | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP` |
-| ROBCO78 | 1 | `RIMG_HOLO_UTILITY` | Utility | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP` |
+| ROBCO78 | 0 | `RIMG_HOLO_GAME` | Game | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP`, or `*.HTP` in the root of a holotape slot card |
+| ROBCO78 | 1 | `RIMG_HOLO_UTILITY` | Utility | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP`, or `*.HTP` in the root of a holotape slot card |
 | ROBCO78 | 2 | `RIMG_HOLO_DATA` | Data. Not executable. | none | `/PIPBOY/HOLO/*.HTP`, `/UOS/HOLO/*.HTP` |
 
 Values not listed are reserved. A loader rejects them at the bounds step.
@@ -200,6 +200,7 @@ The boot partition is FAT32. Names are 8.3 and upper case. Each name is 1 to 8 c
 | Pip-Boy | `/PIPBOY/PIPOS.CFG` | Pip-OS config, INI text |
 | Pip-Boy | `/PIPBOY/ROM1.ROM` | ROM1 0 |
 | Pip-Boy | `/PIPBOY/HOLO/*.HTP` | ROBCO78 0, 1 or 2 |
+| Holotape slot card | `/*.HTP` | ROBCO78 0, 1 or 2, read-only, see [PIPOS_ABI.md](./PIPOS_ABI.md#holotapes) |
 | Pip-Boy | `/PIPBOY/SAVE/*.SAV` | Save files, not `rimg` |
 | Both | `/bootcode.bin`, `/start.elf`, `/fixup.dat` | Firmware, fetched by `tools/fetch_firmware.sh` at a pinned release with pinned SHA-256 values, never committed |
 | Both | `/config.txt` | See [BOARD_SUPPORT.md](./BOARD_SUPPORT.md). `tools/mkbootdir.sh` writes it with the firmware and the image into a boot directory. |
