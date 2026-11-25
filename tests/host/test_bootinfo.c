@@ -209,6 +209,22 @@ TEST(merge_keeps_inherited_fb_and_console)
     CHECK_MEM(out.boot_path, "/A", 3);
 }
 
+TEST(boot_flags_bits)
+{
+    robco_bootinfo_t prev, own, out;
+
+    CHECK_EQ(ROBCO_BOOT_FALLBACK, 0x1u);
+    CHECK_EQ(ROBCO_BOOT_MAINT, 0x2u);
+    CHECK_EQ(ROBCO_BOOT_COLD, 0x4u);
+    CHECK_EQ(ROBCO_BOOT_MAINT_REQ, 0x8u);
+
+    fill_prev(&prev);
+    fill_own(&own);
+    prev.boot_flags = ROBCO_BOOT_MAINT | ROBCO_BOOT_MAINT_REQ;
+    bootinfo_merge(&out, &prev, &own, 0);
+    CHECK_EQ(out.boot_flags, ROBCO_BOOT_MAINT | ROBCO_BOOT_MAINT_REQ);
+}
+
 TEST(merge_own_groups_replace)
 {
     robco_bootinfo_t prev, own, out;
