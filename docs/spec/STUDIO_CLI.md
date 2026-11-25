@@ -508,7 +508,7 @@ The command does these in order:
 
 A scenario is a file `tests/NAME.toml` in the project. `NAME` is 1 to 32 characters from `a` to `z`, `0` to `9`, `_` and `-`, and it is the scenario's name. A `.toml` file in `tests/` with another name fails with `test: name`. Folders inside `tests/` are not searched.
 
-The file is TOML 1.0 in UTF-8. Its keys:
+The file is TOML 1.1 in UTF-8, as the project file is: [TOML 1.1 and a reader built on a 1.0 parser](./STUDIO_PROJECT.md#toml-11-and-a-reader-built-on-a-10-parser) applies. Its keys:
 
 | Key | Type | Required | Default | Limits | Meaning |
 |---|---|---|---|---|---|
@@ -535,7 +535,7 @@ An `exit` step may only be the last step. A scenario without one passes when its
 
 | Error | When |
 |---|---|
-| `test: syntax` | The file is not TOML 1.0 or not UTF-8. The detail has the line. |
+| `test: syntax` | The file is not TOML 1.1 or not UTF-8. The detail has the line. |
 | `test: format` | `format` is missing, is not a positive integer, or is larger than the tool knows. For a larger value the message asks for a newer tool. |
 | `test: unknown key` | A key or a table this spec does not define, at the top or in a step |
 | `test: type` | A key has the wrong TOML type |

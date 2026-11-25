@@ -24,7 +24,45 @@ A tool writes only under `build/` and to `robco.lock`. `robco test --update-gold
 
 ### Syntax
 
-`robco.toml` is TOML 1.0, encoded as UTF-8. A file that does not parse as TOML 1.0 fails with `manifest: syntax` and the line number.
+`robco.toml` is TOML 1.1, encoded as UTF-8. A file that does not parse as TOML 1.1 fails with `manifest: syntax` and the line number. `robco.lock` is TOML 1.1 too, and fails with `lock: syntax`.
+
+#### TOML 1.1 and a reader built on a 1.0 parser
+
+TOML 1.1 reads every TOML 1.0 file with the same meaning. It adds four forms that TOML 1.0 refuses:
+
+| Added in TOML 1.1 | Example | In these files |
+|---|---|---|
+| An inline table may span lines and may end with a comma | The example below | A table of the manifest may be written this way |
+| The escape `\xHH` in a basic string, for the characters up to U+00FF | `title = "Pi\x70es"` | Any string value |
+| The escape `\e` in a basic string, for U+001B | `"\e"` | Parses. No key takes a control character, so the value then fails its own rule, such as `manifest: title`. |
+| A time or a date and time without seconds | `08:30` | Parses. No key takes a time, so it fails with `manifest: type`. |
+
+A reader built on a TOML 1.0 parser does not follow this spec:
+
+- It reads every file that uses none of the four forms, and reads it right.
+- It refuses a file that uses one of them with `manifest: syntax`, where this spec asks for the file to be read, or to fail with another code. So two tools would disagree on the same project.
+- A reader must therefore use a TOML 1.1 parser. A test of a reader holds a manifest with each of the four forms.
+
+A tool writes only the forms that TOML 1.0 and 1.1 share. That covers [`robco.lock`](#robcolock) and the files of a template. So any TOML 1.0 program reads what the tool writes. The rule above is about what a reader accepts from a person.
+
+This manifest uses the first two forms. It means the same as the first manifest of [Examples](#examples), and a TOML 1.0 parser refuses it:
+
+```toml
+format = 1
+project = {
+    name = "PIPES",
+    title = "Pi\x70es",
+    version = "1.0.0",
+    kind = "holotape",
+    subtype = "game",
+    icon = "icon.pbm",
+}
+target = { platform = "pipos", abi = "1.3" }
+
+[build]
+backend = "robco"
+sources = ["src/*.c"]
+```
 
 Every path in the manifest follows these rules:
 
@@ -222,7 +260,7 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 
 | Code | When |
 |---|---|
-| `syntax` | The file is not TOML 1.0 or not UTF-8 |
+| `syntax` | The file is not TOML 1.1 or not UTF-8 |
 | `format` | `format` is missing, not a positive integer, or larger than the tool knows |
 | `unknown key` | A key or table this spec does not define |
 | `type` | A key has the wrong TOML type |
@@ -244,7 +282,7 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 
 ### Syntax and format version
 
-`robco.lock` is TOML 1.0 in UTF-8. Its first key is `format`, an integer, `1` for this spec. The format rules are those of the manifest: a larger value fails with `lock: format`, and an unknown key fails with `lock: unknown key`.
+`robco.lock` is TOML 1.1 in UTF-8. Its first key is `format`, an integer, `1` for this spec. The format rules are those of the manifest: a larger value fails with `lock: format`, and an unknown key fails with `lock: unknown key`.
 
 ### Keys
 

@@ -238,6 +238,34 @@ def test_scenario_examples_follow_the_step_rules():
     assert used == set(ACTIONS), "the examples show every kind of step"
 
 
+def toml_1_0(text):
+    """`text` with the forms that only TOML 1.1 has rewritten into TOML 1.0."""
+    def one_line(m):
+        body = re.sub(r"\s*\n\s*", " ", m[1]).strip()
+        return "{ " + body.rstrip(",").strip() + " }"
+    text = re.sub(r"\{([^{}]*\n[^{}]*)\}", one_line, text)
+    text = re.sub(r"\\x([0-9A-Fa-f]{2})", r"\\u00\1", text)
+    return text.replace("\\e", "\\u001B")
+
+
+def test_toml_1_1_example_means_the_first_manifest():
+    for text in (PROJECT, CLI):
+        assert "TOML 1.0 in" not in text and "not TOML 1.0" not in text
+    plain = next(tomllib.loads(b) for b in blocks(PROJECT, "toml") if "[project]" in b)
+    newer = next(b for b in blocks(PROJECT, "toml") if "project = {" in b)
+    # It uses forms that only TOML 1.1 has: an inline table over lines, a last comma, \xHH.
+    assert re.search(r"\{\n", newer) and re.search(r",\n\}", newer) and "\\x70" in newer
+    try:
+        parsed = tomllib.loads(newer)
+    except tomllib.TOMLDecodeError:
+        parsed = tomllib.loads(toml_1_0(newer))    # this Python reads TOML 1.0 only
+    assert parsed == plain
+    # What the tool writes stays in the forms both versions share.
+    for block in blocks(PROJECT, "toml") + blocks(PACKAGE, "toml") + blocks(CLI, "toml"):
+        if block != newer:
+            assert toml_1_0(block) == block and "\\e" not in block
+
+
 def test_manifest_examples_parse_and_hold_only_known_keys():
     known = {"project": {"name", "title", "version", "kind", "subtype", "icon"},
              "target": {"platform", "abi"}, "build": {"backend", "sources"}}
