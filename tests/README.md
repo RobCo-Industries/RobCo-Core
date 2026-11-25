@@ -609,6 +609,26 @@ def test_ready(board, robco_build):
 is a complete example. `tools/test_harness_plugin.py` runs it from a copy
 outside the repository.
 
+### Temp folders
+
+Tests write card images and build copies into `tmp_path`. The plugin
+removes a passing test's `tmp_path` as soon as the test ends. A failing
+test keeps its folder, so you can open its card image. pytest keeps
+the folders of the last three runs under the system temp folder, in
+`pytest-of-<user>`.
+
+Set `ROBCO_KEEP_TMP=1` to keep every folder, passing tests included:
+
+```sh
+ROBCO_KEEP_TMP=1 make test-canary
+```
+
+A project needs no change for this. When its own pytest configuration
+sets `tmp_path_retention_policy`, that value wins and the plugin leaves
+the policy alone. Folders from `tmp_path_factory.mktemp()` stay until
+the session ends, and go then only when every test passed. Use
+`tmp_path` for card images.
+
 ## Run an image by hand
 
 `harness.run` boots an image with the same firmware stub and arguments
