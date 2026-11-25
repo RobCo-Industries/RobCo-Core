@@ -51,6 +51,49 @@ diskutil eject /dev/diskN
 
 Wire the adapter to header pins 6, 8 and 10 as the guide shows. Open the port before you power the Pi, for example `screen /dev/tty.usbserial-XXXX 115200`. To keep a log, use `script -q hello.log screen /dev/tty.usbserial-XXXX 115200`.
 
+### Zero W 1.1, `examples/sdraw`, 2026-11-24
+
+Same board, card, adapter, firmware tag `1.20260915` and library commit `4249632` as the hello run. No DTB on the card. Only two files changed: the image, `examples/sdraw` default variant as `SDRAW.IMG`, and `config.txt` from `tools/mkbootdir.sh` with `kernel=SDRAW.IMG`.
+
+The output at boot. The card serial and the CID are left out on purpose:
+
+```
+@RC stage=sdraw ev=boot
+@RC stage=sdraw ev=card rc=ok type=sdhc blocks=31116288 clk=25000000
+@RC stage=sdraw ev=info ocr=0xc0ff8000 rca=0xaaaa mid=0x03 oid=SD pnm=SC16G prv=0x80 psn=<hidden> mdt=2019-06 cid=<hidden>
+@RC stage=sdraw ev=mbr rc=ok sig=0x55aa p0_type=0x0b p0_lba=8192 crc=0x04045c4a
+@RC stage=sdraw ev=ready
+```
+
+Read-only commands, in this order:
+
+| Command | Answer |
+|---|---|
+| `i` | The same `ev=card` and `ev=info` lines again |
+| `r 0 1` | `ev=read lba=0 count=1 rc=ok crc=0x04045c4a` |
+| `u 0 1` | `ev=uread lba=0 count=1 rc=ok crc=0x04045c4a` |
+| `r 0 8` | `ev=read lba=0 count=8 rc=ok crc=0x1afd369a` |
+| `r 2048 16` | `ev=read lba=2048 count=16 rc=ok crc=0xd8f49994` |
+| `r 1000000 256` | `ev=read lba=1000000 count=256 rc=ok crc=0x7ee8cdcd` |
+| `u 1000000 256` | `ev=uread lba=1000000 count=256 rc=ok crc=0x7ee8cdcd` |
+| `r 31116287 1` | `ev=read lba=31116287 count=1 rc=ok crc=0xb2aa7578` |
+| `r 31116288 1` | `ev=read lba=31116288 count=1 rc=range crc=0x00000000` |
+| `r 0 1` | `ev=read lba=0 count=1 rc=ok crc=0x04045c4a` |
+
+macOS reported the same card as exactly 31116288 blocks of 512 bytes.
+
+On this board, with this SDHC card, this run confirms:
+
+- `sd_init()` brings the card up through the EMMC controller at base + `0x300000`, on a board where the firmware gives the card to SDHOST and EMMC to the Wi-Fi chip. The driver has no SDHOST code.
+- The CSD capacity matches the size macOS reports.
+- `clk=25000000` is the rate the driver computed from the mailbox EMMC base clock and its divider. It was not measured on the pin.
+- Single and multi-block reads up to 256 blocks return `rc=ok`, at the start, the middle and the last block of the card.
+- A read into a buffer offset by one byte, `u`, gives the same CRC as an aligned read.
+- `rc=range` for block 31116288 comes from the driver's own check against the CSD capacity, before any command goes to the card.
+- The MBR signature and partition type `0x0b` match the macOS FAT32 format, and sector 0 reads the same CRC at the start and at the end of the session.
+
+This run does not show: any write, since `w`, `v` and `s` were not sent; an SDSC card; the no-card case; retries on an old card; FAT through RobCo-Core; whether the block CRCs match a read on a computer; the GPIO function of pins 34 to 39 and 48 to 53 before and after `sd_init()`; any other board.
+
 ## Serial adapter only
 
 | Component | Boards | Run | Look for |
@@ -84,8 +127,8 @@ Use a spare card: `w` in `sdraw` overwrites raw blocks.
 
 | Component | Boards | Run | Look for |
 |---|---|---|---|
-| SD pin routing | Pi 3, Zero 2 W, Zero W. Pi Zero or Pi 1 as control. | `spikes/s2-sd-read`, then `examples/sdraw` | Before the remux `pins=48-53 fsel=444444` and `pins=34-39 fsel=777777`, then `fsel=777777` on 48 to 53, `ev=card`, and `ev=read ok=1 sig=0xaa55` |
-| SD init and transfers | All, with an SDSC and an SDHC card | `examples/sdraw`: `i`, `r 0 1`, `w` and `v` on a scratch block, `u`, `s` | `ev=card rc=ok`, a clock near 25000000, `mismatches=0`, the same CRC from `r` and `u` |
+| SD pin routing | Pi 3, Zero 2 W, Zero W. Pi Zero or Pi 1 as control. | `spikes/s2-sd-read`, then `examples/sdraw` | Before the remux `pins=48-53 fsel=444444` and `pins=34-39 fsel=777777`, then `fsel=777777` on 48 to 53, `ev=card`, and `ev=read ok=1 sig=0xaa55`. Zero W 1.1, 2026-11-24: `examples/sdraw` gave `ev=card rc=ok` and read sector 0 through EMMC, see [results](#zero-w-11-examplessdraw-2026-11-24). The spike's `fsel` markers were not captured, so the pin states stay open on the Zero W. Open on every other board. |
+| SD init and transfers | All, with an SDSC and an SDHC card | `examples/sdraw`: `i`, `r 0 1`, `w` and `v` on a scratch block, `u`, `s` | `ev=card rc=ok`, a clock near 25000000, `mismatches=0`, the same CRC from `r` and `u`. Zero W 1.1, 2026-11-24, one SDHC card: init, `i`, `r` and `u` done, see [results](#zero-w-11-examplessdraw-2026-11-24). `w`, `v`, `s` and an SDSC card stay open. Open on every other board. |
 | SD retries | All, an old card helps | `examples/sdraw`, `r` and `w` of up to 256 blocks | No `rc=io` or `rc=timeout`, and correct data |
 | No card | All | `examples/sdraw` with the slot empty | `rc=nocard` at once, then `rc=nomedia` for `r 0 1` |
 | FAT on a real card | All | `examples/storage`: `ls /`, `cat /config.txt`, `put`, `atomic`, `df` | `ev=mount rc=ok`, the right sizes and CRCs, the files readable on a PC afterwards. |
