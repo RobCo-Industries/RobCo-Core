@@ -154,17 +154,35 @@ def test_make_target_through_make_c_from_another_folder(tmp_path):
     assert path.read_text(encoding="utf-8") == bootjson.dumps()
 
 
-def test_make_target_refuses_relative_output(tmp_path):
-    r = _make("BOOT_JSON=rel/boot.json", f"PYTHON={sys.executable}", cwd=tmp_path)
-    assert r.returncode != 0
-    assert "must be an absolute path" in r.stderr
-    assert not (tmp_path / "rel").exists()
-    assert not os.path.exists(os.path.join(ROOT, "rel"))
+def _copy_of_repo(tmp_path):
+    """A copy holding only what the target needs, so its state is known."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shutil.copy(os.path.join(ROOT, "Makefile"), repo)
+    shutil.copytree(os.path.join(ROOT, "mk"), repo / "mk")
+    shutil.copytree(os.path.join(ROOT, "tests", "harness"), repo / "tests" / "harness",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    return repo
 
 
 def _listing(top):
     return sorted(os.path.relpath(os.path.join(d, n), top)
                   for d, dirs, files in os.walk(top) for n in dirs + files)
+
+
+def test_make_target_refuses_relative_output(tmp_path):
+    repo = _copy_of_repo(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    # mk/host.mk probes the compiler when make reads it; a dry run does that first.
+    subprocess.run(["make", "-s", "-n", "-C", str(repo), "boot-json"], cwd=work,
+                   check=True, capture_output=True)
+    before = _listing(tmp_path)
+    r = subprocess.run(["make", "-s", "-C", str(repo), "boot-json", "BOOT_JSON=rel/boot.json",
+                        f"PYTHON={sys.executable}"], cwd=work, capture_output=True, text=True)
+    assert r.returncode != 0
+    assert "must be an absolute path" in r.stderr
+    assert _listing(tmp_path) == before
 
 
 @pytest.mark.parametrize("name", ["with space", "it's", "a 'b' c"])
