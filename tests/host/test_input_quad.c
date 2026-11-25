@@ -425,3 +425,34 @@ TEST(quad_initial_state)
     CHECK_EQ(input_quad_feed(&q, 1, 1), 0);
     CHECK_EQ(run(&q, "2013"), 1);
 }
+
+TEST(quad_rest_clears_any_history)
+{
+    input_quad_t q;
+    int i;
+    int k;
+
+    /*
+     * The target dial tests rely on this: a run with bad timing may count
+     * wrong, but once the lines rest at 11 the next clean turn is exact.
+     */
+    input_quad_init(&q, 4, 0, 1, 1);
+    for (i = 0; i < 500; i++) {
+        int pos = 0;
+        int n = (int)(rnd() % 12);
+
+        /* Any states, jumps included, as a late host can make them. */
+        for (k = 0; k < n; k++) {
+            int s = (int)(rnd() & 3);
+
+            (void)input_quad_feed(&q, (s >> 1) & 1, s & 1);
+        }
+        (void)input_quad_feed(&q, 1, 1);
+        CHECK_EQ(q.acc, 0);
+        CHECK_EQ(q.pend, 0);
+        CHECK_EQ(q.prev, 3);
+        /* cw[] starts at 00; position 2 is 11, the rest here. */
+        pos = 2;
+        CHECK_EQ(turn(&q, &pos, (i & 1) ? 16 : -16), (i & 1) ? 4 : -4);
+    }
+}
