@@ -612,8 +612,11 @@ outside the repository.
 ### Temp folders
 
 Tests write card images and build copies into `tmp_path`. The plugin
-removes a passing test's `tmp_path` as soon as the test ends. A failing
-test keeps its folder, so you can open its card image. pytest keeps
+removes a passing test's `tmp_path` as soon as the test ends. A test
+that fails or errors keeps its folder, so you can open its card image.
+This holds for a failure in setup, in the test itself and in teardown.
+A skipped test and an expected failure that fails as expected lose
+their folders. pytest keeps
 the folders of the last three runs under the system temp folder, in
 `pytest-of-<user>`.
 
