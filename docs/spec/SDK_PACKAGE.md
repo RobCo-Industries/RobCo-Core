@@ -431,6 +431,176 @@ The Pi firmware files are never part of a package. The `pipos` package carries t
 
 A tool downloads each file, checks its SHA-256 and keeps it in `<cache>/firmware/<tag>/`. A mismatch deletes the file and fails with `firmware: hash`. The tool never puts a firmware file into a package, an index or a release of its own.
 
+## The templates package
+
+The `templates` package holds the project skeletons that `robco new` writes. RobCo-Reel builds it. State today: no template and no package exists.
+
+It is a package like any other: the rules of [The archive](#the-archive), [sdk.json](#sdkjson), [Hashes](#hashes) and [What a package must never contain](#what-a-package-must-never-contain) apply, and it installs into `<cache>/packages/templates/<version>/`.
+
+| Property | Value |
+|---|---|
+| File name | `templates-<version>.zip` |
+| `version` | `X.Y.Z`, the RobCo-Reel release it was built from |
+| `abi`, `tools`, `firmware` | Absent |
+| `requires` | Empty |
+| `built_from` | `RobCo-Reel` and its commit |
+| `formats` | `templates`, `project` and `scenario`, each `1` for this spec |
+| `licences` | MIT for every path |
+
+`project` and `scenario` are the format versions of the `robco.toml` and of the scenario files that the templates hold. A tool that does not know one of them refuses the package by the rule of [Reading sdk.json](#reading-sdkjson), so it never writes a project it cannot build.
+
+### Layout of templates
+
+| Path | Content |
+|---|---|
+| `sdk.json` | The manifest |
+| `templates.json` | The list of templates |
+| `<id>/` | The files of the template `<id>`, laid out as they go into a new project |
+| `LICENSES/` | The licence texts |
+
+The archive holds nothing else.
+
+### templates.json
+
+`templates.json` is a JSON object, UTF-8, at the archive root.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `format` | integer | Yes | `1` for this spec |
+| `templates` | array of objects | Yes | One or more templates, sorted by `id` in byte order |
+
+A template:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | string | Yes | The name a person gives to `robco new`, and the folder of the template in the archive. 1 to 32 characters from `a` to `z`, `0` to `9` and `-`. It starts with a letter. |
+| `title` | string | Yes | A short name for lists. ASCII, 1 to 64 bytes. |
+| `description` | string | Yes | One sentence. ASCII, 1 to 200 bytes. |
+| `kind` | string | Yes | The `project.kind` of the manifest the template writes: `holotape` |
+| `files` | array of objects | Yes | Every file of the template, sorted by `path` in byte order |
+
+A file:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `path` | string | Yes | The path of the file inside `<id>/` and inside the new project. It follows the path rules of [robco.toml](./STUDIO_PROJECT.md#syntax). |
+| `substitute` | boolean | Yes | `true`: the tool replaces the tokens of [Tokens](#tokens) in this file. `false`: the tool copies the file byte for byte. |
+
+`robco new` reads `templates.json` and checks all of it before it writes anything:
+
+| Case | Error |
+|---|---|
+| A larger `format` | `templates: format`, and the message asks for a newer tool |
+| The file is missing, is not JSON, or a required field is missing or has the wrong type | `templates: manifest` |
+| A field this spec does not define | `templates: manifest`, with its name. This file is new, so it starts strict. |
+| Two templates with the same `id`, a list that is not sorted, or a value outside its limits | `templates: manifest` |
+| A `path` that breaks a path rule, or two paths of one template that differ only in case | `templates: manifest` |
+| A listed file that the package does not hold at `<id>/<path>` | `templates: manifest` |
+| A file under `<id>/` that `files` does not list | `templates: manifest` |
+
+### Tokens
+
+A token is `@`, then one or more of `A` to `Z` and `_`, then `@`. Tokens count only in a file with `substitute` set to `true`.
+
+| Token | Replaced by |
+|---|---|
+| `@NAME@` | The project name given to `robco new`, which follows the [name rules](./STUDIO_PROJECT.md#name-rules) |
+
+The tool replaces every `@NAME@` in the file's bytes and changes nothing else. Any other token in such a file fails with `templates: token` and names the file and the token. A file that needs such text as it stands sets `substitute` to `false`.
+
+The tool never changes line ends, on any system, and a `path` holds no token. Left out on purpose: a title or a version given on the command line, files that depend on an answer, and renamed files.
+
+### The holotape-c template
+
+The first template is `holotape-c`: a holotape in C that draws one screen, logs one line and ends on a key. Its entry in `templates.json`:
+
+```json
+{
+  "format": 1,
+  "templates": [
+    {
+      "id": "holotape-c",
+      "title": "Holotape in C",
+      "description": "A holotape in C that draws one screen and waits for SELECT.",
+      "kind": "holotape",
+      "files": [
+        {"path": "icon.pbm", "substitute": false},
+        {"path": "robco.toml", "substitute": true},
+        {"path": "src/main.c", "substitute": false},
+        {"path": "tests/golden/start/ready.png", "substitute": false},
+        {"path": "tests/start.toml", "substitute": false}
+      ]
+    }
+  ]
+}
+```
+
+| File | Must hold |
+|---|---|
+| `robco.toml` | The manifest below, byte for byte |
+| `icon.pbm` | A 32x32 PBM icon, `P1` or `P4`, of original art |
+| `src/main.c` | The tape, by the rules below |
+| `tests/start.toml` | The scenario below, byte for byte |
+| `tests/golden/start/ready.png` | The golden image of the tape's screen, taken from QEMU, by the rules of [Golden images](./STUDIO_CLI.md#golden-images) |
+
+`robco.toml`:
+
+```toml
+format = 1
+
+[project]
+name = "@NAME@"
+title = "@NAME@"
+version = "0.1.0"
+kind = "holotape"
+subtype = "utility"
+icon = "icon.pbm"
+
+[target]
+platform = "pipos"
+abi = "1.4"
+
+[build]
+backend = "robco"
+sources = ["src/*.c"]
+```
+
+`tests/start.toml`:
+
+```toml
+format = 1
+
+[[step]]
+expect = "tape: ready"
+
+[[step]]
+screen = "ready"
+
+[[step]]
+tap = "select"
+
+[[step]]
+exit = 0
+```
+
+The tape, `src/main.c`:
+
+1. Its first line is `/* SPDX-License-Identifier: MIT */`. It includes `<pipos/pip.h>` and no other header, and it calls nothing newer than ABI 1.4.
+2. It draws one screen and calls `present` once. The screen depends only on the code and on the default colours of `gfx_info`. It shows no clock, no random value, no project name and no animation.
+3. After `present` returns, it logs the line `tape: ready` once, with one `pip_printf("tape: ready\n")`.
+4. It then waits for events. On a press of SELECT it returns 0 from `pip_main()`. It ignores every other event and draws nothing more.
+
+Rule 2 makes one golden image right for every project name and every board. Rule 3 gives `robco run --headless --expect "tape: ready"` its line, after the frame is on the screen. Rule 4 lets the scenario send a key and read an exit status.
+
+The golden image is right only on the card of [The simulator card](./STUDIO_CLI.md#the-simulator-card), whose `PIPOS.CFG` sets the colour scheme.
+
+### What RobCo-Reel must add for the templates
+
+1. `templates/holotape-c/` with the five files above.
+2. A build of the template through `pipos-app.mk`, for its own tests: a Makefile outside the template folder with `NAME`, `TITLE`, `VERSION := 0.1.0`, `SUBTYPE := utility`, `ICON`, `ABI := 1.4` and `SRCS := src/main.c`, run in the template folder.
+3. A target test on every board that boots that tape with the `PIPOS.CFG` of [The simulator card](./STUDIO_CLI.md#the-simulator-card), waits for `tape: ready`, compares the screen with `tests/golden/start/ready.png` pixel for pixel, sends SELECT and reads the tape's exit status 0. The ROM that launches the tape is the runner ROM once the Pip-OS pin holds it, and the repository's test launcher until then.
+4. `make templates-package`, which writes `templates-<version>.zip` with `sdk.json`, `templates.json`, `holotape-c/` and `LICENSES/`.
+
 ## The index
 
 The index is one JSON file that lists every package and tool a tool may install.
