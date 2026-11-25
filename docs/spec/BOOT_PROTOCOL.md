@@ -754,7 +754,7 @@ Restore users is the way back in when every password is lost. It copies bytes an
 1. Shows that the setting disables it, and does nothing, when `restore_users` is not `on`.
 2. Checks that `/UOS/SYSUAF.DEF` exists and is not empty. Otherwise it says so and changes nothing.
 3. Asks a question that names both files and takes an explicit yes.
-4. Writes a temporary file, then renames it over `/UOS/SYSUAF.DAT`, with `fs_write_file_atomic()`. A power cut leaves the old or the new file whole.
+4. Writes a temporary file, then renames it over `/UOS/SYSUAF.DAT`, with `fs_write_file_atomic()`. A power cut leaves the old or the new file whole. The image runs no recovery itself beyond what `fs_write_file_atomic()` does. After an interrupted restore, UOS's read of `/UOS/SYSUAF.DAT` recovers the file, because UOS reads its system files through the library's `fs_atomic_recover()`.
 
 ### Writes
 
