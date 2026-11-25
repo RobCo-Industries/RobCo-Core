@@ -44,6 +44,9 @@ PYTHON        ?= python3
 HOST_CC       ?= cc
 HOST_SANITIZE ?= 1
 HOST_BUILD    ?= $(or $(BUILD),build)/host
+# One spelling, as BUILD in mk/robco.mk: the gccwarn .d files name their
+# stamps as the rules spell them.
+override HOST_BUILD := $(patsubst $(CURDIR)/%,%,$(abspath $(HOST_BUILD)))
 
 # "" for the RobCo-Core root itself, so its paths stay as before.
 ROBCO_HOST_P := $(if $(filter .,$(ROBCO_CORE)),,$(ROBCO_CORE)/)

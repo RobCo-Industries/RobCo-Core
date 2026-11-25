@@ -131,6 +131,8 @@ Every variable `mk/robco.mk` reads:
 
 The fragment compiles every `.c` and `.S` file under `robco-core/src/*/` into `build/librobco.a`. The linker keeps only what your image uses.
 
+The fragment rewrites `BUILD` to one spelling: relative to the project when the folder is inside it, absolute otherwise. `mk/host.mk` does the same for `HOST_BUILD`. Header dependencies then hold whichever spelling you pass, but rules your Makefile spells with `$(BUILD)` before the `include` keep the old spelling, so put them after it.
+
 ### robco_config.h
 
 `mk/robco.mk` forces this file into every C file, every assembly file and the linker script. So it may hold preprocessor macros only: no declarations, no types.

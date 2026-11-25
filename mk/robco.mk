@@ -29,7 +29,12 @@ $(error CONFIG_H is not set)
 endif
 
 BUILD   ?= build
-CROSS   ?= arm-none-eabi-
+# One spelling for BUILD: relative to the project when it is inside it,
+# absolute otherwise. gcc names the object in each .d file as the rule
+# spelled it, so `BUILD=build` and an absolute BUILD for the same folder
+# would not share header dependencies.
+override BUILD := $(patsubst $(CURDIR)/%,%,$(abspath $(BUILD)))
+CROSS  ?= arm-none-eabi-
 CC      := $(CROSS)gcc
 AR      := $(CROSS)ar
 LD      := $(CROSS)ld
