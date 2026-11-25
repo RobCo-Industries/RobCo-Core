@@ -320,20 +320,70 @@ These are facts of the kernel as it is, and the runner is shaped by them. None i
 
 ### RUNNER.CFG
 
-The runner reads `/PIPBOY/RUNNER.CFG`. It is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), at most 255 bytes long.
+The runner reads `/PIPBOY/RUNNER.CFG`: 1 to 255 bytes of INI text.
 
 | Section | Key | Required | Value |
 |---|---|---|---|
-| `run` | `tape` | Yes | The file name of the tape, such as `PIPES.HTP`: a name `holo_launch` accepts, with no folder |
+| `run` | `tape` | Yes | The file name of the tape, such as `PIPES.HTP`: a name `holo_launch` accepts, with no folder. 1 to 12 bytes, each from `0x21` to `0x7E`. |
 
 The runner reads this one key and passes an empty argument string to the tape. Left out on purpose: an argument string, a list of tapes and a tape on the slot card.
 
-The tool writes the file as exactly these two lines, each ended by one line feed, with `NAME` the `project.name`:
+#### What the tool writes
+
+The tool writes the file as exactly these two lines, with `NAME` the `project.name`:
 
 ```
 [run]
 tape = NAME.HTP
 ```
+
+Byte for byte: `[run]`, one line feed, `tape`, one space, `=`, one space, `NAME`, `.HTP`, one line feed. No carriage return, no byte order mark, no comment, no blank line and no other space. A name has 1 to 8 bytes, so the file has 19 to 26 bytes. The tool writes no other form.
+
+#### What the runner accepts
+
+The runner parses the file with `pip_ini_get()`. The call exists: `include/pipos/ini.h` declares it and `libpip.a` holds it. It is RobCo-Core's `ini_get()` under the SDK's prefix, with the same limits and the same codes, so the runner links nothing but the SDK and no SDK change is needed.
+
+```c
+int pip_ini_get(const char *text, size_t len, const char *section, const char *key,
+                char *out, size_t out_size);
+```
+
+The runner calls `pip_ini_get(buf, n, "run", "tape", name, 13)`, with `n` the bytes read. The call accepts more than the two lines the tool writes. This is the whole grammar, so a card written by hand behaves the same on every runner:
+
+| Part | Rule |
+|---|---|
+| The file | 1 to 255 bytes. A byte order mark is not skipped: its bytes make the first line a syntax error. |
+| A line | It ends at a line feed. One carriage return right before the line feed is dropped. The last line may lack its line feed, and one carriage return at its end is dropped too. |
+| The longest line | 255 bytes without its line end. No file of 255 bytes holds a longer one, so the limit of the file is the one that counts. |
+| Bytes | A byte below `0x20` other than a tab, or the byte `0x7F`, anywhere in a line, is refused. That covers a NUL and a carriage return that is not before a line feed. Bytes from `0x80` up pass in a comment and in a value. |
+| Blanks | A blank is a space or a tab. Blanks at the start of a line are skipped. |
+| An empty line | Skipped. So is a line that holds only blanks. |
+| A comment | A line whose first byte after its blanks is `#` or `;`. Skipped to its end. |
+| A section line | `[`, blanks, the name, blanks, `]`, then only blanks and an optional comment. The name has 1 to 31 bytes from `A` to `Z`, `a` to `z`, `0` to `9`, `_`, `.` and `-`. Blanks between those bytes are part of the name. |
+| A key line | The key, blanks, `=`, blanks, the value. The key has 1 to 31 bytes from the same set, with no blank. |
+| A plain value | It runs to the end of the line, or to a `#` or `;` that starts the value or follows a blank. Blanks at its end are dropped. It may be empty. At most 127 bytes. |
+| A quoted value | It starts with `"` and ends at the next `"` that no backslash escapes. Inside, `\"` is a quote, `\\` a backslash and `\n` a line feed. Any other byte after a backslash is refused. After the closing quote come only blanks and an optional comment. At most 127 bytes after the escapes. |
+| Any other line | Refused |
+| Names | Compared byte for byte. `[Run]` and `Tape` are other names. |
+| A key before any section | It belongs to the section with the empty name, never to `run` |
+| `tape` twice in `run` | The last one counts. A second `[run]` line continues the section. |
+| Other sections and keys | Parsed and ignored. The whole file must parse, so an error in a line the runner does not need still fails. |
+| The value of `tape` | 1 to 12 bytes, each from `0x21` to `0x7E`. Twelve is the longest 8.3 name: 8 bytes, a dot and 3 bytes. |
+
+Each way the file can be wrong, and the line the runner then prints. [Runner markers](#runner-markers) defines the line. The parser reports the first bad line of the file, so a bad line comes before a missing key.
+
+| The file | The runner prints `@RC stage=runner ev=done result=config` and |
+|---|---|
+| Does not exist | `rc=-2 why=open`. -2 is `-PIP_ENOENT`. |
+| Cannot be opened for another reason, such as a card error | `rc=<rc> why=open`, with the value `file_open` returned, such as `-5` |
+| Cannot be read | `rc=<rc> why=read`, with the negative value `file_read` returned |
+| Has 0 bytes, or more than 255 | `rc=0 why=size` |
+| Holds a control byte | `rc=-4 why=parse`. -4 is `PIP_INI_ERR_CHAR`. |
+| Holds a line that is no section, key, comment or empty line, a section line or a quoted value that breaks its rule, or a key line with no `=` | `rc=-2 why=parse`. -2 is `PIP_INI_ERR_SYNTAX`. |
+| Holds a section name or a key above 31 bytes, or a value above 127 | `rc=-3 why=parse`. -3 is `PIP_INI_ERR_TOO_LONG`. |
+| Parses and has no key `tape` in a section `run` | `rc=-5 why=parse`. -5 is `PIP_INI_ERR_NOT_FOUND`. |
+| Parses and the last `tape` of `run` has more than 12 bytes | `rc=-6 why=parse`. -6 is `PIP_INI_ERR_SPACE`. |
+| Parses and the value is empty, or holds a byte outside `0x21` to `0x7E`, such as a space | `rc=0 why=name` |
 
 ### What the runner does
 
@@ -344,8 +394,8 @@ The runner is `pip_main()` of one C file. It runs these steps once, in order, an
 | 1 | `file_open("/PIPBOY/RUNNER.CFG")` | `result=config why=open`, `rc` the value returned |
 | 2 | `file_read` into a buffer of 256 bytes until it returns 0 or the buffer is full, then `file_close` | `result=config why=read`, `rc` the negative value returned |
 | 3 | The file holds 1 to 255 bytes | `result=config why=size rc=0` |
-| 4 | `pip_ini_get()` of key `tape` in section `run`, into 13 bytes | `result=config why=parse`, `rc` the value returned |
-| 5 | Every byte of the value is from `0x21` to `0x7E` | `result=config why=name rc=0` |
+| 4 | `pip_ini_get(buf, n, "run", "tape", name, 13)`, as [What the runner accepts](#what-the-runner-accepts) says | `result=config why=parse`, `rc` the negative value returned |
+| 5 | The value has 1 to 12 bytes, each from `0x21` to `0x7E` | `result=config why=name rc=0` |
 | 6 | Print `ev=run` with the value | |
 | 7 | `holo_launch(value, "")` | |
 | 8 | Print `ev=done` with the result of step 7 | |

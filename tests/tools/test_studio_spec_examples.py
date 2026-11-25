@@ -367,3 +367,150 @@ def test_card_config_text_is_stable():
                     ("volume", "100"), ("beep", "no"), ("slot", "off")]
     runner = next(b for b in blocks(PACKAGE, "") if b.startswith("[run]"))
     assert runner == "[run]\ntape = NAME.HTP\n"
+
+
+# The grammar of "What the runner accepts", as a model of pip_ini_get().
+INI_SYNTAX, INI_TOO_LONG, INI_CHAR, INI_NOT_FOUND, INI_SPACE = -2, -3, -4, -5, -6
+INI_NAME = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+INI_BLANK = set(b" \t")
+
+
+def ini_get(text, section, key, out_size):
+    """(code, value) for the last `key` of `section`, by the rules of the spec's table."""
+
+    def blank_rest(rest):
+        rest = rest.lstrip(b" \t")
+        return rest == b"" or rest[:1] in (b"#", b";")
+
+    found, current = None, b""
+    for line in text.split(b"\n")[:-1] if text.endswith(b"\n") else text.split(b"\n"):
+        if line.endswith(b"\r"):
+            line = line[:-1]
+        if any((b < 0x20 and b != 9) or b == 0x7F for b in line):
+            return INI_CHAR, b""
+        line = line.lstrip(b" \t")
+        if line == b"" or line[:1] in (b"#", b";"):
+            continue
+        if line[:1] == b"[":
+            close = line.find(b"]")
+            body = line[1:close] if close != -1 else b""
+            if close == -1 or not set(body) <= INI_NAME | INI_BLANK:
+                return INI_SYNTAX, b""
+            name = body.strip(b" \t")
+            if name == b"":
+                return INI_SYNTAX, b""
+            if len(name) > 31:
+                return INI_TOO_LONG, b""
+            if not blank_rest(line[close + 1:]):
+                return INI_SYNTAX, b""
+            current = name
+            continue
+        n = 0
+        while n < len(line) and line[n] in INI_NAME:
+            n += 1
+        if n > 31:
+            return INI_TOO_LONG, b""
+        rest = line[n:].lstrip(b" \t")
+        if n == 0 or rest[:1] != b"=":
+            return INI_SYNTAX, b""
+        rest = rest[1:].lstrip(b" \t")
+        if rest[:1] == b'"':
+            value, i = bytearray(), 1
+            while True:
+                if i == len(rest):
+                    return INI_SYNTAX, b""
+                c = rest[i:i + 1]
+                i += 1
+                if c == b'"':
+                    break
+                if c == b"\\":
+                    c = {b"n": b"\n", b'"': b'"', b"\\": b"\\"}.get(rest[i:i + 1])
+                    i += 1
+                    if c is None:
+                        return INI_SYNTAX, b""
+                value += c
+            if len(value) > 127:
+                return INI_TOO_LONG, b""
+            if not blank_rest(rest[i:]):
+                return INI_SYNTAX, b""
+            value = bytes(value)
+        else:
+            stop = len(rest)
+            for i, c in enumerate(rest):
+                if c in b"#;" and (i == 0 or rest[i - 1] in INI_BLANK):
+                    stop = i
+                    break
+            value = rest[:stop].rstrip(b" \t")
+            if len(value) > 127:
+                return INI_TOO_LONG, b""
+        if current == section and line[:n] == key:
+            found = value
+    if found is None:
+        return INI_NOT_FOUND, b""
+    if len(found) >= out_size:
+        return INI_SPACE, b""
+    return 0, found
+
+
+def runner_config(data):
+    """What the runner makes of RUNNER.CFG: ("run", name) or ("config", rc, why)."""
+    if not 1 <= len(data) <= 255:
+        return ("config", 0, "size")
+    code, value = ini_get(data, b"run", b"tape", 13)
+    if code != 0:
+        return ("config", code, "parse")
+    if not 1 <= len(value) <= 12 or not all(0x21 <= b <= 0x7E for b in value):
+        return ("config", 0, "name")
+    return ("run", value)
+
+
+def test_runner_config_grammar_and_failure_table():
+    written = next(b for b in blocks(PACKAGE, "") if b.startswith("[run]"))
+    for name in ("A", "PIPES", "CULVERT", "ABCD_-78"):
+        data = written.replace("NAME", name).encode()
+        assert 19 <= len(data) <= 26
+        assert runner_config(data) == ("run", f"{name}.HTP".encode())
+    cases = {
+        b"": (0, "size"),
+        b"#" * 256: (0, "size"),
+        b"[run]\ntape = A.HTP\x00\n": (INI_CHAR, "parse"),
+        b"[run]\rtape = A.HTP\n": (INI_CHAR, "parse"),
+        b"\xef\xbb\xbf[run]\ntape = A.HTP\n": (INI_SYNTAX, "parse"),
+        b"[run]\nnonsense\n": (INI_SYNTAX, "parse"),
+        b"[run\ntape = A.HTP\n": (INI_SYNTAX, "parse"),
+        b"[run]\ntape = \"A.HTP\n": (INI_SYNTAX, "parse"),
+        b"[run]\ntape = \"A\\x.HTP\"\n": (INI_SYNTAX, "parse"),
+        b"[run]\ntape = \"A.HTP\" x\n": (INI_SYNTAX, "parse"),
+        b"[" + b"s" * 32 + b"]\n": (INI_TOO_LONG, "parse"),
+        b"[run]\n" + b"k" * 32 + b" = 1\n": (INI_TOO_LONG, "parse"),
+        b"[run]\ntape = " + b"v" * 128 + b"\n": (INI_TOO_LONG, "parse"),
+        b"[other]\ntape = A.HTP\n": (INI_NOT_FOUND, "parse"),
+        b"tape = A.HTP\n[run]\n": (INI_NOT_FOUND, "parse"),
+        b"[Run]\ntape = A.HTP\n": (INI_NOT_FOUND, "parse"),
+        b"[run]\nTape = A.HTP\n": (INI_NOT_FOUND, "parse"),
+        b"[run]\ntape = ABCDEFGH.HTPX\n": (INI_SPACE, "parse"),
+        b"[run]\ntape = A.HTP\ntape = ABCDEFGH.HTPX\n": (INI_SPACE, "parse"),
+        b"[run]\ntape =\n": (0, "name"),
+        b"[run]\ntape = A B.HTP\n": (0, "name"),
+        b"[run]\ntape = \"A\\n.HTP\"\n": (0, "name"),
+        b"[run]\ntape = A\xe9.HTP\n": (0, "name"),
+    }
+    for data, (rc, why) in cases.items():
+        assert runner_config(data) == ("config", rc, why), data
+    accepted = {
+        b"[run]\r\ntape=A.HTP": b"A.HTP",
+        b"  [ run ]  ; the tape\n\ttape\t=\tA.HTP   # comment\n": b"A.HTP",
+        b"[run]\ntape = A#B.HTP\n": b"A#B.HTP",
+        b"[run]\ntape = \"A.HTP\"\n": b"A.HTP",
+        b"[run]\ntape = OLD.HTP\n[x]\nk = v\n[run]\ntape = NEW.HTP\n": b"NEW.HTP",
+        b"[run]\ntape = ABCDEFGH.HTP\n": b"ABCDEFGH.HTP",
+    }
+    for data, name in accepted.items():
+        assert runner_config(data) == ("run", name), data
+    # The failure table names each code the model can give, and no other.
+    table = section(PACKAGE, "What the runner accepts", "####")
+    table = table[table.index("Each way the file can be wrong"):]
+    pairs = set(re.findall(r"`rc=(-?\d+) why=([a-z]+)`", table))
+    assert pairs == {("-2", "open"), ("0", "size"), ("-4", "parse"), ("-2", "parse"), ("-3", "parse"),
+                     ("-5", "parse"), ("-6", "parse"), ("0", "name")}
+    assert {(str(rc), why) for rc, why in cases.values()} == pairs - {("-2", "open")}
