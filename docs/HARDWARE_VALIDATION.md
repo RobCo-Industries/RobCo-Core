@@ -231,6 +231,18 @@ Use a spare card: `w` in `sdraw` overwrites raw blocks.
 | Demo menu with a card | All, with a keyboard over the serial adapter | `examples/demo` variant `build/menu`, card with `/DEMO.INI` | The menu starts on the item the file names and follows the arrow keys |
 | Handoff with caches | All | `examples/chain1` variants `build/mmu` and `build/mmufb` | The next stage accepts the boot info and runs |
 
+## Card removal
+
+QEMU pulls the card with QMP and sets the card inserted bit. A real slot may not, and the driver then never reads it: see [Card detect](guide/api/storage.md#card-detect). Every row is open on every board.
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| Card-inserted bit with a card in, on each board | All | `examples/sdraw` with a working card | The `ev=detect` marker. Write down `present`, `inserted` and `card_detect` for the board. `card_detect=not_reported` means the driver never uses the bit there, and a pull shows as timeouts. |
+| Card inserted bit | All | `examples/storage`: `probe` with the card in, then pull the card and `hread 8192` after `hopen` on a large file | `ev=probe rc=ok` with the card in. After the pull, `rc=gone`. If the answer is `rc=timeout` or `rc=io`, the slot does not report the pull: write that down. |
+| Pulling a card during a read | All | `examples/storage`: `ramfs`, `put ram:/R.BIN 3000 5`, `hopen` on a file of several MiB, then `hread 65536` in a loop while you pull the card | Every answer after the pull is `rc=gone`, never stale data and never a hang. `cat ram:/R.BIN` still works. `hclose` and `umount` give `rc=gone` and `rc=ok`. |
+| Putting another card in | All | After the row above: insert a card with other files, `sdinit`, `mount ro`, `cat sd:/<a file only on the new card>` | `ev=sdinit rc=ok`, `ev=mount rc=ok` and the new file's CRC. A file only on the old card gives `rc=noent`. |
+| Pulling a card during a write | All, with a card you can lose | `examples/storage`: `atomic /SAVE.SAV 70000 1` and pull the card during it, at least 10 times. Put it back, `sdinit`, `mount`, `recover /SAVE.SAV`, `cat /SAVE.SAV`. | `rc=gone` for the write, then `ev=recover rc=ok` and the old or the new CRC. The card passes `fsck.vfat -n` on a PC. |
+
 ## Buttons and encoder
 
 | Component | Boards | Run | Look for |

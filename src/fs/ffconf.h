@@ -41,8 +41,12 @@
 #define FF_FS_RPATH   1
 #define FF_PATH_DEPTH 10
 
-/* The glue maps our volume names to drive numbers "0:" and "1:". */
+/* The glue maps our volume names to drive numbers "0:", "1:" and so on. */
+#if defined(ROBCO_FS_VOLUMES)
+#define FF_VOLUMES         ROBCO_FS_VOLUMES
+#else
 #define FF_VOLUMES         2
+#endif
 #define FF_STR_VOLUME_ID   0
 #define FF_MULTI_PARTITION 0
 

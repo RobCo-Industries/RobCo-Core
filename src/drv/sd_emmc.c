@@ -32,6 +32,7 @@
 
 #define SR_CMD_INHIBIT  (1u << 0)
 #define SR_DAT_INHIBIT  (1u << 1)
+#define SR_CARD_INSERTED (1u << 16)
 
 #define C0_POWER_3V3    (0xfu << 8)
 
@@ -120,6 +121,7 @@
 static uint32_t emmc_base;
 static uint32_t host_version;
 static int ready;
+static int card_detect;         /* 1: the inserted bit was set at init, with a working card */
 static sd_info_t info;
 static blk_dev_t dev;
 
@@ -618,6 +620,38 @@ static int xfer_retry(uint64_t lba, uint32_t n, uint8_t *buf, int write)
     return rc;
 }
 
+/*
+ * After a failed transfer on a board that reports card detect: a clear
+ * inserted bit means the card left. Report no medium until sd_init() runs
+ * again. On a board that does not report it the bit is never read here,
+ * and the error goes back to the caller as before.
+ */
+static int failed(int rc)
+{
+    if (rc != 0 && rc != BLK_ERR_RANGE && card_detect &&
+        (rd(EMMC_STATUS) & SR_CARD_INSERTED) == 0) {
+        ready = 0;
+        return BLK_ERR_NOMEDIA;
+    }
+    return rc;
+}
+
+/*
+ * Learns whether this board reports card detect. Called once the card has
+ * answered and block 0 has been read: the card is in and working, so an
+ * inserted bit that reads 0 now means the slot does not wire the detect
+ * line to the controller. Only a bit that reads 1 here is trusted later.
+ */
+static void sample_card_detect(void)
+{
+    static uint8_t block[BLK_SECTOR_SIZE] __attribute__((aligned(4)));
+    int rc = xfer_retry(0, 1, block, 0);
+
+    info.present_state = rd(EMMC_STATUS);
+    card_detect = rc == 0 && (info.present_state & SR_CARD_INSERTED) != 0;
+    info.card_detect = (uint8_t)card_detect;
+}
+
 static int rw(uint64_t lba, uint32_t count, uint8_t *buf, int write)
 {
     if (!ready) {
@@ -640,14 +674,14 @@ static int rw(uint64_t lba, uint32_t count, uint8_t *buf, int write)
             int one = xfer_retry(lba + i, 1, buf + (size_t)i * BLK_SECTOR_SIZE, write);
 
             if (one != 0) {
-                return one;
+                return failed(one);
             }
             if (i == n - 1) {
                 rc = 0;
             }
         }
         if (rc != 0) {
-            return rc;
+            return failed(rc);
         }
         lba += n;
         count -= n;
@@ -672,7 +706,7 @@ static int sd_write(blk_dev_t *d, uint64_t lba, uint32_t count, const void *buf)
 static int sd_sync(blk_dev_t *d)
 {
     (void)d;
-    return ready ? wait_card_ready() : BLK_ERR_NOMEDIA;
+    return ready ? failed(wait_card_ready()) : BLK_ERR_NOMEDIA;
 }
 
 int sd_init(void)
@@ -681,6 +715,7 @@ int sd_init(void)
     int rc;
 
     ready = 0;
+    card_detect = 0;
     info = (sd_info_t){0};
     if (b->periph_base == 0 || b->soc == ROBCO_SOC_BCM2711 || b->soc == ROBCO_SOC_UNKNOWN) {
         return SD_ERR_BOARD;
@@ -694,6 +729,7 @@ int sd_init(void)
         info.type = SD_TYPE_NONE;
         return rc;
     }
+    sample_card_detect();
 
     dev.name = "sd0";
     dev.block_size = BLK_SECTOR_SIZE;

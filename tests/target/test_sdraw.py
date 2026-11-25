@@ -88,6 +88,10 @@ def test_sdraw_sdsc(board, example_image, need_mtools, tmp_path):
         assert c["rc"] == "ok" and c["type"] == "sdsc", vm.serial
         assert int(c["blocks"]) == SDSC_BLOCKS, vm.serial
         assert int(c["clk"]) > 0, vm.serial
+        # QEMU sets the card-inserted bit with a card in: the driver trusts it.
+        det = events(vm, "detect")[0]
+        assert (det["inserted"], det["card_detect"]) == ("1", "reported"), vm.serial
+        assert int(det["present"], 16) & (1 << 16), vm.serial
 
         mbr = events(vm, "mbr")[0]
         assert mbr["sig"] == "0x55aa", vm.serial
@@ -164,6 +168,7 @@ def test_sdraw_no_card(board, example_image):
         c = card(vm)
         assert c["rc"] not in ("ok", "unknown"), vm.serial
         assert c["type"] == "none", vm.serial
+        assert not events(vm, "detect"), vm.serial
         assert not events(vm, "mbr"), vm.serial
         assert cmd(vm, "r 0 1", "read")["rc"] == "nomedia", vm.serial
         no_exception(vm)

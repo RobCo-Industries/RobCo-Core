@@ -17,6 +17,7 @@
 typedef struct {
     FIL fil;
     uint32_t magic;
+    uint32_t gen;   /* fs_vols[vol].gen at open time */
     uint8_t vol;
     uint8_t flags;
 } file_priv_t;
@@ -24,6 +25,7 @@ typedef struct {
 typedef struct {
     DIR dir;
     uint32_t magic;
+    uint32_t gen;
     uint8_t vol;
 } dir_priv_t;
 
@@ -33,6 +35,20 @@ _Static_assert(_Alignof(file_priv_t) <= _Alignof(fs_file_t), "fs_file_t alignmen
 _Static_assert(_Alignof(dir_priv_t) <= _Alignof(fs_dir_t), "fs_dir_t alignment");
 
 static int default_vol = -1;
+static uint32_t mount_seq; /* source of fs_vols[].gen */
+
+/*
+ * FS_OK when a handle of slot vol from mount gen may reach FatFs. A handle
+ * from an earlier mount is stale. FatFs would catch most uses through its
+ * own volume id, but fs_tell() and fs_size() never ask FatFs.
+ */
+static int handle_state(uint8_t vol, uint32_t gen)
+{
+    if (vol >= FF_VOLUMES || fs_vols[vol].gen == 0 || fs_vols[vol].gen != gen) {
+        return FS_ERR_BADF;
+    }
+    return fs_vols[vol].gone ? FS_ERR_GONE : FS_OK;
+}
 
 static file_priv_t *file_of(fs_file_t *f)
 {
@@ -46,6 +62,23 @@ static dir_priv_t *dir_of(fs_dir_t *d)
     dir_priv_t *p = (dir_priv_t *)(void *)d;
 
     return d != NULL && p->magic == DIR_MAGIC ? p : NULL;
+}
+
+/* The open file f on a live volume in *out, or FS_ERR_BADF or FS_ERR_GONE. */
+static int file_live(fs_file_t *f, file_priv_t **out)
+{
+    file_priv_t *p = file_of(f);
+
+    *out = p;
+    return p == NULL ? FS_ERR_BADF : handle_state(p->vol, p->gen);
+}
+
+static int dir_live(fs_dir_t *d, dir_priv_t **out)
+{
+    dir_priv_t *p = dir_of(d);
+
+    *out = p;
+    return p == NULL ? FS_ERR_BADF : handle_state(p->vol, p->gen);
 }
 
 static int from_blk(int rc)
@@ -65,6 +98,9 @@ static int from_fr(FRESULT fr, int vol)
 {
     int blk = vol >= 0 ? fs_vols[vol].blk_err : 0;
 
+    if (fr != FR_OK && vol >= 0 && fs_vols[vol].gone) {
+        return FS_ERR_GONE;
+    }
     switch (fr) {
     case FR_OK:                  return FS_OK;
     case FR_DISK_ERR:            return blk != 0 ? from_blk(blk) : FS_ERR_IO;
@@ -115,6 +151,7 @@ const char *fs_strerror(int err)
     case FS_ERR_MKFS:        return "cannot format";
     case FS_ERR_TOOBIG:      return "file too big";
     case FS_ERR_MOUNTED:     return "device already mounted";
+    case FS_ERR_GONE:        return "medium removed";
     default:                 return "unknown error";
     }
 }
@@ -173,6 +210,9 @@ static int resolve(const char *path, char *out)
     len = k_strlen(rest);
     if (len + 2 > FS_PATH_MAX) {
         return FS_ERR_NAMETOOLONG;
+    }
+    if (fs_vols[vol].gone) {
+        return FS_ERR_GONE;
     }
     drive_prefix(out, vol);
     k_memcpy(out + 2, rest, len + 1);
@@ -261,12 +301,81 @@ static int check_dev_free(blk_dev_t *dev)
     return FS_OK;
 }
 
+/*
+ * The only two functions that change which slots are in use. Every path
+ * that takes a slot goes through slot_take(), and every path that gives
+ * one back goes through slot_free(). slot_free() clears every field of
+ * fs_vol_t, so no flag of one use of a slot reaches the next one. See
+ * fs_priv.h for the list of fields.
+ */
+static void slot_free(int vol)
+{
+    char drv[3];
+    int i, was_mounted = fs_vols[vol].gen != 0;
+
+    /* No I/O: f_mount(NULL) only unregisters the work area. */
+    drive_prefix(drv, vol);
+    f_mount(NULL, drv, 0);
+    k_memset(&fs_vols[vol], 0, sizeof(fs_vols[vol]));
+    if (was_mounted) {
+        fs_change_count++;
+    }
+    if (default_vol == vol) {
+        default_vol = -1;
+        for (i = 0; i < (int)FF_VOLUMES; i++) {
+            if (fs_vols[i].name[0] != '\0') {
+                default_vol = i;
+                break;
+            }
+        }
+    }
+}
+
+#ifdef ROBCO_HOST
+/* Host tests only: 1 when every slot without a device is all zeros. */
+int fs_host_free_slots_clean(void);
+
+int fs_host_free_slots_clean(void)
+{
+    const unsigned char *p;
+    size_t i;
+    int vol;
+
+    for (vol = 0; vol < (int)FF_VOLUMES; vol++) {
+        if (fs_vols[vol].dev != NULL) {
+            continue;
+        }
+        p = (const unsigned char *)&fs_vols[vol];
+        for (i = 0; i < sizeof(fs_vols[vol]); i++) {
+            if (p[i] != 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+#endif
+
+/* Claims the free slot vol for dev, from a clean state. */
+static void slot_take(int vol, blk_dev_t *dev, int ro)
+{
+    slot_free(vol);
+    fs_vols[vol].dev = dev;
+    fs_vols[vol].ro = (uint8_t)(ro != 0);
+}
+
 int fs_mount(const char *volume, blk_dev_t *dev)
+{
+    return fs_mount_flags(volume, dev, 0);
+}
+
+int fs_mount_flags(const char *volume, blk_dev_t *dev, unsigned flags)
 {
     char drv[3];
     int i, slot = -1, rc;
 
-    if (!valid_vol_name(volume) || dev == NULL || dev->block_size != BLK_SECTOR_SIZE) {
+    if (!valid_vol_name(volume) || dev == NULL || dev->block_size != BLK_SECTOR_SIZE ||
+        (flags & ~FS_MOUNT_RDONLY) != 0) {
         return FS_ERR_INVAL;
     }
     if (find_vol(volume, k_strlen(volume)) >= 0) {
@@ -285,26 +394,72 @@ int fs_mount(const char *volume, blk_dev_t *dev)
     if (slot < 0) {
         return FS_ERR_BUSY;
     }
-    fs_vols[slot].dev = dev;
-    fs_vols[slot].blk_err = 0;
+    slot_take(slot, dev, (flags & FS_MOUNT_RDONLY) != 0);
     drive_prefix(drv, slot);
+    /* f_mount() drops every cached sector of the slot and reads the medium again. */
     rc = from_fr(f_mount(&fs_vols[slot].fs, drv, 1), slot);
     if (rc != FS_OK) {
-        f_mount(NULL, drv, 0);
-        fs_vols[slot].dev = NULL;
-        return rc;
+        slot_free(slot);
+        return rc == FS_ERR_GONE ? FS_ERR_NOTREADY : rc;
     }
     k_strncpy(fs_vols[slot].name, volume, sizeof(fs_vols[slot].name));
+    if (++mount_seq == 0) {
+        mount_seq = 1;
+    }
+    fs_vols[slot].gen = mount_seq;
+    fs_change_count++;
     if (default_vol < 0) {
         default_vol = slot;
     }
     return FS_OK;
 }
 
+int fs_eject(const char *volume)
+{
+    int vol;
+
+    if (!valid_vol_name(volume)) {
+        return FS_ERR_INVAL;
+    }
+    vol = find_vol(volume, k_strlen(volume));
+    if (vol < 0) {
+        return FS_ERR_NOVOL;
+    }
+    slot_free(vol);
+    return FS_OK;
+}
+
+int fs_probe(const char *volume)
+{
+    uint64_t block[BLK_SECTOR_SIZE / 8];
+    int vol, rc;
+
+    if (!valid_vol_name(volume)) {
+        return FS_ERR_INVAL;
+    }
+    vol = find_vol(volume, k_strlen(volume));
+    if (vol < 0) {
+        return FS_ERR_NOVOL;
+    }
+    if (fs_vols[vol].gone) {
+        return FS_ERR_GONE;
+    }
+    rc = blk_read(fs_vols[vol].dev, 0, 1, block);
+    if (rc == BLK_ERR_NOMEDIA) {
+        fs_vol_lost(vol);
+        return FS_ERR_GONE;
+    }
+    return rc == 0 ? FS_OK : from_blk(rc);
+}
+
+uint32_t fs_changes(void)
+{
+    return fs_change_count;
+}
+
 int fs_unmount(const char *volume)
 {
-    char drv[3];
-    int i, vol, rc;
+    int vol, rc;
 
     if (!valid_vol_name(volume)) {
         return FS_ERR_INVAL;
@@ -314,23 +469,15 @@ int fs_unmount(const char *volume)
         return FS_ERR_NOVOL;
     }
     /* Flush first: on failure the volume stays mounted for a retry. */
-    rc = blk_sync(fs_vols[vol].dev);
-    if (rc != 0) {
-        return from_blk(rc);
-    }
-    drive_prefix(drv, vol);
-    f_mount(NULL, drv, 0);
-    fs_vols[vol].dev = NULL;
-    fs_vols[vol].name[0] = '\0';
-    if (default_vol == vol) {
-        default_vol = -1;
-        for (i = 0; i < (int)FF_VOLUMES; i++) {
-            if (fs_vols[i].name[0] != '\0') {
-                default_vol = i;
-                break;
-            }
+    if (!fs_vols[vol].gone) {
+        rc = blk_sync(fs_vols[vol].dev);
+        if (rc == BLK_ERR_NOMEDIA) {
+            fs_vol_lost(vol);
+        } else if (rc != 0) {
+            return from_blk(rc);
         }
     }
+    slot_free(vol);
     return FS_OK;
 }
 
@@ -348,6 +495,10 @@ int fs_statvfs(const char *volume, fs_statvfs_t *out)
     vol = find_vol(volume, k_strlen(volume));
     if (vol < 0) {
         return FS_ERR_NOVOL;
+    }
+    if (fs_vols[vol].gone) {
+        k_memset(out, 0, sizeof(*out));
+        return FS_ERR_GONE;
     }
 #if FF_FS_READONLY
     /* FatFs builds f_getfree() only with write support. */
@@ -511,6 +662,7 @@ int fs_open(fs_file_t *f, const char *path, unsigned flags)
     }
 #endif
     fp->magic = FILE_MAGIC;
+    fp->gen = fs_vols[vol].gen;
     fp->vol = (uint8_t)vol;
     fp->flags = (uint8_t)flags;
     return FS_OK;
@@ -518,12 +670,12 @@ int fs_open(fs_file_t *f, const char *path, unsigned flags)
 
 int fs_read(fs_file_t *f, void *buf, size_t len)
 {
-    file_priv_t *fp = file_of(f);
+    file_priv_t *fp;
     UINT br = 0;
-    int rc;
+    int rc = file_live(f, &fp);
 
-    if (fp == NULL) {
-        return FS_ERR_BADF;
+    if (rc != FS_OK) {
+        return rc;
     }
     if (buf == NULL && len != 0) {
         return FS_ERR_INVAL;
@@ -555,16 +707,16 @@ static int write_all(file_priv_t *fp, const void *buf, UINT len)
 
 int fs_write(fs_file_t *f, const void *buf, size_t len)
 {
+    file_priv_t *fp;
+    int rc = file_live(f, &fp);
+
 #if FF_FS_READONLY
     (void)buf;
     (void)len;
-    return file_of(f) == NULL ? FS_ERR_BADF : FS_ERR_RO;
+    return rc != FS_OK ? rc : FS_ERR_RO;
 #else
-    file_priv_t *fp = file_of(f);
-    int rc;
-
-    if (fp == NULL) {
-        return FS_ERR_BADF;
+    if (rc != FS_OK) {
+        return rc;
     }
     if (buf == NULL && len != 0) {
         return FS_ERR_INVAL;
@@ -591,13 +743,13 @@ int fs_write(fs_file_t *f, const void *buf, size_t len)
 
 int fs_seek(fs_file_t *f, int64_t offset, int whence)
 {
-    file_priv_t *fp = file_of(f);
+    file_priv_t *fp;
     int64_t base, target;
     FSIZE_t size;
-    int rc;
+    int rc = file_live(f, &fp);
 
-    if (fp == NULL) {
-        return FS_ERR_BADF;
+    if (rc != FS_OK) {
+        return rc;
     }
     size = f_size(&fp->fil);
     switch (whence) {
@@ -633,24 +785,27 @@ int fs_seek(fs_file_t *f, int64_t offset, int whence)
 
 int64_t fs_tell(fs_file_t *f)
 {
-    file_priv_t *fp = file_of(f);
+    file_priv_t *fp;
+    int rc = file_live(f, &fp);
 
-    return fp == NULL ? FS_ERR_BADF : (int64_t)f_tell(&fp->fil);
+    return rc != FS_OK ? rc : (int64_t)f_tell(&fp->fil);
 }
 
 int64_t fs_size(fs_file_t *f)
 {
-    file_priv_t *fp = file_of(f);
+    file_priv_t *fp;
+    int rc = file_live(f, &fp);
 
-    return fp == NULL ? FS_ERR_BADF : (int64_t)f_size(&fp->fil);
+    return rc != FS_OK ? rc : (int64_t)f_size(&fp->fil);
 }
 
 int fs_sync(fs_file_t *f)
 {
-    file_priv_t *fp = file_of(f);
+    file_priv_t *fp;
+    int rc = file_live(f, &fp);
 
-    if (fp == NULL) {
-        return FS_ERR_BADF;
+    if (rc != FS_OK) {
+        return rc;
     }
 #if FF_FS_READONLY
     return FS_OK;
@@ -662,11 +817,15 @@ int fs_sync(fs_file_t *f)
 
 int fs_close(fs_file_t *f)
 {
-    file_priv_t *fp = file_of(f);
-    int rc;
+    file_priv_t *fp;
+    int rc = file_live(f, &fp);
 
-    if (fp == NULL) {
-        return FS_ERR_BADF;
+    if (rc != FS_OK) {
+        /* Stale or gone: nothing to flush, FatFs is not asked. */
+        if (fp != NULL) {
+            fp->magic = 0;
+        }
+        return rc;
     }
     fs_vols[fp->vol].blk_err = 0;
     rc = from_fr(f_close(&fp->fil), fp->vol);
@@ -743,6 +902,7 @@ int fs_opendir(fs_dir_t *d, const char *path)
     rc = from_fr(f_opendir(&dp->dir, p), vol);
     if (rc == FS_OK) {
         dp->magic = DIR_MAGIC;
+        dp->gen = fs_vols[vol].gen;
         dp->vol = (uint8_t)vol;
     }
     return rc;
@@ -750,12 +910,12 @@ int fs_opendir(fs_dir_t *d, const char *path)
 
 int fs_readdir(fs_dir_t *d, fs_stat_t *out)
 {
-    dir_priv_t *dp = dir_of(d);
+    dir_priv_t *dp;
     FILINFO fi;
-    int rc;
+    int rc = dir_live(d, &dp);
 
-    if (dp == NULL) {
-        return FS_ERR_BADF;
+    if (rc != FS_OK) {
+        return rc;
     }
     if (out == NULL) {
         return FS_ERR_INVAL;
@@ -779,11 +939,14 @@ int fs_readdir(fs_dir_t *d, fs_stat_t *out)
 
 int fs_closedir(fs_dir_t *d)
 {
-    dir_priv_t *dp = dir_of(d);
-    int rc;
+    dir_priv_t *dp;
+    int rc = dir_live(d, &dp);
 
-    if (dp == NULL) {
-        return FS_ERR_BADF;
+    if (rc != FS_OK) {
+        if (dp != NULL) {
+            dp->magic = 0;
+        }
+        return rc;
     }
     rc = from_fr(f_closedir(&dp->dir), dp->vol);
     dp->magic = 0;
@@ -1160,14 +1323,14 @@ int fs_mkfs(blk_dev_t *dev, const fs_mkfs_opts_t *opts)
     parm.fmt = (BYTE)(fmts[opts != NULL ? opts->fmt : 0] | FM_SFD);
     parm.n_fat = 2;
     parm.au_size = opts != NULL ? opts->cluster_bytes : 0;
-    fs_vols[slot].dev = dev;
-    fs_vols[slot].blk_err = 0;
+    slot_take(slot, dev, 0);
     drive_prefix(drv, slot);
     rc = from_fr(f_mkfs(drv, &parm, work, sizeof(work)), slot);
     if (rc == FS_OK) {
         rc = from_fr(disk_ioctl((BYTE)slot, CTRL_SYNC, NULL) == RES_OK ? FR_OK : FR_DISK_ERR, slot);
     }
-    fs_vols[slot].dev = NULL;
-    return rc;
+    slot_free(slot);
+    /* Nothing was mounted, so a missing medium is not ready, as for fs_mount(). */
+    return rc == FS_ERR_GONE ? FS_ERR_NOTREADY : rc;
 #endif
 }
