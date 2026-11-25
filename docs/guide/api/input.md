@@ -4,7 +4,7 @@ This page covers the input event queue with its GPIO, console and script backend
 
 ## Input events (`input.h`)
 
-`input.h` turns GPIO buttons, a rotary dial and serial lines into one stream of events. Backends push events into a fixed queue from IRQ or main context. The main loop reads them with `input_poll()` or `input_wait()`. Serial input lets a person or a test drive a product in QEMU, where GPIO inputs cannot change.
+`input.h` turns GPIO buttons, a rotary dial and serial lines into one stream of events. Backends push events into a fixed queue from IRQ or main context. The main loop reads them with `input_poll()` or `input_wait()`. Serial input lets a person or a test drive a product in QEMU. A test can also drive the GPIO buttons and the dial in QEMU from outside the guest: see [Testing with real lines](#testing-with-real-lines).
 
 | Part | File | Touches hardware |
 |---|---|---|
@@ -185,6 +185,21 @@ int input_gpio_start(uint32_t tick_hz, unsigned debounce_ms);
 
 Sets the pins to input with their pulls, then samples every pin from a tick callback, once per tick. Buttons go through the debouncer with a stable time of `debounce_ms`, rounded up to whole ticks (1 to 255). Dials go through the quadrature decoder, one DIAL event per detent. Returns `0`, `INPUT_ERR_NO_IRQ` before `irq_init()`, `INPUT_ERR_TICK` when `tick_init(tick_hz)` does not return `0`, `INPUT_ERR_SPACE` when no tick slot is free, or `INPUT_ERR_STATE` on a second call. Main context.
 
+#### Dial speed
+
+The GPIO backend samples on the tick and takes no GPIO edge interrupt. QEMU models neither edge detection nor the GPIO interrupt (V18), so no test could cover that path. Sampling faster than the tick would need another system timer channel, and channels 0 and 2 belong to the GPU, 1 to the tick and 3 to PCM audio. A sample gap that hides one state between two seen states costs nothing. The decoder rules under [Pure modules](#pure-modules) say why.
+
+Measured in QEMU at a 100 Hz tick, 4 transitions per detent, 20 detents each way per rate, 10 sweeps over all four boards, at a load average of 8 to 18 from other jobs:
+
+| States | Every step counted | Steps lost |
+|---|---|---|
+| Equal | Down to 12 ms per state, 20.8 detents per second | 10 ms: 4 of 20 runs lost 2 to 4 |
+| Rest 3 times longer | Down to 12 ms per state, 13.9 detents per second | 10 ms: 3 of 20 runs lost 2 |
+
+At 15 and 12 ms with the rest 3 times longer, one run each lost one step while the guest's tick stalled for 32 and 55 ms.
+
+The test `test_gpio_dial_at_the_limit` enforces 15 ms per state, 16.7 and 11.1 detents per second, a 3 ms margin. The decoder before these rules counted every step at 15 ms with equal states but lost one in 8 of 20 runs with the rest 3 times longer. These are QEMU numbers. A real hand and real contacts are not measured.
+
 `tick.h` cannot report the running rate, so `input_gpio_start()` calls `tick_init(tick_hz)`. If the tick already runs with the same period, this returns `0` and changes nothing. If it does not run yet, the call starts it.
 
 ```c
@@ -201,7 +216,7 @@ const char *input_gpio_status_name(int status);
 
 `input_gpio_status_name()` returns `"unknown"` for any other value.
 
-The stuck-line guard samples for the first 100 ms of ticks (at least one tick) and pushes no event. If every registered button reads active at every sample, the lines are taken as not wired, as in QEMU where every input reads 0 and active-low buttons look pressed. The backend then stops for good. Otherwise it turns active and reports a press for each button whose debounced state is pressed. With no button registered, the guard always passes.
+The stuck-line guard samples for the first 100 ms of ticks (at least one tick) and pushes no event. If every registered button reads active at every sample, the lines are taken as not wired, as in QEMU where an undriven input reads 0 and active-low buttons look pressed. The backend then stops for good. Otherwise it turns active and reports a press for each button whose debounced state is pressed. With no button registered, the guard always passes.
 
 ### Console backend
 
@@ -348,7 +363,18 @@ void input_quad_init(input_quad_t *q, unsigned per_detent, int reverse, int a, i
 int input_quad_feed(input_quad_t *q, int a, int b);
 ```
 
-A Gray-code state table. A one-bit change of A/B adds or removes a transition. A two-bit change means a sample was missed, so it is rejected and counted in `q->invalid`. Transitions add up in an accumulator, and each `per_detent` of them in one direction gives one step. A `per_detent` other than 1 or 2 becomes 4. `input_quad_feed()` returns -1, 0 or 1. A reversal mid-detent cancels the partial transitions.
+A Gray-code state table. A one-bit change of A/B adds or removes a transition. Transitions add up in an accumulator, and `per_detent` of them in one direction give one step. A `per_detent` other than 1 or 2 becomes 4. `input_quad_feed()` returns -1, 0 or 1. A reversal mid-detent cancels the partial transitions.
+
+The rules for missed states:
+
+- The state at init is the rest state, a detent. With 2 transitions per detent its complement is a rest state too.
+- A two-bit change means one state was missed. It counts in `q->invalid` and as two transitions in the last direction. Before the first one-bit change it counts nothing.
+- With 4 per detent, a two-bit change that leaves a rest state waits. The next one-bit change gives its direction, so a turn back that starts with a missed state still counts. A second two-bit change instead takes the last direction.
+- On a rest state the decoder rounds the accumulator to the nearest detent, at most one step, and starts again from 0.
+
+So one missed state between two seen ones costs nothing, and any run of missed states costs at most one step and never shifts the phase.
+
+The dial must rest at a detent at init. If it does not, its state at init still becomes the rest state, and nothing heals that: each detent still gives one step, but at the wrong point of the turn, so the total is off by one at most, in one direction of turn. A dial turned back past its start reads right again. The host test `quad_start_off_a_detent` shows this.
 
 ```c
 void input_ansi_init(input_ansi_t *p, uint32_t esc_timeout_ms);
@@ -393,7 +419,8 @@ The line reader and tokenizer behind the script backend. Blanks are spaces and t
 | One consumer. | Only one loop should call `input_poll()` or `input_wait()`. |
 | Drops keep the newest out by default. | A full queue refuses the new event unless `input_set_overflow(INPUT_DROP_OLDEST)` is set. Under either policy a dropped release still clears the key state and a dropped DIAL event still counts in `input_dial_total()`, but the consumer never sees the event. |
 | The guard is final. | A `disabled_stuck` backend never restarts. If one button is held at power-on and the others are wired, the guard passes. |
-| No resync on the dial. | A missed sample that looks legal shifts the detent phase by one transition until power-off. |
+| The dial is sampled, not interrupt driven. | It is read on the tick, 100 Hz in `examples/input`. Each state of the turn must last longer than the gap between two samples, or at most one state may hide in a gap. See [Dial speed](#dial-speed). |
+| The dial starts at a detent. | Its state at init is taken as a detent. A dial between detents at init keeps an offset of up to one step. |
 | Repeat follows the last press. | Pressing a second key moves the repeat to it. Releasing the second key stops repeat even if the first is still held. Releasing a key on one source keeps the repeat while another source holds it. |
 | Key state covers codes 0 to 31. | `input_key_down()` and repeat ignore KEY events with a higher code. |
 | The console backend takes every byte. | After `input_serial_start()`, `uart_getc()` and `uart_poll()` in other code compete for bytes. |
@@ -451,9 +478,22 @@ They avoid GPIO0 and 1 (ID EEPROM), 2 and 3 (I2C1), 7 to 11 (SPI0), 12 and 13 (P
 
 A mechanical encoder usually has A, B and a common pin: wire common to ground. Most give 4 transitions per detent. Some give 2 or 1. On BCM2711 `gpio_set_pull()` fails, so add external pull-ups there.
 
+### Testing with real lines
+
+QEMU's GPIO model takes a level from outside: a qtest write to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV bit, input pins included (V18). `tests/harness/pigpio.py` does this. Pulls are not modelled, so an undriven line reads 0. Drive every active-low line high before the guest starts, or the stuck-line guard turns the backend off:
+
+```python
+with boot(img, board, qtest=True, gpio_high=[5, 6, 16, 23, 24]) as vm:
+    io = PiGpio(vm, board, names={"select": 5})
+    io.tap("select", 0.15)
+    io.turn(23, 24, detents=3, state_s=0.03)
+```
+
+`tests/target/test_input_gpio.py` runs the buttons, repeat, the guard, the dial and its limit this way on all four boards. Timing comes from the host, so each test names its allowance.
+
 ### Pending hardware validation
 
-QEMU cannot change GPIO input levels, so it proves only the stuck-line guard. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
+QEMU proves the logic with levels driven from outside, not real contacts, pulls or edges. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
 
 | Item | Equipment | What to look for |
 |---|---|---|

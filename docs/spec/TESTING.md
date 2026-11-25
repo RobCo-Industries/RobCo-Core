@@ -10,7 +10,7 @@ Every repo in the suite tests with the same harness from RobCo-Core. QEMU 10.1.2
 | 2. Tool tests | pytest for the host tools, the Makefile, the docs checker, and the file system against mtools | `tests/tools/` |
 | 3. Serial tests | Boot an image in QEMU and assert on `@RC` markers and text. 17 files, each run on every board. | `tests/target/` |
 | 4. Screen tests | Console cell grid dumped over the UART, plus QMP `screendump` compared with golden images | `tests/target/`, `tests/golden/` |
-| 5. Input tests | Key input over the console backend on the PL011 and the script backend on the mini UART | `tests/target/test_input.py` |
+| 5. Input tests | Key input over the console backend on the PL011 and the script backend on the mini UART. GPIO buttons and the dial with levels driven through qtest. | `tests/target/test_input.py`, `tests/target/test_input_gpio.py` |
 | 6. Fault tests | Bad magic, bad CRC, out-of-slot images, a missing next stage, an undefined instruction, MMU faults. Later: truncated file, oversized file, crashing holotape. | `tests/target/` |
 
 The harness is Python with pytest and Pillow in a venv. `tests/harness/` holds the shared code:
@@ -20,6 +20,7 @@ The harness is Python with pytest and Pillow in a venv. `tests/harness/` holds t
 | `qemu.py` | Starts QEMU headless, talks QMP, HMP and qtest, captures serial, kills QEMU on exit | Exists |
 | `boot.py` | `boot()`: boots a raw image the way the firmware does. Serial read and write, `@RC` marker parsing, screendumps. | Exists |
 | `sdimage.py` | Builds SD images and fault images from Python | Exists |
+| `pigpio.py` | Drives the Pi's own GPIO input levels through qtest: buttons, bounce and dial turns on a timed schedule | Exists |
 | `expect.py` | Waits for `@RC` markers and text on a serial log | To be added. `boot.py` covers it today. |
 | `screen.py` | PPM to PNG, golden compare | To be added |
 | `inputs.py` | Sends scripted keys over the serial backend | To be added. `test_input.py` sends the lines itself. |
@@ -76,6 +77,7 @@ Some tests attach more devices:
 | `test_rtc.py` | DS1338 RTC model, DS1307 registers, on I2C bus 1 | `-device ds1338,bus=i2c-bus.1,address=0x68` |
 | `test_spi.py` | W25Q32 SPI flash on the SPI0 bus | `-device w25q32,bus=spi` |
 | `test_gpiox.py` | Two PCA9554 GPIO expanders on I2C bus 1, inputs driven through qtest | `-device pca9554,bus=i2c-bus.1,address=0x20` and `0x21`, `boot(..., qtest=True)` |
+| `test_input_gpio.py` | Pi GPIO input levels driven through qtest, every active-low line high at start | `boot(..., serial2=True, qtest=True, gpio_high=[...])` |
 
 `test_rtc.py` and `test_spi.py` also boot once without the device, to check the absent case.
 
@@ -129,13 +131,29 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 
 | Gap | Fact | Coverage |
 |---|---|---|
-| GPIO input | GPLEV0/1 read 0, input cannot be injected (V12) | The input logic runs on the host and through the serial and script backends in layer 5. The GPIO backend's stuck-line guard turns it off in QEMU. Buttons and dials run on the hardware checklist. |
+| GPIO input | An undriven pin reads 0 and pulls change nothing (V12, V18). There are no input lines, edge and level events are not modelled and no GPIO interrupt comes. A qtest write to GPSET0/1 or GPCLR0/1 sets the level of any pin (V18). | `test_input_gpio.py` drives buttons and the dial through `pigpio.py` on every board, and checks the stuck-line guard with every line low. Real contacts, pulls and edges run on the hardware checklist. |
 | PWM audio | Not modelled. Reading PWM data-aborts on `raspi0` and `raspi1ap` (V7). On `raspi2b` and `raspi3b` writes are dropped. | Host tests for the notes, the sequencer and the PCM engine. The audio driver probes PWM and falls back to the trace backend, which the target test checks. PCM on the trace backend runs the real timer channel 3 IRQ. Sound runs on the hardware checklist. |
 | Real SPI signalling | QEMU ignores the rate, the mode and chip select. | `test_spi.py` checks the data path with the flash model. Rates, modes and chip select levels run on the hardware checklist. |
 | SPI TFT | No model | The display interface is the same for HDMI and TFT, so HDMI goldens cover drawing. The TFT runs on the hardware checklist. |
 | I2C timing | Every transfer finishes at once. No clock stretching. | The bus rate, timeouts and clock stretching run on the hardware checklist. |
 | Cache and timing | QEMU does not model caches, memory types or the SMP bit | `test_mmu.py` checks the map, the faults and that every component still works. Speed and coherence run on the hardware checklist. |
 | VC bus alias, SD routing on WiFi boards | QEMU does not match real firmware here | Pending hardware validation |
+
+### GPIO buttons and dials in project tests
+
+A project test can drive the Pi's own button and dial lines. Boot with `qtest=True` and list every active-low line in `gpio_high=`, so it reads released before the guest starts. Then use `PiGpio` from `tests/harness/pigpio.py`: `press()`, `release()` and `tap()` for buttons, `bounce()` for chatter, `turn()` for a dial with 4 transitions per detent. Timing follows the host clock. Hold a press for several ticks of the guest, and use `slip()` on `io.log` to check how late the host was. Lines on an I2C expander use `set_irq_in` instead, as `test_gpiox.py` does.
+
+| Function | What it does |
+|---|---|
+| `boot(..., qtest=True, gpio_high=pins)` | Drives `pins` high before the guest starts |
+| `PiGpio(vm, board, names=None, active_low=True)` | Wraps the qtest socket. `names` maps button names to pins. |
+| `set(pin, level)`, `get(pin)` | Writes a level through GPSET or GPCLR, reads the GPLEV bit |
+| `press(pin)`, `release(pin)`, `tap(pin, hold_s)` | Button levels, active low unless `active_low=False` |
+| `play(schedule)` | Applies `(t, pin, level)` changes on time, keeps `(planned, real)` times in `io.log`, returns the latest write |
+| `bounce(pin, count, period_s, settle=False)` | A button that chatters, then rests released or pressed |
+| `turn(pin_a, pin_b, detents, state_s, lengths=(1, 1, 1, 1), bounce=None)` | A dial turn from rest, both lines high. `lengths` scales each Gray state. |
+| `slip(log)` | The latest write and the most a state was cut short, in seconds |
+| `quad_schedule()`, `bounce_schedule()`, `quad_states()`, `level_writes()` | The pure parts behind the above, tested in `tests/tools/test_harness_pigpio.py` |
 
 ## Canary suite
 
@@ -152,13 +170,13 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 | V9 | Mailbox channel 8 answers board revision, ARM memory and UART clock, 3 MHz | Mailbox driver and UART divisor |
 | V10 | Timer C1 match sets CS bit 1 and IRQ 1 pending. Writing CS bit 1 clears it. | Timer interrupt driver |
 | V11 | `-drive if=sd` attaches to the EMMC controller. The image size must be a power of 2. | EMMC driver and SD image padding |
-| V12 | GPLEV0/1 read 0 | The decision to test GPIO input on hardware |
+| V12 | GPLEV0/1 read 0 | The stuck-line guard test: undriven active-low lines look pressed |
 | V13 | QMP `screendump` works headless and writes a PPM | Screen tests in CI |
 | V14 | PM_WDOG then PM_RSTC full reset emits a QMP `RESET` event | Reboot and watchdog tests |
 | V15 | First `-serial` is the PL011, second is the mini UART | Serial capture order |
 | V16 | SPI0 is modelled on every board. With nothing attached a byte completes at once and reads 0. | The SPI and TFT panel target tests |
 | V17 | QEMU's `pca9554` model answers on I2C bus 1 with the data sheet registers. qtest `set_irq_in` drives its input pins. | The GPIO expander target test |
-| V18 | A qtest write to GPSET0/1 or GPCLR0/1 sets or clears the GPLEV0/1 bit of any pin, input pins included, while the guest runs. The device has no input lines, GPLEV is read-only, pulls change nothing, event detect and the GPIO interrupt are not modelled. | The GPIO button and dial target tests |
+| V18 | The GPIO device has no input lines. A qtest write to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV0/1 bit, input pins included, in both banks. A write to GPLEV changes nothing. A pull-up leaves an undriven pin at 0. The event detect registers read 0 and GPU IRQ 49 never goes pending. An output pin reads back its level. With the guest running, one write takes under 5 ms at the median and guest timer time follows host time within 5 %. | `pigpio.py` and the GPIO button and dial target tests |
 
 V4 and V8 are not checked.
 
