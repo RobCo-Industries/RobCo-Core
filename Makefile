@@ -3,7 +3,7 @@ VENV := .venv
 SPIKES := s1-uart-hello s2-sd-read s3-fb-mmu
 MACHINES := raspi0 raspi1ap raspi2b raspi3b
 
-.PHONY: venv test test-host test-tools test-canary test-spikes test-examples test-target
+.PHONY: venv test test-host test-tools test-canary test-spikes test-examples test-target boot-json
 
 venv: $(VENV)/.installed
 
@@ -20,6 +20,14 @@ test: test-host test-tools test-docs test-canary test-spikes test-examples test-
 # Unit tests for the Python tools in tools/.
 test-tools: venv
 	$(VENV)/bin/pytest tests/tools -v
+
+# boot.json from the harness's boot_args(), for tools other than the harness.
+# Stdlib only. BOOT_JSON is relative to this folder; give an absolute path
+# when calling through make -C.
+BOOT_JSON ?= build/boot.json
+boot-json:
+	mkdir -p $(dir $(abspath $(BOOT_JSON)))
+	cd tests && $(PYTHON) -m harness.bootjson -o $(abspath $(BOOT_JSON))
 
 # Links, API coverage, checked commands and banned words in the Markdown files.
 test-docs:

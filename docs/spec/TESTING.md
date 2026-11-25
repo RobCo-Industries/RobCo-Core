@@ -115,7 +115,7 @@ The parking does not test the parking code in `start.S`. On `raspi3b` that code 
 
 `boot.json` holds the arguments of `boot_args()` as data, so a tool other than the Python harness boots a board the same way. Studio reads it from the `pipos` package, as [SDK_PACKAGE.md](./SDK_PACKAGE.md#layout-of-pipos) says.
 
-State today: `tests/harness/bootjson.py` writes `boot.json` from the board table in `tests/harness/boot.py` and `tests/fwstub/a64_shim.py`. It calls `boot_args()` with the placeholders as paths, so the boot rules keep one source. From `tests/`, `python -m harness.bootjson` prints the file and `-o <file>` writes it. `tests/tools/test_boot_json.py` fills the placeholders for every board and mode and checks the result against `boot_args()`. It also checks that the file equals the example below.
+State today: `tests/harness/bootjson.py` writes `boot.json` from the board table in `tests/harness/boot.py` and `tests/fwstub/a64_shim.py`. It calls `boot_args()` with the placeholders as paths, so the boot rules keep one source. From `tests/`, `python -m harness.bootjson` prints the file and `-o <file>` writes it. `make boot-json BOOT_JSON=<path>` writes it from the repository root, to `build/boot.json` by default; through `make -C`, give an absolute path. `tests/tools/test_boot_json.py` fills the placeholders for every board and mode and checks the result against `boot_args()`. It also checks that the file equals the example below.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|

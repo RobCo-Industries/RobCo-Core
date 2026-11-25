@@ -123,3 +123,10 @@ def test_unknown_placeholder_is_invalid():
 
 def test_sd_placeholder_outside_sd_is_invalid():
     _broken(lambda d: d["boards"]["raspi3b"]["modes"]["svc"].append("file={sd}"))
+
+
+def test_make_target_writes_the_file(tmp_path):
+    path = tmp_path / "sub" / "boot.json"
+    subprocess.run(["make", "-s", "-C", ROOT, "boot-json", f"BOOT_JSON={path}",
+                    f"PYTHON={sys.executable}"], check=True, capture_output=True)
+    assert path.read_text(encoding="utf-8") == bootjson.dumps()
