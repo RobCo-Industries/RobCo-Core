@@ -343,19 +343,85 @@ def test_templates_json_example_is_sorted_and_matches_the_file_table():
     assert new["files"] == sorted(files)
 
 
+KEY = r"[0-7][0-9a-f]{7}[0-7][0-9a-f]{7}"
 RUNNER_LINE = re.compile(
-    r"@RC stage=runner ev=(?:run tape=[!-~]{5,12}"
+    r"@RC stage=runner ev=(?:run tape=[!-~]{1,12} key=(?P<run>%s)"
     r"|done result=(?:exit rc=(?:\d|[1-9]\d|1\d\d|2[0-4]\d|25[0-5])"
-    r"|fault rc=-14|missing rc=-2|bad rc=-40|io rc=-5|eject rc=-41|error rc=-\d+)"
-    r"|done result=config rc=-?\d+ why=(?:open|read|size|parse|name))")
+    r"|fault rc=-14|missing rc=-2|bad rc=-40|io rc=-5|eject rc=-41|error rc=-\d+) key=(?P<done>%s)"
+    r"|done result=config rc=(?:0|-\d+) why=(?:open|read|size|parse|name|rand))" % (KEY, KEY))
+
+
+def runner_lines(block):
+    return [x for x in block.split("\n") if x.startswith("@RC stage=runner ")]
+
+
+def run_end(lines):
+    """The line that ends a run and its fields, by the rules of "When a run is over"."""
+    key = None
+    for line in lines:
+        m = RUNNER_LINE.fullmatch(line)
+        if m is None:
+            if re.search(r"@RC .*\bev=(exception|panic)\b", line):
+                return line, "fault"
+            if re.search(r"@RC stage=pipos ev=ready\b", line):
+                return line, "ready"
+            continue
+        if m["run"]:
+            key = key or m["run"]
+        elif m["done"]:
+            if key is not None and m["done"] == key:
+                return line, "done"
+        elif key is None:
+            return line, "config"
+    return None, "running"
 
 
 def test_runner_marker_examples_have_the_exact_form():
     lines = [x for text in (PACKAGE, CLI) for x in re.findall(r"@RC stage=runner [^\n\"]*", text)
-             if "<" not in x and "`" not in x]
-    assert len(lines) >= 8
+             if "<" not in x and "`" not in x and "NAME" not in x and "..." not in x]
+    assert len(lines) >= 10
     for line in lines:
         assert RUNNER_LINE.fullmatch(line), line
+    # The config rows of the failure table give whole lines of the third form.
+    table = section(PACKAGE, "What the runner accepts", "####")
+    for tail in re.findall(r"`(rc=-?\d+ why=[a-z]+)`", table):
+        assert RUNNER_LINE.fullmatch("@RC stage=runner ev=done result=config " + tail), tail
+
+
+def test_runner_examples_end_by_the_key_of_the_run():
+    runs = [b.rstrip("\n").split("\n") for b in blocks(PACKAGE, "") if "stage=runner" in b]
+    assert len(runs) == 4
+    ends = []
+    for lines in runs:
+        line, how = run_end(lines)
+        ends.append(how)
+        assert how in ("done", "config"), lines
+        # The runner's line is followed by the kernel's two closing lines and nothing else.
+        rest = lines[lines.index(line) + 1:]
+        assert [re.sub(r"status=\d", "status=N", x) for x in rest] == \
+            ["@RC stage=pipos ev=rom_exit status=N", "@RC stage=pipos ev=ready rom=1"]
+        result = re.search(r"result=(\w+)", line)[1]
+        assert rest[0].endswith("status=0" if result == "exit" else "status=1")
+    assert ends.count("config") == 1
+    # The run with a forged line: the tape's own done line is passed over.
+    forged = next(r for r in runs if sum("ev=done" in x for x in r) == 2)
+    line, how = run_end(forged)
+    assert how == "done" and " rc=3 " in line and forged.index(line) > forged.index(
+        next(x for x in forged if "ev=done" in x))
+    # A tape that prints the forged lines and never ends leaves the run open.
+    cut = forged[:forged.index(line)]
+    assert run_end(cut) == (None, "running")
+    assert run_end(cut + ["@RC stage=runner ev=done result=config rc=0 why=size"]) == (None, "running")
+    assert run_end(cut + ["x@RC stage=pipos ev=panic msg=fake"])[1] == "fault"
+    # In the JSON examples, a done line carries the key of the run line of the same block.
+    for run in json_line_runs():
+        texts = [o["text"] for _, o in run if o["kind"] == "serial"]
+        keys = {m[1] for x in texts for m in [re.search(r"stage=runner .* key=(\w+)", x)] if m}
+        assert len(keys) <= 1, texts
+        for _, o in run:
+            if o["kind"] == "result" and o["command"] == "run" and o["tape_result"]:
+                m = RUNNER_LINE.fullmatch(o["line"])
+                assert m and m["done"] and o["tape_rc"] == int(re.search(r"rc=(-?\d+)", o["line"])[1])
 
 
 def test_card_config_text_is_stable():

@@ -317,6 +317,15 @@ These are facts of the kernel as it is, and the runner is shaped by them. None i
 | The kernel sets no time limit on a tape. | A tape that never ends holds the machine. The tool's time limit ends the run. |
 | While a tape runs, the kernel reads the script channel only inside `sleep_ms`, the input calls, `file_read` and `holo_enumerate`. | A key sent to a tape that makes none of those calls is not answered. |
 | The kernel prints `ev=holo_start name=<file>` when a tape starts and `ev=holo_error code=<code> name=<file>` when a load fails. [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md#events) lists `holo_launch path` and neither of these. | A tool reads the runner's lines, not these. |
+| `log` writes its text to the PL011 as it is, with no prefix. A line feed, a tab and every printable ASCII byte pass, `@` included, and any other byte prints as `?`. A ROM and a holotape print through the same call. This is `sys_log()` in Pip-OS's `kernel/sys_system.c`, with `pipos_log_char()` in `kernel/sysabi.c`. | A holotape can start a fresh line and print any text on it, a line in the form of any marker included. The text of a line on the PL011 never proves who printed it. |
+| The kernel prints its own markers on the same PL011. | A holotape can print a line in the form of a kernel marker too. |
+| A holotape may open every file of the boot card outside `/PIPBOY/SAVE`, as [Files](./PIPOS_ABI.md#files) says, and may read the ROM slot, as [Sandbox](./PIPOS_ABI.md#sandbox) says. | A secret in `RUNNER.CFG`, or in a static object of the runner, is no secret. |
+| A holotape has no access to the ROM's heap and stack. It starts with the registers the kernel sets, `r0`, `sp` and `lr`, and every other register 0. | A value that the runner keeps in automatic variables only stays unknown to the tape. |
+| No call reads back what was printed on the PL011, and the kernel keeps no copy of it. | A holotape cannot read a line the runner printed. |
+| No call writes the mini UART. Only the kernel prints there: `ready` once, and the answers of the script channel. | An answer on the script channel is the kernel's. |
+| While a holotape runs, the ROM waits inside `holo_launch` and runs no code. | The runner prints nothing while a tape runs. |
+| When a holotape ends, the kernel prints one whole line before `holo_launch` returns: `ev=holo_exit`, `ev=holo_kill` or `ev=error`. | The runner's `done` line starts at the start of a line, whatever the tape left unfinished. |
+| `rand` returns a value from 0 to 2^31 - 1 from the hardware generator, or `-PIP_EIO`. | The runner can make a number that nobody can predict. |
 
 ### RUNNER.CFG
 
@@ -396,12 +405,39 @@ The runner is `pip_main()` of one C file. It runs these steps once, in order, an
 | 3 | The file holds 1 to 255 bytes | `result=config why=size rc=0` |
 | 4 | `pip_ini_get(buf, n, "run", "tape", name, 13)`, as [What the runner accepts](#what-the-runner-accepts) says | `result=config why=parse`, `rc` the negative value returned |
 | 5 | The value has 1 to 12 bytes, each from `0x21` to `0x7E` | `result=config why=name rc=0` |
-| 6 | Print `ev=run` with the value | |
-| 7 | `holo_launch(value, "")` | |
-| 8 | Print `ev=done` with the result of step 7 | |
-| 9 | Return 0 from `pip_main()` when the result is `exit`, else 1 | |
+| 6 | `rand`, twice. The key is the first value, then the second, each as 8 lower case hex digits. See [The key of a run](#the-key-of-a-run). | `result=config why=rand`, `rc` the negative value returned |
+| 7 | Print `ev=run` with the value and the key | |
+| 8 | `holo_launch(value, "")` | |
+| 9 | Print `ev=done` with the result of step 8 and the key | |
+| 10 | Return 0 from `pip_main()` when the result is `exit`, else 1 | |
 
-The runner prints each marker with one `log` call, as one line that ends in a line feed. It prints nothing else. It never draws and never reads an event.
+The runner prints each marker with one `pip_printf()` call, as one line that ends in a line feed. It prints nothing else. It never draws and never reads an event. A failure of steps 1 to 6 returns 1 from `pip_main()` after its `done` line.
+
+### The key of a run
+
+A holotape prints on the same port as the runner, with the same call, and may print any text. So a line `ev=done` proves nothing by its text: a tape could print it and then hang, and a tool would take a run that never ended for one that ended well. The runner therefore marks its lines with a key that no tape can know.
+
+| Rule for the runner | Detail |
+|---|---|
+| Making the key | Two `rand` calls, at step 6, after the settings are read and before anything else is printed. Each value is from 0 to 2^31 - 1. The key is both values written with `%08x%08x`: 16 lower case hex digits, 62 random bits. The first and the ninth digit are from `0` to `7`. |
+| Printing it | Once in the `run` line, before `holo_launch`. Once in the `done` line, after `holo_launch` returned. Nowhere else. |
+| Keeping it | In automatic variables of `pip_main()` only, so it lives in registers and on the ROM's stack. No static object, no global and no file ever holds it or a text that contains it. `pip_printf()` formats on the caller's stack and fits this rule. |
+| A new key per boot | The runner never reads the key from the card and never takes it from the tool. |
+
+Why a tape cannot print a `done` line with the key:
+
+| A tape cannot | Because |
+|---|---|
+| Print before the `run` line | The runner prints it before `holo_launch`. Until then only the kernel and the runner have printed, and neither prints text that a project supplies, but the tape's file name in `tape=`. |
+| Read the key from memory | The key is on the ROM's stack and in registers. A holotape has no access to the ROM's heap and stack, and the kernel clears the registers before it starts the tape. The ROM slot, which a tape may read, holds no copy. |
+| Read the key from the card | The key is never on the card. |
+| Read the key from the serial port | No call reads back what was printed. |
+| Guess the key | A guess is right once in 2^62. |
+| Make the runner print | The runner waits inside `holo_launch` while a tape runs. |
+
+So a `done` line with the key of the `run` line was printed by the runner, after `holo_launch` returned. It proves two things at once: the tape has ended, and `rc` is the value `holo_launch` returned.
+
+The key gives no secrecy to anything else, and it is no protection of the device. It only tells the runner's lines from a tape's.
 
 ### Runner markers
 
@@ -409,11 +445,11 @@ The lines follow the marker format of [Serial markers](./BOOT_PROTOCOL.md#serial
 
 | Line | When |
 |---|---|
-| `@RC stage=runner ev=run tape=<file>` | Right before `holo_launch`. At most once per boot. |
-| `@RC stage=runner ev=done result=<result> rc=<rc>` | After `holo_launch` returned. `<rc>` is the value it returned, as a signed decimal number. |
-| `@RC stage=runner ev=done result=config rc=<rc> why=<why>` | `RUNNER.CFG` could not be used, and `holo_launch` was not called |
+| `@RC stage=runner ev=run tape=<file> key=<key>` | Right before `holo_launch`. At most once per boot. |
+| `@RC stage=runner ev=done result=<result> rc=<rc> key=<key>` | After `holo_launch` returned. `<rc>` is the value it returned, as a signed decimal number, printed with `%d`. `<key>` is the key of the `run` line. |
+| `@RC stage=runner ev=done result=config rc=<rc> why=<why>` | The runner could not start the tape, and `holo_launch` was not called. This line has no key and comes with no `run` line. |
 
-A runner that reaches its end prints exactly one `done` line, and it is the last line the runner prints.
+A runner that reaches its end prints exactly one `done` line, and it is the last line the runner prints. `<file>` is the value of `tape` in `RUNNER.CFG`, 1 to 12 bytes from `0x21` to `0x7E`. `<key>` is 16 lower case hex digits, as [The key of a run](#the-key-of-a-run) says. `<result>` is a name of the table below. `<rc>` is an optional `-` and 1 to 10 decimal digits. `<why>` is `open`, `read`, `size`, `parse`, `name` or `rand`. Each line ends with one line feed, has one space between its parts, and holds no other byte.
 
 | `result` | `holo_launch` returned | Meaning |
 |---|---|---|
@@ -424,17 +460,30 @@ A runner that reaches its end prints exactly one `done` line, and it is the last
 | `io` | `-PIP_EIO`, -5 | A read of the card failed |
 | `eject` | `-PIP_ENODEV`, -41 | The slot card was pulled while its tape ran |
 | `error` | Any other negative value | Such as `-PIP_EINVAL`, -22, for a name the kernel refuses |
-| `config` | Not called | See the steps above. `why` is `open`, `read`, `size`, `parse` or `name`. |
+| `config` | Not called | See the steps above. `why` is `open`, `read`, `size`, `parse`, `name` or `rand`. |
 
 A run of a tape that returns 3:
 
 ```
 @RC stage=pipos ev=jump entry=0x00400000
-@RC stage=runner ev=run tape=PIPES.HTP
+@RC stage=runner ev=run tape=PIPES.HTP key=3f2a9c0b5d417e86
 @RC stage=pipos ev=holo_start name=PIPES.HTP
 tape: ready
 @RC stage=pipos ev=holo_exit status=3
-@RC stage=runner ev=done result=exit rc=3
+@RC stage=runner ev=done result=exit rc=3 key=3f2a9c0b5d417e86
+@RC stage=pipos ev=rom_exit status=0
+@RC stage=pipos ev=ready rom=1
+```
+
+A run of a tape that prints a `done` line of its own, with a guessed key, and then returns 3. A tool takes the tape's line for text and the runner's line for the end:
+
+```
+@RC stage=pipos ev=jump entry=0x00400000
+@RC stage=runner ev=run tape=PIPES.HTP key=6c01d4e27a93b5f0
+@RC stage=pipos ev=holo_start name=PIPES.HTP
+@RC stage=runner ev=done result=exit rc=0 key=0000000000000000
+@RC stage=pipos ev=holo_exit status=3
+@RC stage=runner ev=done result=exit rc=3 key=6c01d4e27a93b5f0
 @RC stage=pipos ev=rom_exit status=0
 @RC stage=pipos ev=ready rom=1
 ```
@@ -442,8 +491,8 @@ tape: ready
 A card without the tape:
 
 ```
-@RC stage=runner ev=run tape=PIPES.HTP
-@RC stage=runner ev=done result=missing rc=-2
+@RC stage=runner ev=run tape=PIPES.HTP key=1b7e44a90c35d2f8
+@RC stage=runner ev=done result=missing rc=-2 key=1b7e44a90c35d2f8
 @RC stage=pipos ev=rom_exit status=1
 @RC stage=pipos ev=ready rom=1
 ```
@@ -460,36 +509,89 @@ The `stage=pipos` lines are the kernel's own and are shown for context. Only the
 
 ### When a run is over
 
-A tool reads the PL011 line by line. A line holds a marker when it contains the four bytes `@RC `, and the marker runs from the first of them to the end of the line. A tape may leave a line unfinished, so a marker does not always start its line. The tool splits the marker at spaces into `key=value` pairs, at the first `=` of each, and finds keys by name. The first of these markers ends the run:
+A tool reads the PL011 line by line, as [Serial lines](./STUDIO_CLI.md#serial-lines) says, and sorts each whole line into one of three kinds.
 
-| Marker | The run ended because |
+| Kind | How a tool finds it |
 |---|---|
-| `stage=runner` with `ev=done` | The runner reported. `result` and `rc` say how. |
-| Any stage with `ev=exception` or `ev=panic` | The kernel stopped on a fault of its own. No `done` line will come. |
-| `stage=pipos` with `ev=ready`, before any `done` line | The kernel reached its main loop and the runner did not report: the ROM did not load, with `rom=0`, or the kernel killed it, with `rom=1`. No `done` line will come. |
+| A runner line | The whole line, from its first byte to its last, is one of the three lines of [Runner markers](#runner-markers): the same parts in the same order, one space between them, a value of the right form in each, and nothing before or after. A line that holds `stage=runner` in any other shape is text. |
+| A kernel marker | The line contains the four bytes `@RC `. The marker runs from the first of them to the end of the line. A tape may leave a line unfinished, so a kernel marker does not always start its line. The tool splits the marker at spaces into `key=value` pairs, at the first `=` of each, and takes the first pair of each name. |
+| Text | Every other line |
 
-A run with none of these lines is not over. The tape still runs, and only the tool's time limit ends it. After a `done` line the machine idles in the kernel's main loop, with the script channel still answering, until the tool stops QEMU.
+A tool then keeps one value, the key of the run, and follows these rules:
+
+1. The first runner line with `ev=run` gives the key of the run. A later `ev=run` line is text.
+2. A runner line with `ev=done` and `key=` is the runner's `done` line only when a `run` line came before it and its key equals the key of the run. Otherwise it is text.
+3. A runner line with `ev=done` and `result=config` is the runner's `done` line only when no `run` line came before it. Otherwise it is text.
+
+The first of these lines ends the run:
+
+| Line | The run ended because | A tape can print it |
+|---|---|---|
+| The runner's `done` line, by rules 2 and 3 | The runner reported. `result` and `rc` say how. | No |
+| A kernel marker with `ev=exception` or `ev=panic`, of any stage | The kernel stopped on a fault of its own. No `done` line will come. | Yes |
+| A kernel marker with `stage=pipos` and `ev=ready`, before the runner's `done` line | The kernel reached its main loop and the runner did not report: the ROM did not load, with `rom=0`, or the kernel killed it, with `rom=1`. No `done` line will come. | Yes |
+
+A run with none of these lines is not over. The tape still runs, and only the tool's time limit ends it. After the runner's `done` line the machine idles in the kernel's main loop, with the script channel still answering, until the tool stops QEMU.
+
+#### Who may print a line
+
+This table lists every line a tool reads, who prints it, and what a tool may conclude. The rule behind it: a tool takes good news only from a line that a tape cannot print, and it takes bad news from any line.
+
+| Line | Printed by | A tape can print the same bytes | A tool concludes |
+|---|---|---|---|
+| The first `ev=run` runner line | The runner | No. No tape has run yet. | The key of the run. Nothing else. |
+| A later `ev=run` runner line | A tape | Yes | Nothing. It is text. |
+| An `ev=done` runner line with the key of the run | The runner | No. See [The key of a run](#the-key-of-a-run). | The tape has ended, and `rc` is what `holo_launch` returned. This is the only line that can end a run well. |
+| An `ev=done` runner line with another key, or before any `run` line | A tape | Yes | Nothing. It is text. |
+| An `ev=done result=config` runner line before any `run` line | The runner | No. No tape has run. | The run is over, and it failed: the runner could not start the tape. |
+| An `ev=done result=config` runner line after a `run` line | A tape | Yes | Nothing. It is text. |
+| A kernel marker with `ev=exception` or `ev=panic` | The kernel | Yes | The run is over, and it failed. Never that a run went well. |
+| A kernel marker `stage=pipos ev=ready` before the runner's `done` line | The kernel | Yes | The run is over, and it failed. Never that a run went well. |
+| Any other kernel marker, such as `ev=holo_exit` or `ev=rom_exit` | The kernel | Yes | Nothing. A tool reads none of them. |
+| A line that holds the text of `--expect` or of an `expect` step | Anyone. The tape, by design. | Yes, and that is the point | That a line held the text. Nothing about how or whether the tape ended. |
+| `ok`, `ok dropped` and `err` lines on the mini UART | The kernel | No. No call writes the mini UART. | The answer to a line the tool sent on the script channel |
+
+So a tape that prints a kernel marker can only fail its own run: the tool reports `guest: fault` or `guest: runner` for a machine that had no fault. A tape that prints text in the shape of the runner's lines changes nothing. And a tape cannot make a tool believe that it ended, or that it ended with a given status.
 
 ```mermaid
 flowchart TB
     B["Kernel boots"] --> L{"ROM1.ROM loads?"}
     L -- No --> R0["ev=ready rom=0"]
-    L -- Yes --> C{"RUNNER.CFG usable?"}
+    L -- Yes --> C{"RUNNER.CFG usable,<br/>rand works?"}
     C -- No --> CFG["ev=done result=config"]
-    C -- Yes --> RUN["ev=run tape=NAME.HTP"]
+    C -- Yes --> RUN["ev=run tape=NAME.HTP key=KEY"]
     RUN --> H["holo_launch"]
-    H --> RES["ev=done result=... rc=..."]
+    H --> RES["ev=done result=... rc=... key=KEY"]
     CFG --> X["ROM exits<br/>ev=rom_exit, ev=ready rom=1"]
     RES --> X
 ```
 
 ### What Pip-OS must add for the runner
 
-1. `sdk/examples/runner/`: `main.c` and a `Makefile` that includes `pipos-app.mk` with `KIND := rom`, `NAME := RUNNER` and `IMAGE := RUNNER.ROM`. The code follows [What the runner does](#what-the-runner-does) and prints the lines of [Runner markers](#runner-markers), byte for byte.
+1. `sdk/examples/runner/`: `main.c` and a `Makefile` that includes `pipos-app.mk` with `KIND := rom`, `NAME := RUNNER` and `IMAGE := RUNNER.ROM`. The code follows [What the runner does](#what-the-runner-does) and [The key of a run](#the-key-of-a-run), and prints the lines of [Runner markers](#runner-markers), byte for byte.
 2. Its package build copies the built image to `boot/RUNNER.ROM` and writes `"runner": 1` into `formats` of `sdk.json`.
-3. A target test on every board that boots a card with the runner as `/PIPBOY/ROM1.ROM`: a tape that returns 0, a tape that returns 3, a missing tape, a tape with a bad CRC and a card without `RUNNER.CFG`. Each case checks the exact `done` line and that `ev=ready rom=1` follows.
+3. A target test on every board that boots a card with the runner as `/PIPBOY/ROM1.ROM`: a tape that returns 0, a tape that returns 3, a missing tape, a tape with a bad CRC, a card without `RUNNER.CFG`, and one card for each row of the table of bad files in [What the runner accepts](#what-the-runner-accepts). Each case checks the exact `done` line and that `ev=ready rom=1` follows.
+4. A target test of the key: the `run` and `done` lines of one boot carry the same key, two boots give two keys, and a tape that prints a `done` line with a key of its own and then returns 3 is followed by the runner's line with `rc=3` and the key of the `run` line.
+5. A build check that the runner's own object file, built from `main.c`, has an empty `.data` and an empty `.bss`, so the key has no static home.
 
 No kernel change is needed.
+
+### What Pip-OS must keep for the runner
+
+The key holds only while these stay true. Each is a fact of Pip-OS today. A change to one of them is a change to this spec first.
+
+| Fact | Where Pip-OS has it |
+|---|---|
+| A holotape has no access to the ROM's heap and stack | `holo_regions` in `kernel/sys_holo.c`, and [Sandbox](./PIPOS_ABI.md#sandbox) |
+| A holotape starts with every register 0 but `r0`, `sp` and `lr` | `pipos_image_run()` in `kernel/rom.c`, on the library's `umode_run()` |
+| No call reads back the text of `log`, and the kernel keeps no copy an image can reach | `sys_log()` in `kernel/sys_system.c` |
+| No call writes the mini UART | The whole table of calls in `kernel/sys_*.c` |
+| The ROM runs no code while a holotape runs | `holo_launch` in `kernel/sys_holo.c` |
+| A whole kernel line ends every tape before `holo_launch` returns | `run_tape()` in `kernel/sys_holo.c` |
+| `rand` returns the hardware generator's bits, and no fixed sequence | `sys_rand()` in `kernel/sys_system.c` |
+| `pip_printf()` keeps its text on the caller's stack | `sdk/lib/printf.c` |
+
+A kernel that prefixed or escaped what a holotape logs would also tell the two apart. It is left out on purpose: the test ROMs and the conformance tape of Pip-OS print `@RC` lines of their own through `log`, and that must keep working.
 
 ## Firmware pins
 

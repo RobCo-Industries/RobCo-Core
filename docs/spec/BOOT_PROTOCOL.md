@@ -463,8 +463,8 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `holo_launch` | `path` | Pip-OS starts a holotape |
 | `holo_exit` | `status` | Holotape returned |
 | `holo_kill` | `reason pc` | Pip-OS killed a holotape. `reason` and `pc` work as in `rom_kill`. `reason` is also `eject` when the slot card of a running tape was pulled. Every `holo_kill` carries `pc`. For `eject`, `pc` is the tape's program counter at the syscall where Pip-OS ended it, in the same format as for a fault. |
-| `run` | `tape` | Runner ROM: it is about to launch the tape `tape`. See [The runner ROM](./SDK_PACKAGE.md#the-runner-rom). |
-| `done` | `result rc` | Runner ROM: the run is over. `result` says how, and `rc` is what `holo_launch` returned. With `result=config` it adds `why`. See [Runner markers](./SDK_PACKAGE.md#runner-markers). |
+| `run` | `tape key` | Runner ROM: it is about to launch the tape `tape`. `key` is the key of this run. See [The key of a run](./SDK_PACKAGE.md#the-key-of-a-run). |
+| `done` | `result rc key` | Runner ROM: the run is over. `result` says how, `rc` is what `holo_launch` returned and `key` repeats the key of `run`. With `result=config` it has `why` and no `key`. See [Runner markers](./SDK_PACKAGE.md#runner-markers). |
 | `init` | `fb console tick hz` | First stage: return codes of the hardware set-up, and the tick rate |
 | `input` | `serial mini script` | First stage: return codes of the input back ends |
 | `post` | `name result`, then probe keys | First stage: one self-test probe. `result` is `ok`, `fail`, `absent` or `skipped`. A skipped probe has `after`, the probe that stopped the self test. See [First-stage self test](#first-stage-self-test). |
@@ -504,6 +504,8 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `runner` | `run`, `done` |
 
 All stages emit `exception` and `panic` when those happen. Deitrix runs in USR mode, so it prints through the `log` syscall. The runner ROM does the same. It prints no `boot` marker, because a ROM in USR mode cannot read the values of one.
+
+The text of a marker does not prove who printed it. On Pip-OS every ROM and every holotape prints through `log` on the same PL011 as the kernel, and `log` passes a line feed and `@`. So a holotape can print a line in the form of any marker, with any stage name. A reader that draws a conclusion a holotape must not be able to fake needs more than the text. [Who may print a line](./SDK_PACKAGE.md#who-may-print-a-line) lists what a tool may conclude from each line, and [The key of a run](./SDK_PACKAGE.md#the-key-of-a-run) is how the runner ROM marks its own.
 
 The first-stage events, from `init` to `fault_hook` in the table, are RETROS-BIOS's. Their keys are a draft.
 

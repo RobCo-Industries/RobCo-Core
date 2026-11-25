@@ -72,8 +72,8 @@ A command that cannot tell which case holds never ends with 0.
 | The tape ended and no line held `TEXT` | 1 |
 | The time limit passed | 6 |
 | QEMU did not start, or died | 7 |
-| A line held an `ev=exception` or `ev=panic` marker | 8 |
-| The runner ROM did not report, or could not read its settings | 8 |
+| A line held an `ev=exception` or `ev=panic` marker, or an `ev=ready` marker of the kernel before the runner's `done` line | 8 |
+| The runner ROM could not start the tape | 8 |
 
 `robco test` ends with 0 when every scenario passed, with 7 when QEMU failed in at least one scenario, and with 1 when a scenario failed and QEMU failed in none. A fault of the machine inside a scenario fails that scenario, so it gives 1.
 
@@ -391,7 +391,7 @@ The tool boots the machine from the `pipos` package that the lock names, `PKG`, 
 1. It reads `PKG/boot.json`, by the rules of [boot.json](./TESTING.md#bootjson). A `--board` that the file does not list fails with `run: board`, and the detail lists the boards. The mode is the board's `default_mode`.
 2. The program is the board's `qemu` value in `bin/` of the `qemu` tool folder, with `.exe` on Windows. A missing program fails with `tool: program`.
 3. It makes a new, empty folder for the run in the system's temporary folder, and writes [the simulator card](#the-simulator-card) there as `sd.img`.
-4. It builds the command line in the order of [boot.json](./TESTING.md#bootjson): `{stub}` is `PKG/boot/fwstub.bin`, `{image}` is `PKG/boot/PIPOS.IMG` and `{sd}` is the card. It attaches QMP once, no qtest, both serial ports and the card, and no other device.
+4. It builds the command line in the order of [boot.json](./TESTING.md#bootjson): `{stub}` is `PKG/boot/fwstub.bin`, `{image}` is `PKG/boot/PIPOS.IMG` and `{sd}` is the card. It attaches QMP once, no qtest, both serial ports and the card, and no other device. It adds no `-seed` option: [the key of a run](./SDK_PACKAGE.md#the-key-of-a-run) must come from random numbers that nobody fixed.
 5. QMP and both serial ports use TCP on `127.0.0.1`, on every system.
 6. It starts QEMU so that QEMU dies when the tool dies, connects to QMP and to both serial ports, and only then sends QMP `cont`. The time limit of the run starts at `cont`.
 7. While the machine runs, it sends QMP `query-status` every 20 ms. [QEMU keep-alive](./TESTING.md#qemu-keep-alive) says why: without it QEMU 10.1 at times leaves a `raspi0` or `raspi1ap` machine halted until the next QMP command, which a quiet tool never sends.
@@ -433,12 +433,23 @@ The tool handles each whole line in this order, and the first rule that holds en
 |---|---|---|---|---|
 | 1 | The line is written out, as [Serial lines](#serial-lines) says | | | |
 | 2 | `--expect` is given and `TEXT` matches the line | `matched` | 0 | None |
-| 3 | The line holds a marker with `ev=exception` or `ev=panic` | `guest` | 8 | `guest: fault`, with the line |
-| 4 | The line holds the runner's `done` marker with `result=config` | `guest` | 8 | `guest: runner`, with the line |
-| 5 | The line holds the runner's `done` marker with another result, and `--expect` is given | `ended` | 1 | `run: unmatched` |
+| 3 | The line holds a kernel marker with `ev=exception` or `ev=panic` | `guest` | 8 | `guest: fault`, with the line |
+| 4 | The line is the runner's `done` line with `result=config` | `guest` | 8 | `guest: runner`, with the line |
+| 5 | The line is the runner's `done` line with another result, and `--expect` is given | `ended` | 1 | `run: unmatched` |
 | 6 | The same, without `--expect`, and the result is `exit` | `ended` | 0 | None |
 | 7 | The same, without `--expect`, and the result is not `exit` | `ended` | 1 | `run: tape`, with the result |
-| 8 | The line holds the kernel's `ev=ready` marker, and no `done` marker came before | `guest` | 8 | `guest: runner`, with the line |
+| 8 | The line holds the kernel marker `stage=pipos ev=ready`, and the runner's `done` line did not come before | `guest` | 8 | `guest: runner`, with the line |
+
+"The runner's `done` line" and "a kernel marker" have the exact meaning of [When a run is over](./SDK_PACKAGE.md#when-a-run-is-over). The runner's `done` line is the one line that carries the key of the run, or the `result=config` line that comes before any `run` line. A line that only looks like it is text, and rules 4 to 7 pass over it.
+
+A tape can print any line, so [Who may print a line](./SDK_PACKAGE.md#who-may-print-a-line) sorts the rules by what a tape can do:
+
+| Rules | A tape can trigger them | What that gives the tape |
+|---|---|---|
+| 2 | Yes, by printing `TEXT` | The match that `--expect` asks for. This is the point of the option. |
+| 3 and 8 | Yes, by printing a line in the form of a kernel marker | A failed run with exit code 8, for a machine that had no fault. Never a passed run. |
+| 4 | No | |
+| 5, 6 and 7 | Only by ending | The result and the status are the ones `holo_launch` returned. A tape cannot make rule 6 hold without ending with a status from 0 to 255. |
 
 Between lines, two more things end the run:
 
@@ -447,7 +458,7 @@ Between lines, two more things end the run:
 | The time limit passes | `timeout` | 6 | `run: timeout` |
 | QEMU exits or a connection closes | `simulator` | 7 | `sim: died` |
 
-[When a run is over](./SDK_PACKAGE.md#when-a-run-is-over) says how to find a marker in a line. Rule 2 comes before the others, so `--expect` can wait for any line, a marker included. The exit status of the tape is not the exit code of the command: it is `tape_rc` in the `result` line.
+Rule 2 comes before the others, so `--expect` can wait for any line, a marker included. The exit status of the tape is not the exit code of the command: it is `tape_rc` in the `result` line.
 
 ```mermaid
 flowchart TB
@@ -456,7 +467,7 @@ flowchart TB
     M -- Yes --> OK["matched, 0"]
     M -- No --> F{"exception or panic?"}
     F -- Yes --> G["guest, 8"]
-    F -- No --> D{"runner done?"}
+    F -- No --> D{"the runner's done line,<br/>with the key of the run?"}
     D -- "result=config" --> G
     D -- "other result" --> E["ended: 1 with --expect,<br/>else 0 for exit, 1 otherwise"]
     D -- No --> R{"kernel ready,<br/>no done before?"}
@@ -471,8 +482,8 @@ The `result` line adds:
 | `outcome` | string | Always | `matched`, `ended`, `timeout`, `simulator` or `guest`. `not_run` when the command failed before `cont`. |
 | `board` | string | Always | The board |
 | `line` | string | Always | The line that ended the run, by rules 2 to 8. Empty for `timeout`, `simulator` and `not_run`. |
-| `tape_result` | string | Always | The `result` of the runner's `done` marker when one came, else empty |
-| `tape_rc` | integer | Always | The `rc` of that marker when one came, else 0 |
+| `tape_result` | string | Always | The `result` of the runner's `done` line when it came, else empty |
+| `tape_rc` | integer | Always | The `rc` of that line when it came, else 0 |
 | `ms` | integer | Always | Milliseconds from `cont` to the end of the run. 0 for `not_run`. |
 
 ## robco test
@@ -516,7 +527,7 @@ Each step holds exactly one action key, and `timeout_ms` where the table allows 
 | `dial` | integer | -1000000 to 1000000, not 0 | Turns the dial by that many detents | The machine answers `ok` | Not allowed |
 | `sleep_ms` | integer | 1 to 60000 | Waits that long on the host's clock | Always | Not allowed |
 | `screen` | string | A golden name: 1 to 32 characters from `a` to `z`, `0` to `9`, `_` and `-` | Takes one capture of the screen and compares it with the golden image of that name | The two are equal | Not allowed |
-| `exit` | integer | 0 to 255 | Waits for the tape to end | The runner's `done` marker has `result=exit` and this `rc` | Allowed, as for `expect` |
+| `exit` | integer | 0 to 255 | Waits for the tape to end | The runner's `done` line has `result=exit` and this `rc` | Allowed, as for `expect` |
 
 A key name is one of `up`, `down`, `left`, `right`, `select`, `back` and `dial_push`.
 
@@ -554,7 +565,7 @@ The [script backend](../guide/api/input.md#script-backend) defines these lines a
 
 A `screen` step sends QMP `screendump` once, with a file in the run's folder, reads the PPM that QEMU writes, and compares. It takes one capture and never tries again.
 
-An `exit` step waits for the runner's `done` marker. It fails at once when the marker has another result or another `rc`.
+An `exit` step waits for the runner's `done` line, as [When a run is over](./SDK_PACKAGE.md#when-a-run-is-over) defines it: the line with the key of the run. It fails at once when the line has another result or another `rc`. A line of a tape in the same form, with another key or none, is text: it neither passes nor fails the step.
 
 ### What ends a scenario
 
@@ -564,17 +575,19 @@ A scenario passes when every step passed. It fails at the first step that fails,
 |---|---|---|
 | The step's own limit passes | That step | `timeout` |
 | The scenario's limit passes | The step that is running | `timeout` |
-| The tool reads a line that holds a marker with `ev=exception` or `ev=panic` | The step that is running, whatever its action | `guest` |
-| The tool reads the kernel's `ev=ready` marker, and no `done` marker came before it | The step that is running, whatever its action | `guest` |
+| The tool reads a line that holds a kernel marker with `ev=exception` or `ev=panic` | The step that is running, whatever its action | `guest` |
+| The tool reads the kernel marker `stage=pipos ev=ready`, and the runner's `done` line did not come before it | The step that is running, whatever its action | `guest` |
 | QEMU exits, a connection closes or QMP fails | The step that is running | `simulator` |
-| An `expect` step reaches the runner's `done` marker before a line that holds its text | That step | `ended` |
-| An `exit` step finds a `done` marker with another result or another `rc` | That step | `status` |
+| An `expect` step reaches the runner's `done` line before a line that holds its text | That step | `ended` |
+| An `exit` step finds the runner's `done` line with another result or another `rc` | That step | `status` |
 | The machine answers a key step with anything but `ok`, or not at all | That step | `script` |
 | A `screen` step finds another size, or another pixel | That step | `size` or `pixels` |
 
 The tool reads the PL011 from `cont` until the last step has passed. When a line of the third or fourth row comes while no step runs, the next step fails with it before it does anything else.
 
-A `done` marker fails no step but an `expect` step. A tape may end while a key step or a `sleep_ms` step runs: the kernel's main loop then answers the script channel, and an `exit` step that follows finds the marker.
+The runner's `done` line fails no step but an `expect` step. A tape may end while a key step or a `sleep_ms` step runs: the kernel's main loop then answers the script channel, and an `exit` step that follows finds the line.
+
+A scenario passes on nothing a tape can fake but the text of its `expect` steps. The third and fourth rows take lines that a tape can print too, and they only fail a step. [Who may print a line](./SDK_PACKAGE.md#who-may-print-a-line) has the whole list.
 
 ### Golden images
 
@@ -642,7 +655,7 @@ A `check` line, one per step that ran:
 | `action` | string | The step's action key |
 | `ok` | boolean | The step passed |
 | `reason` | string | Empty when `ok`. Else `timeout`, `guest`, `ended`, `simulator`, `script`, `status`, `size` or `pixels`. |
-| `detail` | string | Text for a person. For `script` the answer line. For `status` the `done` marker. For `size` both sizes. |
+| `detail` | string | Text for a person. For `script` the answer line. For `status` the runner's `done` line. For `size` both sizes. |
 | `ms` | integer | Milliseconds the step took |
 
 A `check` line with the reason `pixels` adds five keys:
@@ -749,7 +762,7 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 {"v":1,"kind":"step","step":"boot","item":"raspi0","state":"start"}
 {"v":1,"kind":"step","step":"boot","item":"raspi0","state":"done"}
 {"v":1,"kind":"serial","t_ms":41,"text":"@RC stage=pipos ev=boot midr=0x410fb767 soc=bcm2835 base=0x20000000 board_rev=0x00900092 mem=0x1c000000 entry_mode=svc"}
-{"v":1,"kind":"serial","t_ms":902,"text":"@RC stage=runner ev=run tape=PIPES.HTP"}
+{"v":1,"kind":"serial","t_ms":902,"text":"@RC stage=runner ev=run tape=PIPES.HTP key=2e91c7045b0fa3d6"}
 {"v":1,"kind":"serial","t_ms":931,"text":"tape: ready"}
 {"v":1,"kind":"result","command":"run","ok":true,"exit":0,"outcome":"matched","board":"raspi0","line":"tape: ready","tape_result":"","tape_rc":0,"ms":931}
 ```
@@ -758,9 +771,9 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 
 ```json
 {"v":1,"kind":"serial","t_ms":2210,"text":"@RC stage=pipos ev=holo_exit status=3"}
-{"v":1,"kind":"serial","t_ms":2211,"text":"@RC stage=runner ev=done result=exit rc=3"}
+{"v":1,"kind":"serial","t_ms":2211,"text":"@RC stage=runner ev=done result=exit rc=3 key=47d0b61e09c85a2f"}
 {"v":1,"kind":"error","code":"run: unmatched","detail":"the tape ended and no line held \"never\"","exit":1}
-{"v":1,"kind":"result","command":"run","ok":false,"exit":1,"outcome":"ended","board":"raspi0","line":"@RC stage=runner ev=done result=exit rc=3","tape_result":"exit","tape_rc":3,"ms":2211}
+{"v":1,"kind":"result","command":"run","ok":false,"exit":1,"outcome":"ended","board":"raspi0","line":"@RC stage=runner ev=done result=exit rc=3 key=47d0b61e09c85a2f","tape_result":"exit","tape_rc":3,"ms":2211}
 ```
 
 `robco test --json` in the same project. The lines of the install and of the build and most serial lines are cut:
@@ -775,7 +788,7 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 {"v":1,"kind":"check","scenario":"start","index":1,"action":"expect","ok":true,"reason":"","detail":"","ms":931}
 {"v":1,"kind":"check","scenario":"start","index":2,"action":"screen","ok":true,"reason":"","detail":"","ms":6}
 {"v":1,"kind":"check","scenario":"start","index":3,"action":"tap","ok":true,"reason":"","detail":"","ms":4}
-{"v":1,"kind":"serial","t_ms":948,"text":"@RC stage=runner ev=done result=exit rc=0"}
+{"v":1,"kind":"serial","t_ms":948,"text":"@RC stage=runner ev=done result=exit rc=0 key=0a5f3e8172c4d96b"}
 {"v":1,"kind":"check","scenario":"start","index":4,"action":"exit","ok":true,"reason":"","detail":"","ms":7}
 {"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi0","outcome":"passed","failed_step":0,"updated":0,"ms":948}
 {"v":1,"kind":"result","command":"test","ok":true,"exit":0,"scenarios":1,"passed":1,"failed":0,"updated":0}
