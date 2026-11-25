@@ -155,7 +155,14 @@ A project test can drive the Pi's own button and dial lines. Boot with `qtest=Tr
 | `slip(log)` | The latest write and the most a state was cut short, in seconds |
 | `pressed_span(schedule, log, press)` | The longest time from the first press to the real end of the last press, in seconds |
 | `one_sample_at_most(span_s, missed, jitter_s, tick_s)` | True when no two tick samples can fall inside the span |
+| `hosttiming.skip(numbers)` | Skips a test whose runs had poor host timing, with the reason `host timing: <numbers>` |
 | `quad_schedule()`, `bounce_schedule()`, `quad_states()`, `level_writes()` | The pure parts behind the above, tested in `tests/tools/test_harness_pigpio.py` |
+
+#### Host timing skips
+
+QEMU's guest tick is irregular when the host is busy. Each timed check in `test_input_gpio.py` judges a run only when the host timing of that run was good enough. It tries a bad run 3 times, then skips the test through `hosttiming.skip()`. That is a host timing skip. Its reason starts with `host timing:` and gives the numbers of the last run.
+
+`tests/target/conftest.py` counts host timing skips in each session. A session allows 1 per selected board: 1 for `--board raspi0`, 4 for `--board all`. A session over the limit fails, and its summary lists each counted skip with its numbers. Other skips, such as a board QEMU lacks, do not count. On a loaded machine, `--timing-skips-max=N` sets another limit for the whole session. `make test-target` passes `-rs`, so the log shows every skip reason. Project tests get this rule only by copying the target conftest, since `harness.plugin` does not include it.
 
 ## Canary suite
 
