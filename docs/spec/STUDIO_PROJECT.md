@@ -45,10 +45,9 @@ A reader built on a TOML 1.0 parser does not follow this spec:
 
 A tool writes only the forms that TOML 1.0 and 1.1 share. That covers [`robco.lock`](#robcolock) and the files of a template. So any TOML 1.0 program reads what the tool writes. The rule above is about what a reader accepts from a person.
 
-This manifest uses the first two forms. It means the same as the first manifest of [Examples](#examples), and a TOML 1.0 parser refuses it:
+This manifest uses the first two forms, and it writes `format` after other keys, which [Format version](#format-version) allows. It means the same as the first manifest of [Examples](#examples), and a TOML 1.0 parser refuses it:
 
 ```toml
-format = 1
 project = {
     name = "PIPES",
     title = "Pi\x70es",
@@ -58,6 +57,7 @@ project = {
     icon = "icon.pbm",
 }
 target = { platform = "pipos", abi = "1.3" }
+format = 1
 
 [build]
 backend = "robco"
@@ -76,13 +76,17 @@ A path that breaks a rule fails with `manifest: path` and the key.
 
 ### Format version
 
-The first key of the file is `format`, outside any table.
+`format` is a key outside any table.
 
 | Key | Type | Required | Value |
 |---|---|---|---|
 | `format` | integer | Yes | `1` for this spec |
 
 A tool reads every format version it knows. A manifest with a larger `format` fails with `manifest: format`, and the message asks for a newer tool. A missing `format`, or one that is not a positive integer, fails with `manifest: format`.
+
+The order of keys carries no meaning, in a table and outside one. `format` need not be the first key of the file, and no key need come before another. TOML itself sets one limit: a key outside any table stands above the first table header. A `format` written below a header such as `[build]` belongs to that table. The file then has no `format` of its own and fails with `manifest: format`.
+
+`format` is still the first thing a tool checks. Once the file has parsed, the tool checks `format` before any other rule, so a manifest of a later format reports `manifest: format` and never an unknown key or a bad value of that later format.
 
 A change to this spec that an older tool would build wrongly raises `format`. A new optional key with a default that keeps old builds the same does not.
 
@@ -301,7 +305,7 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 
 ### Syntax and format version
 
-`robco.lock` is TOML 1.1 in UTF-8. Its first key is `format`, an integer, `1` for this spec. The format rules are those of the manifest: a larger value fails with `lock: format`, and an unknown key fails with `lock: unknown key`.
+`robco.lock` is TOML 1.1 in UTF-8. `format` is an integer outside any table, `1` for this spec. The format rules are those of the manifest: a reader gives the order of keys no meaning, checks `format` before any other rule, fails a larger value, a missing one and one that is not a positive integer with `lock: format`, and fails an unknown key with `lock: unknown key`.
 
 ### Keys
 

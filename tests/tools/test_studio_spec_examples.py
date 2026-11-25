@@ -260,6 +260,9 @@ def test_toml_1_1_example_means_the_first_manifest():
     except tomllib.TOMLDecodeError:
         parsed = tomllib.loads(toml_1_0(newer))    # this Python reads TOML 1.0 only
     assert parsed == plain
+    # The order of keys carries no meaning: this example does not start with format.
+    assert list(parsed)[0] != "format" and list(plain)[0] == "format"
+    assert "first key" not in PROJECT.replace("need not be the first key", "")
     # What the tool writes stays in the forms both versions share.
     for block in blocks(PROJECT, "toml") + blocks(PACKAGE, "toml") + blocks(CLI, "toml"):
         if block != newer:
