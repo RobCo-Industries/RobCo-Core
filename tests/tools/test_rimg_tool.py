@@ -542,3 +542,44 @@ def test_pack_usage(tmp_path):
     assert run("pack", payload, "--magic", "ROM1").returncode == rimg.EX_USAGE
     assert run("pack", payload, "-o", tmp_path / "x", "--magic", "ROM1", "--subtype", "0",
                "--load-addr", "0x400000", "--abi-version", "1").returncode == rimg.EX_USAGE
+
+
+@pytest.mark.parametrize("key, value", [
+    ("--subtype", "-1"), ("--subtype", "0x100000000"),
+    ("--load-addr", "-0x8000"), ("--load-addr", "0x100008000"),
+    ("--mem-size", "-1"), ("--mem-size", "0x100000000"),
+])
+def test_pack_refuses_numbers_outside_32_bits(tmp_path, key, value):
+    payload = write(tmp_path, bytes(64), "payload.bin")
+    out = tmp_path / "out.img"
+    args = {"--subtype": "7", "--load-addr": "0x8000", key: value}
+    r = run("pack", payload, "-o", out, "--magic", "BOOT", *(f"{k}={v}" for k, v in args.items()))
+    assert r.returncode == 1 and "pack: bounds:" in r.stderr, r.stderr
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("cmd", ["seal", "pack"])
+def test_name_must_be_ascii(tmp_path, cmd):
+    out = tmp_path / "out.img"
+    if cmd == "seal":
+        r = run("seal", write(tmp_path, make_image()), "-o", out, "--name", "PIPÉ")
+    else:
+        r = run("pack", write(tmp_path, bytes(64), "payload.bin"), "-o", out, "--magic", "BOOT",
+                "--subtype", "7", "--load-addr", "0x8000", "--name", "Ünit")
+    assert r.returncode == 1 and f"{cmd}: version: name is not ASCII" in r.stderr, r.stderr
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("option, value", [
+    ("--image-version", "١.2.3"), ("--image-version", "1.２.3"),
+    ("--abi-version", "١.4"), ("--image-version", "1..3"),
+])
+def test_versions_take_ascii_digits_only(tmp_path, option, value):
+    out = tmp_path / "out.img"
+    r = run("pack", write(tmp_path, bytes(64), "payload.bin"), "-o", out, "--magic", "BOOT",
+            "--subtype", "7", "--load-addr", "0x8000", f"{option}={value}")
+    assert r.returncode == rimg.EX_USAGE, r.stderr
+    assert not out.exists()
+    parse = rimg.parse_version if option == "--image-version" else rimg.parse_abi
+    with pytest.raises(ValueError):
+        parse(value)

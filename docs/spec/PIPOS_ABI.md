@@ -620,11 +620,9 @@ The target promises one thing: the code calls nothing newer than the target. On 
 | Not defined | The headers define it to the ABI they implement. A build that does not set it sees every call, as today. |
 | Larger than the headers' ABI | A compile error that names both versions |
 | What is hidden | The `pip_*` wrapper of each call added after the target, and its syscall number. A call added in 1.1 is visible when `PIPOS_ABI_TARGET >= 0x00010001`. |
-| What stays visible | Struct layouts, every field included, since a struct is the same size on every kernel of the major. Error codes. |
+| What stays visible | Struct layouts, every field included, since a struct is the same size on every kernel of the major. Error codes. Constants that come with a newer call, such as `PIP_HW_TAPE`, `PIP_EV_TAPE` and the `PIP_HOLO_EV_*` bits of 1.4, because an image ignores bits and events it does not know. |
 | A use of a hidden call | Fails at compile time, with an error that names the call and the ABI that added it |
-| The image header | The build writes the same value into `abi_version`. The loader checks only its major. |
-
-Constants that come with a newer call, such as `PIP_HW_TAPE`, `PIP_EV_TAPE` and the `PIP_HOLO_EV_*` bits of 1.4, are not settled. They may stay visible, because an image ignores bits and events it does not know, or be hidden with their call.
+| The image header | The startup code, compiled with the same define, writes the same value into `abi_version`. See [Startup code](./SDK_PACKAGE.md#startup-code). The loader checks only its major. |
 
 ## Changes
 
@@ -632,5 +630,7 @@ Constants that come with a newer call, such as `PIP_HW_TAPE`, `PIP_EV_TAPE` and 
 |---|---|
 | 1.1 | `sample_queue` |
 | 1.2 | Button 6, Back |
-| 1.3 | `hw_flags` in `sys_info`. Pip-OS implements it in its own repository later. Until then it reports ABI 1.2 and writes 0. |
-| 1.4 | Removable holotapes: `[holotape] slot` in `PIPOS.CFG`, `PIP_HW_TAPE`, `flags` in `pip_holo_info_t`, `PIP_EV_TAPE`, the `holo_eject_event` mask, `-PIP_ENODEV` from `holo_launch`. Pip-OS implements it in its own repository later. Until then it reports ABI 1.3, returns 0 from `holo_eject_event` and never sets the new bits. |
+| 1.3 | `hw_flags` in `sys_info` |
+| 1.4 | Removable holotapes: `[holotape] slot` in `PIPOS.CFG`, `PIP_HW_TAPE`, `flags` in `pip_holo_info_t`, `PIP_EV_TAPE`, the `holo_eject_event` mask, `-PIP_ENODEV` from `holo_launch` |
+
+Pip-OS implements every version up to 1.4 and reports ABI 1.4.

@@ -67,13 +67,13 @@ Each table lists the parts of one document. "Implemented" means the code in this
 |---|---|
 | Branch stub and `rimg_header_t` emitted by `start.S` | Implemented |
 | Magic and subtype constants in `rimg.h` | Implemented |
-| META block | Specified |
+| META block | Implemented |
 | CRC-32 function, `crc32()` | Implemented |
 | Image CRC check, validation, `rimg_err_t`, `rimg_validate()` | Implemented |
 | `tools/rimg.py` `seal`, `info` and `verify` | Implemented |
 | Sealing every image in `mk/robco.mk` | Implemented |
 | Firmware download with pinned hashes, `tools/fetch_firmware.sh`, and boot directory, `tools/mkbootdir.sh` | Implemented |
-| Filling the META block in `tools/rimg.py` | Specified |
+| Filling the META block in `tools/rimg.py` | Implemented |
 | Loading images from the SD card, `loader_load()` | Implemented, pending hardware validation |
 | Sealing and packing rules in `tools/rimg.py` | Implemented |
 | Seal and pack test vectors in `tests/vectors/rimg/`, checked against `tools/rimg.py` | Implemented |
