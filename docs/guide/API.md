@@ -1,6 +1,6 @@
 # API reference
 
-This page and the topic files under [api/](./api/) list every public function, type and constant in `include/robco/`. This page holds the conventions, boot, board, the core drivers, the screen, images, boot info and faults. The topic files hold memory, storage, input, audio, the buses, the SPI display and the watchdog.
+This page and the topic files under [api/](./api/) list every public function, type and constant in `include/robco/`. This page holds the conventions, boot, board, the core drivers, the screen, images, boot info and faults. The topic files hold memory, storage, the holotape slot, input, audio, the buses, the SPI display and the watchdog.
 
 Each function signature is copied from its header. `tools/check_docs.py` fails the build when a header declares a function that neither this page nor a topic file lists, or when one of them lists a function that no header declares.
 
@@ -8,6 +8,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 |---|---|
 | [Memory, MMU and caches](./api/memory.md) | `alloc.h`, `mmu.h`, `cache.h` |
 | [Storage and files](./api/storage.md) | `blk.h`, `blk_ram.h`, `part.h`, `sd.h`, `fs.h`, `loader.h` |
+| [Holotape slot](./api/holo.md) | `holo.h`, `sdspi.h` |
 | [Input](./api/input.md) | `input.h`, `uart_mini.h` |
 | [Audio](./api/audio.md) | `audio.h` |
 | [Buses, clock and configuration](./api/buses.md) | `i2c.h`, `rtc.h`, `datetime.h`, `spi.h`, `ini.h` |

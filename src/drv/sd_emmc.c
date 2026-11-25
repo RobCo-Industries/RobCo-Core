@@ -743,22 +743,6 @@ int sd_init(void)
     return 0;
 }
 
-const char *sd_strerror(int err)
-{
-    switch (err) {
-    case 0:              return "ok";
-    case SD_ERR_BOARD:   return "board";
-    case SD_ERR_CLOCK:   return "clock";
-    case SD_ERR_RESET:   return "reset";
-    case SD_ERR_NOCARD:  return "nocard";
-    case SD_ERR_VOLTAGE: return "voltage";
-    case SD_ERR_BUSY:    return "busy";
-    case SD_ERR_CMD:     return "cmd";
-    case SD_ERR_CSD:     return "csd";
-    default:             return "unknown";
-    }
-}
-
 blk_dev_t *sd_blkdev(void)
 {
     return ready ? &dev : NULL;

@@ -1,6 +1,6 @@
 # Storage and files
 
-These sections cover raw block devices, MBR partitions, the SD card driver, the FAT file system and the stage loader. Errors, init and context follow the [Conventions](../API.md#conventions).
+These sections cover raw block devices, MBR partitions, the SD card driver, the FAT file system and the stage loader. The removable SD card on SPI0 has its own page: [Holotape slot](./holo.md). Errors, init and context follow the [Conventions](../API.md#conventions).
 
 | Header | Section |
 |---|---|
@@ -235,6 +235,9 @@ const char *part_boot_strerror(int rc);
 | `SD_ERR_BUSY` | `-15` | `busy` | The card stayed busy in ACMD41 for 1 s |
 | `SD_ERR_CMD` | `-16` | `cmd` | An identification command failed |
 | `SD_ERR_CSD` | `-17` | `csd` | Unknown CSD layout |
+| `SD_ERR_OLD` | `-18` | `old` | Version 1 SD or MMC card. Only the holotape slot returns it. |
+| `SD_ERR_AGAIN` | `-19` | `again` | The holotape card has not settled, or its off time runs |
+| `SD_ERR_BUS` | `-20` | `bus` | The holotape slot's SPI or GPIO call failed, or a bad config |
 
 ```c
 typedef enum {
@@ -274,7 +277,7 @@ Routes the card to EMMC, resets the controller, and identifies the card at 400 k
 const char *sd_strerror(int err);
 ```
 
-Returns the name of an `sd_init()` result from the table above, `"ok"` for `0`, or `"unknown"`.
+Returns the name of an `SD_ERR_*` code from the table above, `"ok"` for `0`, or the `blk_strerror()` name of any other code. It lives in `src/lib/`, so host tests link it.
 
 ```c
 blk_dev_t *sd_blkdev(void);

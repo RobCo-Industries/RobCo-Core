@@ -291,6 +291,20 @@ Use a PCA9554 at `0x20` and another at `0x21`, with LEDs on outputs and switches
 |---|---|---|---|
 | Watchdog | All | `examples/wdog`, then send `f`, `k`, `s`, `r` and `h` | `f` resets within about 1 s, `k` prints `ev=kicked` with `remaining=` below 1000 and stays up, `s` prints `ev=stayed`, `r` reboots at once, `h` stays halted |
 
+## Holotape slot
+
+Use the Pip-Boy HAT with its slot fitted, or the slot's parts wired as in its spec, section 4.12. `examples/holo` is the bring-up tool. Nothing here has run on hardware: the driver has run only against the host card model and, with no card, in QEMU. Keep a spare card.
+
+| Component | Boards | Run | Look for |
+|---|---|---|---|
+| Slot bring-up | All | `examples/holo`: `p` with the slot empty, insert a card, `p`, `a`, `i`, `r 0 1`, `r 0 64`, `d`, `p` | `cd=1 pwr=0 bus=0` empty, then `ev=inserted`, `ev=attach rc=ok`, the card's type and size, the same CRC as the card's first blocks read on a PC, `pwr=0 bus=0` after `d`. `i` prints no serial number. Open. |
+| Card in at boot with the display running | All, with the ILI9341 on CE0 | An image that runs `examples/tft` frames and `holo` reads in turn, with a card in at boot | A clean picture and correct CRCs, no tearing, no `rc=io`. A logic analyser shows `HOLO_BUS` high only around card transfers and never during a display byte. Open. |
+| Hot insertion | All | `examples/holo` running, insert a card, then `a` | One `ev=inserted` after the bounce, power only after `a`, the `+5V` dip under 0.05 V, `SD_3V3` rising in 0.5 ms to 3 ms. Open. |
+| Hot removal mid-read | All | `examples/holo`, `r 0 64` repeated, pull the card during a read | `ev=read rc=nomedia` or `rc=io`, never a hang, then `ev=removed`, `pwr=0 bus=0`. Insert it again: `a` works after the debounce. Open. |
+| SDSC card | All, with a card of 2 GB or less | `examples/holo`: `a`, `i`, `r 0 1` | `type=sdsc` and the right size and data. Open. |
+| Lock tab | All | `examples/holo`: `p` with the tab on, then off | `locked=1` with the tab on, `locked=0` off, and the device stays read-only either way. Open. |
+| Timing margin | All | `examples/holo` with a scope on SCLK and MISO at U4 and J1 | Setup time at 9.62 MHz. Under 10 ns, lower `hz` to 4.8 MHz. Open. |
+
 ## SPI device
 
 Use a W25Qxx flash, a logic analyser, or both.
