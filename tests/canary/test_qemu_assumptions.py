@@ -547,12 +547,15 @@ def test_v23_spi0_byte_rate(machine, tmp_path):
     start = time.monotonic()
     with boot(str(img), machine, extra_args=["-device", "w25q32,bus=spi"],
               keepalive=False, timeout=30) as vm:
-        while time.monotonic() - start < 20:
+        # Done means the PC sits in the completion loop at 0x8038 with R02 at
+        # zero. R02 alone is also zero before the stub reaches the image.
+        r = vm.qmp.registers()
+        while not (r["R15"] == 0x8038 and r["R02"] == 0):
+            if time.monotonic() - start > 20:
+                pytest.fail(f"{machine}: SPI loop not done after 20 s: "
+                            f"PC={r['R15']:#x} R02={r['R02']:#x}")
             time.sleep(0.05)
             r = vm.qmp.registers()
-            if r["R02"] == 0:
-                break
     wall = time.monotonic() - start
     print(f"{machine}: 2 MiB through SPI0 in {wall:.2f} s")
-    assert r["R02"] == 0 and r["R15"] == 0x8038, r
     assert wall < 10, wall
