@@ -367,6 +367,67 @@ TEST(init_rejects_bad_config)
     CHECK_EQ(holo_init(&c), SD_ERR_BUS);
 }
 
+TEST(init_rejects_display_chip_select)
+{
+    holo_config_t c = HOLO_CONFIG_DEFAULT;
+
+    world(SDM_SDHC, 0);
+    c.spi_cs = 0;
+    CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+    c = (holo_config_t)HOLO_CONFIG_DEFAULT;
+    c.cs_pin = 8;
+    CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+}
+
+TEST(init_rejects_spi0_signal_pins)
+{
+    holo_config_t c;
+    uint8_t pin;
+
+    world(SDM_SDHC, 0);
+    for (pin = 8; pin <= 11; pin++) {
+        c = (holo_config_t)HOLO_CONFIG_DEFAULT;
+        c.cd_pin = pin;
+        CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+        c = (holo_config_t)HOLO_CONFIG_DEFAULT;
+        c.wp_pin = pin;
+        CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+        c = (holo_config_t)HOLO_CONFIG_DEFAULT;
+        c.pwr_pin = pin;
+        CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+        c = (holo_config_t)HOLO_CONFIG_DEFAULT;
+        c.bus_pin = pin;
+        CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+        c = (holo_config_t)HOLO_CONFIG_DEFAULT;
+        c.cs_pin = pin;
+        CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+    }
+}
+
+TEST(init_rejects_pin_off_header)
+{
+    holo_config_t c = HOLO_CONFIG_DEFAULT;
+
+    world(SDM_SDHC, 0);
+    c.cd_pin = 28;
+    CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+    c = (holo_config_t)HOLO_CONFIG_DEFAULT;
+    c.wp_pin = 53;
+    CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+}
+
+TEST(init_rejects_duplicate_pins)
+{
+    holo_config_t c = HOLO_CONFIG_DEFAULT;
+
+    world(SDM_SDHC, 0);
+    c.cs_pin = c.cd_pin;
+    CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+    c = (holo_config_t)HOLO_CONFIG_DEFAULT;
+    c.wp_pin = c.bus_pin;
+    CHECK_EQ(holo_init(&c), SD_ERR_BUS);
+}
+
 TEST(debounce_by_timestamps)
 {
     unsigned ev;

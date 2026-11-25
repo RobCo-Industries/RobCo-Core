@@ -26,6 +26,13 @@
 #include <robco/timer.h>
 
 #define MISO_PIN    9u
+/* SPI0 signals on the header: CE0 (the display), MISO, MOSI, SCLK. */
+#define SPI0_FIRST_PIN 8u
+#define SPI0_LAST_PIN  11u
+/* The 40-pin header carries GPIO 0 to 27. */
+#define HEADER_PIN_COUNT 28u
+/* The display's chip select on SPI0. */
+#define DISPLAY_SPI_CS 0u
 
 static holo_config_t slot;
 static int inited;
@@ -207,7 +214,8 @@ int holo_init(const holo_config_t *c)
     pins[3] = c->bus_pin;
     pins[4] = c->cs_pin;
     for (i = 0; i < 5; i++) {
-        if (pins[i] >= GPIO_PIN_COUNT || pins[i] == MISO_PIN) {
+        if (pins[i] >= HEADER_PIN_COUNT ||
+            (pins[i] >= SPI0_FIRST_PIN && pins[i] <= SPI0_LAST_PIN)) {
             return SD_ERR_BUS;
         }
         for (j = 0; j < i; j++) {
@@ -216,7 +224,7 @@ int holo_init(const holo_config_t *c)
             }
         }
     }
-    if (c->spi_cs >= SPI_CS_COUNT || c->hz < SDSPI_INIT_HZ) {
+    if (c->spi_cs >= SPI_CS_COUNT || c->spi_cs == DISPLAY_SPI_CS || c->hz < SDSPI_INIT_HZ) {
         return SD_ERR_BUS;
     }
     if (inited) {

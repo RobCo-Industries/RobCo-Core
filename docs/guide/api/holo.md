@@ -52,6 +52,8 @@ typedef struct {
 
 `spi_cs` is the SPI0 chip select the controller runs with during card transfers. Keep it off the display's chip select: with CS on GPIO 7 as a plain output, the controller's own CE1 never reaches a pin, so the card's transfers assert no chip select of the display.
 
+`holo_init()` returns `SD_ERR_BUS` when `spi_cs` is `0`, the display's CE0. It also rejects a slot pin outside GPIO 0 to 27, a pin on GPIO 8 to 11, which carry SPI0, and two slot pins with the same number.
+
 ```c
 int holo_init(const holo_config_t *cfg);
 ```
