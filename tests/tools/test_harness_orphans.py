@@ -89,16 +89,48 @@ def stand_in_pids(script, count=1, timeout=5.0):
 
 
 def gone(pid, timeout=5.0):
-    """True once `pid` names no process, zombie included."""
+    """True once `pid` names no process or a zombie.
+
+    A container whose process 1 reaps no child keeps a dead orphan as a
+    zombie, and os.kill(pid, 0) still finds it. A zombie counts as dead.
+    """
     deadline = time.monotonic() + timeout
     while True:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not qemu_mod._alive(pid):
             return True
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.02)
+
+
+def proc_state(pid):
+    """One line on `pid` for a failure message: /proc on Linux, ps elsewhere."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return f"{pid}: no such process"
+    except OSError as e:
+        return f"{pid}: {e}"
+    try:
+        r = subprocess.run(["ps", "-o", "pid,ppid,pgid,stat,command", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=2.0)
+        return r.stdout.strip() or f"{pid}: no such process"
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"{pid}: {e}"
+
+
+def group_of(pid):
+    """The stand-in's group, that is the watcher's pid, or None if it is gone."""
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def states(pid, watcher):
+    return f"stand-in: {proc_state(pid)} | watcher: {proc_state(watcher)}"
 
 
 CHILD = textwrap.dedent("""
@@ -133,6 +165,7 @@ def test_qemu_dies_with_its_test_process(fake, how):
     try:
         assert child.stdout.readline().strip() == "started"
         (pid,) = stand_in_pids(fake)
+        watcher = group_of(pid)  # the watcher leads the stand-in's group
         if how == "kill":
             child.kill()
         elif how == "term":
@@ -142,7 +175,8 @@ def test_qemu_dies_with_its_test_process(fake, how):
         elif how == "hup":
             child.send_signal(signal.SIGHUP)
         child.wait(5)
-        assert gone(pid), f"QEMU stand-in {pid} outlived its test process ({how})"
+        assert gone(pid), (f"QEMU stand-in {pid} outlived its test process ({how}); "
+                           f"{states(pid, watcher)}")
     finally:
         child.kill()
         child.wait()
@@ -157,11 +191,13 @@ def test_qemu_dies_when_test_process_dies_in_close(stubborn):
     try:
         assert child.stdout.readline().strip() == "started"
         (pid,) = stand_in_pids(stubborn)
+        watcher = group_of(pid)
         assert child.stdout.readline().strip() == "closing"
         time.sleep(0.5)  # close() now waits on the stand-in
         child.kill()
         child.wait(5)
-        assert gone(pid, timeout=2.0), f"QEMU stand-in {pid} outlived a kill during close()"
+        assert gone(pid, timeout=2.0), (f"QEMU stand-in {pid} outlived a kill during close(); "
+                                        f"{states(pid, watcher)}")
     finally:
         child.kill()
         child.wait()
@@ -200,10 +236,12 @@ def test_qemu_dies_when_test_process_dies_in_early_close(stubborn):
         try:
             assert child.stdout.readline().strip() == "closing"
             pid = stand_in_pids(stubborn, count=i + 1)[i]
+            watcher = group_of(pid)
             time.sleep(0.3)  # close() now waits on the stand-in
             child.kill()
             child.wait(5)
-            assert gone(pid, timeout=2.0), f"run {i}: QEMU stand-in {pid} outlived its test process"
+            assert gone(pid, timeout=2.0), (f"run {i}: QEMU stand-in {pid} outlived its "
+                                            f"test process; {states(pid, watcher)}")
         finally:
             child.kill()
             child.wait()
@@ -231,15 +269,66 @@ def test_watcher_survives_a_signal_to_its_group(deaf, sig):
         (pid,) = stand_in_pids(deaf)
         os.killpg(watcher, sig)
         time.sleep(0.3)
-        os.kill(watcher, 0)  # raises if the watcher died
+        assert qemu_mod._alive(watcher), f"the watcher died: {states(pid, watcher)}"
         assert not gone(pid, timeout=0.0)
         child.kill()
         child.wait(5)
-        assert gone(pid, timeout=2.0), f"QEMU stand-in {pid} outlived its test process"
+        assert gone(pid, timeout=2.0), (f"QEMU stand-in {pid} outlived its test process; "
+                                        f"{states(pid, watcher)}")
     finally:
         child.kill()
         child.wait()
         child.stdout.close()
+
+
+def make_zombie():
+    """A child that has exited and that nobody has reaped yet."""
+    proc = subprocess.Popen(["true"])
+    deadline = time.monotonic() + 5.0
+    while not qemu_mod.zombie(proc.pid):
+        assert time.monotonic() < deadline, f"no zombie: {proc_state(proc.pid)}"
+        time.sleep(0.01)
+    return proc
+
+
+def test_a_zombie_counts_as_dead():
+    proc = make_zombie()
+    try:
+        os.kill(proc.pid, 0)  # the kernel still lists it
+        assert not qemu_mod._alive(proc.pid)
+        assert qemu_mod.process_start(proc.pid) is None
+        assert gone(proc.pid, timeout=0.0)
+    finally:
+        proc.wait()
+
+
+def test_a_live_process_is_no_zombie():
+    proc = subprocess.Popen(["sleep", "600"])
+    try:
+        assert not qemu_mod.zombie(proc.pid)
+        assert qemu_mod._alive(proc.pid)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_sweep_kills_a_vm_whose_owner_is_a_zombie(tmp_path):
+    # In a container whose process 1 reaps nothing, a dead owner stays a
+    # zombie. The sweep must take it for dead and stop its VM.
+    if not ps_works():
+        pytest.skip("cannot read a process start time here: ps may not run")
+    owner = make_zombie()
+    try:
+        vm, folder = stale_vm(tmp_path, owner=owner.pid)
+        try:
+            assert sweep_stale(str(tmp_path)) == [vm.pid]
+            assert vm.wait(5) == -signal.SIGKILL
+            assert not os.path.exists(folder)
+        finally:
+            vm.kill()
+            vm.wait()
+    finally:
+        owner.wait()
 
 
 def test_dead_test_process_signals_no_bystander(short, tmp_path):

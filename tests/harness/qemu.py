@@ -115,19 +115,48 @@ def _valid_pid(pid):
     return isinstance(pid, int) and not isinstance(pid, bool) and pid > 1
 
 
+def _run_ps_stat(pid):
+    """Run ps for the state of `pid`. Tests replace it."""
+    return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
+                          text=True, timeout=PS_TIMEOUT,
+                          env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"})
+
+
+def zombie(pid):
+    """True when `pid` names a zombie: dead, not yet reaped.
+
+    A container whose process 1 reaps no child keeps every orphan that
+    dies as a zombie. It holds no CPU, no memory and no file, so it counts
+    as dead. Linux reads /proc, macOS asks ps. False when unsure.
+    """
+    try:
+        with open(f"{PROC}/{pid}/stat") as f:
+            return f.read().rpartition(")")[2].split()[0] in ("Z", "X")
+    except FileNotFoundError:
+        if os.path.isdir(f"{PROC}/self"):
+            return False
+    except (OSError, ValueError, IndexError):
+        return False
+    try:
+        r = _run_ps_stat(pid)
+        return r.returncode == 0 and r.stdout.strip().startswith("Z")
+    except (OSError, subprocess.SubprocessError, AttributeError):
+        return False
+
+
 def process_start(pid):
     """When `pid` started, in seconds since the epoch, or None.
 
-    None when the process is gone and whenever the start time cannot be
-    learned: no /proc, no ps, ps not allowed, a hung ps, odd output.
-    Linux reads /proc, so the CI container needs no ps. macOS asks ps.
+    None when the process is gone or a zombie, and whenever the start
+    time cannot be learned: no /proc, no ps, ps not allowed, a hung ps,
+    odd output. Linux reads /proc, so the CI container needs no ps. macOS asks ps.
     Both are good to about a second.
     """
     try:
         pid = int(pid)
     except (TypeError, ValueError, OverflowError):
         return None
-    if not _valid_pid(pid):
+    if not _valid_pid(pid) or zombie(pid):
         return None
     try:
         with open(f"{PROC}/{pid}/stat") as f:
@@ -152,7 +181,7 @@ def process_start(pid):
 
 
 def _alive(pid):
-    """False only when `pid` surely names no process. Never signals."""
+    """False only when `pid` surely names no process or a zombie. Never signals."""
     if not _valid_pid(pid):
         return True  # not a process we may ask about: count it as alive
     try:
@@ -161,7 +190,7 @@ def _alive(pid):
         return False
     except OSError:
         return True
-    return True
+    return not zombie(pid)
 
 
 def sweep_stale(tmp=None, slack=2.0):

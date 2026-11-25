@@ -524,6 +524,11 @@ The sweep is a courtesy, so no error in it stops a session. It never
 kills a process whose start time it cannot read, for example where `ps`
 may not run, and leaves that pidfile in place with one line on stderr.
 
+A zombie counts as dead. In a container whose process 1 reaps no child,
+such as the CI one, a dead orphan stays a zombie and `os.kill(pid, 0)`
+still finds it. The harness reads the state from `/proc` on Linux and
+from `ps` on macOS.
+
 ## The harness in a project
 
 A project with RobCo-Core in `external/robco-core` enables the plugin
