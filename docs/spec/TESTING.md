@@ -111,6 +111,163 @@ Without the harness, QEMU starts cores 1 to 3 at `0x0` in AArch64 EL3 (V18). The
 
 The parking does not test the parking code in `start.S`. On `raspi3b` that code never runs on cores 1 to 3. The `-kernel` ELF runs on `raspi2b` cover it, because QEMU starts every core at the entry point there (V2).
 
+### boot.json
+
+`boot.json` holds the arguments of `boot_args()` as data, so a tool other than the Python harness boots a board the same way. Studio reads it from the `pipos` package, as [SDK_PACKAGE.md](./SDK_PACKAGE.md#layout-of-pipos) says.
+
+State today: no writer exists. The harness keeps its own board table in `tests/harness/boot.py` and `tests/fwstub/a64_shim.py`. A writer in the harness will produce `boot.json` from that table, so the boot rules keep one source, and a tool test will compare the two. The example below is what `boot_args()` gives today.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `format` | integer | Yes | `1` for this spec |
+| `common` | array of strings | Yes | Arguments every boot passes after `-M` |
+| `sd` | array of strings | Yes | Arguments that attach an SD image, added when there is one |
+| `boards` | object | Yes | One entry per board, keyed by the QEMU machine name |
+
+A board entry:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `qemu` | string | Yes | The QEMU program: `qemu-system-arm` or `qemu-system-aarch64` |
+| `machine` | string | Yes | The `-M` value |
+| `default_mode` | string | Yes | The mode `boot()` uses with `mode="auto"` |
+| `modes` | object | Yes | `svc`, and `hyp` where the board has it. Each holds the arguments of that mode. |
+
+Strings hold three placeholders. A tool replaces each with a path and nothing else:
+
+| Placeholder | Path |
+|---|---|
+| `{stub}` | The firmware stub, `fwstub.bin` |
+| `{image}` | The raw image, loaded at `0x8000` |
+| `{sd}` | The SD image |
+
+QEMU reads a comma in an option value as the end of the value, and a doubled comma as one comma. A tool doubles every comma in a path before it puts the path in a placeholder. The harness does not, so it cannot boot a path with a comma.
+
+A tool builds the command line in this order, which is the harness's order:
+
+1. The `qemu` program, `-M`, the `machine`.
+2. `common`.
+3. QMP, then qtest when used. The transport is the tool's choice: the harness uses Unix sockets.
+4. The serial ports, PL011 first, then the mini UART when used (V15). Each is a `-chardev` and a `-serial chardev:<id>`.
+5. `-S`, so the tool can connect before the guest runs. It then sends QMP `cont`.
+6. The arguments of the chosen mode.
+7. `sd` when an SD image is attached.
+8. Any device a test adds, as in the table of devices above.
+
+The mode arguments do what [Firmware stub plus loader](#firmware-stub-plus-loader) and [raspi3b](#raspi3b) describe. They load the stub at `0x0`, the image at `0x8000` and the four parameter words at `0x7F00`. The flags word is 1 only for `hyp` on `raspi2b`. On `raspi3b` it stays 0 in both modes, because the shim already enters HYP or SVC. There the mode arguments also load the seven shim words at `0x80000` and start all four cores there, CPU 0 first. The shim's third word differs between the two modes.
+
+A `boot.json` with a larger `format` fails. A tool ignores a field it does not know. A board or a mode the file does not list cannot boot, and the tool says so.
+
+The example, for every board the harness knows:
+
+```json
+{
+  "format": 1,
+  "common": ["-display", "none", "-monitor", "none", "-no-user-config"],
+  "sd": ["-drive", "if=sd,format=raw,file={sd}"],
+  "boards": {
+    "raspi0": {
+      "qemu": "qemu-system-arm",
+      "machine": "raspi0",
+      "default_mode": "svc",
+      "modes": {
+        "svc": [
+          "-device", "loader,file={stub},addr=0x0,force-raw=on",
+          "-device", "loader,file={image},addr=0x8000,force-raw=on",
+          "-device", "loader,addr=0x7f00,data=0x57464352,data-len=4",
+          "-device", "loader,addr=0x7f04,data=0x00000c42,data-len=4",
+          "-device", "loader,addr=0x7f08,data=0x20000000,data-len=4",
+          "-device", "loader,addr=0x7f0c,data=0x00000000,data-len=4"
+        ]
+      }
+    },
+    "raspi1ap": {
+      "qemu": "qemu-system-arm",
+      "machine": "raspi1ap",
+      "default_mode": "svc",
+      "modes": {
+        "svc": [
+          "-device", "loader,file={stub},addr=0x0,force-raw=on",
+          "-device", "loader,file={image},addr=0x8000,force-raw=on",
+          "-device", "loader,addr=0x7f00,data=0x57464352,data-len=4",
+          "-device", "loader,addr=0x7f04,data=0x00000c42,data-len=4",
+          "-device", "loader,addr=0x7f08,data=0x20000000,data-len=4",
+          "-device", "loader,addr=0x7f0c,data=0x00000000,data-len=4"
+        ]
+      }
+    },
+    "raspi2b": {
+      "qemu": "qemu-system-arm",
+      "machine": "raspi2b",
+      "default_mode": "hyp",
+      "modes": {
+        "svc": [
+          "-device", "loader,file={stub},addr=0x0,force-raw=on",
+          "-device", "loader,file={image},addr=0x8000,force-raw=on",
+          "-device", "loader,addr=0x7f00,data=0x57464352,data-len=4",
+          "-device", "loader,addr=0x7f04,data=0x00000c43,data-len=4",
+          "-device", "loader,addr=0x7f08,data=0x40000000,data-len=4",
+          "-device", "loader,addr=0x7f0c,data=0x00000000,data-len=4"
+        ],
+        "hyp": [
+          "-device", "loader,file={stub},addr=0x0,force-raw=on",
+          "-device", "loader,file={image},addr=0x8000,force-raw=on",
+          "-device", "loader,addr=0x7f00,data=0x57464352,data-len=4",
+          "-device", "loader,addr=0x7f04,data=0x00000c43,data-len=4",
+          "-device", "loader,addr=0x7f08,data=0x40000000,data-len=4",
+          "-device", "loader,addr=0x7f0c,data=0x00000001,data-len=4"
+        ]
+      }
+    },
+    "raspi3b": {
+      "qemu": "qemu-system-aarch64",
+      "machine": "raspi3b",
+      "default_mode": "hyp",
+      "modes": {
+        "svc": [
+          "-device", "loader,file={stub},addr=0x0,force-raw=on",
+          "-device", "loader,file={image},addr=0x8000,force-raw=on",
+          "-device", "loader,addr=0x7f00,data=0x57464352,data-len=4",
+          "-device", "loader,addr=0x7f04,data=0x00000c43,data-len=4",
+          "-device", "loader,addr=0x7f08,data=0x40000000,data-len=4",
+          "-device", "loader,addr=0x7f0c,data=0x00000000,data-len=4",
+          "-device", "loader,addr=0x80000,data=0xd2802620,data-len=4",
+          "-device", "loader,addr=0x80004,data=0xd51e1100,data-len=4",
+          "-device", "loader,addr=0x80008,data=0xd2803a60,data-len=4",
+          "-device", "loader,addr=0x8000c,data=0xd51e4000,data-len=4",
+          "-device", "loader,addr=0x80010,data=0xd2800000,data-len=4",
+          "-device", "loader,addr=0x80014,data=0xd51e4020,data-len=4",
+          "-device", "loader,addr=0x80018,data=0xd69f03e0,data-len=4",
+          "-device", "loader,addr=0x80000,cpu-num=0",
+          "-device", "loader,addr=0x80000,cpu-num=1",
+          "-device", "loader,addr=0x80000,cpu-num=2",
+          "-device", "loader,addr=0x80000,cpu-num=3"
+        ],
+        "hyp": [
+          "-device", "loader,file={stub},addr=0x0,force-raw=on",
+          "-device", "loader,file={image},addr=0x8000,force-raw=on",
+          "-device", "loader,addr=0x7f00,data=0x57464352,data-len=4",
+          "-device", "loader,addr=0x7f04,data=0x00000c43,data-len=4",
+          "-device", "loader,addr=0x7f08,data=0x40000000,data-len=4",
+          "-device", "loader,addr=0x7f0c,data=0x00000000,data-len=4",
+          "-device", "loader,addr=0x80000,data=0xd2802620,data-len=4",
+          "-device", "loader,addr=0x80004,data=0xd51e1100,data-len=4",
+          "-device", "loader,addr=0x80008,data=0xd2803b40,data-len=4",
+          "-device", "loader,addr=0x8000c,data=0xd51e4000,data-len=4",
+          "-device", "loader,addr=0x80010,data=0xd2800000,data-len=4",
+          "-device", "loader,addr=0x80014,data=0xd51e4020,data-len=4",
+          "-device", "loader,addr=0x80018,data=0xd69f03e0,data-len=4",
+          "-device", "loader,addr=0x80000,cpu-num=0",
+          "-device", "loader,addr=0x80000,cpu-num=1",
+          "-device", "loader,addr=0x80000,cpu-num=2",
+          "-device", "loader,addr=0x80000,cpu-num=3"
+        ]
+      }
+    }
+  }
+}
+```
+
 ### Guest state on timeout
 
 A wait in `boot.py` that times out appends a guest state block to its `QemuError`, after the serial log. The dump asks QEMU for the run state, stops the VM, reads the interrupt controller and system timer registers and one CPU0 sample, then resumes it. It then takes five samples of CPU0's pc, lr, sp and CPSR while the VM runs, and names functions from the image's ELF. The VM is resumed even when a read fails. A VM that was already stopped stays stopped. If QEMU does not report the run state, the dump sends no stop and no cont and labels the state unknown. The block says whether the keep-alive was on. `vm.state_dump()` returns the same block. [tests/README.md](../../tests/README.md#when-a-wait-times-out) shows how to read it.
