@@ -183,7 +183,7 @@ Registers a quadrature dial with pull-ups on both pins, and an optional active-l
 int input_gpio_start(uint32_t tick_hz, unsigned debounce_ms);
 ```
 
-Sets the pins to input with their pulls, then samples every pin from a tick callback, once per tick. Buttons go through the debouncer with a stable time of `debounce_ms`, rounded up to whole ticks (1 to 255). Dials go through the quadrature decoder, one DIAL event per detent. Returns `0`, `INPUT_ERR_NO_IRQ` before `irq_init()`, `INPUT_ERR_TICK` when `tick_init(tick_hz)` does not return `0`, `INPUT_ERR_SPACE` when no tick slot is free, or `INPUT_ERR_STATE` on a second call. Main context.
+Sets the pins to input with their pulls, then samples every pin from a tick callback, once per tick. Buttons go through the debouncer with a stable time of `debounce_ms`, rounded up to whole ticks (1 to 255). Dials go through the quadrature decoder. Each sample that completes steps gives one DIAL event with their signed count: one step with 2 or 4 per detent, up to 7 with 1 per detent after missed states. Returns `0`, `INPUT_ERR_NO_IRQ` before `irq_init()`, `INPUT_ERR_TICK` when `tick_init(tick_hz)` does not return `0`, `INPUT_ERR_SPACE` when no tick slot is free, or `INPUT_ERR_STATE` on a second call. Main context.
 
 #### Dial speed
 
@@ -363,16 +363,23 @@ void input_quad_init(input_quad_t *q, unsigned per_detent, int reverse, int a, i
 int input_quad_feed(input_quad_t *q, int a, int b);
 ```
 
-A Gray-code state table. A one-bit change of A/B adds or removes a transition. Transitions add up in an accumulator, and `per_detent` of them in one direction give one step. A `per_detent` other than 1 or 2 becomes 4. `input_quad_feed()` returns -1, 0 or 1. A reversal mid-detent cancels the partial transitions.
+A Gray-code state table. A one-bit change of A/B adds or removes a transition. Transitions add up in an accumulator, and `per_detent` of them in one direction give one step. A `per_detent` other than 1 or 2 becomes 4. A reversal mid-detent cancels the partial transitions. `input_quad_feed()` returns the signed steps completed by this sample: -1, 0 or 1 with 2 or 4 per detent, and -7 to 7 with 1 per detent.
 
 The rules for missed states:
 
-- The state at init is the rest state, a detent. With 2 transitions per detent its complement is a rest state too.
-- A two-bit change means one state was missed. It counts in `q->invalid` and as two transitions in the last direction. Before the first one-bit change it counts nothing.
-- With 4 per detent, a two-bit change that leaves a rest state waits. The next one-bit change gives its direction, so a turn back that starts with a missed state still counts. A second two-bit change instead takes the last direction.
-- On a rest state the decoder rounds the accumulator to the nearest detent, at most one step, and starts again from 0.
+- The state at init is the rest state, a detent. With 2 transitions per detent its complement is a rest state too. With 1 per detent every state is a detent.
+- A two-bit change means one state was missed. It counts in `q->invalid` and as two transitions in the last direction. Before the first one-bit change it counts nothing, except in the waiting cases below.
+- Some two-bit changes wait. The next one-bit change gives their direction, and the decoder counts the waiting transitions with it. With 4 per detent, a two-bit change that leaves a rest state waits, so a turn back that starts with a missed state still counts. A second two-bit change instead takes the last direction. With 1 per detent, a two-bit change before the first one-bit change waits, and so does each one after it until a one-bit change comes, up to 3.
+- With 2 or 4 per detent, on a rest state the decoder rounds the accumulator to the nearest detent, at most one step, and starts again from 0.
+- With 1 per detent the accumulator never holds a partial detent: each sample returns all its transitions as steps and clears it.
 
-So one missed state between two seen ones costs nothing, and any run of missed states costs at most one step and never shifts the phase.
+| `per_detent` | A two-bit change gives | Its direction | Cost of one missed state |
+|---|---|---|---|
+| 1 | 2 steps at once | The last direction, or the next one-bit change before any | None while the dial keeps its direction. 4 steps when it hides a turn back. |
+| 2 | 2 transitions, one detent from a rest state | The last direction | None while the dial keeps its direction, after the first one-bit change. 2 steps when it hides a turn back. |
+| 4 | 2 transitions | The next one-bit change when it leaves a rest state, else the last direction | None while the dial keeps its direction. 1 step when it hides a turn back. |
+
+So one missed state costs nothing while the dial keeps its direction. A missed state can also hide a turn back, and no rule can tell those two paths apart from the samples. With 4 per detent that costs one step at most, with 2 per detent two, and with 1 per detent four, since every transition is a step. With 2 or 4 per detent the rounding at a rest state means a missed state never shifts the phase.
 
 The dial must rest at a detent at init. If it does not, its state at init still becomes the rest state, and nothing heals that: each detent still gives one step, but at the wrong point of the turn, so the total is off by one at most, in one direction of turn. A dial turned back past its start reads right again. The host test `quad_start_off_a_detent` shows this.
 
