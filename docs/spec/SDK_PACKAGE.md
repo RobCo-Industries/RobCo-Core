@@ -8,7 +8,7 @@ State today: no package is built and no index exists. Pip-OS ships its SDK as th
 
 | Name | Kind | Contents | Version |
 |---|---|---|---|
-| `pipos` | Package | Headers, `libpip.a`, `crt0` objects, linker scripts, `flags.json`, kernels, the runner ROM, the firmware stub, `boot.json`, the firmware pins | `MAJOR.MINOR.BUILD`. `MAJOR.MINOR` is the Pip-OS ABI it implements. |
+| `pipos` | Package | Headers, `libpip.a`, `crt0.S`, linker scripts, `flags.json`, kernels, the runner ROM, the firmware stub, `boot.json`, the firmware pins | `MAJOR.MINOR.BUILD`. `MAJOR.MINOR` is the Pip-OS ABI it implements. |
 | `gcc` | Tool | One xPack `arm-none-eabi-gcc` archive per host, from its publisher | The xPack release, such as `15.2.1` |
 | `qemu` | Tool | One QEMU build per host, with its source archive | The QEMU version, such as `10.1.2` |
 
@@ -31,7 +31,27 @@ A package file is a zip archive named `<name>-<version>.zip`, such as `pipos-1.3
 
 An archive that breaks a rule fails the install with `package: archive` and names the entry. The tool extracts nothing from it.
 
-A tool installs a package into its own folder, `<cache>/packages/<name>/<version>/`. `<cache>` is a per-user folder the tool chooses. The tool never writes into an installed package folder after the install.
+A tool installs a package into its own folder, `<cache>/packages/<name>/<version>/`. The tool never writes into an installed package folder after the install.
+
+### The cache folder
+
+`<cache>` is the system's standard per-user cache folder plus `robco`:
+
+| System | `<cache>` |
+|---|---|
+| Linux | `$XDG_CACHE_HOME/robco`. When `XDG_CACHE_HOME` is unset, empty or not an absolute path: `$HOME/.cache/robco`. |
+| macOS | `$HOME/Library/Caches/robco` |
+| Windows | `%LOCALAPPDATA%\robco` |
+
+The environment variable `ROBCO_CACHE` overrides the table on every system. Its value is used as `<cache>` itself, with no `robco` added. A value that is set but empty counts as unset. A value that is not an absolute path fails every command that needs the cache with `cache: path`. The tool creates `<cache>` and its subfolders when it first needs them.
+
+| Folder | Content |
+|---|---|
+| `<cache>/packages/<name>/<version>/` | An installed package |
+| `<cache>/tools/<name>/<version>/<host>/` | An extracted tool archive, such as `<cache>/tools/gcc/15.2.1/linux-x64/` |
+| `<cache>/firmware/<tag>/` | The firmware files of one [firmware pin](#firmware-pins) |
+
+A person may delete `<cache>` at any time. The next command that needs a file downloads it again and checks it as [Hashes](#hashes) says.
 
 ```mermaid
 flowchart LR
@@ -107,10 +127,8 @@ flowchart LR
 |---|---|
 | `sdk.json` | The manifest |
 | `include/pipos/*.h` | The SDK headers |
-| `lib/libpip.a` | Syscall wrappers and the small libc |
-| `lib/crt0-game.o` | Startup code for a holotape, subtype 0 |
-| `lib/crt0-utility.o` | Startup code for a holotape, subtype 1 |
-| `lib/crt0-rom.o` | Startup code for a ROM |
+| `lib/libpip.a` | Syscall wrappers and the small libc. See [Building libpip.a](#building-libpipa). |
+| `lib/crt0.S` | The startup code, as source. See [Startup code](#startup-code). |
 | `lib/holotape.ld` | Links at `0x00800000` |
 | `lib/rom.ld` | Links at `0x00400000` |
 | `flags.json` | Compile and link flags |
@@ -124,6 +142,10 @@ flowchart LR
 | `docs/` | The API reference |
 | `LICENSES/` | The licence texts |
 
+### Building libpip.a
+
+Pip-OS builds `lib/libpip.a` with `ar rcsD`. The `D` flag writes 0 for every date, user and group id and a fixed mode, so two builds of one package from one commit give the same archive. Without it `ar` stores the build time and the archive hash differs on every build. Today `pipos-app.mk` runs `ar rcs`, so Pip-OS must change it to `ar rcsD`. [K2](https://github.com/RobCo-Industries/RobCo-Studio/blob/main/docs/spikes/K2.md) measured this.
+
 ## flags.json
 
 `flags.json` holds the compile and link flags of a project build. Pip-OS writes it from `pipos-app.mk` when it builds the package, so the flags have one source.
@@ -135,21 +157,64 @@ flowchart LR
 | `include_dirs` | array of strings | Yes | Folders for `-I`, relative to the package root |
 | `ldflags` | array of strings | Yes | Flags for the link, in order |
 | `linker_scripts` | object | Yes | Kind to script path, relative to the package root: `holotape`, `rom` |
-| `crt0` | object | Yes | Kind and subtype to object path: `holotape-game`, `holotape-utility`, `rom` |
+| `crt0` | string | Yes | The startup code source, relative to the package root: `lib/crt0.S` |
+| `crt0_defines` | object | Yes | Kind and subtype to an array of macro definitions for the startup code. Keys: `holotape-game`, `holotape-utility`, `rom`. Each string is `NAME=VALUE`, passed as `-D` and the string. |
 | `libs` | array of strings | Yes | Archive paths relative to the package root, in link order |
 | `system_libs` | array of strings | Yes | Flags for the compiler's own libraries, last on the link line, such as `-lgcc` |
 | `abi_define` | string | Yes | The macro that carries the project's ABI. See [PIPOS_ABI.md](./PIPOS_ABI.md#calls-newer-than-the-target-abi). |
 
-No flag in `cflags` or `ldflags` holds a path. Paths live in the fields made for them, so a tool joins them to the package folder on any system.
+No flag in `cflags` or `ldflags` holds a path. Paths live in the fields made for them, so a tool joins them to the package folder on any system. `flags.json` holds no path map either: the tool adds the maps itself, as [Path maps](#path-maps) says.
 
-A tool runs, with `gcc` the `arm-none-eabi-gcc` of the locked tool archive and `PKG` the installed package folder:
+### Build order
 
-1. For each source, in the order of [STUDIO_PROJECT.md](./STUDIO_PROJECT.md#build):
-   `gcc <cflags> -D<abi_define>=<abi> -I<PKG/include_dirs>... -c <source> -o <object>`.
-   `<abi>` is `0x` and 8 hex digits: `(MAJOR << 16) | MINOR` of `target.abi`.
-2. `gcc <ldflags> -T <PKG/linker script> <PKG/crt0> <objects> <PKG/libs>... <system_libs> -o build/NAME.elf`
-3. `arm-none-eabi-objcopy -O binary build/NAME.elf <raw>`
-4. Seal `<raw>` into `build/NAME.HTP`.
+A tool runs these steps in order, with `gcc` the `arm-none-eabi-gcc` of the locked tool archive, `PKG` the installed package folder and `<maps>` the flags of [Path maps](#path-maps). Each command is an argument list passed to the program with no shell, so a quote inside an argument reaches `gcc` as it is.
+
+1. Compile the startup code:
+   `gcc <cflags> -D<abi_define>=<abi> -D<crt0_defines>... -I<PKG/include_dirs>... <maps> -c <PKG/crt0> -o <crt0 object>`.
+   `<crt0_defines>` is the array of the project's kind and subtype, such as `holotape-game`, one `-D` argument per string, in array order.
+2. For each source, in the order of [STUDIO_PROJECT.md](./STUDIO_PROJECT.md#build):
+   `gcc <cflags> -D<abi_define>=<abi> -I<PKG/include_dirs>... <maps> -c <source> -o <object>`.
+3. `gcc <ldflags> -T <PKG/linker script> <crt0 object> <objects> <PKG/libs>... <system_libs> -o build/NAME.elf`
+4. `arm-none-eabi-objcopy -O binary build/NAME.elf <raw>`
+5. Seal `<raw>` into `build/NAME.HTP`.
+
+`<abi>` is `0x` and 8 lower case hex digits: `(MAJOR << 16) | MINOR` of `target.abi`, such as `0x00010003` for `1.3`. Steps 1 and 2 pass the same value. The object paths are the tool's choice, under `build/`.
+
+### Startup code
+
+The package ships the startup code as source, `lib/crt0.S`, and every project build compiles it at step 1 of [Build order](#build-order). So the header's `abi_version` holds the project's target ABI, not the package's.
+
+| Rule | Detail |
+|---|---|
+| The file | `lib/crt0.S` is Pip-OS's `sdk/crt0.S` at the commit in `built_from`, byte for byte |
+| The ABI | `crt0.S` writes `PIPOS_ABI_TARGET` into `abi_version`. The build passes it as `-DPIPOS_ABI_TARGET=<abi>`, through `abi_define`. |
+| Magic and subtype | From `crt0_defines`: `PIP_IMG_MAGIC="ROBCO78"` and `PIP_IMG_SUBTYPE=0` for `holotape-game`, `PIP_IMG_MAGIC="ROBCO78"` and `PIP_IMG_SUBTYPE=1` for `holotape-utility`, `PIP_IMG_MAGIC="ROM1"` and `PIP_IMG_SUBTYPE=0` for `rom` |
+| An older target | A project with `abi = "1.3"` built against `pipos` 1.4.0 gets `abi_version = 0x00010003`. The loader checks only the major, so the tape loads on every 1.x kernel. |
+| No define | Without `PIPOS_ABI_TARGET`, `abi.h` defines it to `PIP_ABI_VERSION`, the ABI of the headers. `pipos-app.mk` builds this way. |
+
+Seal never changes `abi_version`, as [Seal steps](./IMAGE_FORMAT.md#seal-steps) says. Only the compile of `crt0.S` sets it.
+
+What Pip-OS's `sdk/crt0.S` and `abi.h` must do for this rule. Today `crt0.S` writes `PIP_ABI_VERSION`, so every tape carries the ABI of the headers.
+
+1. `abi.h` defines `PIPOS_ABI_TARGET` to `PIP_ABI_VERSION` when it is not defined, and stops with `#error` when it is larger than `PIP_ABI_VERSION`. These are the rules of [Calls newer than the target ABI](./PIPOS_ABI.md#calls-newer-than-the-target-abi).
+2. `crt0.S` writes `.word PIPOS_ABI_TARGET` in place of `.word PIP_ABI_VERSION`.
+
+### Path maps
+
+The tool adds two `-ffile-prefix-map` flags to every compile, steps 1 and 2 of [Build order](#build-order), and to no other step:
+
+1. `-ffile-prefix-map=<project root>=.`
+2. `-ffile-prefix-map=<toolchain root>=toolchain`
+
+`<project root>` is the absolute path of the folder that holds `robco.toml`. `<toolchain root>` is the absolute path of the folder that holds the gcc archive's `bin/`. On Windows the tool passes each map twice, first with `\` and then with `/` as the separator, so four flags in all.
+
+Without the maps, the person's folder path and the toolchain path land in the debug info of `build/NAME.elf`. The maps keep them out. They do not change the tape, which holds no debug info. [K2](https://github.com/RobCo-Industries/RobCo-Studio/blob/main/docs/spikes/K2.md) measured both.
+
+### What must be equal
+
+Only the sealed tape, `build/NAME.HTP`, must be byte-equal across host systems and project folders, for the same manifest, lock and sources. Objects, `build/NAME.elf` and the map files may differ. [K2](https://github.com/RobCo-Industries/RobCo-Studio/blob/main/docs/spikes/K2.md) found the tape equal on Linux, macOS and Windows and through two build paths with no extra flag. The Windows ELF differs in its debug sections through the `libgcc.a` of xPack's Windows archive, and no compile flag cures that. So the tool adds no `-fno-ident`, and a test of a build compares tapes only.
+
+### Reading flags.json
 
 A `flags.json` with a larger `format` fails with `package: format`. An unknown field is ignored.
 
@@ -165,7 +230,7 @@ The Pi firmware files are never part of a package. The `pipos` package carries t
 | `base_url` | string | The download base. `<base_url>/<file>` is each file. |
 | `files` | array of objects | `name`, `sha256`, for `bootcode.bin`, `start.elf`, `fixup.dat` |
 
-A tool downloads each file, checks its SHA-256 and keeps it in a per-user cache. A mismatch deletes the file and fails with `firmware: hash`. The tool never puts a firmware file into a package, an index or a release of its own.
+A tool downloads each file, checks its SHA-256 and keeps it in `<cache>/firmware/<tag>/`. A mismatch deletes the file and fails with `firmware: hash`. The tool never puts a firmware file into a package, an index or a release of its own.
 
 ## The index
 
@@ -208,7 +273,21 @@ An archive object:
 
 The host names are `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64` and `windows-x64`. A tool that has no archive for the running host fails with `index: host`.
 
-A tool finds the index from the location it is given: an `https:` URL or a local file path. Studio's CI uses a local fixture index. The default location, and how a person overrides it, are not specified yet.
+### Where the index is
+
+Every command that reads the index takes the option `--index LOCATION`, written as two arguments or as `--index=LOCATION`. `LOCATION` is one of:
+
+| Form | Meaning |
+|---|---|
+| Starts with `https://` | A URL. The tool downloads the index from it. |
+| Starts with `http://` or another scheme followed by `://` | Refused with `index: location` |
+| Anything else | A local file path, absolute or relative to the current folder |
+
+A command reads the index only when it must resolve or download something. A build whose lock pins packages and tools already in `<cache>` reads no index and needs no `--index`. A command that must read the index and has no `--index` fails with `index: location`, and the message names the option. It never falls back to the `index` value of `robco.lock`, which is for the record only. A missing local file, or a download that fails, gives `index: read`.
+
+The lock records `LOCATION` as given. Studio's CI passes a local fixture index. A default index URL built into each release comes later. It will apply only when `--index` is absent.
+
+### Reading the index
 
 A larger `format` fails with `index: format`. An unknown field is ignored. An entry with a missing field fails with `index: entry` and names it. Two entries with the same name and version fail with `index: duplicate`.
 
@@ -228,6 +307,8 @@ So a project with `abi = "1.3"` fits `pipos` 1.3.x and 1.4.x, and not 1.2.x or 2
 A `requires` entry fits by the same rules 2 and 3, with its `abi` as the project's.
 
 No package fits: the tool fails with `sdk: no package` and names the platform and ABI.
+
+When several versions of a package fit, the tool picks the highest version by the order above. The lock then pins it. A newer package that appears in the index later changes nothing until `robco update`, as [When the lock changes](./STUDIO_PROJECT.md#when-the-lock-changes) says. A `requires` entry is resolved by the same rule.
 
 ## Hashes
 
@@ -261,7 +342,7 @@ A tool never retries a mismatch from another location, and never installs a file
 
 | Part | Licence |
 |---|---|
-| `pipos`: headers, `libpip.a`, `crt0` objects, linker scripts, kernels, runner ROM, firmware stub, data files | MIT |
+| `pipos`: headers, `libpip.a`, `crt0.S`, linker scripts, kernels, runner ROM, firmware stub, data files | MIT |
 | `gcc`: the xPack archive. Its `libgcc` ends up in every tape. | GPL-3.0 with the GCC Runtime Library Exception for `libgcc`. The archive is not ours and is not repackaged. |
 | `qemu`: our build | GPL-2.0, with its source archive in the same release |
 | The Pi firmware | Not in any package. Fetched from its publisher under its own licence. |
@@ -306,9 +387,7 @@ A tool never retries a mismatch from another location, and never installs a file
     {"path": "boot/pipos.elf", "size": 524288, "sha256": "0000000000000000000000000000000000000000000000000000000000000007"},
     {"path": "flags.json", "size": 700, "sha256": "0000000000000000000000000000000000000000000000000000000000000008"},
     {"path": "include/pipos/pipos.h", "size": 9000, "sha256": "0000000000000000000000000000000000000000000000000000000000000009"},
-    {"path": "lib/crt0-game.o", "size": 1500, "sha256": "000000000000000000000000000000000000000000000000000000000000000a"},
-    {"path": "lib/crt0-rom.o", "size": 1500, "sha256": "000000000000000000000000000000000000000000000000000000000000000b"},
-    {"path": "lib/crt0-utility.o", "size": 1500, "sha256": "000000000000000000000000000000000000000000000000000000000000000c"},
+    {"path": "lib/crt0.S", "size": 2600, "sha256": "000000000000000000000000000000000000000000000000000000000000000a"},
     {"path": "lib/holotape.ld", "size": 900, "sha256": "000000000000000000000000000000000000000000000000000000000000000d"},
     {"path": "lib/libpip.a", "size": 40000, "sha256": "000000000000000000000000000000000000000000000000000000000000000e"},
     {"path": "lib/rom.ld", "size": 900, "sha256": "000000000000000000000000000000000000000000000000000000000000000f"}
@@ -333,10 +412,11 @@ A tool never retries a mismatch from another location, and never installs a file
     "-Wl,--gc-sections"
   ],
   "linker_scripts": {"holotape": "lib/holotape.ld", "rom": "lib/rom.ld"},
-  "crt0": {
-    "holotape-game": "lib/crt0-game.o",
-    "holotape-utility": "lib/crt0-utility.o",
-    "rom": "lib/crt0-rom.o"
+  "crt0": "lib/crt0.S",
+  "crt0_defines": {
+    "holotape-game": ["PIP_IMG_MAGIC=\"ROBCO78\"", "PIP_IMG_SUBTYPE=0"],
+    "holotape-utility": ["PIP_IMG_MAGIC=\"ROBCO78\"", "PIP_IMG_SUBTYPE=1"],
+    "rom": ["PIP_IMG_MAGIC=\"ROM1\"", "PIP_IMG_SUBTYPE=0"]
   },
   "libs": ["lib/libpip.a"],
   "system_libs": ["-lgcc"],
@@ -389,14 +469,8 @@ An index with one package and both tools. The URLs and hashes are placeholders.
 
 ## Open points
 
-These rules are provisional. They are written down so the file is complete. Each may change before a tool reads the file.
+One point is not decided yet.
 
-| Point | Written here | Other options |
-|---|---|---|
-| Which package a tool picks when several fit | Not specified | The newest that fits, or the oldest that fits |
-| The default index location and its override | Not specified | A URL built into each release, a setting, a command option, an environment variable |
-| `crt0` per kind and subtype, as objects | Three objects | `crt0.S` in the package, compiled with defines for the magic and subtype |
-| `<cache>` per system | The tool's choice | A fixed folder per system |
-| An unknown field in `sdk.json`, `flags.json` or the index | Ignored | Fails |
-| Whether an installed package is checked again on each build | Only the archive against the lock | Every file against `files` |
-| Where the runner ROM and the firmware stub sit | `pipos` | A package of their own |
+| Point | Options |
+|---|---|
+| Which version of each tool, `gcc` and `qemu`, the tool picks when it resolves | a. The highest version in the index. b. The package names it, with a new `sdk.json` field such as `tools`, so a package always builds with the compiler it was tested with. |

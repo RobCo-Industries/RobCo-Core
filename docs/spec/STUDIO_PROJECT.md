@@ -77,7 +77,7 @@ For `pipos`, MAJOR must be 1, the Pip-OS ABI major in [PIPOS_ABI.md](./PIPOS_ABI
 `abi` does three things:
 
 1. It picks the packages that fit. See [SDK_PACKAGE.md](./SDK_PACKAGE.md#version-and-abi-rules).
-2. It goes into the image header as `abi_version = (MAJOR << 16) | MINOR`.
+2. It goes into the image header as `abi_version = (MAJOR << 16) | MINOR`. The build compiles the package's startup code with that value, as [Startup code](./SDK_PACKAGE.md#startup-code) says. A project that targets 1.3 and builds against `pipos` 1.4.0 gets `0x00010003`.
 3. It hides calls newer than itself in the SDK headers. See [PIPOS_ABI.md](./PIPOS_ABI.md#calls-newer-than-the-target-abi).
 
 ### [build]
@@ -139,7 +139,7 @@ A format 1 tool builds `holotape` only. Any other value of `kind` fails with `ma
 | `load_addr` | `0x00800000` |
 | `file_size` | The file length |
 | `mem_size` | As linked: file, BSS and stack |
-| `abi_version` | From `target.abi` |
+| `abi_version` | `target.abi` as `(MAJOR << 16) \| MINOR`, written by the startup code |
 | `image_version` | From `project.version` |
 | `subtype` | 0 for `game`, 1 for `utility` |
 | `name` | `project.name`, NUL-padded to 16 bytes |
@@ -153,7 +153,8 @@ The tool seals the image with the rules of [Sealing and packing](./IMAGE_FORMAT.
 flowchart LR
     M["robco.toml"] --> R["Resolve packages"]
     L["robco.lock"] --> R
-    R --> C["Compile sources<br/>flags.json"]
+    R --> A["Compile crt0.S<br/>ABI, magic, subtype"]
+    A --> C["Compile sources<br/>flags.json"]
     C --> K["Link<br/>crt0, holotape.ld, libpip.a, libgcc"]
     K --> E["build/NAME.elf"]
     E --> B["objcopy -O binary"]
@@ -162,7 +163,11 @@ flowchart LR
     V --> H["build/NAME.HTP"]
 ```
 
-[SDK_PACKAGE.md](./SDK_PACKAGE.md#flagsjson) gives the compile and link command lines.
+[Build order](./SDK_PACKAGE.md#build-order) gives the compile and link command lines.
+
+### What must be equal
+
+Only `build/NAME.HTP` must be byte-equal on every host system and in every project folder, for the same manifest, lock and sources. `build/NAME.elf` and the objects may differ. See [What must be equal](./SDK_PACKAGE.md#what-must-be-equal).
 
 ## Errors
 
@@ -237,8 +242,30 @@ The lock pins inputs, not outputs. It holds no hash of a built tape. With a lock
 |---|---|
 | No `robco.lock` | Resolves from the index and writes the lock. |
 | A lock whose packages fit the manifest | Uses it unchanged. |
-| A lock whose packages no longer fit, after a change to `target.abi` or `target.platform` | Fails with `lock: stale`. It changes nothing. The command that updates the lock is not specified yet. |
+| A stale lock | Fails with `lock: stale`. It changes nothing. |
 | A lock that does not parse, or a larger `format` | Fails with `lock: syntax` or `lock: format`. |
+| `robco update` | Resolves again and writes a new lock. See below. |
+
+A build never moves a pin. Only `robco update` does, and only when a person runs it.
+
+### A stale lock
+
+A lock that parses is stale when one of these holds for the current manifest:
+
+1. A `[[package]]` entry no longer fits, by the rules of [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules). A change to `target.abi` or `target.platform` does this.
+2. The manifest needs a package that the lock does not list: `pipos` for `target.platform = "pipos"`, and each package that a listed package `requires`.
+3. The lock lists a package that the manifest does not need.
+4. The lock does not list both tools, `gcc` and `qemu`, or a `[[tool]]` entry has no archive for the running host.
+
+The tool checks for a stale lock before it installs, downloads or compiles anything. It fails with `lock: stale: <detail>`. The detail names the first package or tool that fails, in the order of the list above and then by `name`, and the message ends with `run robco update`. The tool writes no `build/NAME.HTP`, deletes an older one, and leaves `robco.lock` as it is.
+
+A lock that is not stale but names a package version or a tool archive that the index no longer lists still pins it. The tool installs it from `<cache>` if it is there. If it must download it and the index has no entry with that name, version and hash, it fails with `lock: missing` and names it.
+
+### robco update
+
+`robco update [--index LOCATION]` resolves every package and tool again from the index, as if no lock existed. It picks the newest package that fits, by [Version and ABI rules](./SDK_PACKAGE.md#version-and-abi-rules), installs and checks it, then writes a new `robco.lock` in place of the old one. It builds nothing and touches nothing under `build/`. It needs `--index`, as [Where the index is](./SDK_PACKAGE.md#where-the-index-is) says.
+
+`robco update` fails with the code of the first error it meets and then leaves the old `robco.lock` as it is. It writes the new lock to a temporary file in the project root and renames it over the old one, so a failure never leaves half a lock.
 
 ## Examples
 
@@ -298,16 +325,4 @@ windows-x64 = "0000000000000000000000000000000000000000000000000000000000000009"
 
 ## Open points
 
-These rules are provisional. They are written down so the file is complete. Each may change before a tool reads the file.
-
-| Point | Written here | Other options |
-|---|---|---|
-| An unknown key | Fails the build | Warn and ignore |
-| Lower case in `project.name` | Fails | Upper-case it, as the `BOOT.CFG` path rule does |
-| A missing `title` | Empty | Required, or the name |
-| A missing `subtype` | Fails | Default to `game` |
-| A missing `sources` | `["src/*.c"]` | Required |
-| Wildcards | `*` in the last component only | Also `**` for folders |
-| The lock file format | TOML | JSON |
-| The command that updates a stale lock | Not specified | An `update` command, or a build that re-resolves on its own |
-| Which package wins when several fit | Not specified here. See [SDK_PACKAGE.md](./SDK_PACKAGE.md#open-points). | |
+Only one point is still open, the choice of tool versions when the tool resolves. See [Open points](./SDK_PACKAGE.md#open-points).
