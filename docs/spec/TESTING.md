@@ -452,6 +452,8 @@ V4 and V8 are not checked.
 
 Fault images start from a good image. `corrupt()` then patches raw bytes in place, such as one byte of `MFBOOT.SYS`.
 
+Tests write images into `tmp_path`. The harness plugin removes a passing, skipped or expected-to-fail test's folder when the test ends. A test that fails or errors in setup, call or teardown keeps its folder. `ROBCO_KEEP_TMP=1` keeps them all. See [Temp folders](../../tests/README.md#temp-folders).
+
 ## CI
 
 CI runs in the `robco-ci` container, built from `ci/Dockerfile` in RobCo-Core. It holds Ubuntu 24.04, QEMU 10.1.2 built from source with `qemu-system-arm` and `qemu-system-aarch64`, `gcc-arm-none-eabi`, a host `gcc`, mtools and Python.
