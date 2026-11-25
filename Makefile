@@ -22,12 +22,16 @@ test-tools: venv
 	$(VENV)/bin/pytest tests/tools -v
 
 # boot.json from the harness's boot_args(), for tools other than the harness.
-# Stdlib only. BOOT_JSON must be an absolute path.
+# Stdlib only. BOOT_JSON must be an absolute path. The recipe reads it from the
+# environment, so a space or a quote in it works. Make expands a dollar sign
+# before the shell sees it, so the target refuses one.
 BOOT_JSON ?= $(CURDIR)/build/boot.json
+boot-json: export BOOT_JSON := $(BOOT_JSON)
 boot-json:
-	@case "$(BOOT_JSON)" in /*) ;; *) echo "boot-json: BOOT_JSON must be an absolute path, got '$(BOOT_JSON)'" >&2; exit 1 ;; esac
-	mkdir -p $(dir $(BOOT_JSON))
-	PYTHONPATH=tests $(PYTHON) -m harness.bootjson -o $(BOOT_JSON)
+	@$(if $(findstring $$,$(value BOOT_JSON)),echo "boot-json: BOOT_JSON must not contain a dollar sign" >&2; exit 1)
+	@case "$$BOOT_JSON" in /*) ;; *) echo "boot-json: BOOT_JSON must be an absolute path, got '$$BOOT_JSON'" >&2; exit 1 ;; esac
+	mkdir -p "$$(dirname "$$BOOT_JSON")"
+	PYTHONPATH=tests $(PYTHON) -m harness.bootjson -o "$$BOOT_JSON"
 
 # Links, API coverage, checked commands and banned words in the Markdown files.
 test-docs:

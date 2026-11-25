@@ -160,3 +160,24 @@ def test_make_target_refuses_relative_output(tmp_path):
     assert "must be an absolute path" in r.stderr
     assert not (tmp_path / "rel").exists()
     assert not os.path.exists(os.path.join(ROOT, "rel"))
+
+
+def _listing(top):
+    return sorted(os.path.relpath(os.path.join(d, n), top)
+                  for d, dirs, files in os.walk(top) for n in dirs + files)
+
+
+@pytest.mark.parametrize("name", ["with space", "it's", "a 'b' c"])
+def test_make_target_writes_to_a_path_with_odd_characters(tmp_path, name):
+    path = tmp_path / name / "boot.json"
+    r = _make(f"BOOT_JSON={path}", f"PYTHON={sys.executable}", cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert path.read_text(encoding="utf-8") == bootjson.dumps()
+
+
+def test_make_target_refuses_a_dollar_sign(tmp_path):
+    before = _listing(tmp_path)
+    r = _make(f"BOOT_JSON={tmp_path}/a$b/boot.json", f"PYTHON={sys.executable}", cwd=tmp_path)
+    assert r.returncode != 0
+    assert "dollar sign" in r.stderr
+    assert _listing(tmp_path) == before
