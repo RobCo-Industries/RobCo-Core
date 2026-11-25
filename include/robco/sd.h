@@ -23,6 +23,9 @@
 #define SD_ERR_AGAIN    (-19)   /* holotape slot: card not settled or off time not over */
 #define SD_ERR_BUS      (-20)   /* holotape slot: SPI0 or GPIO failed, or bad config */
 
+/* A stepped call has more work: call it again. Positive, so `rc < 0` stays "failed". */
+#define SD_PENDING      1
+
 typedef enum {
     SD_TYPE_NONE = 0,
     SD_TYPE_SDSC = 1,   /* byte addressing */

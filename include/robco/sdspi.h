@@ -25,6 +25,15 @@
 #define SDSPI_R1_BYTES      9u          /* bytes polled for an R1, Ncr is 8 at most */
 #define SDSPI_INIT_US       1000000u    /* ACMD41 until the card leaves idle */
 #define SDSPI_TOKEN_US      100000u     /* a data start token after CMD9, CMD10 or CMD17 */
+#define SDSPI_RETRY_US      1000u       /* pause between CMD0 or ACMD41 tries */
+#define SDSPI_NCX_BYTES     16u         /* bytes polled for the CSD or CID token, Ncx is 8 at most */
+
+/*
+ * Bytes one init step clocks, at most: a CMD9 or CMD10 with its R1 poll,
+ * its token poll, 16 bytes, the CRC and the 8 trailing clocks is 51. At
+ * SDSPI_INIT_HZ that is about 1.3 ms.
+ */
+#define SDSPI_STEP_BYTES    64u
 
 typedef struct {
     void *ctx;
@@ -44,6 +53,13 @@ typedef struct {
     const sdspi_ops_t *ops;
     sd_info_t info;     /* rca is 0: SPI mode has no relative address */
     int ready;
+    /* Stepped init state. Private. */
+    int phase;
+    int result;
+    uint32_t hz;
+    unsigned tries;
+    uint64_t deadline;
+    uint64_t wake_us;
 } sdspi_card_t;
 
 /*
@@ -53,6 +69,30 @@ typedef struct {
  * `hz`. Ends with CS high and 8 more clocks. Returns 0 or SD_ERR_*.
  */
 int sdspi_card_init(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz);
+
+/*
+ * The same init in steps, for a caller that cannot block. sdspi_card_init()
+ * is a loop over these. The start clocks nothing and returns SD_PENDING,
+ * or SD_ERR_BUS for bad arguments.
+ *
+ * Each step clocks one command and its reply, SDSPI_STEP_BYTES at most,
+ * and ends with CS high and 8 more clocks, so the caller may give the bus
+ * to someone else between two steps. A step sets SDSPI_INIT_HZ before it
+ * clocks, and the last one sets `hz`. The pairs that need each other stay
+ * in one step: the start clocks and the first CMD0, CMD55 and its ACMD41.
+ *
+ * A step returns SD_PENDING while work remains, 0 when the card is ready,
+ * or SD_ERR_*. After a final result it returns that result again.
+ */
+int sdspi_init_start(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz);
+int sdspi_init_step(sdspi_card_t *c);
+
+/*
+ * Microseconds until the next step has work: the pause between two CMD0
+ * or two ACMD41 tries. 0 when a step should run now. A step called sooner
+ * still runs, and spends one of the tries.
+ */
+uint32_t sdspi_init_wait_us(const sdspi_card_t *c);
 
 /*
  * Reads block `lba` into buf, 512 bytes, any alignment, with CMD17. Checks

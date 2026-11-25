@@ -6,6 +6,7 @@ const char *sd_strerror(int err)
 {
     switch (err) {
     case 0:              return "ok";
+    case SD_PENDING:     return "pending";
     case SD_ERR_BOARD:   return "board";
     case SD_ERR_CLOCK:   return "clock";
     case SD_ERR_RESET:   return "reset";
