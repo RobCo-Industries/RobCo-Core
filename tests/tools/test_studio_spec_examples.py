@@ -631,3 +631,22 @@ def test_backend_other_than_robco_is_an_unknown_key():
     assert re.fullmatch(r'build\.backend = "[^"\\]*"', errors[0]["detail"])
     line = next(b for b in blocks(PROJECT, "") if b.startswith("manifest: unknown key"))
     assert line == "manifest: unknown key: " + errors[0]["detail"] + "\n"
+
+
+def test_boot_json_example_keeps_placeholders_out_of_names():
+    testing = (SPEC / "TESTING.md").read_text(encoding="utf-8")
+    boot = next(json.loads(b) for b in blocks(testing, "json") if '"boards"' in b)
+    assert boot["format"] == 1
+    lists = [boot["common"], boot["sd"]]
+    for name, board in boot["boards"].items():
+        # machine and qemu are names: a reader fills nothing in them.
+        assert "{" not in board["machine"] and "{" not in board["qemu"], name
+        assert board["default_mode"] in board["modes"], name
+        lists += board["modes"].values()
+    # Any argument list may hold a placeholder, and only the three exist.
+    found = [m for args in lists for s in args for m in re.findall(r"\{[^}]*\}?", s)]
+    assert set(found) == {"{stub}", "{image}", "{sd}"}
+    assert all(type(s) is str for args in lists for s in args)
+    section_text = section(testing, "boot.json")
+    assert "Any argument list may hold a placeholder: `common`, `sd` and the list of each mode." in section_text
+    assert "A `{` in either makes the file invalid" in section_text

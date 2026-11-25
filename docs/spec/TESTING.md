@@ -158,6 +158,11 @@ The mode arguments do what [Firmware stub plus loader](#firmware-stub-plus-loade
 
 A `boot.json` with a larger `format` fails. A tool ignores a field it does not know. A board or a mode the file does not list cannot boot, and the tool says so.
 
+A reader also follows these two rules about where a placeholder may stand:
+
+- Any argument list may hold a placeholder: `common`, `sd` and the list of each mode. A reader fills every string of all of them, the same way.
+- A board's `machine` and `qemu` are names, not arguments. A reader fills nothing in them. A `{` in either makes the file invalid, and a reader fails when it reads the file.
+
 The example, for every board the harness knows:
 
 ```json
