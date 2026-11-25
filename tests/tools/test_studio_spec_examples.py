@@ -284,6 +284,38 @@ def test_sdk_json_and_index_name_the_same_tools():
     assert [f["path"] for f in sdk["files"]] == sorted(f["path"] for f in sdk["files"])
 
 
+def section(text, heading, level="###"):
+    """The text of one section, from its heading to the next heading of that level or above."""
+    start = text.index(f"{level} {heading}\n")
+    end = min((i for i in (text.find("\n" + "#" * n + " ", start + 1)
+                           for n in range(2, len(level) + 1)) if i != -1), default=len(text))
+    return text[start:end]
+
+
+def test_sdk_json_lists_the_files_of_the_layout_table():
+    layout = section(PACKAGE, "Layout of pipos")
+    first, second = layout.split("The headers are the whole of")[:2]
+    paths = set(re.findall(r"^\| `([^`]+)` \|", first, re.M))
+    headers = set(re.findall(r"^\| `([a-z0-9]+\.h)` \|", second, re.M))
+    assert len(headers) == 10 and "pip.h" in headers and "pipos.h" not in headers
+    assert "include/pipos/*.h" in paths
+    paths = (paths - {"include/pipos/*.h", "sdk.json"}) | {f"include/pipos/{h}" for h in headers}
+    sdk = package_json('"built_from"')
+    listed = [f["path"] for f in sdk["files"]]
+    assert set(listed) == paths and len(listed) == len(paths)
+    assert listed == sorted(listed, key=str.encode), "files is sorted by path in byte order"
+    assert all(re.fullmatch(r"[0-9a-f]{64}", f["sha256"]) and f["size"] > 0 for f in sdk["files"])
+    # Every path of flags.json is a file of the package.
+    flags = package_json('"cflags"')
+    for path in [flags["crt0"], *flags["libs"], *flags["linker_scripts"].values()]:
+        assert path in paths, path
+    assert all(any(p.startswith(d + "/") for p in paths) for d in flags["include_dirs"])
+    # The header the template includes ships in the package.
+    includes = set(re.findall(r"includes `<(pipos/[a-z0-9]+\.h)>`", PACKAGE))
+    assert includes == {"pipos/pip.h"}
+    assert all(f"include/{i}" in paths for i in includes)
+
+
 def test_lock_example_pins_the_tools_the_package_names():
     lock = next(tomllib.loads(b) for b in blocks(PROJECT, "toml") if "[[package]]" in b)
     sdk = package_json('"built_from"')

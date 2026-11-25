@@ -131,24 +131,48 @@ A `pipos` package carries `rimg`, `flags`, `boot` and `runner`. A `templates` pa
 
 ### Layout of pipos
 
-| Path | Content |
+A `pipos` package holds exactly these files. The third column says where each comes from at the commits in `built_from`.
+
+| Path | Content | From |
+|---|---|---|
+| `sdk.json` | The manifest | The package job |
+| `LICENSES/MIT.txt` | The licence text | Pip-OS `LICENSE` |
+| `boot.json` | The QEMU arguments per board | RobCo-Core `make boot-json`. See [boot.json](./TESTING.md#bootjson). |
+| `boot/PIPOS.CFG` | The default Pip-OS config | Pip-OS `boot/PIPOS.CFG` |
+| `boot/PIPOS.IMG` | The release kernel | Pip-OS `build/pipos.img` |
+| `boot/RUNNER.ROM` | The runner ROM: it launches the project's tape and prints its exit status. See [The runner ROM](#the-runner-rom). | Pip-OS `sdk/examples/runner/`, built |
+| `boot/config.txt` | The default `config.txt` | Pip-OS `boot/config.txt` |
+| `boot/fwstub.bin` | The QEMU firmware stub | RobCo-Core `tests/fwstub/`, built |
+| `boot/pipos.elf` | The kernel's ELF, for a debugger | Pip-OS `build/pipos.elf` |
+| `docs/API.md` | The system call reference | Pip-OS `docs/API.md` |
+| `flags.json` | Compile and link flags. See [flags.json](#flagsjson). | The package job, from `sdk/pipos-app.mk` |
+| `include/pipos/*.h` | The ten SDK headers listed below | Pip-OS `sdk/include/pipos/` |
+| `lib/crt0.S` | The startup code, as source. See [Startup code](#startup-code). | Pip-OS `sdk/crt0.S` |
+| `lib/holotape.ld` | Links at `0x00800000` | Pip-OS `sdk/holotape.ld` |
+| `lib/libpip.a` | Syscall wrappers and the small libc. See [Building libpip.a](#building-libpipa). | Pip-OS `sdk/lib/*.c` and the RobCo-Core sources that `pipos-app.mk` names, built |
+| `lib/rom.ld` | Links at `0x00400000` | Pip-OS `sdk/rom.ld` |
+
+The headers are the whole of `sdk/include/pipos/`, byte for byte:
+
+| Header | Holds |
 |---|---|
-| `sdk.json` | The manifest |
-| `include/pipos/*.h` | The SDK headers |
-| `lib/libpip.a` | Syscall wrappers and the small libc. See [Building libpip.a](#building-libpipa). |
-| `lib/crt0.S` | The startup code, as source. See [Startup code](#startup-code). |
-| `lib/holotape.ld` | Links at `0x00800000` |
-| `lib/rom.ld` | Links at `0x00400000` |
-| `flags.json` | Compile and link flags |
-| `boot/PIPOS.IMG` | The release kernel |
-| `boot/pipos.elf` | Its ELF, for a debugger |
-| `boot/PIPOS.CFG` | The default Pip-OS config |
-| `boot/config.txt` | The default `config.txt` |
-| `boot/RUNNER.ROM` | The runner ROM: it launches the project's tape and prints its exit status. See [The runner ROM](#the-runner-rom). |
-| `boot/fwstub.bin` | The QEMU firmware stub, built from RobCo-Core `tests/fwstub/` |
-| `boot.json` | The QEMU arguments per board |
-| `docs/` | The API reference |
-| `LICENSES/` | The licence texts |
+| `pip.h` | Includes the nine others. A tape or a ROM includes `<pipos/pip.h>` and nothing else of the SDK. |
+| `abi.h` | Call numbers, error codes, limits and the structs of [PIPOS_ABI.md](./PIPOS_ABI.md) |
+| `crc32.h` | `pip_crc32()` |
+| `crt0.h` | `pip_main()` and the registers at entry |
+| `heap.h` | The heap allocator |
+| `ini.h` | The INI parser, `pip_ini_get()` and its codes |
+| `printf.h` | `pip_printf()` and `pip_snprintf()` |
+| `selftest.h` | The self-check markers of a test ROM |
+| `string.h` | `memcpy()`, `strlen()` and the other string functions |
+| `syscall.h` | One `pip_<name>()` wrapper per call |
+
+A file of the first table that the archive lacks, or that `files` does not list, fails the install with `package: manifest` and names the path. So does a header of the second table. A later package may add a header: a tool does not refuse a header it does not know. No file named `pipos.h` exists.
+
+What Pip-OS must add for the layout:
+
+1. `make sdk-package`, which writes `pipos-<version>.zip` with the files of the first table, each from the source the table names, and an `sdk.json` that lists every one of them.
+2. The copy of `sdk/include/pipos/` takes every header of the folder, so a header added later ships without a change to the job.
 
 ### Tools a package names
 
@@ -585,7 +609,7 @@ exit = 0
 
 The tape, `src/main.c`:
 
-1. Its first line is `/* SPDX-License-Identifier: MIT */`. It includes `<pipos/pip.h>` and no other header, and it calls nothing newer than ABI 1.4.
+1. Its first line is `/* SPDX-License-Identifier: MIT */`. It includes `<pipos/pip.h>` and no other header, and it calls nothing newer than ABI 1.4. `pip.h` is `include/pipos/pip.h` of the package, as [Layout of pipos](#layout-of-pipos) says. It is the header that Pip-OS's `sdk/examples/tape/main.c` and RobCo-Reel's `samples/hello/main.c` include.
 2. It draws one screen and calls `present` once. The screen depends only on the code and on the default colours of `gfx_info`. It shows no clock, no random value, no project name and no animation.
 3. After `present` returns, it logs the line `tape: ready` once, with one `pip_printf("tape: ready\n")`.
 4. It then waits for events. On a press of SELECT it returns 0 from `pip_main()`. It ignores every other event and draws nothing more.
@@ -755,19 +779,30 @@ A tool never retries a mismatch from another location, and never installs a file
     {"paths": [""], "spdx": "MIT"}
   ],
   "files": [
-    {"path": "boot.json", "size": 4210, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"},
-    {"path": "boot/PIPOS.CFG", "size": 512, "sha256": "0000000000000000000000000000000000000000000000000000000000000002"},
-    {"path": "boot/PIPOS.IMG", "size": 98304, "sha256": "0000000000000000000000000000000000000000000000000000000000000003"},
-    {"path": "boot/RUNNER.ROM", "size": 4096, "sha256": "0000000000000000000000000000000000000000000000000000000000000004"},
-    {"path": "boot/config.txt", "size": 160, "sha256": "0000000000000000000000000000000000000000000000000000000000000005"},
-    {"path": "boot/fwstub.bin", "size": 1280, "sha256": "0000000000000000000000000000000000000000000000000000000000000006"},
-    {"path": "boot/pipos.elf", "size": 524288, "sha256": "0000000000000000000000000000000000000000000000000000000000000007"},
-    {"path": "flags.json", "size": 700, "sha256": "0000000000000000000000000000000000000000000000000000000000000008"},
-    {"path": "include/pipos/pipos.h", "size": 9000, "sha256": "0000000000000000000000000000000000000000000000000000000000000009"},
-    {"path": "lib/crt0.S", "size": 2600, "sha256": "000000000000000000000000000000000000000000000000000000000000000a"},
-    {"path": "lib/holotape.ld", "size": 900, "sha256": "000000000000000000000000000000000000000000000000000000000000000d"},
-    {"path": "lib/libpip.a", "size": 40000, "sha256": "000000000000000000000000000000000000000000000000000000000000000e"},
-    {"path": "lib/rom.ld", "size": 900, "sha256": "000000000000000000000000000000000000000000000000000000000000000f"}
+    {"path": "LICENSES/MIT.txt", "size": 1071, "sha256": "0000000000000000000000000000000000000000000000000000000000000001"},
+    {"path": "boot.json", "size": 4210, "sha256": "0000000000000000000000000000000000000000000000000000000000000002"},
+    {"path": "boot/PIPOS.CFG", "size": 512, "sha256": "0000000000000000000000000000000000000000000000000000000000000003"},
+    {"path": "boot/PIPOS.IMG", "size": 98304, "sha256": "0000000000000000000000000000000000000000000000000000000000000004"},
+    {"path": "boot/RUNNER.ROM", "size": 4096, "sha256": "0000000000000000000000000000000000000000000000000000000000000005"},
+    {"path": "boot/config.txt", "size": 160, "sha256": "0000000000000000000000000000000000000000000000000000000000000006"},
+    {"path": "boot/fwstub.bin", "size": 1280, "sha256": "0000000000000000000000000000000000000000000000000000000000000007"},
+    {"path": "boot/pipos.elf", "size": 524288, "sha256": "0000000000000000000000000000000000000000000000000000000000000008"},
+    {"path": "docs/API.md", "size": 30000, "sha256": "0000000000000000000000000000000000000000000000000000000000000009"},
+    {"path": "flags.json", "size": 700, "sha256": "000000000000000000000000000000000000000000000000000000000000000a"},
+    {"path": "include/pipos/abi.h", "size": 2100, "sha256": "000000000000000000000000000000000000000000000000000000000000000b"},
+    {"path": "include/pipos/crc32.h", "size": 2200, "sha256": "000000000000000000000000000000000000000000000000000000000000000c"},
+    {"path": "include/pipos/crt0.h", "size": 2300, "sha256": "000000000000000000000000000000000000000000000000000000000000000d"},
+    {"path": "include/pipos/heap.h", "size": 2400, "sha256": "000000000000000000000000000000000000000000000000000000000000000e"},
+    {"path": "include/pipos/ini.h", "size": 2500, "sha256": "000000000000000000000000000000000000000000000000000000000000000f"},
+    {"path": "include/pipos/pip.h", "size": 2600, "sha256": "0000000000000000000000000000000000000000000000000000000000000010"},
+    {"path": "include/pipos/printf.h", "size": 2700, "sha256": "0000000000000000000000000000000000000000000000000000000000000011"},
+    {"path": "include/pipos/selftest.h", "size": 2800, "sha256": "0000000000000000000000000000000000000000000000000000000000000012"},
+    {"path": "include/pipos/string.h", "size": 2900, "sha256": "0000000000000000000000000000000000000000000000000000000000000013"},
+    {"path": "include/pipos/syscall.h", "size": 3000, "sha256": "0000000000000000000000000000000000000000000000000000000000000014"},
+    {"path": "lib/crt0.S", "size": 2600, "sha256": "0000000000000000000000000000000000000000000000000000000000000015"},
+    {"path": "lib/holotape.ld", "size": 900, "sha256": "0000000000000000000000000000000000000000000000000000000000000016"},
+    {"path": "lib/libpip.a", "size": 40000, "sha256": "0000000000000000000000000000000000000000000000000000000000000017"},
+    {"path": "lib/rom.ld", "size": 900, "sha256": "0000000000000000000000000000000000000000000000000000000000000018"}
   ]
 }
 ```
