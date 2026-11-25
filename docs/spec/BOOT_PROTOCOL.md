@@ -357,7 +357,7 @@ A later stage keeps the screen the earlier stage left on. It passes the `fb_*` f
 | Bit | Meaning |
 |---|---|
 | 0 | The loader used a fallback file, such as `MFBOOT.BAK` |
-| 1 | The user asked for maintenance mode |
+| 1 | The user asked for maintenance mode. MFBootAgent sets it when a request file was found, the maintenance screen was opened or the image it starts is a maintenance image, subtype 2, this boot. |
 | 2 | The writing stage cold-booted and built the block itself |
 | 3 | Maintenance was asked by a request file. See [Maintenance request](#maintenance-request). Bit 1 is set too. MFBootAgent owns bits 1 and 3. |
 | 4 to 31 | Reserved, 0 |
@@ -642,7 +642,7 @@ Before the jump MFBootAgent unmounts the volume and calls `bootinfo_build()` wit
 | `boot_part_lba` | First block of its boot volume |
 | `boot_path` | `path` of the chosen entry |
 | `cmdline` | `cmdline` of the chosen entry, or empty |
-| `boot_flags` | Bit 0 cleared, since it loaded no fallback file. Bit 1 set when a [maintenance request](#maintenance-request) was found or the person opened the maintenance screen this boot, clear otherwise. Bit 3 set when a request was found this boot, clear otherwise. The agent sets or clears bits 1 and 3 whatever it received. The other bits stay as received. |
+| `boot_flags` | Bit 0 cleared, since it loaded no fallback file. Bit 1 set when any of these holds this boot, clear otherwise: a [maintenance request](#maintenance-request) was found, the maintenance screen was opened, or the image it starts is a maintenance image, subtype 2. So `MAINT.SYS` always receives bit 1, whatever road started it. Bit 3 set when a request was found this boot, clear otherwise. The agent sets or clears bits 1 and 3 whatever it received. The other bits stay as received. |
 
 It then calls `bootinfo_seal()` and jumps with r2 set to the firmware blob copy, or 0 when there is none.
 
@@ -670,7 +670,7 @@ MFBootAgent reads the request once per boot. RETROS-BIOS never looks at it. The 
 3. Reads the line, if any, and keeps it for the screen.
 4. Deletes the file with `fs_unlink()`. Delete first makes the request one-shot: a fault later cannot make the terminal start in maintenance for ever.
 5. Prints `maint_req result=found rc=0` when the delete worked, or `maint_req result=clear_failed rc=<code>` when it failed.
-6. Sets `boot_flags` bits 1 and 3 for the next image. They say what was asked, not what was started: they stay set whatever entry the person picks. An image other than the maintenance image ignores them.
+6. Sets `boot_flags` bits 1 and 3 for the next image. They say what was asked, not what was started: they stay set whatever entry the person picks. An image other than the maintenance image ignores them. Without a request, bit 1 is still set when the maintenance screen opens or a maintenance image starts, as [Boot info](#boot-info) states. Bit 3 is then clear.
 7. Shows the menu with no countdown, then opens the maintenance screen and prints `maint_open why=request`. The screen shows the request line, if any. No image boots without a key.
 
 The agent can delete this one file. It mounts the boot volume with write support, and it writes nothing else on the card.
@@ -723,7 +723,7 @@ The image needs no login. Physical presence at the terminal, with its card, is t
 
 ### Start
 
-- The boot entry `MAINT` starts it from the menu. The agent's maintenance screen can always start it: it uses the path of the `MAINT` entry when `BOOT.CFG` has one, and `/ROBCO/MAINT.SYS` when it has none, the fallback menu included. A damaged `BOOT.CFG` is a case where a person needs this image. A missing or bad file is the usual load failure.
+- The boot entry `MAINT` starts it from the menu. The agent sets `boot_flags` bit 1 whenever it starts a maintenance image, from the menu, the maintenance screen or the maintenance port. So this image always receives bit 1. Bit 3 is set only when a request file was found this boot. The agent's maintenance screen can always start it: it uses the path of the `MAINT` entry when `BOOT.CFG` has one, and `/ROBCO/MAINT.SYS` when it has none, the fallback menu included. A damaged `BOOT.CFG` is a case where a person needs this image. A missing or bad file is the usual load failure.
 - It applies the [trust rule](#trust-rule). With a trusted block it adopts the agent's screen, as `DIAG.SYS` does. Alone, or with a block it does not trust, it starts its own screen.
 - It mounts the boot volume, reads the `[maint]` section of `BOOT.CFG`, then shows its menu and prints `ready`.
 - It is driven by the console keys, the six buttons and the maintenance port, with a menu like `DIAG.SYS`.
@@ -770,7 +770,7 @@ Version 1 does not edit a config file, format the card, repair a file system, ch
 
 ### What each project does
 
-- MFBootAgent reads and clears the request as [Reader](#reader) states, skips `[maint]` in `BOOT.CFG` without a count, lets its maintenance screen start the maintenance image, and builds `MAINT.SYS`.
+- MFBootAgent reads and clears the request as [Reader](#reader) states, sets `boot_flags` bit 1 whenever it starts a maintenance image, skips `[maint]` in `BOOT.CFG` without a count, lets its maintenance screen start the maintenance image, and builds `MAINT.SYS`.
 - UOS writes the request for `SET HALT RESTART /MAINTENANCE`, and ships `/UOS/SYSUAF.DEF` on its card image.
 - RETROS-BIOS does nothing.
 
