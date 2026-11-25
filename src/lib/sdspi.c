@@ -26,7 +26,7 @@
 #define OCR_33V         0x00300000u     /* 3.2 V to 3.4 V */
 #define ACMD41_HCS      0x40000000u
 
-#define RETRY_US        1000u   /* pause between CMD0 or ACMD41 tries */
+#define RETRY_US        SDSPI_RETRY_US
 
 /* Internal results, below every R1 value. */
 #define E_BUS           (-1)    /* xfer() or set_hz() failed */
@@ -154,11 +154,14 @@ static int command(const sdspi_card_t *c, unsigned idx, uint32_t arg, uint8_t *r
     return v;
 }
 
-/* Waits for a start token, then reads len bytes and the CRC16 and checks it. */
-static int data_block(const sdspi_card_t *c, uint8_t *buf, size_t len, uint32_t timeout_us)
+/*
+ * Waits for a start token, at most `cap` bytes or timeout_us, then reads
+ * len bytes and the CRC16 and checks it.
+ */
+static int data_block(const sdspi_card_t *c, uint8_t *buf, size_t len, uint32_t timeout_us,
+                      uint32_t cap)
 {
     uint64_t deadline = c->ops->now_us(c->ops->ctx) + timeout_us;
-    uint32_t cap = timeout_us * 4u + 64u;
     uint8_t crc[2];
     uint8_t v;
 
@@ -205,7 +208,10 @@ static int single(const sdspi_card_t *c, unsigned idx, uint32_t arg, uint8_t *r,
     return rc;
 }
 
-/* A command followed by a data block, CID or CSD, in one transaction. */
+/*
+ * A command followed by a data block, CID or CSD, in one transaction. The
+ * token wait is the init's budget: token_bytes, and SDSPI_TOKEN_US.
+ */
 static int reg_read(const sdspi_card_t *c, unsigned idx, uint8_t *out)
 {
     int rc;
@@ -213,7 +219,7 @@ static int reg_read(const sdspi_card_t *c, unsigned idx, uint8_t *out)
     c->ops->cs(c->ops->ctx, 0);
     rc = command(c, idx, 0, NULL, 0);
     if (rc == 0) {
-        rc = data_block(c, out, 16, SDSPI_TOKEN_US);
+        rc = data_block(c, out, 16, SDSPI_TOKEN_US, c->token_bytes);
     } else if (rc > 0) {
         rc = SD_ERR_CMD;
     }
@@ -291,55 +297,66 @@ static void parse_cid(sd_info_t *in, const uint8_t *r)
     in->mdt_month = (uint8_t)bits(r, 8, 4);
 }
 
-static int go_idle(sdspi_card_t *c)
-{
-    const sdspi_ops_t *o = c->ops;
-    uint64_t deadline = o->now_us(o->ctx) + SDSPI_CMD0_US;
-    unsigned tries = SDSPI_CMD0_US / RETRY_US + 1u;
-    int rc;
+/* Init phases, one step each. */
+enum {
+    PH_START,   /* 80 clocks with CS high, then the first CMD0 */
+    PH_CMD0,    /* CMD0 again, until the card answers idle */
+    PH_CMD8,
+    PH_CMD59,
+    PH_ACMD41,  /* CMD55 then ACMD41, never split */
+    PH_CMD58,
+    PH_CSD,
+    PH_CID,
+    PH_CMD16,
+    PH_END,     /* result holds the outcome */
+};
 
-    for (;;) {
-        rc = single(c, 0, 0, NULL, 0);
-        if (rc == (int)R1_IDLE) {
-            return 0;
-        }
-        if (rc == E_BUS) {
-            return SD_ERR_BUS;
-        }
-        if (rc == E_GONE || --tries == 0 || o->now_us(o->ctx) > deadline) {
-            return SD_ERR_NOCARD;
-        }
-        o->delay_us(o->ctx, RETRY_US);
-    }
+static uint64_t now(const sdspi_card_t *c)
+{
+    return c->ops->now_us(c->ops->ctx);
 }
 
-static int leave_idle(sdspi_card_t *c)
+/* One try failed: wait RETRY_US, or give up with `err` once tries or time run out. */
+static int retry(sdspi_card_t *c, int err)
 {
-    const sdspi_ops_t *o = c->ops;
-    uint64_t deadline = o->now_us(o->ctx) + SDSPI_INIT_US;
-    unsigned tries = SDSPI_INIT_US / RETRY_US + 1u;
-    int rc;
+    uint64_t t = now(c);
 
-    for (;;) {
-        rc = single(c, 55, 0, NULL, 0);
-        if (rc < 0 || (rc & ~R1_IDLE) != 0) {
-            return init_err(rc);
-        }
-        rc = single(c, 41, ACMD41_HCS, NULL, 0);
-        if (rc == 0) {
-            return 0;
-        }
-        if (rc != (int)R1_IDLE) {
-            return init_err(rc);
-        }
-        if (--tries == 0 || o->now_us(o->ctx) > deadline) {
-            return SD_ERR_BUSY;
-        }
-        o->delay_us(o->ctx, RETRY_US);
+    if (--c->tries == 0 || t > c->deadline) {
+        return err;
     }
+    c->wake_us = t + RETRY_US;
+    return SD_PENDING;
 }
 
-static int identify(sdspi_card_t *c, uint32_t hz)
+/*
+ * A CSD or CID read ended. A token later than the stepped budget ends the
+ * step cleanly; the next step sends the command again, SDSPI_TOKEN_TRIES
+ * times in all, then gives SD_ERR_SLOW. The blocking budget gets one try.
+ */
+static int reg_result(sdspi_card_t *c, int rc)
+{
+    if (rc != E_TIMEOUT || c->token_bytes > SDSPI_STEP_TOKEN_BYTES) {
+        return init_err(rc);
+    }
+    if (--c->tries == 0) {
+        return SD_ERR_SLOW;
+    }
+    c->wake_us = now(c) + RETRY_US;
+    return SD_PENDING;
+}
+
+/* The last step: the data rate, and the card is ready. */
+static int finish(sdspi_card_t *c)
+{
+    if (c->ops->set_hz(c->ops->ctx, c->hz) < 0) {
+        return SD_ERR_BUS;
+    }
+    c->info.clock_hz = c->hz;
+    return 0;
+}
+
+/* Runs the current phase: one command, or the pair the phase names. */
+static int run_phase(sdspi_card_t *c)
 {
     const sdspi_ops_t *o = c->ops;
     sd_info_t *in = &c->info;
@@ -350,100 +367,208 @@ static int identify(sdspi_card_t *c, uint32_t hz)
     if (o->set_hz(o->ctx, SDSPI_INIT_HZ) < 0) {
         return SD_ERR_BUS;
     }
-    o->cs(o->ctx, 1);
     if (gone(c)) {
         return SD_ERR_NOCARD;
     }
-    if (read_bytes(c, r, SDSPI_START_BYTES) < 0) {
-        return SD_ERR_BUS;
+    if (c->phase == PH_START) {
+        /* The start clocks and the first CMD0 share a step. */
+        o->cs(o->ctx, 1);
+        if (read_bytes(c, r, SDSPI_START_BYTES) < 0) {
+            return SD_ERR_BUS;
+        }
+        c->deadline = now(c) + SDSPI_CMD0_US;
+        c->tries = SDSPI_CMD0_US / RETRY_US + 1u;
+        c->phase = PH_CMD0;
     }
-    rc = go_idle(c);
-    if (rc != 0) {
-        return rc;
-    }
+    switch (c->phase) {
+    case PH_CMD0:
+        rc = single(c, 0, 0, NULL, 0);
+        if (rc == (int)R1_IDLE) {
+            c->phase = PH_CMD8;
+            return SD_PENDING;
+        }
+        if (rc == E_BUS) {
+            return SD_ERR_BUS;
+        }
+        if (rc == E_GONE) {
+            return SD_ERR_NOCARD;
+        }
+        return retry(c, SD_ERR_NOCARD);
 
-    rc = single(c, 8, 0x1aau, r, 4);
-    if (rc >= 0 && (rc & R1_ILLEGAL)) {
-        return SD_ERR_OLD;
-    }
-    if (rc != (int)R1_IDLE) {
-        return init_err(rc);
-    }
-    if ((r[2] & 0x0fu) != 1u || r[3] != 0xaau) {
-        return SD_ERR_VOLTAGE;
-    }
+    case PH_CMD8:
+        rc = single(c, 8, 0x1aau, r, 4);
+        if (rc >= 0 && (rc & R1_ILLEGAL)) {
+            return SD_ERR_OLD;
+        }
+        if (rc != (int)R1_IDLE) {
+            return init_err(rc);
+        }
+        if ((r[2] & 0x0fu) != 1u || r[3] != 0xaau) {
+            return SD_ERR_VOLTAGE;
+        }
+        c->phase = PH_CMD59;
+        return SD_PENDING;
 
-    rc = single(c, 59, 1, NULL, 0);
-    if (rc != (int)R1_IDLE) {
-        return init_err(rc);
-    }
-    rc = leave_idle(c);
-    if (rc != 0) {
-        return rc;
-    }
+    case PH_CMD59:
+        rc = single(c, 59, 1, NULL, 0);
+        if (rc != (int)R1_IDLE) {
+            return init_err(rc);
+        }
+        c->deadline = now(c) + SDSPI_INIT_US;
+        c->tries = SDSPI_INIT_US / RETRY_US + 1u;
+        c->phase = PH_ACMD41;
+        return SD_PENDING;
 
-    rc = single(c, 58, 0, r, 4);
-    if (rc != 0) {
-        return init_err(rc);
-    }
-    ocr = be32(r);
-    if (!(ocr & OCR_BUSY)) {
-        return SD_ERR_BUSY;
-    }
-    if (!(ocr & OCR_33V)) {
-        return SD_ERR_VOLTAGE;
-    }
-    in->ocr = ocr;
-    in->type = (ocr & OCR_CCS) ? SD_TYPE_SDHC : SD_TYPE_SDSC;
+    case PH_ACMD41:
+        rc = single(c, 55, 0, NULL, 0);
+        if (rc < 0 || (rc & ~R1_IDLE) != 0) {
+            return init_err(rc);
+        }
+        rc = single(c, 41, ACMD41_HCS, NULL, 0);
+        if (rc == 0) {
+            c->phase = PH_CMD58;
+            return SD_PENDING;
+        }
+        if (rc != (int)R1_IDLE) {
+            return init_err(rc);
+        }
+        return retry(c, SD_ERR_BUSY);
 
-    rc = reg_read(c, 9, r);
-    if (rc != 0) {
-        return init_err(rc);
-    }
-    in->capacity_blocks = parse_csd(r);
-    if (in->capacity_blocks == 0) {
-        return SD_ERR_CSD;
-    }
-    rc = reg_read(c, 10, r);
-    if (rc != 0) {
-        return init_err(rc);
-    }
-    parse_cid(in, r);
+    case PH_CMD58:
+        rc = single(c, 58, 0, r, 4);
+        if (rc != 0) {
+            return init_err(rc);
+        }
+        ocr = be32(r);
+        if (!(ocr & OCR_BUSY)) {
+            return SD_ERR_BUSY;
+        }
+        if (!(ocr & OCR_33V)) {
+            return SD_ERR_VOLTAGE;
+        }
+        in->ocr = ocr;
+        in->type = (ocr & OCR_CCS) ? SD_TYPE_SDHC : SD_TYPE_SDSC;
+        c->tries = SDSPI_TOKEN_TRIES;
+        c->phase = PH_CSD;
+        return SD_PENDING;
 
-    if (in->type == SD_TYPE_SDSC) {
+    case PH_CSD:
+        rc = reg_read(c, 9, r);
+        if (rc != 0) {
+            return reg_result(c, rc);
+        }
+        in->capacity_blocks = parse_csd(r);
+        if (in->capacity_blocks == 0) {
+            return SD_ERR_CSD;
+        }
+        c->tries = SDSPI_TOKEN_TRIES;
+        c->phase = PH_CID;
+        return SD_PENDING;
+
+    case PH_CID:
+        rc = reg_read(c, 10, r);
+        if (rc != 0) {
+            return reg_result(c, rc);
+        }
+        parse_cid(in, r);
+        if (in->type == SD_TYPE_SDSC) {
+            c->phase = PH_CMD16;
+            return SD_PENDING;
+        }
+        return finish(c);
+
+    case PH_CMD16:
         rc = single(c, 16, BLK_SECTOR_SIZE, NULL, 0);
         if (rc != 0) {
             return init_err(rc);
         }
-    }
-    if (o->set_hz(o->ctx, hz) < 0) {
+        return finish(c);
+
+    default:
         return SD_ERR_BUS;
     }
-    in->clock_hz = hz;
-    return 0;
 }
 
-int sdspi_card_init(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz)
+int sdspi_init_start(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz)
 {
-    int rc;
-
     if (c == NULL) {
         return SD_ERR_BUS;
     }
     c->ready = 0;
     c->info = (sd_info_t){0};
     c->ops = ops;
+    c->hz = hz;
+    c->tries = 0;
+    c->deadline = 0;
+    c->wake_us = 0;
+    c->token_bytes = SDSPI_STEP_TOKEN_BYTES;
+    c->phase = PH_END;
+    c->result = SD_ERR_BUS;
     if (ops == NULL || ops->xfer == NULL || ops->cs == NULL || ops->set_hz == NULL ||
         ops->delay_us == NULL || ops->now_us == NULL || hz == 0) {
         return SD_ERR_BUS;
     }
-    rc = identify(c, hz);
-    if (rc != 0) {
-        c->info = (sd_info_t){0};
+    c->phase = PH_START;
+    c->result = SD_PENDING;
+    return SD_PENDING;
+}
+
+int sdspi_init_step(sdspi_card_t *c)
+{
+    int rc;
+
+    if (c == NULL) {
+        return SD_ERR_BUS;
+    }
+    if (c->phase == PH_END) {
+        return c->result;
+    }
+    c->wake_us = 0;
+    rc = run_phase(c);
+    if (rc == SD_PENDING) {
         return rc;
     }
-    c->ready = 1;
-    return 0;
+    if (rc != 0) {
+        c->info = (sd_info_t){0};
+    }
+    c->ready = rc == 0;
+    c->phase = PH_END;
+    c->result = rc;
+    return rc;
+}
+
+void sdspi_init_set_blocking(sdspi_card_t *c)
+{
+    if (c != NULL) {
+        c->token_bytes = SDSPI_BLOCKING_TOKEN_BYTES;
+    }
+}
+
+uint32_t sdspi_init_wait_us(const sdspi_card_t *c)
+{
+    uint64_t t;
+
+    if (c == NULL || c->phase == PH_END || c->wake_us == 0) {
+        return 0;
+    }
+    t = now(c);
+    return t >= c->wake_us ? 0 : (uint32_t)(c->wake_us - t);
+}
+
+int sdspi_card_init(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz)
+{
+    int rc = sdspi_init_start(c, ops, hz);
+    uint32_t w;
+
+    sdspi_init_set_blocking(c);
+    while (rc == SD_PENDING) {
+        w = sdspi_init_wait_us(c);
+        if (w > 0) {
+            ops->delay_us(ops->ctx, w);
+        }
+        rc = sdspi_init_step(c);
+    }
+    return rc;
 }
 
 static int read_err(int rc)
@@ -482,7 +607,7 @@ int sdspi_card_read(sdspi_card_t *c, uint64_t lba, uint8_t *buf)
     c->ops->cs(c->ops->ctx, 0);
     rc = command(c, 17, (uint32_t)addr, NULL, 0);
     if (rc == 0) {
-        rc = data_block(c, buf, BLK_SECTOR_SIZE, SDSPI_TOKEN_US);
+        rc = data_block(c, buf, BLK_SECTOR_SIZE, SDSPI_TOKEN_US, SDSPI_BLOCKING_TOKEN_BYTES);
     }
     deselect(c);
     return rc == 0 ? 0 : read_err(rc);

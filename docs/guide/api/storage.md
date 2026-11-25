@@ -238,6 +238,8 @@ const char *part_boot_strerror(int rc);
 | `SD_ERR_OLD` | `-18` | `old` | Version 1 SD or MMC card. Only the holotape slot returns it. |
 | `SD_ERR_AGAIN` | `-19` | `again` | The holotape card has not settled, or its off time runs |
 | `SD_ERR_BUS` | `-20` | `bus` | The holotape slot's SPI or GPIO call failed, or a bad config |
+| `SD_ERR_SLOW` | `-21` | `slow` | A stepped holotape attach: the CSD or CID token never fit in a step. See [holo.md](holo.md#the-token-wait-after-cmd9-and-cmd10). |
+| `SD_PENDING` | `1` | `pending` | Not an error: a stepped holotape attach or SPI init has more work. See [holo.md](holo.md#slot-holoh). |
 
 ```c
 typedef enum {
