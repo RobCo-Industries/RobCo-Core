@@ -30,6 +30,8 @@ HOLD_S = 0.15
 GLITCH_S = 0.004
 # Slow dial: 3 samples per state even with 9 ms of jitter.
 SLOW_STATE_S = 0.030
+# A state this short is hidden between two samples most of the time.
+HIDDEN_S = 0.002
 # The enforced limit: 15 ms per state. Equal states give 16.7 detents per
 # second, 3:1 states (the rest three times longer) 11.1. Sweeps on all four
 # boards counted every step down to 12 ms and lost steps at 10 ms, so the
@@ -173,6 +175,29 @@ def test_gpio_dial_bounce(board, example_image):
         want = [("dial", "0", 1)] * 4 + [("dial", "0", -1)] * 4
         assert wait_events(vm, 8) == want, vm.serial
         assert total(vm) == 0
+
+
+def test_gpio_dial_hidden_states(board, example_image):
+    """States of 2 ms between states of 30 ms: the decoder infers the ones it misses.
+
+    A 2 ms state falls between two samples most of the time. Its 30 ms
+    neighbours are each seen, so at most one state hides per gap. The
+    short state is either the first after the detent, which also starts
+    each turn back, or the middle one of the detent.
+    """
+    h = HIDDEN_S / SLOW_STATE_S
+    # Gray positions are entered 1, 2, 3, 0 clockwise and 3, 2, 1, 0 back.
+    runs = [(4, (1, h, 1, 1)), (4, (1, 1, h, 1)), (-4, (1, 1, 1, h)), (-4, (1, 1, h, 1)),
+            (4, (1, h, 1, 1)), (-4, (1, 1, 1, h))]
+    with boot(example_image("input"), board, serial2=True, qtest=True,
+              gpio_high=ALL_PINS) as vm:
+        io = start(vm)
+        for detents, lengths in runs:
+            t0 = total(vm)
+            io.turn(DIAL_A, DIAL_B, detents, SLOW_STATE_S, lengths)
+            time.sleep(SETTLE_S)
+            assert total(vm) - t0 == detents, (detents, lengths, vm.serial)
+        no_exception(vm)
 
 
 def test_gpio_dial_at_the_limit(board, example_image):
