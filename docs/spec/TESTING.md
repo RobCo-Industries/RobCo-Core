@@ -81,7 +81,7 @@ Some tests attach more devices:
 
 ### raspi3b
 
-`raspi3b` exists only in `qemu-system-aarch64`, and its CPU always starts in AArch64 (V5). `tests/fwstub/a64_shim.py` holds seven AArch64 words. The harness loads them at `0x80000` and starts CPU 0 there. They drop CPU 0 to AArch32 HYP at `0x0`, the firmware stub:
+`raspi3b` exists only in `qemu-system-aarch64`, and its CPU always starts in AArch64 (V5). `tests/fwstub/a64_shim.py` holds seven AArch64 words. The harness loads them at `0x80000` and starts all four cores there. They drop each core to AArch32 HYP at `0x0`, the firmware stub:
 
 | Word | Instruction |
 |---|---|
@@ -93,7 +93,21 @@ Some tests attach more devices:
 | `0xD51E4020` | `msr elr_el3, x0` |
 | `0xD69F03E0` | `eret` |
 
-For `mode="svc"` the third word is `0xD2803A60`, `mov x0, #0x1D3`. The stub then runs as on the other boards, but never issues `smc`, because the CPU is already in the right mode. The other cores stay parked by QEMU. No AArch64 toolchain is needed.
+For `mode="svc"` the third word is `0xD2803A60`, `mov x0, #0x1D3`. The stub then runs as on the other boards, but never issues `smc`, because the CPU is already in the right mode. No AArch64 toolchain is needed.
+
+The stub reads MPIDR and parks cores 1 to 3 in its AArch32 `wfi` loop, as on `raspi2b`. Real firmware also parks them before the image runs. CPU 0 alone enters the image, so `start.S` runs on CPU 0 as before.
+
+```mermaid
+flowchart LR
+    R[All cores reset in AArch64 EL3] --> S[Shim at 0x80000]
+    S --> F[AArch32 stub at 0x0]
+    F -->|MPIDR 0| K[Image at 0x8000]
+    F -->|MPIDR 1 to 3| P[wfi loop in the stub]
+```
+
+Without the harness, QEMU starts cores 1 to 3 at `0x0` in AArch64 EL3 (V18). There they run the A32 stub as A64 code, fault, and spin on the EL3 vector at `0x200`. Each spinning core keeps one host thread busy and slows every MMIO access of CPU 0. A SPI panel test took 8 seconds instead of 1. The harness avoids that by starting the spare cores in the shim.
+
+The parking does not test the parking code in `start.S`. On `raspi3b` that code never runs on cores 1 to 3. The `-kernel` ELF runs on `raspi2b` cover it, because QEMU starts every core at the entry point there (V2).
 
 ### Guest state on timeout
 
@@ -159,6 +173,7 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 | V15 | First `-serial` is the PL011, second is the mini UART | Serial capture order |
 | V16 | SPI0 is modelled on every board. With nothing attached a byte completes at once and reads 0. | The SPI and TFT panel target tests |
 | V17 | QEMU's `pca9554` model answers on I2C bus 1 with the data sheet registers. qtest `set_irq_in` drives its input pins. | The GPIO expander target test |
+| V18 | `raspi3b` resets cores 1 to 3 at `0x0` in AArch64 EL3. With A32 code there they spin on the EL3 vector at `0x200`. With `boot()` they sit in the stub's AArch32 `wfi` loop. | Parking the spare `raspi3b` cores |
 
 V4 and V8 are not checked.
 
