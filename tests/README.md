@@ -128,7 +128,8 @@ temporary directory outside the repository and builds it there.
 - `fwstub/`: the firmware stub `boot()` loads at 0x0. It parks secondary
   cores, writes ATAGS at 0x100, switches to HYP on raspi2b and enters
   the image with r0 = 0, r1 = machine id, r2 = 0x100. `a64_shim.py`
-  holds the AArch64 words that drop raspi3b to AArch32 first.
+  holds the AArch64 words that drop raspi3b to AArch32 first. All four
+  raspi3b cores run them, so the stub parks cores 1 to 3 as on raspi2b.
 - `host/`: host unit tests, `rc_test.h`, the file-backed block device
   `blk_file.c` and `fs_tool.c`.
 - `target/`: tests that boot real images. `--board NAME` picks boards
@@ -186,6 +187,7 @@ temporary directory outside the repository and builds it there.
 | V15 | raspi0, 1ap, 2b | First `-serial` is the PL011, second is the mini UART. | Serial capture order in tests. |
 | V16 | raspi0, 1ap, 2b, 3b | SPI0 is modelled. With nothing attached a byte completes at once and reads 0. | SPI and TFT panel tests run on every board. |
 | V17 | raspi0, 1ap, 2b, 3b | `-device pca9554,bus=i2c-bus.1` answers at 0x20 to 0x27 and 0x38 to 0x3F with the data sheet power-on values. The register pointer keeps 2 bits and a multi-byte read repeats one register. QMP `qom-get` of `pinN` gives the config bit OR the output bit, so it shows outputs and reads inputs as high. qtest `set_irq_in <path> unnamed-gpio-in N level` sets an outside level that the input register ANDs with the chip's own drive, so 1 releases a line and 0 also pulls an output driven high to 0. `qom-set pinN` makes the pin an output at that level. | `test_gpiox.py` observes outputs with `qom-get` and drives inputs with qtest, never with `qom-set`, and releases every line before pins change direction. |
+| V18 | raspi3b | Cores 1 to 3 reset at 0x0 in AArch64 EL3 and, with A32 code there, spin on the EL3 vector at 0x200. With `boot()` they sit in the stub's AArch32 `wfi` loop. | Spinning spare cores slow every MMIO access of CPU 0. |
 
 V4 and V8 are not checked here.
 
