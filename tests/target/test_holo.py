@@ -4,8 +4,9 @@ What QEMU can show: no SD card model attaches to SPI0 (canary V20), so
 no card ever answers. Card detect, GPIO 12, is driven through qtest.
 These tests check that the slot stays off with detect high, that attach
 with detect low fails by its CMD0 timeout and leaves the power and the
-bus off, that insertion and removal are reported, and that the example
-keeps answering. The protocol itself runs against the host card model,
+bus off, that the stepped attach fails the same way in many short steps,
+that insertion and removal are reported, and that the example keeps
+answering. The protocol itself runs against the host card model,
 tests/host/test_sdspi.c and test_holo.c. Real cards need hardware.
 """
 
@@ -18,6 +19,7 @@ from harness.qemu import QemuError
 CD, WP, BUS, PWR, CS = 12, 13, 20, 21, 7
 CMD_TIMEOUT = 30
 CMD0_MS = 100           # SDSPI_CMD0_US
+STEP_US_MAX_QEMU = 50000  # one step on a host-timed QEMU; real cards: HARDWARE_VALIDATION.md
 
 
 def events(vm, ev):
@@ -78,6 +80,14 @@ def test_holo_no_card(board, example_image):
         assert (pins["cd"], pins["pwr"], pins["bus"], pins["attached"]) == ("0", "0", "0", "0"), \
             vm.serial
         assert pins["present"] == "1", vm.serial
+
+        # The stepped attach: the same failure, in many short steps.
+        g = cmd(vm, "g", "steps")
+        assert g["rc"] == "nocard", vm.serial
+        assert int(g["ms"]) >= CMD0_MS, vm.serial
+        assert int(g["steps"]) > CMD0_MS // 10, vm.serial
+        assert int(g["max_us"]) < STEP_US_MAX_QEMU, vm.serial
+        slot_off(gpio)
 
         # Removal is reported, and the example still answers.
         before = len(events(vm, "removed"))
