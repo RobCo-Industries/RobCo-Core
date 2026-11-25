@@ -441,7 +441,7 @@ A holotape is a file in the `ROBCO78` image format. It lives in one of two place
 
 The Pip-Boy board has one holotape slot: an SD card in SPI mode, driven by RobCo-Core's [`holo.h`](../guide/api/holo.md). `PIPOS.CFG` turns it on with `[holotape] slot = on`. The default is `off`. With `off`, Pip-OS never touches the slot pins and behaves as ABI 1.3 in every call. `PIP_HW_TAPE` in `hw_flags` is set when the setting is `on` and the slot driver started at boot.
 
-The slot card is a FAT volume that the library can mount. Pip-OS mounts it read-only as the library volume `tape`, and ignores the lock tab. The boot card stays the only writable volume. Pip-OS reads only the `NAME.HTP` files in the root folder of the slot card, under the name rule below. It skips dot names, hidden entries and system entries, as the library listing does.
+The slot card is a FAT volume that the library can mount. Pip-OS mounts it as the library volume `tape` with `FS_MOUNT_RDONLY`, and ignores the lock tab. The driver's device is read-only too. The boot card stays the only writable volume. Pip-OS reads only the `NAME.HTP` files in the root folder of the slot card, under the name rule below. It skips dot names, hidden entries and system entries, as the library listing does.
 
 `file_open`, `dir_list` and the save calls never reach the slot card. A slot tape saves to `/PIPBOY/SAVE` on the boot card, like any holotape. A data holotape on the slot cannot be launched either.
 
@@ -487,7 +487,7 @@ typedef struct __attribute__((packed)) pip_holo_info {
 3. Run the holotape. The ROM waits inside `holo_launch`.
 4. When the holotape ends, close its files, stop the sound, empty the event queue and restore the ROM's drawing state.
 
-The image is loaded whole before it runs. Still, when the slot card is pulled while its tape runs, Pip-OS ends the tape no later than the tape's next syscall of any kind after Pip-OS saw the card leave. A tape that makes no syscall runs on. When Pip-OS ends the tape, it prints `ev=holo_kill reason=eject`, and `holo_launch` returns `-PIP_ENODEV`. Step 4 runs as for any ended tape. The slot does not affect a tape launched from the boot card.
+The image is loaded whole before it runs. Still, when the slot card is pulled while its tape runs, Pip-OS ends the tape no later than the tape's next syscall of any kind after Pip-OS saw the card leave. A tape that makes no syscall runs on. When Pip-OS ends the tape, it prints `ev=holo_kill reason=eject pc=<pc>`, where `pc` is the tape's program counter at the syscall where Pip-OS ended it, in the same format as for a fault. Then `holo_launch` returns `-PIP_ENODEV`. Step 4 runs as for any ended tape. The slot does not affect a tape launched from the boot card.
 
 `holo_launch` returns the holotape's exit status, 0 to 255, `-PIP_EFAULT` when Pip-OS killed it after a fault, or `-PIP_ENODEV` as above. The back buffer holds whatever the holotape drew, so the ROM redraws its screen.
 
@@ -509,7 +509,7 @@ While a holotape runs, every call sees it as the caller: its kind, its memory fo
 |---|---|---|
 | 0 | `PIP_HOLO_EV_INSERTED` | A card was inserted and its volume is mounted. A `holo_enumerate` made after this bit lists its tapes. |
 | 1 | `PIP_HOLO_EV_REMOVED` | The card left, whether it was mounted or bad |
-| 2 | `PIP_HOLO_EV_BAD` | A card was inserted and cannot be used: no FAT volume, a card type the driver refuses, or an init error. None of its tapes is listed. |
+| 2 | `PIP_HOLO_EV_BAD` | A card was inserted and cannot be used: `holo_attach()` returned an `SD_ERR_*` code other than `SD_ERR_AGAIN`, or the mount found no FAT volume. None of its tapes is listed. |
 | 3 to 31 | | 0 |
 
 - A card that is in at boot reports `INSERTED` or `BAD` once, after boot.
@@ -520,7 +520,9 @@ While a holotape runs, every call sees it as the caller: its kind, its memory fo
 
 Each change also puts a `PIP_EV_TAPE` event in the ROM's event queue, so `wait_event` wakes. Its `value` holds the bits for that one change. The queue is emptied around `holo_launch` and can drop events, so the event is a hint and `holo_eject_event` is the truth. A running holotape never gets `PIP_EV_TAPE`.
 
-A change is reported after the driver's 250 ms card detect debounce and, for an insertion, after the mount. Pip-OS does its slot work at least inside these calls: `sleep_ms`, `poll_event`, `wait_event`, `read_buttons`, `read_dial`, `file_read`, `holo_enumerate` and `holo_eject_event`. A ROM that makes none of them sees no slot change.
+A change is reported after the driver's 250 ms card detect debounce, `HOLO_SETTLE_MS`, and, for an insertion, after the mount. While `holo_attach()` returns `SD_ERR_AGAIN`, the card is still settling: Pip-OS tries again and sets no bit.
+
+On a removal, Pip-OS detaches the `tape` volume with the library's `fs_eject()`. It needs no card and does no I/O, so the volume slot is free and the next card mounts. Pip-OS does the same after a read error on the slot card, since the driver then detaches the card. See [Several volumes and removable media](../guide/api/storage.md#several-volumes-and-removable-media). Pip-OS does its slot work at least inside these calls: `sleep_ms`, `poll_event`, `wait_event`, `read_buttons`, `read_dial`, `file_read`, `holo_enumerate` and `holo_eject_event`. A ROM that makes none of them sees no slot change.
 
 ```mermaid
 stateDiagram-v2

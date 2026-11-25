@@ -111,7 +111,7 @@ _Static_assert(sizeof(rimg_meta_t) == 192, "rimg_meta_t must be 192 bytes");
 | ROM1 | 0 | `RIMG_ROM1_SYSTEM` | System ROM, Deitrix | `0x00400000`-`0x007FFFFF` | `/PIPBOY/ROM1.ROM` |
 | ROBCO78 | 0 | `RIMG_HOLO_GAME` | Game | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP`, or `*.HTP` in the root of a holotape slot card |
 | ROBCO78 | 1 | `RIMG_HOLO_UTILITY` | Utility | `0x00800000`-`0x00BFFFFF` | `/PIPBOY/HOLO/*.HTP`, or `*.HTP` in the root of a holotape slot card |
-| ROBCO78 | 2 | `RIMG_HOLO_DATA` | Data. Not executable. | none | `/PIPBOY/HOLO/*.HTP`, `/UOS/HOLO/*.HTP` |
+| ROBCO78 | 2 | `RIMG_HOLO_DATA` | Data. Not executable. | none | `/PIPBOY/HOLO/*.HTP`, `*.HTP` in the root of a holotape slot card, `/UOS/HOLO/*.HTP` |
 
 Values not listed are reserved. A loader rejects them at the bounds step.
 

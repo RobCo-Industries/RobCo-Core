@@ -445,7 +445,7 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `rom_kill` | `reason pc` | Pip-OS killed the ROM after a fault. `reason` is `undef`, `prefetch_abort` or `data_abort` for a fault, `thumb_svc` for a system call made in Thumb state, or `killed` when Pip-OS stopped the ROM for another reason. `pc` is the address of the instruction. |
 | `holo_launch` | `path` | Pip-OS starts a holotape |
 | `holo_exit` | `status` | Holotape returned |
-| `holo_kill` | `reason pc` | Pip-OS killed a holotape. `reason` and `pc` work as in `rom_kill`. `reason` is also `eject` when the slot card of a running tape was pulled. |
+| `holo_kill` | `reason pc` | Pip-OS killed a holotape. `reason` and `pc` work as in `rom_kill`. `reason` is also `eject` when the slot card of a running tape was pulled. Every `holo_kill` carries `pc`. For `eject`, `pc` is the tape's program counter at the syscall where Pip-OS ended it, in the same format as for a fault. |
 | `init` | `fb console tick hz` | First stage: return codes of the hardware set-up, and the tick rate |
 | `input` | `serial mini script` | First stage: return codes of the input back ends |
 | `post` | `name result`, then probe keys | First stage: one self-test probe. `result` is `ok`, `fail`, `absent` or `skipped`. A skipped probe has `after`, the probe that stopped the self test. See [First-stage self test](#first-stage-self-test). |
