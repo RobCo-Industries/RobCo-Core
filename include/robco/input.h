@@ -123,6 +123,7 @@ typedef struct {
     uint8_t reverse;
     uint8_t rest;       /* the state at init, taken as a detent position */
     int8_t dir;         /* direction of the last single transition, 0 before one */
+    uint8_t pend;       /* a double transition left a detent: the next step decides its way */
     uint32_t invalid;   /* double transitions: a state was missed */
 } input_quad_t;
 
@@ -136,9 +137,12 @@ void input_quad_init(input_quad_t *q, unsigned per_detent, int reverse, int a, i
 /*
  * Feeds one A/B sample. Returns the detent steps completed: -1, 0 or 1.
  * A double transition means a state was missed: it counts as two steps
- * in the last direction, or nothing before the first single step. On a
- * rest state the decoder rounds to the nearest detent and starts again,
- * so a missed state costs at most one step and never shifts the phase.
+ * in the last direction, or nothing before the first single step. With
+ * 4 per detent, a double transition that leaves a detent waits for the
+ * next single transition and takes its direction, so a turn back that
+ * starts with a missed state still counts. On a rest state the decoder
+ * rounds to the nearest detent and starts again, so a missed state costs
+ * at most one step and never shifts the phase.
  */
 int input_quad_feed(input_quad_t *q, int a, int b);
 

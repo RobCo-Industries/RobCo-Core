@@ -182,11 +182,12 @@ TEST(quad_double_transition_before_any_direction)
     input_quad_t q;
 
     input_quad_init(&q, 4, 0, 0, 0);
-    /* 00 -> 11 skips a state with no direction known: counted, no step. */
+    /* 00 -> 11 skips a state at a detent: counted, held for the next step. */
     CHECK_EQ(input_quad_feed(&q, 1, 1), 0);
     CHECK_EQ(q.invalid, 1);
     CHECK_EQ(q.acc, 0);
-    /* 11 -> 10 -> 00: the rest state rounds +2 to one detent. */
+    CHECK_EQ(q.pend, 1);
+    /* 11 -> 10 -> 00: the next step is clockwise, so one detent. */
     CHECK_EQ(run(&q, "2"), 0);
     CHECK_EQ(run(&q, "0"), 1);
     CHECK_EQ(q.acc, 0);
@@ -207,6 +208,25 @@ TEST(quad_missed_state_is_inferred)
     /* The gap across the rest state: 00 01 11 10 [00] 01 11 10 00 is two detents. */
     CHECK_EQ(run(&q, "1321"), 1);
     CHECK_EQ(run(&q, "320"), 1);
+    CHECK_EQ(q.acc, 0);
+}
+
+TEST(quad_turn_back_with_first_state_missed)
+{
+    input_quad_t q;
+
+    /* Rest 11. One detent clockwise: 11 10 00 01 11, so dir is +. */
+    input_quad_init(&q, 4, 0, 1, 1);
+    CHECK_EQ(run(&q, "2013"), 1);
+    /* Back counter-clockwise, 01 missed: 11 [01] 00 10 11 is still -1. */
+    CHECK_EQ(run(&q, "0"), 0);
+    CHECK_EQ(q.pend, 1);
+    CHECK_EQ(run(&q, "2"), 0);
+    CHECK_EQ(q.pend, 0);
+    CHECK_EQ(run(&q, "3"), -1);
+    /* And forward again with 10 missed: 11 [10] 00 01 11 is +1. */
+    CHECK_EQ(run(&q, "013"), 1);
+    CHECK_EQ(q.invalid, 2);
     CHECK_EQ(q.acc, 0);
 }
 
@@ -282,9 +302,10 @@ TEST(quad_long_sequences_match_a_reference)
 
     /*
      * The reference is the true position. Runs of one direction, sampled
-     * with gaps of at most one missed state, back to rest at the end of
-     * each run: the decoder must count exactly the true detents. The
-     * first transition of a run is seen, so the direction is known.
+     * with gaps of at most one missed state and never two gaps in a row,
+     * back to rest at the end of each run: the decoder must count exactly
+     * the true detents. A gap may hide the first state of a run, also
+     * when the run turns back.
      */
     for (run_i = 0; run_i < 200; run_i++) {
         int pos = 0, sum = 0, want, dir, n, k;
@@ -292,16 +313,17 @@ TEST(quad_long_sequences_match_a_reference)
         input_quad_init(&q, 4, (int)(run_i & 1), 1, 1);
         rnd_state += (uint32_t)run_i;
         for (k = 0; k < 20; k++) {
-            int start = pos;
+            int start = pos, last = 1;
 
             dir = (rnd() & 1) ? 1 : -1;
             n = 1 + (int)(rnd() % 6);           /* detents this run */
             while (pos != start + dir * 4 * n) {
-                int adv = (rnd() % 3 == 0 && pos != start) ? 2 : 1;
+                int adv = (rnd() % 3 == 0 && last == 1) ? 2 : 1;
 
                 if ((start + dir * 4 * n - pos) * dir < adv) {
                     adv = 1;
                 }
+                last = adv;
                 pos += dir * adv;
                 sum += feed_pos(&q, pos + 2);   /* cw[2] = 11 is the start */
             }

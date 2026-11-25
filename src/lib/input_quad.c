@@ -30,6 +30,7 @@ void input_quad_init(input_quad_t *q, unsigned per_detent, int reverse, int a, i
     q->prev = (uint8_t)(((a ? 1 : 0) << 1) | (b ? 1 : 0));
     q->rest = q->prev;
     q->dir = 0;
+    q->pend = 0;
     q->acc = 0;
     q->invalid = 0;
 }
@@ -50,14 +51,28 @@ int input_quad_feed(input_quad_t *q, int a, int b)
     if (cur == q->prev) {
         return 0;
     }
-    q->prev = cur;
     if (move == BAD) {
-        /* One state was missed. Assume the dial kept its last direction. */
         q->invalid++;
+        if (per == 4 && q->acc == 0 && at_rest(q, q->prev)) {
+            /*
+             * One state was missed just after a detent, where the dial
+             * may have turned back. Wait for the next single transition
+             * and count this one in its direction.
+             */
+            q->prev = cur;
+            q->pend = 1;
+            return 0;
+        }
+        /* One state was missed mid-detent. Assume the dial kept its last direction. */
         move = 2 * q->dir;
     } else {
         q->dir = (int8_t)move;
+        if (q->pend) {
+            move *= 3;
+            q->pend = 0;
+        }
     }
+    q->prev = cur;
     q->acc = (int8_t)(q->acc + move);
     if (q->acc > ACC_LIMIT) {
         q->acc = ACC_LIMIT;
@@ -78,6 +93,7 @@ int input_quad_feed(input_quad_t *q, int a, int b)
             step = -1;
         }
         q->acc = 0;
+        q->pend = 0;
     } else if (q->acc >= per) {
         /* A rest state was skipped. */
         q->acc = (int8_t)(q->acc - per);
