@@ -1,11 +1,13 @@
 """AArch64 shim for raspi3b, loaded at 0x80000.
 
-raspi3b starts CPU0 in AArch64 EL3. These words drop it to AArch32 at
-ENTRY (the firmware stub at 0x0), in HYP or SVC mode.
+raspi3b starts every core in AArch64 EL3. These words drop a core to
+AArch32 at ENTRY (the firmware stub at 0x0), in HYP or SVC mode. The
+harness starts all four cores here. The stub parks cores 1 to 3.
 """
 
 ADDR = 0x80000
 ENTRY = 0x0
+SECONDARY_CPUS = (1, 2, 3)
 
 WORDS = [
     0xD2802620,  # mov  x0, #0x131     SCR_EL3: NS, RES1 bits 4-5, HCE; RW=0 so EL2 is AArch32
