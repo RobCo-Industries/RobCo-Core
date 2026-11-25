@@ -508,12 +508,12 @@ While a holotape runs, every call sees it as the caller: its kind, its memory fo
 | Bit | Name | Meaning |
 |---|---|---|
 | 0 | `PIP_HOLO_EV_INSERTED` | A card was inserted and its volume is mounted. A `holo_enumerate` made after this bit lists its tapes. |
-| 1 | `PIP_HOLO_EV_REMOVED` | The card left, whether it was mounted or bad |
+| 1 | `PIP_HOLO_EV_REMOVED` | A card reported by `INSERTED` or `BAD` left |
 | 2 | `PIP_HOLO_EV_BAD` | A card was inserted and cannot be used: `holo_attach()` returned an `SD_ERR_*` code other than `SD_ERR_AGAIN`, or the mount found no FAT volume. None of its tapes is listed. |
 | 3 to 31 | | 0 |
 
 - A card that is in at boot reports `INSERTED` or `BAD` once, after boot.
-- A card that leaves before the debounce ends sets no bit.
+- A card that leaves before Pip-OS reported `INSERTED` or `BAD` for it sets no bit, at whatever step it leaves: the debounce, `holo_attach()` returning `BLK_ERR_NOMEDIA`, or the mount. `REMOVED` is set only for a card that was reported.
 - Several changes between two calls set several bits, and their order is lost. A ROM that sees `REMOVED` with `INSERTED` enumerates again.
 - A holotape that calls it gets 0, and the mask is not cleared: the bits wait for the ROM.
 - With `PIP_HW_TAPE` clear it returns 0.
@@ -528,7 +528,7 @@ On a removal, Pip-OS detaches the `tape` volume with the library's `fs_eject()`.
 stateDiagram-v2
     [*] --> Empty
     Empty --> Settling: card detect low
-    Settling --> Empty: card left in the debounce, no bit
+    Settling --> Empty: card left in the debounce, the attach or the mount, no bit
     Settling --> Mounted: debounce over, mount ok / INSERTED
     Settling --> Bad: debounce over, card or mount refused / BAD
     Mounted --> Empty: card pulled / REMOVED
