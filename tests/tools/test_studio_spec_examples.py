@@ -650,3 +650,38 @@ def test_boot_json_example_keeps_placeholders_out_of_names():
     section_text = section(testing, "boot.json")
     assert "Any argument list may hold a placeholder: `common`, `sd` and the list of each mode." in section_text
     assert "A `{` in either makes the file invalid" in section_text
+
+
+def pbm_number(token):
+    """The value of a width or height token, or None: 1 to 9 ASCII digits and nothing else."""
+    if not 1 <= len(token) <= 9 or not all(0x30 <= b <= 0x39 for b in token):
+        return None
+    return int(token)
+
+
+def test_pbm_number_forms_match_the_tables_of_the_image_spec():
+    image = (SPEC / "IMAGE_FORMAT.md").read_text(encoding="utf-8")
+    text = section(image, "Numbers in a PBM header", "####")
+    assert "| Length | 1 to 9 digits. Leading zeros count toward the length. |" in text
+    accepted = {b"32": 32, b"032": 32, b"0032": 32, b"000000032": 32, b"0": 0, b"00": 0,
+                b"999999999": 999999999}
+    for token, value in accepted.items():
+        assert pbm_number(token) == value, token
+    refused = [b"+32", b"-32", b"3_2", b"0x20", b"32.0", b"1e1", "\uff13\uff12".encode(),
+               b"0000000032", b"32\x0b", b"\x0c32", b"", b" 32"]
+    for token in refused:
+        assert pbm_number(token) is None, token
+    # Every token the refused table and the vector list spell out follows the rule.
+    refused_table = text[text.index("These forms are refused"):text.index("State today")]
+    for token in re.findall(r"`([^`]+)`", refused_table):
+        if token not in ("io", "size", "0x0B", "0x0C", "0x30", "0x39", "32"):
+            assert pbm_number(token.encode()) is None, token
+    vectors = re.findall(r"Vector `(\w+)`: width `([^`]+)`[^.]*?, height `([^`]+)`[^.]*\. Expect `(\w+)`",
+                         text)
+    assert len(vectors) == 7
+    for name, width, height, expect in vectors:
+        if "0x0B" in text[text.index(name):text.index(name) + 80]:
+            width += "\x0b"
+        ok = pbm_number(width.encode()) == 32 and pbm_number(height.encode()) == 32
+        assert expect == ("ok" if ok else "io"), name
+        assert name.startswith("seal_holo_" if ok else "seal_err_"), name

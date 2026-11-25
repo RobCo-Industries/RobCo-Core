@@ -321,7 +321,7 @@ The icon is decoded before any other step. The decoding follows the `--icon` rul
 |---|---|
 | Format `raw`, or `auto` with a 128-byte file: the file is not 128 bytes | `size` |
 | Format `pbm` with a 128-byte file | `io` |
-| The file does not start with `P1` or `P4`, or its header does not parse | `io` |
+| The file does not start with `P1` or `P4`, or its header does not parse. [Numbers in a PBM header](#numbers-in-a-pbm-header) gives the form of the width and the height. | `io` |
 | The PBM is not 32x32 | `size` |
 | `P4`: the height is not followed by one whitespace byte | `io` |
 | `P4`: not exactly 128 bytes after that byte | `size` |
@@ -329,6 +329,58 @@ The icon is decoded before any other step. The decoding follows the `--icon` rul
 | `P1`: not exactly 1024 pixels | `size` |
 
 The result is the 128 bytes of the META icon layout.
+
+#### Numbers in a PBM header
+
+A PBM header is three tokens: the magic, the width and the height. In the header, whitespace is a space, a tab, a carriage return or a line feed, and a `#` starts a comment that runs to the next carriage return or line feed. A token is the bytes up to the next whitespace byte or `#`.
+
+The width and the height each have exactly this form:
+
+| Rule | Detail |
+|---|---|
+| Bytes | The ASCII digits `0` to `9`, bytes `0x30` to `0x39`, and nothing else |
+| Length | 1 to 9 digits. Leading zeros count toward the length. |
+| Value | The decimal number. Leading zeros are allowed and ignored: `032` and `0032` are 32, and `0` and `00` are 0. |
+| A token in any other form | The header does not parse: `io` |
+| A token in this form whose value is not 32 | `size` |
+
+Nine digits fit a 32-bit integer, so an implementation in C or Rust reads the value with no overflow check.
+
+These forms are refused with `io`, each because of one byte outside the set or one digit too many:
+
+| Token | Why |
+|---|---|
+| `+32` | A sign |
+| `-32` | A sign. The code is `io`, not `size`: the token is no number in this form. |
+| `3_2` | A digit separator |
+| `0x20`, `32.0`, `1e1` | A letter or a dot |
+| A digit outside ASCII, such as U+FF13 | Not a byte from `0x30` to `0x39` |
+| `0000000032` | Ten digits |
+| `32` with a vertical tab, `0x0B`, or a form feed, `0x0C`, before or after it | Those two bytes are not whitespace in the header, so they are part of the token |
+| An empty token, at the end of the file | No digit |
+
+State today: `tools/rimg.py` reads both tokens with Python's `int()`. It accepts `032` and refuses a letter, a dot and a digit outside ASCII, as this section asks. It does not follow this section in five cases:
+
+| Token | `rimg.py` today | This section |
+|---|---|---|
+| `+32` | Read as 32, and the icon is accepted | `io` |
+| `3_2` | Read as 32, and the icon is accepted | `io` |
+| `-32` | `size` | `io` |
+| `0000000032` | Read as 32, and the icon is accepted | `io` |
+| `32` with a vertical tab or a form feed before or after it | Read as 32, and the icon is accepted: `int()` drops those bytes | `io` |
+
+What RobCo-Core must change in `tools/rimg.py`, and the vectors that go with it in `tests/vectors/rimg/`. Each vector is a seal of a holotape image with an icon in the `P1` form, whose header is `P1`, a line feed, the width, a space, the height and a line feed:
+
+1. `_pbm_header()` reads the width and the height by the table above, with the check that `parse_version()` already uses for its parts plus the limit of 9 digits, in place of `int()` on the token.
+2. Vector `seal_err_icon_num_plus`: width `+32`, height `32`. Expect `io`.
+3. Vector `seal_err_icon_num_minus`: width `-32`, height `32`. Expect `io`.
+4. Vector `seal_err_icon_num_sep`: width `3_2`, height `32`. Expect `io`.
+5. Vector `seal_err_icon_num_long`: width `0000000032`, height `32`. Expect `io`.
+6. Vector `seal_err_icon_num_vt`: width `32` followed by the byte `0x0B`, then a space, height `32`. Expect `io`.
+7. Vector `seal_err_icon_num_height`: width `32`, height `+32`. Expect `io`. It shows that the rule holds for both tokens.
+8. Vector `seal_holo_icon_num_zeros`: width `032`, height `000000032`, which has nine digits. Expect `ok`, with the output of the same seal with `32` and `32`.
+
+Until that change, a second implementation that follows this section differs from `rimg.py` on the five rows of the table, and on nothing else.
 
 ### Seal steps
 
