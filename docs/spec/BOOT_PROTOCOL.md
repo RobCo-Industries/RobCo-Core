@@ -659,14 +659,22 @@ A maintenance request asks the next boot to open the maintenance screen of MFBoo
 
 ### Writer
 
-Any operating image may write the request. UOS writes the file with one atomic write, `fs_write_file_atomic()`, then restarts the terminal through the watchdog. Who may ask is UOS's own rule: its command `SET HALT RESTART /MAINTENANCE` needs the `OPER` privilege. See the UOS command reference.
+Any operating image may write the request. The writer:
+
+1. Leaves `/ROBCO/MAINT.REQ` as it is when it exists.
+2. Otherwise creates it with `fs_open()`, writes the line, if any, with `fs_write()`, and calls `fs_sync()`.
+3. Restarts the terminal through the watchdog.
+
+The writer does not use `fs_write_file_atomic()`. That call can leave the complete file under a `~` or `#` work name after a power cut, and the reader checks the plain name only. The presence of the file is the request and its content is only a note, so a torn write is still a valid request. A power cut during the create leaves no file, and the person asks again, or a file, and the agent honours it.
+
+UOS writes the request this way. Who may ask is UOS's own rule: its command `SET HALT RESTART /MAINTENANCE` needs the `OPER` privilege. See the UOS command reference.
 
 ### Reader
 
 MFBootAgent reads the request once per boot. RETROS-BIOS never looks at it. The agent:
 
 1. Mounts the boot volume, by the rule in [Boot volume markers](#boot-volume-markers). When nothing mounts, it halts as the [failure table](#failure-behaviour) states and prints no `maint_req`.
-2. Before the menu shows and before the countdown starts, looks for `/ROBCO/MAINT.REQ`. With no file, or with a folder of that name, it prints `maint_req result=none rc=0` and goes on as before.
+2. Before the menu shows and before the countdown starts, looks for `/ROBCO/MAINT.REQ` by its plain name. It runs no recovery of work names. With no file, or with a folder of that name, it prints `maint_req result=none rc=0` and goes on as before.
 3. Reads the line, if any, and keeps it for the screen.
 4. Deletes the file with `fs_unlink()`. Delete first makes the request one-shot: a fault later cannot make the terminal start in maintenance for ever.
 5. Prints `maint_req result=found rc=0` when the delete worked, or `maint_req result=clear_failed rc=<code>` when it failed.
@@ -696,7 +704,7 @@ sequenceDiagram
     participant C as SD card
     participant B as RETROS-BIOS
     participant A as MFBootAgent
-    U->>C: Write /ROBCO/MAINT.REQ, atomic
+    U->>C: Create /ROBCO/MAINT.REQ, sync
     U->>U: Restart through the watchdog
     B->>C: Load /ROBCO/MFBOOT.SYS
     B->>A: Jump
@@ -771,7 +779,7 @@ Version 1 does not edit a config file, format the card, repair a file system, ch
 ### What each project does
 
 - MFBootAgent reads and clears the request as [Reader](#reader) states, sets `boot_flags` bit 1 whenever it starts a maintenance image, skips `[maint]` in `BOOT.CFG` without a count, lets its maintenance screen start the maintenance image, and builds `MAINT.SYS`.
-- UOS writes the request for `SET HALT RESTART /MAINTENANCE`, and ships `/UOS/SYSUAF.DEF` on its card image.
+- UOS writes the request as [Writer](#writer) states, with a plain create, for `SET HALT RESTART /MAINTENANCE`, and ships `/UOS/SYSUAF.DEF` on its card image.
 - RETROS-BIOS does nothing.
 
 ## Third-stage markers
