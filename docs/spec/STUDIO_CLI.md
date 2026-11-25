@@ -23,7 +23,10 @@ Every command also takes `--json`. `robco --version` and `robco version` print t
 - An option that takes a value is written as two arguments, `--index LOCATION`, or as one, `--index=LOCATION`.
 - Options and the other arguments may come in any order after the command words `sdk list`, `sdk install`, `new`, `update`, `build`, `run` and `test`.
 - An unknown command, an unknown option, an option given twice, a missing value, a value outside its limits, a missing argument or an extra argument fails with `usage`. The command does nothing else.
-- `--index` follows [Where the index is](./SDK_PACKAGE.md#where-the-index-is).
+- `--index` follows [Where the index is](./SDK_PACKAGE.md#where-the-index-is). It is an option on every command line that shows it, with brackets or without. A command that must read the index and has no `--index` fails with `index: location`, and not with `usage`.
+- `robco` with no argument fails with `usage`.
+- A command line that fails with `usage` still follows [Output streams](#output-streams). The tool writes JSON lines when one of the arguments is exactly `--json`, wherever it stands, also after an unknown command.
+- Every command then checks the place of the cache, by [The cache folder](./SDK_PACKAGE.md#the-cache-folder), and fails with `cache: path` before it reads any file.
 
 ### The project folder
 
@@ -58,7 +61,7 @@ Every command ends with one of these codes. A caller can act on the code alone.
 | 5 | `build` | A compile, the link, `objcopy` or the seal failed | `build`, `run`, `test` |
 | 6 | `timeout` | The time limit of a run passed before the run ended | `run` |
 | 7 | `simulator` | QEMU did not start, died or stopped answering | `run`, `test` |
-| 8 | `guest` | The machine failed outside the tape: a kernel fault, or a runner ROM that did not report | `run` |
+| 8 | `guest` | The machine failed outside the tape: a kernel fault, a runner ROM that did not report, or one that could not read its settings | `run` |
 | 9 | `io` | The host refused to read, write, create or rename a file | All |
 | 10 | `internal` | A fault of the tool itself. The message asks for a report. | All |
 
@@ -66,14 +69,17 @@ A command that cannot tell which case holds never ends with 0.
 
 `robco run` gives one code per outcome. [What ends a run](#what-ends-a-run) has the rules.
 
-| Outcome of `robco run --headless --expect TEXT` | Code |
-|---|---|
-| A line held `TEXT` | 0 |
-| The tape ended and no line held `TEXT` | 1 |
-| The time limit passed | 6 |
-| QEMU did not start, or died | 7 |
-| A line held an `ev=exception` or `ev=panic` marker, or an `ev=ready` marker of the kernel before the runner's `done` line | 8 |
-| The runner ROM could not start the tape | 8 |
+| Outcome of `robco run --headless` | With `--expect TEXT` | Without `--expect` |
+|---|---|---|
+| A line held `TEXT` | 0 | |
+| The tape ended with an exit status, whatever the status | 1, `run: unmatched` | 0 |
+| The tape ended in another way: the kernel killed it, or it was missing or damaged on the card, so `holo_launch` returned a negative value | 1, `run: unmatched` | 1, `run: tape` |
+| The time limit passed | 6 | 6 |
+| QEMU did not start, died or did not answer | 7 | 7 |
+| A line held an `ev=exception` or `ev=panic` marker, or an `ev=ready` marker of the kernel before the runner's `done` line | 8 | 8 |
+| The runner ROM reported `result=config`: it could not read its settings or make its key | 8 | 8 |
+
+A tape that is missing or damaged on the card gives 1 and not 8: the runner started, called `holo_launch` and reported what it returned. Code 8 is for a machine that gave no such report.
 
 `robco test` counts runs. A run is one scenario on one board. The command ends with 0 when every run passed, with 7 when QEMU failed in at least one run, and with 1 when a run failed and QEMU failed in none. A fault of the machine inside a run fails that run, so it gives 1.
 
@@ -179,14 +185,14 @@ Rules for a newer version:
 | `item` | string | What the step works on. Empty when the step has one subject only. |
 | `state` | string | `start`, `done` or `skip` |
 
-A `start` line is followed by a `done` line with the same `step` and `item`, unless the command fails inside the step. A `skip` line stands alone: the work was not needed. Version 1 runs one step at a time, so no two steps are open at once.
+A `start` line is followed by a `done` line with the same `step` and `item`, unless the command fails inside the step. A `skip` line stands alone: the work was not needed. Only `install` writes `skip`. Every other step runs each time, so a build that changes nothing writes the same `compile`, `link`, `objcopy` and `seal` lines as the first. Version 1 runs one step at a time, so no two steps are open at once.
 
 | `step` | `item` | The work |
 |---|---|---|
-| `resolve` | Empty | Reading the index and picking packages and tools |
+| `resolve` | Empty | Reading the index and picking packages and tools: step 6 of [The steps of update, build, run and test](#the-steps-of-update-build-run-and-test), and steps 1 to 3 of [robco sdk install](#robco-sdk-install). A command that reads the index only to download an item of its lock writes no `resolve` line. |
 | `download` | `pipos@1.4.0` for a package, `gcc@15.2.1-1.1/linux-x64` for a tool | Fetching an archive |
 | `verify` | As `download` | The hash checks of [Hashes](./SDK_PACKAGE.md#hashes) |
-| `install` | As `download` | Extracting, and moving the folder into the cache. `skip` when the cache already holds it. |
+| `install` | As `download` | Extracting, and moving the folder into the cache. `skip` when the cache already holds it and its record passed the check of [Hashes](./SDK_PACKAGE.md#hashes). |
 | `compile` | `crt0` for the startup code, else the source path | Step 1 or 2 of [Build order](./SDK_PACKAGE.md#build-order) |
 | `link`, `objcopy`, `seal` | Empty | Steps 3, 4 and 5 |
 | `card` | Empty | Writing [the simulator card](#the-simulator-card) |
@@ -222,15 +228,15 @@ Every `result` line starts with these keys:
 
 | Key | Type | Value |
 |---|---|---|
-| `command` | string | `sdk list`, `sdk install`, `new`, `update`, `build`, `run` or `test` |
+| `command` | string | `sdk list`, `sdk install`, `new`, `update`, `build`, `run` or `test`. The empty string when the command line named none of them, which ends with `usage`. |
 | `ok` | boolean | `true` when `exit` is 0 |
 | `exit` | integer | The exit code of the run |
 
-The keys that follow depend on the command. Each command's section lists them. They are present when the table says "Always", and otherwise only when `ok` is `true`.
+The keys that follow depend on the command. Each command's section lists them. They are present when the table says "Always", also after `usage`, and otherwise only when `ok` is `true`. A `result` line with an empty `command` has no key after `exit`.
 
 ## robco sdk list
 
-`robco sdk list [--index LOCATION] [--json]` writes one `item` line per package version and per tool archive: every one in the cache, and with `--index` also every one the index lists. It changes nothing.
+`robco sdk list [--index LOCATION] [--json]` writes one `item` line per package version and per tool archive: every one in the cache, and with `--index` also every one the index lists. It changes nothing. It reads the cache and the index before it writes the first `item` line, so a command that fails writes none.
 
 | Key | Type | Value |
 |---|---|---|
@@ -261,19 +267,22 @@ The command reads `formats` from the index entry, as [Version and ABI rules](./S
 
 Any other form after `@` fails with `usage`. A package that the index does not list at a version that matches fails with `sdk: no package`. `gcc` and `qemu` are tools, not packages, so `robco sdk install gcc` fails with `sdk: no package`.
 
-The command then does this, in order:
+The command then does this, in order, and stops at the first failure:
 
-1. It resolves the package and each package it `requires`.
-2. For `pipos`, it adds the two tools the package names, for the running host, as [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names) says.
-3. For each of them that the cache does not hold, it downloads, checks and installs, by the rules of [SDK_PACKAGE.md](./SDK_PACKAGE.md#hashes). One that the cache holds is skipped.
+| Step | Work | Fails with |
+|---|---|---|
+| 1 | It checks the command line and the place of the cache, and reads the index. | `usage`, 2. `cache: path`, 4. An `index:` code, 4. |
+| 2 | It resolves the package, then each package of its `requires` in the order of that array, and each of those the same way. A package that comes twice is taken once, at its first place. | `sdk: no package`, `package: format`, 4 |
+| 3 | When `pipos` is among those packages, it adds the two tools that package names, for the running host, as [Tools a package names](./SDK_PACKAGE.md#tools-a-package-names) says: `gcc`, then `qemu`. | `sdk: no tool`, `index: host`, 4 |
+| 4 | It takes the packages in the order of step 2 and then the tools. One that the cache holds is skipped, once its record equals the hash of the index entry. Any other is downloaded, checked and installed, by the rules of [Hashes](./SDK_PACKAGE.md#hashes), [The archive](./SDK_PACKAGE.md#the-archive) and [Tool archives](./SDK_PACKAGE.md#tool-archives). | A `package:` code, `tool: hash`, `tool: archive`, 4. `io: write`, 9. |
 
-It reads no `robco.toml` and writes no `robco.lock`. A second run with the same arguments skips everything and ends with 0. A failure leaves nothing of the failed item behind and leaves the items installed before it in place.
+It reads no `robco.toml` and writes no `robco.lock`. It downloads no firmware file. A second run with the same arguments skips everything and ends with 0. A failure leaves nothing of the failed item behind and leaves the items installed before it in place.
 
 The `result` line adds:
 
 | Key | Type | Present | Value |
 |---|---|---|---|
-| `packages` | array of objects | When `ok` | `name`, `version` and `state` of each package, in the order installed |
+| `packages` | array of objects | When `ok` | `name`, `version` and `state` of each package, in the order of step 2 |
 | `tools` | array of objects | When `ok` | `name`, `version`, `host` and `state` of each tool, `gcc` first |
 
 `state` is `installed` when this run put it into the cache and `present` when the cache already held it.
@@ -282,13 +291,13 @@ The `result` line adds:
 
 `robco new TEMPLATE NAME [--json]` writes a new project into the folder `NAME` of the current folder. Everything it writes comes from the installed `templates` package of [The templates package](./SDK_PACKAGE.md#the-templates-package). It reads no index and installs nothing.
 
-It makes these checks in order and stops at the first that fails. It writes nothing until all have passed.
+After its command line, `usage`, and the place of the cache, `cache: path`, it makes these checks in order and stops at the first that fails. It writes nothing until all have passed.
 
 | Order | Check | Error |
 |---|---|---|
 | 1 | `NAME` follows the [name rules](./STUDIO_PROJECT.md#name-rules), as given. The command does not change its case. | `new: name`, with the reason |
 | 2 | The cache holds a `templates` package. The command takes the highest version in `<cache>/packages/templates/`. | `templates: none`. The detail ends with `run robco sdk install templates`. |
-| 3 | The tool knows every format in `formats` of that package's `sdk.json` | `package: format` |
+| 3 | The `sdk.json` of that package in the cache reads by [Reading sdk.json](./SDK_PACKAGE.md#reading-sdkjson), and the tool knows every format in its `formats` | `package: manifest`, `package: format` |
 | 4 | `templates.json` passes the checks of [templates.json](./SDK_PACKAGE.md#templatesjson) | `templates: format` or `templates: manifest` |
 | 5 | `templates.json` lists a template whose `id` is `TEMPLATE` | `new: template`. The detail lists the ids. |
 | 6 | No `substitute` file of the template holds a token other than `@NAME@` | `templates: token` |
@@ -402,7 +411,7 @@ The `result` line adds:
 | `gcc` | string | When `ok` | The version of the locked `gcc` tool, such as `15.2.1-1.1` |
 | `sources` | array of strings | When `ok` | The [source list](./STUDIO_PROJECT.md#source-order), in link order |
 
-`robco update` writes `step` lines for `resolve`, `download`, `verify` and `install`, and a `result` line with no added key.
+`robco update` writes `step` lines for `resolve`, `download`, `verify` and `install`, and a `result` line with no added key. [Examples](#examples) has one.
 
 ## The simulator card
 
@@ -487,11 +496,13 @@ The tool boots the machine from the `pipos` package that the lock names, `PKG`, 
 6. It starts QEMU so that QEMU dies when the tool dies, connects to QMP and to both serial ports, and only then sends QMP `cont`. The time limit of the run starts at `cont`.
 7. While the machine runs, it sends QMP `query-status` every 20 ms. [QEMU keep-alive](./TESTING.md#qemu-keep-alive) says why: without it QEMU 10.1 at times leaves a `raspi0` or `raspi1ap` machine halted until the next QMP command, which a quiet tool never sends.
 
-| Failure | Error |
-|---|---|
-| QEMU does not start, or a connection is not made within 10 s | `sim: start` |
-| QEMU exits, or one of its three connections closes, before the run ends | `sim: died` |
-| QMP answers a command with an error, or does not answer within 10 s | `sim: qmp` |
+| Failure | When | Error |
+|---|---|---|
+| QEMU does not start, QEMU exits, or a connection is not made within 10 s of the start | Before `cont` is answered | `sim: start` |
+| QEMU exits, or one of its three connections closes | After `cont` is answered, before the run ends | `sim: died` |
+| QMP answers a command with an error, or does not answer within 10 s. That covers `cont`, each `query-status` and each `screendump`. | At any time | `sim: qmp` |
+
+A run that fails before `cont` is answered has not run: `outcome` is `not_run`. After that the outcome is `simulator`.
 
 A read that waits on a silent machine is not a closed connection. A machine that prints nothing for a while is still running.
 
@@ -548,6 +559,7 @@ Between lines, two more things end the run:
 |---|---|---|---|
 | The time limit passes | `timeout` | 6 | `run: timeout` |
 | QEMU exits or a connection closes | `simulator` | 7 | `sim: died` |
+| QMP answers with an error, or does not answer within 10 s | `simulator` | 7 | `sim: qmp` |
 
 Rule 2 comes before the others, so `--expect` can wait for any line, a marker included. The exit status of the tape is not the exit code of the command: it is `tape_rc` in the `result` line.
 
@@ -570,11 +582,11 @@ The `result` line adds:
 
 | Key | Type | Present | Value |
 |---|---|---|---|
-| `outcome` | string | Always | `matched`, `ended`, `timeout`, `simulator` or `guest`. `not_run` when the command failed before `cont`. |
-| `board` | string | Always | The board |
+| `outcome` | string | Always | `matched`, `ended`, `timeout`, `simulator` or `guest`. `not_run` when the command failed before QMP `cont` was answered, at any step of [The steps of update, build, run and test](#the-steps-of-update-build-run-and-test). |
+| `board` | string | Always | The value of `--board`, or `raspi0` without the option. Empty after `usage`. |
 | `line` | string | Always | The line that ended the run, by rules 2 to 8. Empty for `timeout`, `simulator` and `not_run`. |
-| `tape_result` | string | Always | The `result` of the runner's `done` line when it came, else empty |
-| `tape_rc` | integer | Always | The `rc` of that line when it came, else 0 |
+| `tape_result` | string | Always | The `result` of the runner's `done` line when that line ended the run, else empty. Rule 4 gives `config`. Rule 2 gives the result too when the line that held `TEXT` is the runner's `done` line. |
+| `tape_rc` | integer | Always | The `rc` of that line when `tape_result` is not empty, else 0 |
 | `ms` | integer | Always | Milliseconds from `cont` to the end of the run. 0 for `not_run`. |
 
 ## robco test
@@ -664,7 +676,7 @@ An `exit` step waits for the runner's `done` line, as [When a run is over](./SDK
 
 ### What ends a scenario
 
-A scenario passes when every step passed. It fails at the first step that fails, and the steps after it do not run. A step fails by its own rule in the table of [Scenario files](#scenario-files), or by one of these:
+A run of a scenario passes when every step passed. It fails at the first step that fails, and the steps after it do not run. A run in which QEMU failed has the outcome `simulator`, and every other failed run has `failed`. A step fails by its own rule in the table of [Scenario files](#scenario-files), or by one of these:
 
 | Event | Fails | `reason` |
 |---|---|---|
@@ -673,6 +685,7 @@ A scenario passes when every step passed. It fails at the first step that fails,
 | The tool reads a line that holds a kernel marker with `ev=exception` or `ev=panic` | The step that is running, whatever its action | `guest` |
 | The tool reads the kernel marker `stage=pipos ev=ready`, and the runner's `done` line did not come before it | The step that is running, whatever its action | `guest` |
 | QEMU exits, a connection closes or QMP fails | The step that is running | `simulator` |
+| QEMU writes no capture for a `screen` step, or a file that is not a `P6` PPM with a maximum value of 255 | That step | `simulator` |
 | An `expect` step reaches the runner's `done` line before a line that holds its text | That step | `ended` |
 | An `exit` step finds the runner's `done` line with another result or another `rc` | That step | `status` |
 | The machine answers a key step with anything but `ok`, or not at all | That step | `script` |
@@ -757,11 +770,11 @@ A `scenario` line:
 | `state` | string | `start` or `done` |
 | `board` | string | The board of the run |
 | `outcome` | string | Empty for `start`. For `done`: `passed`, `failed`, or `simulator` when QEMU failed. |
-| `failed_step` | integer | The number of the step that failed, counting from 1. 0 for `start` and for `passed`. |
+| `failed_step` | integer | The number of the step that failed, counting from 1. 0 for `start` and for `passed`, and for `simulator` when QEMU failed before the first step began. |
 | `updated` | integer | The number of golden images the tool wrote when this run ended. The images of a scenario are written after its last board, so only the `done` line of that run can hold more than 0. 0 for `start` and without `--update-golden`. |
-| `ms` | integer | Milliseconds from `cont` to the end. 0 for `start`. |
+| `ms` | integer | Milliseconds from `cont` to the end. 0 for `start`, and when `cont` was not answered. |
 
-A `check` line, one per step that ran:
+A `check` line, one per step that ran. A step that QEMU failed under writes one too, with the reason `simulator`:
 
 | Key | Type | Value |
 |---|---|---|
@@ -876,9 +889,22 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 {"v":1,"kind":"result","command":"build","ok":false,"exit":3}
 ```
 
-`robco run --headless --expect "tape: ready" --json`. The lines of the install and of the build are cut here, and so are the serial lines between the first and the last:
+`robco run --headless --expect "tape: ready" --json` in that project, with a lock and everything in the cache. The serial lines between the first and the last are cut:
 
 ```json
+{"v":1,"kind":"step","step":"install","item":"pipos@1.4.0","state":"skip"}
+{"v":1,"kind":"step","step":"install","item":"gcc@15.2.1-1.1/linux-x64","state":"skip"}
+{"v":1,"kind":"step","step":"install","item":"qemu@10.1.2/linux-x64","state":"skip"}
+{"v":1,"kind":"step","step":"compile","item":"crt0","state":"start"}
+{"v":1,"kind":"step","step":"compile","item":"crt0","state":"done"}
+{"v":1,"kind":"step","step":"compile","item":"src/main.c","state":"start"}
+{"v":1,"kind":"step","step":"compile","item":"src/main.c","state":"done"}
+{"v":1,"kind":"step","step":"link","item":"","state":"start"}
+{"v":1,"kind":"step","step":"link","item":"","state":"done"}
+{"v":1,"kind":"step","step":"objcopy","item":"","state":"start"}
+{"v":1,"kind":"step","step":"objcopy","item":"","state":"done"}
+{"v":1,"kind":"step","step":"seal","item":"","state":"start"}
+{"v":1,"kind":"step","step":"seal","item":"","state":"done"}
 {"v":1,"kind":"step","step":"card","item":"","state":"start"}
 {"v":1,"kind":"step","step":"card","item":"","state":"done"}
 {"v":1,"kind":"step","step":"boot","item":"raspi0","state":"start"}
@@ -896,6 +922,61 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 {"v":1,"kind":"serial","t_ms":2211,"text":"@RC stage=runner ev=done result=exit rc=3 key=47d0b61e09c85a2f"}
 {"v":1,"kind":"error","code":"run: unmatched","detail":"the tape ended and no line held \"never\"","exit":1}
 {"v":1,"kind":"result","command":"run","ok":false,"exit":1,"outcome":"ended","board":"raspi0","line":"@RC stage=runner ev=done result=exit rc=3 key=47d0b61e09c85a2f","tape_result":"exit","tape_rc":3,"ms":2211}
+```
+
+The first `robco run --headless --timeout 5 --index index.json --json` in a project fresh from `robco new`, which has no lock yet, with `qemu` not in the cache. The command resolves, installs `qemu` only then, and writes the lock before it compiles. The tape of the template waits for a key, so the time limit ends the run. The serial lines are cut:
+
+```json
+{"v":1,"kind":"step","step":"resolve","item":"","state":"start"}
+{"v":1,"kind":"step","step":"resolve","item":"","state":"done"}
+{"v":1,"kind":"step","step":"install","item":"pipos@1.4.0","state":"skip"}
+{"v":1,"kind":"step","step":"install","item":"gcc@15.2.1-1.1/linux-x64","state":"skip"}
+{"v":1,"kind":"step","step":"download","item":"qemu@10.1.2/linux-x64","state":"start"}
+{"v":1,"kind":"step","step":"download","item":"qemu@10.1.2/linux-x64","state":"done"}
+{"v":1,"kind":"step","step":"verify","item":"qemu@10.1.2/linux-x64","state":"start"}
+{"v":1,"kind":"step","step":"verify","item":"qemu@10.1.2/linux-x64","state":"done"}
+{"v":1,"kind":"step","step":"install","item":"qemu@10.1.2/linux-x64","state":"start"}
+{"v":1,"kind":"step","step":"install","item":"qemu@10.1.2/linux-x64","state":"done"}
+{"v":1,"kind":"step","step":"compile","item":"crt0","state":"start"}
+{"v":1,"kind":"step","step":"compile","item":"crt0","state":"done"}
+{"v":1,"kind":"step","step":"compile","item":"src/main.c","state":"start"}
+{"v":1,"kind":"step","step":"compile","item":"src/main.c","state":"done"}
+{"v":1,"kind":"step","step":"link","item":"","state":"start"}
+{"v":1,"kind":"step","step":"link","item":"","state":"done"}
+{"v":1,"kind":"step","step":"objcopy","item":"","state":"start"}
+{"v":1,"kind":"step","step":"objcopy","item":"","state":"done"}
+{"v":1,"kind":"step","step":"seal","item":"","state":"start"}
+{"v":1,"kind":"step","step":"seal","item":"","state":"done"}
+{"v":1,"kind":"step","step":"card","item":"","state":"start"}
+{"v":1,"kind":"step","step":"card","item":"","state":"done"}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"start"}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"done"}
+{"v":1,"kind":"serial","t_ms":931,"text":"tape: ready"}
+{"v":1,"kind":"error","code":"run: timeout","detail":"no end within 5 s","exit":6}
+{"v":1,"kind":"result","command":"run","ok":false,"exit":6,"outcome":"timeout","board":"raspi0","line":"","tape_result":"","tape_rc":0,"ms":5000}
+```
+
+`robco run --headless --json` after someone set `abi = "1.5"` in the manifest. The command fails at step 5, before any install, and no machine runs:
+
+```json
+{"v":1,"kind":"error","code":"lock: stale","detail":"pipos 1.4.0 does not fit target.abi 1.5, run robco update","exit":3}
+{"v":1,"kind":"result","command":"run","ok":false,"exit":3,"outcome":"not_run","board":"raspi0","line":"","tape_result":"","tape_rc":0,"ms":0}
+```
+
+`robco update --index index.json --json` in a project whose package is in the cache:
+
+```json
+{"v":1,"kind":"step","step":"resolve","item":"","state":"start"}
+{"v":1,"kind":"step","step":"resolve","item":"","state":"done"}
+{"v":1,"kind":"step","step":"install","item":"pipos@1.4.0","state":"skip"}
+{"v":1,"kind":"result","command":"update","ok":true,"exit":0}
+```
+
+`robco biuld --json`, a command the tool does not know:
+
+```json
+{"v":1,"kind":"error","code":"usage","detail":"unknown command \"biuld\"","exit":2}
+{"v":1,"kind":"result","command":"","ok":false,"exit":2}
 ```
 
 `robco test --json` in the same project. The lines of the install and of the build and most serial lines are cut:
@@ -961,6 +1042,16 @@ The same command where the screen of `raspi2b` differs from the screen of `raspi
 {"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi2b","outcome":"failed","failed_step":2,"updated":0,"ms":609}
 {"v":1,"kind":"error","code":"test: failed","detail":"1 of 2 runs failed","exit":1}
 {"v":1,"kind":"result","command":"test","ok":false,"exit":1,"scenarios":2,"passed":1,"failed":1,"updated":0}
+```
+
+`robco test --json` where QEMU does not start. Only the end is shown. The run counts as failed, and the exit code is 7:
+
+```json
+{"v":1,"kind":"scenario","name":"start","state":"start","board":"raspi0","outcome":"","failed_step":0,"updated":0,"ms":0}
+{"v":1,"kind":"step","step":"boot","item":"raspi0","state":"start"}
+{"v":1,"kind":"scenario","name":"start","state":"done","board":"raspi0","outcome":"simulator","failed_step":0,"updated":0,"ms":0}
+{"v":1,"kind":"error","code":"test: failed","detail":"1 of 1 runs failed, QEMU failed in 1","exit":7}
+{"v":1,"kind":"result","command":"test","ok":false,"exit":7,"scenarios":1,"passed":0,"failed":1,"updated":0}
 ```
 
 A scenario file that uses every kind of step, `tests/moves.toml`:

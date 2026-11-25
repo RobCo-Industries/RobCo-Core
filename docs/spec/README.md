@@ -11,8 +11,8 @@ These files are the contracts for RobCo-Core and every repo built on it. Code fo
 | [PIPOS_ABI.md](./PIPOS_ABI.md) | Pip-OS entry state, syscalls, display, saves, sandbox, SDK | draft |
 | [TESTING.md](./TESTING.md) | Test layers, QEMU boot methods, `boot.json`, canary suite, SD images, CI, hardware checklists | stable |
 | [STUDIO_PROJECT.md](./STUDIO_PROJECT.md) | The Studio project files `robco.toml` and `robco.lock` | draft |
-| [SDK_PACKAGE.md](./SDK_PACKAGE.md) | SDK packages, `sdk.json`, `flags.json`, the runner ROM and the key of a run, the firmware pins, the `templates` package, the SDK index, version and hash rules | draft |
-| [STUDIO_CLI.md](./STUDIO_CLI.md) | The `robco` command: its commands, output streams, JSON lines, exit codes and the order of checks, the simulator card, what ends a run, scenario files and golden images | draft |
+| [SDK_PACKAGE.md](./SDK_PACKAGE.md) | SDK packages, `sdk.json`, `flags.json`, the cache and what it records, the runner ROM and the key of a run, the firmware pins, the `templates` package, the SDK index, tool archives, version and hash rules | draft |
+| [STUDIO_CLI.md](./STUDIO_CLI.md) | The `robco` command: its commands, output streams, JSON lines, exit codes and the order of checks, the one list of steps of `update`, `build`, `run` and `test`, the simulator card, what ends a run, scenario files and the golden images that every board shares | draft |
 
 Spots marked "pending hardware validation" may change after tests on real boards.
 

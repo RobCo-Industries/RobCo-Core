@@ -36,6 +36,7 @@ LINE_KEYS = {
 PIXEL_KEYS = ["x", "y", "want", "got", "count"]
 # The keys a result line adds after "command", "ok" and "exit".
 RESULT_OK_KEYS = {
+    "": [],
     "sdk list": ["count"],
     "sdk install": ["packages", "tools"],
     "new": ["template", "name", "path", "files"],
@@ -134,6 +135,7 @@ def test_every_json_line_follows_its_table():
                     assert rest[3:] == RESULT_ALWAYS_KEYS[command], raw
                 else:
                     assert rest[3:] == (RESULT_OK_KEYS[command] if obj["ok"] else []), raw
+                    assert command != "" or obj["exit"] == 2, raw
             elif kind == "check" and obj["reason"] == "pixels":
                 assert rest == LINE_KEYS["check"] + PIXEL_KEYS, raw
                 assert re.fullmatch(r"#[0-9a-f]{6}", obj["want"]), raw
@@ -216,7 +218,10 @@ def test_test_command_examples_add_up():
         for o, checks in runs:
             failed = [c for c in checks if not c["ok"]]
             assert o["failed_step"] == (failed[0]["index"] if failed else 0)
-            assert (o["outcome"] == "passed") == (not failed), o
+            if o["outcome"] == "simulator":
+                assert all(c["reason"] == "simulator" for c in failed), o
+            else:
+                assert (o["outcome"] == "passed") == (not failed), o
             boards_seen.add(o["board"])
         # The images of a scenario are written after its last board, and only when every
         # board passed.
@@ -915,3 +920,266 @@ def test_order_of_checks_names_a_known_code_for_every_step():
                    "manifest: subtype", "manifest: platform", "manifest: abi"}
     read_codes -= value_codes | {"templates: none"}    # no package installed: no file is read
     assert read_codes <= seen, sorted(read_codes - seen)
+
+
+CODE_RE = r"`((?:%s)(?:: [a-z][a-z ]*[a-z])?)`" % "|".join(CODE_PREFIXES)
+STEPS_HEADING = "The steps of update, build, run and test"
+
+
+def anchors(text):
+    """The anchors of the headings of one file, as GitHub makes them."""
+    found, fence = {}, False
+    for line in text.split("\n"):
+        if line.startswith("```"):
+            fence = not fence
+        m = None if fence else re.match(r"#{1,6} +(.*?) *$", line)
+        if m:
+            anchor = re.sub(r"[^\w\- ]", "", m[1].lower()).replace(" ", "-")
+            n = found.get(anchor, -1) + 1
+            found[anchor] = n
+            if n:
+                found[f"{anchor}-{n}"] = 0
+    return set(found)
+
+
+def test_every_heading_a_spec_points_at_exists():
+    files = {name: (SPEC / name).read_text(encoding="utf-8") for name in
+             ("TESTING.md", "IMAGE_FORMAT.md", "PIPOS_ABI.md", "BOOT_PROTOCOL.md")}
+    files.update({"STUDIO_CLI.md": CLI, "STUDIO_PROJECT.md": PROJECT, "SDK_PACKAGE.md": PACKAGE})
+    known = {name: anchors(text) for name, text in files.items()}
+    checked = 0
+    for name in ("STUDIO_CLI.md", "STUDIO_PROJECT.md", "SDK_PACKAGE.md"):
+        for target in re.findall(r"\]\(([^)\s]+)\)", files[name]):
+            if target.startswith("http") or target.startswith("../"):
+                continue
+            path, _, anchor = target.partition("#")
+            other = path[2:] if path.startswith("./") else (path or name)
+            assert other in known, (name, target)
+            if anchor:
+                assert anchor in known[other], (name, target)
+                checked += 1
+    assert checked > 150
+    # A section named in plain words, "step N of [Heading]", points at a list that long.
+    for text in files.values():
+        for n, heading in re.findall(r"steps? (\d+) of \[([^\]]+)\]", text):
+            if heading == STEPS_HEADING:
+                assert 1 <= int(n) <= 14
+
+
+def steps_table():
+    """The rows of the table of steps: (number, work, {command: cell}, fails-with cell)."""
+    text = section(CLI, STEPS_HEADING, "##")
+    rows = []
+    for line in text.split("\n"):
+        m = re.match(r"\| (\d+) \|", line)
+        if m:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            assert len(cells) == 7, line
+            rows.append((int(cells[0]), cells[1], dict(zip(("update", "build", "run", "test"),
+                                                           cells[2:6])), cells[6]))
+    return rows
+
+
+def test_steps_table_gives_every_failure_its_exit_code():
+    codes = error_codes()
+    rows = steps_table()
+    assert [n for n, *_ in rows] == list(range(1, 15))
+    named = set()
+    for n, work, cols, fails in rows:
+        assert all(v for v in cols.values()), n
+        groups = re.findall(r"((?:[^.]|\.(?! |$))*?), (\d+)(?: or (\d+))?\.?(?: |$)", fails)
+        assert groups, (n, fails)
+        for names, exit_code, other in groups:
+            found = [c for c in re.findall(CODE_RE, names) if c in codes]
+            families = re.findall(r"`([a-z]+):` code", names)    # a whole family, "A `test:` code"
+            assert found or families, (n, names)
+            for prefix in families:
+                family = {c: e for c, e in codes.items() if c.startswith(prefix + ": ")}
+                assert family, prefix
+                wanted = set(family.values()) - ({1} if prefix == "test" else set())
+                assert wanted == {int(exit_code)}, (n, prefix, wanted)
+                named |= set(family) - {"test: failed"}
+            for code in found:
+                assert codes[code] == int(exit_code), (n, code)
+                named.add(code)
+            assert (other == "7") == ("test: failed" in found), (n, names)
+    # Every code a project command can end with has its step. The others belong to
+    # commands outside the table, or to no step.
+    outside = {"new: name", "new: template", "new: exists", "templates: none", "templates: format",
+               "templates: manifest", "templates: token", "firmware: hash", "internal"}
+    assert set(codes) - named == outside, sorted(set(codes) - named - outside)
+    # No tool is installed before the lock is read or resolved: finding 1.
+    step = {work.split(":")[0].split(",")[0].split(" ")[0]: n for n, work, _, _ in rows}
+    install_tools = next(n for n, work, _, _ in rows if work.startswith("Install the tools"))
+    read_lock = next(n for n, work, _, _ in rows if work.startswith("Read `robco.lock`"))
+    resolve = next(n for n, work, _, _ in rows if work.startswith("Resolve"))
+    write_lock = next(n for n, work, _, _ in rows if work.startswith("Write `robco.lock`"))
+    build = next(n for n, work, _, _ in rows if work.startswith("Build the tape"))
+    start = next(n for n, work, _, _ in rows if work.startswith("Start QEMU"))
+    assert read_lock < resolve < install_tools < write_lock < build < start, step
+    tools = rows[install_tools - 1][2]
+    assert "qemu" not in tools["build"] and tools["update"] == "No"
+    assert "qemu" in tools["run"] and "qemu" in tools["test"]
+    # run and test state no order of their own: they point at the table.
+    for heading in ("robco run", "robco test", "robco build"):
+        text = section(CLI, heading, "##")
+        assert "(#the-steps-of-update-build-run-and-test)" in text, heading
+        assert "first installs" not in text and "does everything `robco build` does" not in text
+    assert "the-steps-of-update-build-run-and-test" in section(PROJECT, "robco update")
+
+
+STEP_RANK = {"resolve": 0, "download": 1, "verify": 1, "install": 1, "compile": 2, "link": 3,
+             "objcopy": 4, "seal": 5, "card": 6, "boot": 7}
+
+
+def test_step_lines_of_the_examples_follow_the_steps_table():
+    seen = set()
+    for run in json_line_runs():
+        command = run[-1][1]["command"]
+        steps = [o for _, o in run if o["kind"] == "step"]
+        ranks = [STEP_RANK[o["step"]] for o in steps]
+        assert ranks == sorted(ranks), (command, [o["step"] for o in steps])
+        items = [o["item"] for o in steps if STEP_RANK[o["step"]] == 1]
+        order = []
+        for item in items:
+            name = item.split("@")[0]
+            kind = 0 if "/" not in item else 1 if name == "gcc" else 2
+            assert name == "qemu" or kind < 2, item
+            if not order or order[-1] != kind:
+                order.append(kind)
+        assert order == sorted(order), (command, items)    # packages, then gcc, then qemu
+        names = {i.split("@")[0] for i in items}
+        if command == "build":
+            assert "qemu" not in names
+        if command == "update":
+            assert not names & {"gcc", "qemu"}
+        if "resolve" in [o["step"] for o in steps] and command == "run":
+            # The first run of a project: the resolution comes before the qemu install.
+            assert "qemu" in names
+            seen.add("fresh run")
+        for o in steps:
+            if o["state"] == "skip":
+                assert o["step"] == "install", o
+            if o["step"] == "boot":
+                assert o["item"] in BOARDS, o
+        seen.add(command)
+    assert seen >= {"sdk install", "update", "build", "run", "test", "fresh run"}
+
+
+BOARDS = ("raspi0", "raspi1ap", "raspi2b", "raspi3b")
+
+
+def table_values(text, key):
+    """The backticked words of the row of `key` in a key table."""
+    row = next(r for r in text.split("\n") if r.startswith(f"| `{key}` |"))
+    return set(re.findall(r"`([a-z_]+)`", row.split("|", 2)[2]))
+
+
+def test_every_kind_and_value_of_an_example_is_defined():
+    kinds = set(re.findall(r"^\| `([a-z]+)` \|", section(CLI, "Kinds"), re.M)) - {"kind"}
+    assert kinds == set(LINE_KEYS) | {"result"}
+    # Each kind has a table of its keys, in the order the test holds.
+    for kind, heading in (("step", "step"), ("diagnostic", "diagnostic"), ("serial", "serial"),
+                          ("error", "error"), ("item", "robco sdk list")):
+        text = section(CLI, heading, "###" if kind != "item" else "##")
+        keys = re.findall(r"^\| `([a-z_]+)` \| (?:string|integer|boolean) \|", text, re.M)
+        assert keys[:len(LINE_KEYS[kind])] == LINE_KEYS[kind], kind
+    lines = section(CLI, "Lines of robco test")
+    keys = [k for cell in re.findall(r"^\| ((?:`[a-z_]+`(?:, )?)+) \| (?:string|integer|boolean) \|",
+                                     lines, re.M) for k in re.findall(r"`([a-z_]+)`", cell)]
+    assert keys == (LINE_KEYS["scenario"] + LINE_KEYS["check"] + PIXEL_KEYS
+                    + RESULT_ALWAYS_KEYS["test"])
+    step_names = table_values(section(CLI, "step"), "step")
+    assert step_names == STEPS == set(STEP_RANK)
+    run_keys = section(CLI, "What ends a run")
+    outcomes = {"matched", "ended", "timeout", "simulator", "guest", "not_run"}
+    assert outcomes <= table_values(run_keys, "outcome")
+    reasons = table_values(lines, "reason") - {"ok"}
+    scenario_outcomes = table_values(lines, "outcome") - {"start", "done"}
+    programs = table_values(section(CLI, "diagnostic"), "program")
+    commands = {"sdk list", "sdk install", "new", "update", "build", "run", "test", ""}
+    exits = {"matched": {0}, "ended": {0, 1}, "timeout": {6}, "simulator": {7}, "guest": {8}}
+    used = {"kind": set(), "outcome": set(), "command": set()}
+    for run in json_line_runs():
+        for raw, o in run:
+            assert o["kind"] in kinds, raw
+            used["kind"].add(o["kind"])
+            if o["kind"] == "step":
+                assert o["step"] in step_names, raw
+            elif o["kind"] == "diagnostic":
+                assert o["program"] in programs, raw
+            elif o["kind"] == "check":
+                assert o["reason"] in reasons | {""} and (o["reason"] == "") == o["ok"], raw
+                assert o["action"] in ACTIONS, raw
+            elif o["kind"] == "scenario":
+                assert o["outcome"] in scenario_outcomes | {""} and o["board"] in BOARDS, raw
+                assert (o["outcome"] == "") == (o["state"] == "start"), raw
+            elif o["kind"] == "result":
+                assert o["command"] in commands, raw
+                used["command"].add(o["command"])
+                if o["command"] == "run":
+                    assert o["outcome"] in outcomes, raw
+                    used["outcome"].add(o["outcome"])
+                    if o["outcome"] == "not_run":
+                        assert o["exit"] not in (0, 1, 6, 8), raw
+                        assert (o["line"], o["tape_result"], o["tape_rc"], o["ms"]) == ("", "", 0, 0)
+                    else:
+                        assert o["exit"] in exits[o["outcome"]], raw
+                    if o["outcome"] in ("timeout", "simulator"):
+                        assert o["line"] == "" and o["tape_result"] == "", raw
+    assert used["kind"] == kinds, "every kind has an example"
+    assert used["command"] == commands, "every command has an example"
+    assert used["outcome"] >= {"matched", "ended", "timeout", "not_run"}
+
+
+def test_what_ends_a_run_agrees_with_the_code_tables():
+    codes = error_codes()
+    text = section(CLI, "What ends a run")
+    rules = [[c.strip() for c in r.strip("|").split("|")]
+             for r in text.split("\n") if re.match(r"\| \d \|", r)]
+    rules = [r for r in rules if len(r) == 5]    # the table of rules, not the table about tapes
+    assert [int(r[0]) for r in rules] == list(range(1, 9))
+    seen = set()
+    for order, rule, outcome, exit_code, error in rules[1:]:
+        outcome = outcome.strip("`")
+        found = re.findall(CODE_RE, error)
+        assert (found == []) == (exit_code == "0"), order
+        for code in found:
+            assert codes[code] == int(exit_code), (order, code)
+            seen.add(code)
+        assert {"matched": "0", "guest": "8"}.get(outcome, exit_code) == exit_code, order
+    events = re.findall(r"^\| [^|`]+ \| `(timeout|simulator)` \| (\d) \| `([a-z: ]+)` \|$", text, re.M)
+    assert len(events) == 3
+    for outcome, exit_code, code in events:
+        assert codes[code] == int(exit_code)
+        seen.add(code)
+    # Every code of a run is reached by a rule or an event, but the one of a QEMU that
+    # never started.
+    run_codes = {c for c in codes if c.split(":")[0] in ("guest", "sim") or
+                 c in ("run: unmatched", "run: tape", "run: timeout")}
+    assert run_codes - seen == {"sim: start"}
+    # The outcome table of "Exit codes" gives the same exit codes.
+    table = CLI[CLI.index("| Outcome of `robco run --headless` |"):CLI.index("`robco test` counts runs.")]
+    rows = [[c.strip() for c in r.strip("|").split("|")] for r in table.split("\n")
+            if r.startswith("| ") and "Outcome of" not in r]
+    assert len(rows) == 7
+    for row in rows:
+        for cell in row[1:]:
+            if cell:
+                m = re.fullmatch(r"(\d)(?:, `([a-z: ]+)`)?", cell)
+                assert m, cell
+                assert m[2] is None or codes[m[2]] == int(m[1]), cell
+    assert "The runner ROM could not start the tape" not in CLI
+
+
+def test_every_code_is_used_outside_its_table():
+    codes = error_codes()
+    table = CLI[CLI.index("### Error codes"):CLI.index("### Order of checks")]
+    rest = CLI.replace(table, "") + PROJECT + PACKAGE
+    used = set(re.findall(CODE_RE, rest))
+    # The manifest codes are named in their short form in the table of the project spec.
+    short = set(re.findall(r"^\| `([a-z ]+)` \|", section(PROJECT, "Errors", "##"), re.M))
+    used |= {f"manifest: {c}" for c in short}
+    assert set(codes) - used == set(), sorted(set(codes) - used)
+    # And every exit code but 0 has at least one code.
+    assert set(codes.values()) == set(range(1, 11))
