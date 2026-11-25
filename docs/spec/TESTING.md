@@ -146,11 +146,38 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 | GPIO input | GPLEV0/1 read 0, input cannot be injected (V12) | The input logic runs on the host and through the serial and script backends in layer 5. The GPIO backend's stuck-line guard turns it off in QEMU. Buttons and dials run on the hardware checklist. |
 | PWM audio | Not modelled. Reading PWM data-aborts on `raspi0` and `raspi1ap` (V7). On `raspi2b` and `raspi3b` writes are dropped. | Host tests for the notes, the sequencer and the PCM engine. The audio driver probes PWM and falls back to the trace backend, which the target test checks. PCM on the trace backend runs the real timer channel 3 IRQ. Sound runs on the hardware checklist. |
 | Real SPI signalling | QEMU ignores the rate, the mode and chip select. | `test_spi.py` checks the data path with the flash model. Rates, modes and chip select levels run on the hardware checklist. |
+| SD card in SPI mode | No SD card model attaches to SPI0 (V20). SPI0 has no chip select lines (V21). | A host-side card model tests the driver. See [SD card over SPI](#sd-card-over-spi). |
 | Watchdog countdown | `bcm2835_powermgt` resets at the PM_RSTC write and does not count PM_WDOG. A reset clears PM_RSTS to `0x1000`. | `tests/host/test_wdog.c` checks every register write. `test_wdog.py` checks that an armed watchdog resets the board and skips the kick, stop, reboot and halt cases by name. They run on the hardware checklist. |
 | SPI TFT | No model | The display interface is the same for HDMI and TFT, so HDMI goldens cover drawing. The TFT runs on the hardware checklist. |
 | I2C timing | Every transfer finishes at once. No clock stretching. | The bus rate, timeouts and clock stretching run on the hardware checklist. |
 | Cache and timing | QEMU does not model caches, memory types or the SMP bit | `test_mmu.py` checks the map, the faults and that every component still works. Speed and coherence run on the hardware checklist. |
 | VC bus alias, SD routing on WiFi boards | QEMU does not match real firmware here | Pending hardware validation |
+
+### SD card over SPI
+
+The holotape slot puts a second SD card on SPI0 with chip select 1, next to the display on chip select 0. QEMU 10.1.2 cannot run that setup.
+
+- No card attaches to SPI0 (V20). `-device ssi-sd,bus=spi` fails with "expects a pluggable device type". `sd-card-spi` exists but lands on the EMMC SD bus.
+- SPI0 drives no chip select lines (V21). Two devices on bus `spi` both answer every byte, and the controller ORs their replies. A flash never sees a CS edge, so only its first command works.
+- A read-only image is refused as an SD card (V22). Write protect cannot be tested with a read-only image.
+- The EMMC card can be pulled and put back at run time with QMP `eject` and `blockdev-change-medium` (V22). The present state register follows. SPI0 has no card detect, and GPIO input cannot be injected (V12).
+- A guest moves 2 MiB through the SPI0 FIFO in about 2 s (V23). A block by block read of 2 MiB adds a few percent of command, token and CRC bytes.
+
+```mermaid
+flowchart LR
+    D[SD over SPI driver] --> T{Where}
+    T -->|QEMU| Q[SPI0 FIFO and register use with the flash model]
+    T -->|Host model| H[Commands, CRC, tokens, busy, errors, removal]
+    T -->|Hardware| W[CS lines, rate, 74 clocks, DO release, power, card detect]
+```
+
+| Where | What it covers |
+|---|---|
+| QEMU | SPI0 register use, FIFO polling and the byte path, with `w25q32` on bus `spi`. The EMMC volume and its removal through QMP. |
+| Host model | A C card model behind the SPI transfer call. It answers CMD0, CMD8, ACMD41, CMD58, CMD17 and CMD24 with R1 and R7 replies, start tokens, data CRC and busy. It must also inject a pulled card, timeouts, CRC errors and a write protected card. |
+| Hardware | Chip select 0 and 1 sharing the bus, the card releasing DO when deselected, the 74 clock start at 400 kHz, the rate switch, power and voltage, card detect and real removal. |
+
+QEMU gives no data on CRC checks, CMD59, write busy or card timing, because no card model reaches SPI0.
 
 ## Canary suite
 
@@ -174,6 +201,10 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 | V16 | SPI0 is modelled on every board. With nothing attached a byte completes at once and reads 0. | The SPI and TFT panel target tests |
 | V17 | QEMU's `pca9554` model answers on I2C bus 1 with the data sheet registers. qtest `set_irq_in` drives its input pins. | The GPIO expander target test |
 | V18 | `raspi3b` resets cores 1 to 3 at `0x0` in AArch64 EL3. With A32 code there they spin on the EL3 vector at `0x200`. With `boot()` they sit in the stub's AArch32 `wfi` loop. | Parking the spare `raspi3b` cores |
+| V20 | No SD card can sit on SPI0. `ssi-sd` is not user creatable, and `sd-card-spi` plugs only into an SD bus. | Testing an SD driver in SPI mode on a host model, not in QEMU |
+| V21 | SPI0 drives no chip select lines. Every device on bus `spi` gets every byte, whatever the CS field says, and the replies are ORed. Each device needs its own `cs=` index. | Never putting two devices on the bus in one test |
+| V22 | A read-only drive is refused as an SD card. QMP `eject` and `blockdev-change-medium` work on the `sd0` drive, and EMMC present state bits 16 and 18 follow them. | Card removal tests on the EMMC path |
+| V23 | Guest code moves 2 MiB through the SPI0 FIFO, one byte at a time, in about 2 s on every board | Test time budgets for SPI drivers |
 
 V4 and V8 are not checked.
 
