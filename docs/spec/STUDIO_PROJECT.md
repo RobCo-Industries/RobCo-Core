@@ -124,8 +124,16 @@ For `pipos`, MAJOR must be 1, the Pip-OS ABI major in [PIPOS_ABI.md](./PIPOS_ABI
 
 | Key | Type | Required | Default | Limits | Meaning |
 |---|---|---|---|---|---|
-| `backend` | string | No | `"robco"` | `robco` | Who runs the build. `robco`: the tool compiles, links and seals itself. |
+| `backend` | string | No | `"robco"` | Exactly `robco` | Who runs the build. `robco`: the tool compiles, links and seals itself. |
 | `sources` | array of strings | No | `["src/*.c"]` | 1 to 256 patterns, each a path pattern | The C files to compile |
+
+`backend` has one value in format 1. Any other string fails with `manifest: unknown key`, and the detail is `build.backend = "<value>"`, with the value written as a TOML basic string. `make` is reserved for a later format and fails the same way, so the whole error line is:
+
+```
+manifest: unknown key: build.backend = "make"
+```
+
+The code is `unknown key` and not a code of its own because a format 1 tool knows no other backend, as it knows no other key. The comparison is exact: `Robco` and `robco ` fail. A `backend` that is not a string fails with `manifest: type`.
 
 A pattern is a path whose last component may hold `*`, which matches any run of characters other than `/`, including none. No other wildcard exists. Every other component is literal. The tool expands each pattern and keeps only regular files. A pattern that matches nothing fails with `manifest: sources` and the pattern. Only files ending in `.c` compile. Any other match fails with `manifest: sources`. [Source order](#source-order) says in which order the files compile and link.
 
@@ -187,7 +195,7 @@ Checks 1 to 3 come first so that a difference between the tapes has a named caus
 
 ### Keys reserved for later formats
 
-These keys are named so no project uses them for something else. A format 1 tool refuses each one as an unknown key.
+These keys are named so no project uses them for something else. A format 1 tool refuses each one with `manifest: unknown key`. The detail is the dotted name of the key, and for the first row `build.backend = "make"`.
 
 | Key | Purpose |
 |---|---|
@@ -273,7 +281,7 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 |---|---|
 | `syntax` | The file is not TOML 1.1 or not UTF-8 |
 | `format` | `format` is missing, not a positive integer, or larger than the tool knows |
-| `unknown key` | A key or table this spec does not define |
+| `unknown key` | A key or table this spec does not define, or a `build.backend` other than `robco` |
 | `type` | A key has the wrong TOML type |
 | `missing` | A required key is absent |
 | `name` | `project.name` breaks a name rule |

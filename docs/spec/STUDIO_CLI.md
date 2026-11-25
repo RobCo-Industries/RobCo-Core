@@ -754,6 +754,13 @@ Each block is the whole standard output of one command with `--json`. Hashes are
 {"v":1,"kind":"result","command":"build","ok":false,"exit":5}
 ```
 
+`robco build --json` in a project whose manifest says `backend = "make"`:
+
+```json
+{"v":1,"kind":"error","code":"manifest: unknown key","detail":"build.backend = \"make\"","exit":3}
+{"v":1,"kind":"result","command":"build","ok":false,"exit":3}
+```
+
 `robco run --headless --expect "tape: ready" --json`. The lines of the install and of the build are cut here, and so are the serial lines between the first and the last:
 
 ```json

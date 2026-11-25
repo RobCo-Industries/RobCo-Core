@@ -280,8 +280,9 @@ def test_manifest_examples_parse_and_hold_only_known_keys():
             assert set(doc[table]) <= keys, doc[table]
         sources = doc["build"]["sources"]
         assert 1 <= len(sources) <= 256 and all(type(s) is str for s in sources)
-        assert all(s.count("*") == 0 or "*" not in s.rsplit("/", 1)[0] or "/" not in s
-                   for s in sources), "a star only in the last component"
+        assert all("*" not in s.rsplit("/", 1)[0] for s in sources if "/" in s), \
+            "a star only in the last component"
+        assert doc["build"].get("backend", "robco") == "robco"
         names.add(doc["project"]["name"])
     # The template's manifest holds the token, the other two a real name.
     assert names == {"PIPES", "CULVERT", "@NAME@"}
@@ -616,3 +617,14 @@ def test_runner_config_grammar_and_failure_table():
     assert pairs == {("-2", "open"), ("0", "size"), ("-4", "parse"), ("-2", "parse"), ("-3", "parse"),
                      ("-5", "parse"), ("-6", "parse"), ("0", "name")}
     assert {(str(rc), why) for rc, why in cases.values()} == pairs - {("-2", "open")}
+
+
+def test_backend_other_than_robco_is_an_unknown_key():
+    codes = error_codes()
+    errors = [o for run in json_line_runs() for _, o in run
+              if o["kind"] == "error" and o["detail"].startswith("build.backend")]
+    assert len(errors) == 1
+    assert errors[0]["code"] == "manifest: unknown key" and codes[errors[0]["code"]] == 3
+    assert re.fullmatch(r'build\.backend = "[^"\\]*"', errors[0]["detail"])
+    line = next(b for b in blocks(PROJECT, "") if b.startswith("manifest: unknown key"))
+    assert line == "manifest: unknown key: " + errors[0]["detail"] + "\n"
