@@ -50,6 +50,7 @@
 #define ROBCO_BOOT_FALLBACK     (1u << 0)
 #define ROBCO_BOOT_MAINT        (1u << 1)
 #define ROBCO_BOOT_COLD         (1u << 2)
+#define ROBCO_BOOT_MAINT_REQ    (1u << 3)
 
 /* uart_type values. */
 #define ROBCO_UART_NONE         0u

@@ -194,7 +194,9 @@ The boot partition is FAT32. Names are 8.3 and upper case. Each name is 1 to 8 c
 | Terminal | `/ROBCO/UOS.SYS` | BOOT 0 |
 | Terminal | `/ROBCO/MAINT.SYS` | BOOT 2 |
 | Terminal | `/ROBCO/DIAG.SYS` | BOOT 3 |
+| Terminal | `/ROBCO/MAINT.REQ` | Maintenance request, text, see [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md#maintenance-request) |
 | Terminal | `/UOS/...` | UOS data files |
+| Terminal | `/UOS/SYSUAF.DEF` | Default user file, copied by the maintenance image's restore users tool |
 | Terminal | `/UOS/HOLO/*.HTP` | ROBCO78 2, read by UOS |
 | Pip-Boy | `/PIPOS.IMG` | BOOT 6, loaded by firmware |
 | Pip-Boy | `/PIPBOY/PIPOS.CFG` | Pip-OS config, INI text |
@@ -212,6 +214,7 @@ The boot partition is FAT32. Names are 8.3 and upper case. Each name is 1 to 8 c
 | `.BAK` | Fallback copy of a `.SYS` file |
 | `.ROM` | Pip-Boy ROM |
 | `.HTP` | Holotape |
+| `.REQ` | Request file, read once by the next boot |
 
 ## tools/rimg.py
 
