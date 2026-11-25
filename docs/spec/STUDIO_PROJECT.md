@@ -129,6 +129,17 @@ For `pipos`, MAJOR must be 1, the Pip-OS ABI major in [PIPOS_ABI.md](./PIPOS_ABI
 
 A pattern is a path whose last component may hold `*`, which matches any run of characters other than `/`, including none. No other wildcard exists. Every other component is literal. The tool expands each pattern and keeps only regular files. A pattern that matches nothing fails with `manifest: sources` and the pattern. Only files ending in `.c` compile. Any other match fails with `manifest: sources`. [Source order](#source-order) says in which order the files compile and link.
 
+`sources` holds 1 to 256 patterns. The limit counts the entries of the array as the manifest writes them, before a pattern is expanded and before a path that comes twice is dropped. Both ends fail with `manifest: sources`, and the detail gives the count:
+
+| `sources` | Result |
+|---|---|
+| Absent | The default, `["src/*.c"]` |
+| `[]` | `manifest: sources`, with the detail `build.sources holds 0 patterns, 1 to 256 allowed` |
+| 1 to 256 entries | Read |
+| 257 entries or more | `manifest: sources`, with the count in the same detail |
+
+The tool makes this check on the manifest alone, before it looks at a file. The source list that the patterns expand to has no limit of its own: one pattern may match more than 256 files.
+
 ### Source order
 
 The source list is the order of the link, and the link order is one of the things that decide the bytes of the tape. The tool builds the list in three steps:
@@ -274,7 +285,7 @@ A tool reports the first error it finds as `manifest: <code>: <detail>` and buil
 | `abi` | `target.abi` is not `MAJOR.MINOR`, out of range, or the wrong major |
 | `path` | A path breaks a path rule |
 | `icon` | The icon file is missing or breaks the icon rules |
-| `sources` | A pattern matches nothing, or matches a file that is not `.c` |
+| `sources` | `build.sources` is empty or holds more than 256 patterns, a pattern matches nothing or matches a file that is not `.c`, or a path spells a file name in another case |
 
 ## robco.lock
 

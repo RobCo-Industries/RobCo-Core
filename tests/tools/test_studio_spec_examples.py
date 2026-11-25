@@ -278,12 +278,20 @@ def test_manifest_examples_parse_and_hold_only_known_keys():
         assert doc["format"] == 1
         for table, keys in known.items():
             assert set(doc[table]) <= keys, doc[table]
-        assert doc["build"]["sources"]
+        sources = doc["build"]["sources"]
+        assert 1 <= len(sources) <= 256 and all(type(s) is str for s in sources)
+        assert all(s.count("*") == 0 or "*" not in s.rsplit("/", 1)[0] or "/" not in s
+                   for s in sources), "a star only in the last component"
         names.add(doc["project"]["name"])
     # The template's manifest holds the token, the other two a real name.
     assert names == {"PIPES", "CULVERT", "@NAME@"}
     culvert = next(d for d in manifests if d["project"]["name"] == "CULVERT")
     assert culvert["build"]["sources"] == ["main.c", "game.c", "logic.c", "draw.c"]
+    # The limit of sources is stated once as a range and once per end.
+    build = section(PROJECT, "[build]")
+    assert "| 1 to 256 patterns, each a path pattern |" in build
+    assert "`sources` holds 1 to 256 patterns." in build
+    assert "| `[]` | `manifest: sources`" in build and "| 257 entries or more | `manifest: sources`" in build
 
 
 def test_template_tokens_are_only_name():
