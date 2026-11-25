@@ -167,8 +167,8 @@ A project test can drive the Pi's own button and dial lines. Boot with `qtest=Tr
 | `play(schedule)` | Applies `(t, pin, level)` changes on time, keeps `(planned, real)` times in `io.log`, returns the latest write |
 | `bounce(pin, count, period_s, settle=False)` | A button that chatters, then rests released or pressed |
 | `turn(pin_a, pin_b, detents, state_s, lengths=(1, 1, 1, 1), bounce=None)` | A dial turn from rest, both lines high. `lengths` scales each Gray state. |
-| `slip(log)` | The latest write and the most a state was cut short, in seconds |
-| `pressed_span(schedule, log, press)` | The longest time from the first press to the real end of the last press, in seconds |
+| `slip(log)` | The latest write and the most a state could have been cut short, in seconds. Each log entry is (planned, start, done). |
+| `pressed_span(schedule, log, press)` | The longest time the line could have been pressed, from the start of the first press write to the return of the last release write, in seconds |
 | `one_sample_at_most(span_s, missed, jitter_s, tick_s)` | True when no two tick samples can fall inside the span |
 | `hosttiming.skip(numbers)` | Skips a test whose runs had poor host timing, with the reason `host timing: <numbers>` |
 | `quad_schedule()`, `bounce_schedule()`, `quad_states()`, `level_writes()` | The pure parts behind the above, tested in `tests/tools/test_harness_pigpio.py` |
@@ -188,6 +188,16 @@ One rule fixes when `timed()` measures. The window opens before the first pin ch
 | Dial at the limit | Last detent of the turn | Same as the other turns |
 | Wiggle | No event | `settle()` |
 | Dial push | Release of `dial_push` | Same as a button tap |
+
+A qtest write can be slow, and the pin changes at some moment between the start of the `writel` and its return. So `play()` logs three times for each write: the planned time, the start and the return. Each check takes the bound that makes it strict:
+
+| Question | Bound | From | To | Used by |
+|---|---|---|---|---|
+| Did every state last long enough to sample? | Lower, the shortest a state could be | Return of the write that began it | Start of the write that ended it | `slip()` short value: dial slow, bounce, hidden states, at the limit, wiggle |
+| Was a pulse short enough to hide between samples? | Upper, the longest a press could be | Start of the first press's write | Return of the write that ended the last press | `pressed_span()`: glitch, chatter |
+| How late did a write take effect? | Upper | Planned time | Return of the write | `slip()` late value, the return of `play()` |
+
+A run judged on the wrong bound passes a check that the host made impossible, and blames the decoder for the host. `test_a_state_shorter_than_the_tick_gap_is_no_longer_judged` in `tests/tools/test_harness_pigpio.py` shows such a run.
 
 A wait gives up after 2 s, so a lost event fails the check that follows. A stall that long also misses ticks, so the run is tried again first.
 
