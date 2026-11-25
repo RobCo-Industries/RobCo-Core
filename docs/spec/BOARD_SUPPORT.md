@@ -6,7 +6,7 @@ RobCo-Core builds one AArch32 image per stage. The same image runs on every supp
 
 | Board | SoC | CPU | Status |
 |---|---|---|---|
-| Pi Zero, Zero W, Pi 1 A+/B+ | BCM2835 | ARM1176JZF-S | Supported. Hardware checklist. |
+| Pi Zero, Zero W, Pi 1 A+/B+ | BCM2835 | ARM1176JZF-S | Supported. Hardware checklist. Boot, detection, mailbox and PL011 validated on a Zero W 1.1 on 2026-11-24, see [the Zero W result](../HARDWARE_VALIDATION.md#zero-w-11-exampleshello-2026-11-24). |
 | Pi 2 B v1.1 | BCM2836 | Cortex-A7 | Supported in QEMU only. |
 | Pi 2 B v1.2, Pi 3 B/B+, Zero 2 W | BCM2837 | Cortex-A53 | Supported. Hardware checklist. |
 | Pi 4 B | BCM2711 | Cortex-A72 | Not supported. Table entry only. |
@@ -48,7 +48,7 @@ Peripheral offsets used by RobCo-Core, relative to the base:
 
 ## Board revision
 
-The exact board comes from the property mailbox, channel 8, tag `0x00010002` "get board revision". RobCo-Core stores the raw value in `robco_bootinfo_t.board_rev`. `board_model_name()` decodes new-style revision codes, where bit 23 is set, for the board name. Old-style codes map through a lookup table. Bit 24, the warranty bit of old-style codes, is ignored. An unknown code gives `Raspberry Pi (unknown model)`. Code never uses the revision to pick a peripheral base. MIDR decides that.
+The exact board comes from the property mailbox, channel 8, tag `0x00010002` "get board revision". RobCo-Core stores the raw value in `robco_bootinfo_t.board_rev`. `board_model_name()` decodes new-style revision codes, where bit 23 is set, for the board name. Old-style codes map through a lookup table. Bit 24, the warranty bit of old-style codes, is ignored. An unknown code gives `Raspberry Pi (unknown model)`. A Zero W 1.1 reported `0x009000c1` on hardware, the code the host tests map to `Raspberry Pi Zero W`. Code never uses the revision to pick a peripheral base. MIDR decides that.
 
 Other mailbox tags used at boot:
 
@@ -87,7 +87,7 @@ FBRD  = div64 & 0x3F;
 
 If the mailbox clock query fails, the driver uses 48 MHz.
 
-On Pi 3 and Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` does not depend on the firmware for this. It muxes GPIO14/15 to the PL011 (ALT0) itself and takes the UART clock from the mailbox. Without a DTB the firmware applies no overlay, so nothing else changes the pins. Whether this is enough on these boards is pending hardware validation.
+On Pi 3 and Zero 2 W, Bluetooth normally owns the PL011. `uart_init()` does not depend on the firmware for this. It muxes GPIO14/15 to the PL011 (ALT0) itself and takes the UART clock from the mailbox. Without a DTB the firmware applies no overlay, so nothing else changes the pins. Whether this is enough on these boards is pending hardware validation. On a Zero W 1.1, which also has Bluetooth, the PL011 sent and received at 115200 with no `dtoverlay` on 2026-11-24, see [the Zero W result](../HARDWARE_VALIDATION.md#zero-w-11-exampleshello-2026-11-24).
 
 `dtoverlay=disable-bt` is not a fallback under this policy. The card holds no `.dtb` file and no `overlays/` folder (see [below](#no-dtb-on-the-card)), and without them the firmware ignores `dtoverlay=`. If the PL011 stays silent on a board, the options are:
 
