@@ -42,7 +42,8 @@ TMP_PREFIX = "qh"
 # process dying for any reason, SIGKILL included, closes the pipe.
 #
 # No moment exists with QEMU up and no watcher: the watcher starts first,
-# and QEMU cannot join a group whose leader is gone. The group number
+# QEMU's child joins its group, then waits in LAUNCHER until the test
+# process, still alive, lets it exec QEMU. The group number
 # cannot name a stranger: a group id stays taken while its leader lives,
 # and the watcher outlives QEMU. close() signals QEMU's own pid, never
 # the group, so the watcher gets nothing from it. close() reaps QEMU
@@ -56,6 +57,13 @@ TMP_PREFIX = "qh"
 # See tests/README.md, "QEMU outlives no test process".
 WATCHER_SIGNALS = (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)
 WATCHER = "trap '' INT HUP TERM; echo; read _ ; kill -s KILL 0"
+# QEMU's child runs this shell first, already inside the watcher's group.
+# It waits for one line from the test process, then execs QEMU. The test
+# process sends it only after Popen returned, that is after the join, and
+# while it lives, so the watcher lives too. A test process that dies first
+# closes the pipe: the shell exits and QEMU never runs.
+# See tests/README.md, "QEMU outlives no test process".
+LAUNCHER = 'read _ || exit 125; exec "$@" </dev/null'
 
 # Popen(process_group=) exists from Python 3.11. Older ones call
 # os.setpgid() from preexec_fn: same call, same child, before the exec.
@@ -363,18 +371,9 @@ class Qemu:
             qt_listener.settimeout(self.timeout)
         try:
             self._start_watcher()
-            err = open(self.stderr_path, "wb")
-            try:
-                self.proc = subprocess.Popen(self.command_line(), stdin=subprocess.DEVNULL,
-                                             stdout=err, stderr=err,
-                                             **_group_kwargs(self._watcher.pid))
-            except (OSError, subprocess.SubprocessError) as e:
-                # A missing binary, or setpgid() failed in the child:
-                # either way QEMU never ran.
-                raise QemuError(f"cannot start QEMU: {e}") from e
-            finally:
-                err.close()
+            self._spawn()
             self._write_pidfile()
+            self._release()
             if qt_listener:
                 try:
                     self._qt, _ = qt_listener.accept()
@@ -416,6 +415,48 @@ class Qemu:
                 raise QemuError("the QEMU watcher did not get ready")
         finally:
             out.close()
+
+    def _spawn(self):
+        """Fork QEMU's child into the watcher's group, held before QEMU runs.
+
+        Popen returns after the child joined the group and exec'd the
+        launcher shell, which then waits for _release(). QEMU keeps the
+        child's pid, so the pidfile can name it before QEMU runs.
+        """
+        cmd = self.command_line()
+        if shutil.which(cmd[0]) is None:
+            raise QemuError(f"cannot start QEMU: no executable {cmd[0]}")
+        err = open(self.stderr_path, "wb")
+        try:
+            self.proc = subprocess.Popen(
+                ["/bin/sh", "-c", LAUNCHER, "qemu-launcher", *cmd],
+                stdin=subprocess.PIPE, stdout=err, stderr=err,
+                **_group_kwargs(self._watcher.pid))
+        except (OSError, subprocess.SubprocessError) as e:
+            # setpgid() failed in the child, or no shell: QEMU never ran.
+            raise QemuError(f"cannot start QEMU: {e}") from e
+        finally:
+            err.close()
+
+    def _release(self):
+        """Let the launcher exec QEMU. The child is in the group by now.
+
+        A watcher that died before this point, even one not reaped yet,
+        refuses the start: QEMU would run with nothing to stop it.
+        """
+        go, self.proc.stdin = self.proc.stdin, None
+        try:
+            if self._watcher.poll() is not None:
+                raise QemuError("cannot start QEMU: the watcher is gone")
+            go.write(b"\n")
+            go.flush()
+        except OSError as e:
+            raise QemuError(f"cannot start QEMU: {e}") from e
+        finally:
+            try:
+                go.close()
+            except OSError:
+                pass
 
     def _write_pidfile(self):
         """Record the VM for sweep_stale(). A failure only warns: the
@@ -526,6 +567,9 @@ class Qemu:
         signal once QEMU is reaped, so the pid names no stranger. QEMU's
         children, if any, die when the watcher kills the group.
         """
+        if self.proc.stdin is not None:
+            self.proc.stdin.close()  # never released: the launcher exits
+            self.proc.stdin = None
         try:
             self.proc.terminate()
             self.proc.wait(3)

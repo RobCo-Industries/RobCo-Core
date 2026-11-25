@@ -4,6 +4,7 @@ A stand-in script plays QEMU: it writes its pid next to itself and sleeps.
 """
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -280,6 +281,100 @@ def test_watcher_survives_a_signal_to_its_group(deaf, sig):
         child.kill()
         child.wait()
         child.stdout.close()
+
+
+LATE_JOIN = textwrap.dedent("""
+    import os, signal, sys, threading, time
+    sys.path.insert(0, {tests!r})
+    from harness import qemu
+    real = qemu._group_kwargs
+    def held(pgid, ignore=()):
+        if pgid == 0:
+            return real(pgid, ignore)
+        # Test-only: QEMU's child waits before it joins the group, so the
+        # test process dies in the window between the fork and the join.
+        # process_group= has no hook, so both forms take preexec_fn here.
+        def join():
+            time.sleep(1.0)
+            os.setpgid(0, pgid)
+        return {{"preexec_fn": join}}
+    qemu._group_kwargs = held
+    def die():
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGKILL)
+    threading.Thread(target=die, daemon=True).start()
+    q = qemu.Qemu({binary!r}, "none", qmp=False)
+    print(q.tmpdir, flush=True)
+    q.start()
+    time.sleep(600)
+""")
+
+
+def test_qemu_never_runs_when_test_process_dies_before_the_join(fake):
+    # The test process dies after QEMU's fork, before the child joins the
+    # watcher's group. The watcher kills its group and exits, which may
+    # leave a zombie leader the child can still join. QEMU must not run.
+    code = LATE_JOIN.format(tests=TESTS, binary=str(fake))
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        tmpdir = child.stdout.readline().strip()
+        assert child.wait(5) == -signal.SIGKILL
+        time.sleep(1.5)  # the child joins, then would exec QEMU
+        assert not (fake.parent / "pids").exists(), "QEMU ran with no watcher"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+UNRELEASED = textwrap.dedent("""
+    import os, signal, sys
+    sys.path.insert(0, {tests!r})
+    from harness import qemu
+    def die(self):
+        # Test-only: the test process dies after the join, before it lets
+        # the launcher exec QEMU.
+        print(self.proc.pid, self.tmpdir, flush=True)
+        os.kill(os.getpid(), signal.SIGKILL)
+    qemu.Qemu._write_pidfile = die
+    qemu.Qemu({binary!r}, "none", qmp=False).start()
+""")
+
+
+def test_qemu_never_runs_when_test_process_dies_before_the_release(fake):
+    code = UNRELEASED.format(tests=TESTS, binary=str(fake))
+    child = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        pid, tmpdir = child.stdout.readline().split()
+        assert child.wait(5) == -signal.SIGKILL
+        assert gone(int(pid)), f"the launcher outlived its test process; {proc_state(pid)}"
+        assert not (fake.parent / "pids").exists(), "QEMU ran after its test process died"
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_vm_does_not_start_after_its_watcher_died(monkeypatch, fake):
+    # The watcher dies, not reaped yet, so its group still exists and
+    # the child joins it. start() must refuse to let QEMU run.
+    real = Qemu._start_watcher
+
+    def start_then_kill(self):
+        real(self)
+        self._watcher.kill()
+        while not qemu_mod.zombie(self._watcher.pid):
+            time.sleep(0.01)
+    if not state_works():
+        pytest.skip(NO_STATE)
+    monkeypatch.setattr(Qemu, "_start_watcher", start_then_kill)
+    q = Qemu(str(fake), "none", qmp=False)
+    with pytest.raises(qemu_mod.QemuError, match="cannot start QEMU"):
+        q.start()
+    assert not (fake.parent / "pids").exists(), "QEMU ran with a dead watcher"
+    assert not os.path.exists(q.tmpdir)
 
 
 def state_works():
