@@ -530,10 +530,10 @@ TEST(strerror_names)
 {
     int e;
 
-    for (e = 0; e >= FS_ERR_MOUNTED; e--) {
+    for (e = 0; e >= FS_ERR_GONE; e--) {
         CHECK(strcmp(fs_strerror(e), "unknown error") != 0);
     }
-    CHECK_STR(fs_strerror(FS_ERR_MOUNTED - 1), "unknown error");
+    CHECK_STR(fs_strerror(FS_ERR_GONE - 1), "unknown error");
     CHECK_STR(fs_strerror(1), "unknown error");
     CHECK_STR(fs_strerror(FS_ERR_NOSPC), "no space left");
 }

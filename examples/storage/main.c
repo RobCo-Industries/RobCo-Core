@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include <robco/blk.h>
+#include <robco/blk_ram.h>
 #include <robco/crc32.h>
 #include <robco/datetime.h>
 #include <robco/fs.h>
@@ -24,7 +25,16 @@
  *   recover <path>              fs_atomic_recover() after a power cut
  *   rm <path>, mv <a> <b>, mkdir <path>
  *   df, sync, umount, mount
+ *   mount ro                    mount partition 0 read-only
  *   ini <path> <section> <key>  read the file and look the key up
+ *
+ * Removable media, with the card pulled and put back through QMP:
+ *   hopen <path>, hread <n>, hclose   one file held open across commands
+ *   probe                       fs_probe(): is the card still there
+ *   changes                     the fs_changes() counter
+ *   eject                       fs_eject(): drop the volume, no I/O
+ *   sdinit                      sd_init() again, after a new card
+ *   ramfs                       format and mount a RAM volume "ram"
  *
  * rc= is the error name from fs_rc_name() below, or an INI name for ini.
  */
@@ -39,6 +49,10 @@
 static uint8_t buf[BUF_SIZE] __attribute__((aligned(8)));
 static part_info_t part;
 static fs_boot_t vol;
+static blk_dev_t ro_dev;
+static fs_file_t held;
+static uint64_t ram_words[128u * 1024u / 8u];
+static blk_dev_t ram_dev;
 
 /*
  * Pattern for put and atomic: byte i of the file is
@@ -80,6 +94,7 @@ static const char *fs_rc_name(int rc)
     case FS_ERR_MKFS:        return "mkfs";
     case FS_ERR_TOOBIG:      return "toobig";
     case FS_ERR_MOUNTED:     return "mounted";
+    case FS_ERR_GONE:        return "gone";
     default:                 return "unknown";
     }
 }
@@ -165,6 +180,49 @@ static int mount(void)
     }
     /* The fs_mount() error of the last volume tried, else no file system. */
     return rc != PART_BOOT_ERR_DEVICE && vol.last_err < 0 ? vol.last_err : FS_ERR_NOFS;
+}
+
+/* Partition 0, or the whole card without a table, mounted read-only. */
+static int mount_ro(void)
+{
+    part_info_t p;
+    int n;
+
+    if (sd_blkdev() == NULL) {
+        return FS_ERR_NOTREADY;
+    }
+    n = part_scan(sd_blkdev(), &p, 1);
+    if (n < 0) {
+        return FS_ERR_IO;
+    }
+    if (n == 0) {
+        return fs_mount_flags(VOL, sd_blkdev(), FS_MOUNT_RDONLY);
+    }
+    if (part_open(sd_blkdev(), &p, &ro_dev) != 0) {
+        return FS_ERR_IO;
+    }
+    return fs_mount_flags(VOL, &ro_dev, FS_MOUNT_RDONLY);
+}
+
+static void cmd_hread(uint32_t len)
+{
+    int rc = fs_read(&held, buf, len < BUF_SIZE ? len : BUF_SIZE);
+
+    k_printf("@RC stage=" STAGE " ev=hread rc=%s n=%d crc=0x%08x\n", fs_rc_name(rc),
+             rc > 0 ? rc : 0, (unsigned)(rc > 0 ? crc32_update(0, buf, (size_t)rc) : 0));
+}
+
+static void cmd_ramfs(void)
+{
+    int rc = blk_ram_init(&ram_dev, ram_words, sizeof(ram_words), 0) == 0 ? FS_OK : FS_ERR_INVAL;
+
+    if (rc == FS_OK) {
+        rc = fs_mkfs(&ram_dev, NULL);
+    }
+    if (rc == FS_OK) {
+        rc = fs_mount("ram", &ram_dev);
+    }
+    k_printf("@RC stage=" STAGE " ev=ramfs rc=%s\n", fs_rc_name(rc));
 }
 
 /* k_printf() has no 64-bit conversion. Writes v in decimal to out, 21 bytes. */
@@ -325,6 +383,24 @@ static void command(char *line)
         k_printf("@RC stage=" STAGE " ev=umount rc=%s\n", fs_rc_name(fs_unmount(VOL)));
     } else if (argc == 1 && k_strcmp(argv[0], "mount") == 0) {
         print_df("mount", mount());
+    } else if (argc == 2 && k_strcmp(argv[0], "mount") == 0 && k_strcmp(argv[1], "ro") == 0) {
+        print_df("mount", mount_ro());
+    } else if (argc == 2 && k_strcmp(argv[0], "hopen") == 0) {
+        k_printf("@RC stage=" STAGE " ev=hopen rc=%s\n", fs_rc_name(fs_open(&held, argv[1], FS_READ)));
+    } else if (argc == 2 && k_strcmp(argv[0], "hread") == 0) {
+        cmd_hread(num(argv[1]));
+    } else if (argc == 1 && k_strcmp(argv[0], "hclose") == 0) {
+        k_printf("@RC stage=" STAGE " ev=hclose rc=%s\n", fs_rc_name(fs_close(&held)));
+    } else if (argc == 1 && k_strcmp(argv[0], "probe") == 0) {
+        k_printf("@RC stage=" STAGE " ev=probe rc=%s\n", fs_rc_name(fs_probe(VOL)));
+    } else if (argc == 1 && k_strcmp(argv[0], "changes") == 0) {
+        k_printf("@RC stage=" STAGE " ev=changes n=%u\n", (unsigned)fs_changes());
+    } else if (argc == 1 && k_strcmp(argv[0], "eject") == 0) {
+        k_printf("@RC stage=" STAGE " ev=eject rc=%s\n", fs_rc_name(fs_eject(VOL)));
+    } else if (argc == 1 && k_strcmp(argv[0], "sdinit") == 0) {
+        k_printf("@RC stage=" STAGE " ev=sdinit rc=%s\n", sd_strerror(sd_init()));
+    } else if (argc == 1 && k_strcmp(argv[0], "ramfs") == 0) {
+        cmd_ramfs();
     } else {
         k_printf("@RC stage=" STAGE " ev=error what=unknown_command\n");
     }

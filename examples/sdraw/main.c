@@ -64,6 +64,10 @@ static void print_card(int rc)
              (unsigned)in->prv, (unsigned)in->psn, (unsigned)in->mdt_year,
              (unsigned)in->mdt_month, (unsigned)in->cid[0], (unsigned)in->cid[1],
              (unsigned)in->cid[2], (unsigned)in->cid[3]);
+    /* One run on a real board tells whether its slot reports card detect. */
+    k_printf("@RC stage=sdraw ev=detect present=0x%08x inserted=%u card_detect=%s\n",
+             (unsigned)in->present_state, (unsigned)(in->present_state >> 16) & 1u,
+             in->card_detect ? "reported" : "not_reported");
 }
 
 static void print_mbr(void)
