@@ -16,7 +16,7 @@ Two boot chains will use it:
 ## What exists today
 
 - Startup, board detection, the mailbox, exception reports and the stage handoff.
-- Drivers: PL011 UART and mini UART, system timer, interrupt controller, periodic tick, GPIO, reboot and halt, hardware RNG, framebuffer.
+- Drivers: PL011 UART and mini UART, system timer, interrupt controller, periodic tick, GPIO, reboot and halt, a hardware watchdog, hardware RNG, framebuffer.
 - An identity-mapped MMU with data and instruction caches, and cache maintenance for buffers shared with the GPU.
 - Storage: a block device interface, an SD card driver on the EMMC controller, a RAM disk, MBR partitions, a FAT12/16/32 file system over FatFs and a stage loader that loads the next image from the card with a fallback file.
 - Input from GPIO buttons, a rotary dial and serial lines, as one event queue.

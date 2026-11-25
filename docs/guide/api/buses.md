@@ -300,7 +300,7 @@ int spi_transfer(unsigned cs, const void *tx, void *rx, size_t len);
 int spi_write(unsigned cs, const void *tx, size_t len);
 ```
 
-`spi_transfer()` clocks `len` bytes full duplex. With `tx` NULL it sends zeros. With `rx` NULL it drops what comes in. Chip select stays asserted for the whole call. `len` 0 returns `0` and does nothing. `spi_write()` is `spi_transfer()` with `rx` NULL. Its `tx` must not be NULL when `len` is not 0. Each call has a deadline of 20 ms plus four times the wire time of `(len + 1) * 8` bits. A timeout clears the FIFOs and releases chip select, also inside a `spi_begin()` pair.
+`spi_transfer()` clocks `len` bytes full duplex. With `tx` NULL it sends zeros. With `rx` NULL it drops what comes in. Chip select stays asserted for the whole call. `len` 0 returns `0` and does nothing. `spi_write()` is `spi_transfer()` with `rx` NULL. Its `tx` must not be NULL when `len` is not 0. Each wait follows a progress rule. It fails only when no byte comes back for 20 ms plus four times the wire time of one byte, 32 bits at the rounded rate. The window restarts at every byte received, so a slow but moving transfer of any length completes. After the window ends, the driver reads the status once more, so a pause of the host or the CPU alone does not fail a transfer. A dead bus gives `SPI_ERR_TIMEOUT` within one window of the last byte: about 20 ms at 125 MHz and about 28.4 ms at 3.8 kHz, plus the time of one status read. `spi_end()` waits for DONE under the same window. A timeout clears the FIFOs and releases chip select, also inside a `spi_begin()` pair.
 
 ```c
 int spi_begin(unsigned cs);

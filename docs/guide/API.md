@@ -1,6 +1,6 @@
 # API reference
 
-This page and the topic files under [api/](./api/) list every public function, type and constant in `include/robco/`. This page holds the conventions, boot, board, the core drivers, the screen, images, boot info and faults. The topic files hold memory, storage, input, audio, the buses and the SPI display.
+This page and the topic files under [api/](./api/) list every public function, type and constant in `include/robco/`. This page holds the conventions, boot, board, the core drivers, the screen, images, boot info and faults. The topic files hold memory, storage, input, audio, the buses, the SPI display and the watchdog.
 
 Each function signature is copied from its header. `tools/check_docs.py` fails the build when a header declares a function that neither this page nor a topic file lists, or when one of them lists a function that no header declares.
 
@@ -14,6 +14,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | [SPI display](./api/display.md) | `tft.h` |
 | [User mode](./api/umode.md) | `umode.h` |
 | [GPIO expanders](./api/gpiox.md) | `gpiox.h` |
+| [Watchdog](./api/watchdog.md) | `wdog.h` |
 
 ## Contents
 
@@ -29,6 +30,7 @@ Each function signature is copied from its header. `tools/check_docs.py` fails t
 | `tick.h` | [Periodic tick](#periodic-tick-tickh) |
 | `gpio.h` | [GPIO](#gpio-gpioh) |
 | `power.h` | [Reboot and halt](#reboot-and-halt-powerh) |
+| `wdog.h` | [Hardware watchdog](./api/watchdog.md#hardware-watchdog-wdogh) |
 | `rng.h` | [Hardware RNG](#hardware-rng-rngh) |
 | `fb.h` | [Framebuffer](#framebuffer-fbh) |
 | `console.h` | [Screen console](#screen-console-consoleh) |
@@ -657,6 +659,8 @@ uint32_t power_reset_status(void);
 ```
 
 Returns the raw PM_RSTS register, or `0` on an unknown board. Read it early in `robco_main()` to see why the board reset.
+
+Both `power_reboot()` and `power_halt()` mask IRQs and FIQs first, so a running watchdog from [`wdog.h`](./api/watchdog.md#reboot-halt-and-panic) neither delays nor undoes them.
 
 ## Hardware RNG (`rng.h`)
 
