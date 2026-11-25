@@ -2,7 +2,7 @@
 
 These sections cover the holotape slot of the Pip-Boy HAT: a removable SD card on SPI0, read-only. `sdspi.h` holds the SD protocol in SPI mode. `holo.h` holds the slot: its pins, power, card detect and the `"holo0"` block device. Errors, init and context follow the [Conventions](../API.md#conventions).
 
-Nothing here has run on real hardware. The driver has run only against the host card model and, with no card, in QEMU. See [What is tested where](#what-is-tested-where).
+Nothing here has run on real hardware, the stepped attach included. The driver has run only against the host card model and, with no card, in QEMU. See [What is tested where](#what-is-tested-where).
 
 | Header | Section |
 |---|---|
@@ -33,6 +33,7 @@ The slot follows the software sequence of the HAT spec, section 4.12 of `pipboy-
 | `HOLO_ST_POWER` | `0x08u` | `HOLO_PWR` is high |
 | `HOLO_ST_BUS` | `0x10u` | `HOLO_BUS` is high |
 | `HOLO_ST_ATTACHED` | `0x20u` | The block device is live |
+| `HOLO_ST_ATTACHING` | `0x40u` | A stepped attach runs |
 | `HOLO_EV_INSERTED` | `0x1u` | The card became present, after the debounce |
 | `HOLO_EV_REMOVED` | `0x2u` | Card detect went high. The slot is off. |
 
@@ -76,7 +77,79 @@ Returns `HOLO_ST_*` bits for the pins and the driver state. `0` before `holo_ini
 int holo_attach(void);
 ```
 
-Runs the spec's sequence: detect stable, power on, wait `HOLO_POWER_MS`, bus on, the protocol's init, bus off. Then it registers `"holo0"`. Returns `0`, `0` again when already attached, `BLK_ERR_NOMEDIA` with no card, `SD_ERR_AGAIN` while the card settles or the off time runs, or another `SD_ERR_*`. On any error the bus and the power are off. It blocks for `HOLO_POWER_MS` plus the card's init: about 20 ms plus the card's own ACMD41 time, and 1.2 s at most for a card that stays busy.
+Runs the spec's sequence: detect stable, power on, wait `HOLO_POWER_MS`, bus on, the protocol's init, bus off. Then it registers `"holo0"`. Returns `0`, `0` again when already attached, `BLK_ERR_NOMEDIA` with no card, `SD_ERR_AGAIN` while the card settles or the off time runs, or another `SD_ERR_*`. On any error the bus and the power are off. It blocks for `HOLO_POWER_MS` plus the card's init: about 20 ms plus the card's own ACMD41 time, and 1.2 s at most for a card that stays busy. It is a loop over the two stepped calls below, so both share one implementation.
+
+```c
+int holo_attach_start(void);
+int holo_attach_step(void);
+```
+
+The same attach in steps, for a main loop that cannot block for 1.2 s. `holo_attach_start()` checks the card and the off time, powers the card and returns at once. It returns `0`, or the error `holo_attach()` would give before it powers anything: `BLK_ERR_NOMEDIA`, `SD_ERR_AGAIN` or `SD_ERR_BUS`. While an attach runs, it returns `0` and that attach goes on: no second power on. Already attached, it returns `0` and the next step returns `0`.
+
+`holo_attach_step()` does one bounded piece of work. It returns `SD_PENDING` while work remains, `0` once `"holo0"` is registered, or the error `holo_attach()` would give, with the bus and the power off. After a final result it returns that result until the next start.
+
+`SD_PENDING` is `1`. It is not `SD_ERR_AGAIN`, for two reasons. `SD_ERR_AGAIN` comes from the start and means nothing began: start again later. `SD_PENDING` means an attach runs: step again on the next pass. And `SD_PENDING` is positive, so `rc < 0` still means failed.
+
+A step never waits. Before `HOLO_POWER_MS` ran, or during the 1 ms pause between two CMD0 or two ACMD41 tries, it returns `SD_PENDING` at once with the bus off. Otherwise it turns the bus on, runs one protocol step and turns the bus off. Between two steps the bus is off, CS is high and SPI0 is free for the display.
+
+The bound: one step clocks at most `SDSPI_STEP_BYTES`, 64 bytes, at 400 kHz. That is about 1.3 ms of wire time. The largest step is a CMD9 or CMD10 with its data block, 31 bytes on the card model, about 0.63 ms of fake time. Card detect is read before each step and in every polled byte, so a pulled card ends the attach within one step.
+
+`holo_detach()` ends a running attach. So does `holo_poll()` when it sees card detect high. A `holo_poll()` with the card still in leaves the attach alone. Either way the next step returns `BLK_ERR_NOMEDIA`.
+
+These pairs are never split across two steps:
+
+| Pair | Why |
+|---|---|
+| The 80 start clocks with CS high, then the first CMD0 | The card counts the clocks from power up. CMD0 follows them at once. |
+| CMD55, then ACMD41 | CMD55 marks the next command as an application command. Nothing goes between them. |
+| A command, its reply, then CS high and 8 clocks | The card releases DO only after the 8 clocks. Each step ends with them, so the bus goes off with the card idle. |
+| CMD9 or CMD10, then its data block | The block follows the reply in the same transaction. |
+
+#### The stepped attach
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Power: holo_attach_start, card settled, off time over
+    Idle --> Idle: start fails, nomedia or again
+    Power --> Power: step before 10 ms, pending
+    Power --> Card: step after 10 ms
+    Card --> Card: step, one command, pending
+    Card --> Card: step during a retry pause, pending, bus off
+    Card --> Attached: step, last command, returns 0
+    Card --> Idle: step fails, slot off
+    Power --> Idle: card detect high, slot off
+    Card --> Idle: card detect high, holo_detach or holo_poll, slot off
+    Attached --> [*]
+```
+
+#### In a cooperative loop
+
+Start on `HOLO_EV_INSERTED`. Then run one step per loop pass, and let the rest of the loop run between them.
+
+```c
+static int attaching;
+
+void loop_pass(void)
+{
+    unsigned ev = holo_poll();
+
+    if ((ev & HOLO_EV_INSERTED) && holo_attach_start() == 0) {
+        attaching = 1;
+    }
+    if (attaching) {
+        int rc = holo_attach_step();
+
+        if (rc != SD_PENDING) {
+            attaching = 0;
+            /* rc 0: holo_blkdev() is live. */
+        }
+    }
+    /* sound, input and display work */
+}
+```
+
+An SDHC card that leaves idle at the fourth ACMD41 takes 10 steps that clock, plus the passes that only wait. Each extra busy ACMD41 adds one step and a 1 ms pause.
 
 ```c
 void holo_detach(void);
@@ -146,7 +219,8 @@ Never call `holo_*` or the block device from an interrupt handler. A read takes 
 
 | Code | Name | From `holo_attach()` |
 |---|---|---|
-| `BLK_ERR_NOMEDIA` | `nomedia` | Card detect high, before or during the attach |
+| `SD_PENDING` | `pending` | From `holo_attach_step()` only: the attach runs, step again |
+| `BLK_ERR_NOMEDIA` | `nomedia` | Card detect high, before or during the attach, or the attach was ended by `holo_detach()` or `holo_poll()` |
 | `SD_ERR_AGAIN` | `again` | Card detect not low for `HOLO_SETTLE_MS` yet, or the supply off less than `HOLO_OFF_MS` |
 | `SD_ERR_NOCARD` | `nocard` | No idle answer to CMD0 within 100 ms |
 | `SD_ERR_OLD` | `old` | CMD8 is illegal: a version 1 SD card or an MMC card |
@@ -188,6 +262,9 @@ Every error turns the bus and the power off and detaches. Call `holo_attach()` a
 | `SDSPI_R1_BYTES` | `9u` | Bytes polled for an R1 |
 | `SDSPI_INIT_US` | `1000000u` | ACMD41 tries until the card leaves idle |
 | `SDSPI_TOKEN_US` | `100000u` | Wait for a start token |
+| `SDSPI_RETRY_US` | `1000u` | Pause between two CMD0 or two ACMD41 tries |
+| `SDSPI_NCX_BYTES` | `16u` | Bytes polled for the CSD or CID token. Ncx is 8 at most. |
+| `SDSPI_STEP_BYTES` | `64u` | Bytes one init step clocks, at most |
 
 ```c
 typedef struct {
@@ -204,6 +281,13 @@ typedef struct {
     const sdspi_ops_t *ops;
     sd_info_t info;
     int ready;
+    /* stepped init state, private */
+    int phase;
+    int result;
+    uint32_t hz;
+    unsigned tries;
+    uint64_t deadline;
+    uint64_t wake_us;
 } sdspi_card_t;
 ```
 
@@ -213,7 +297,17 @@ typedef struct {
 int sdspi_card_init(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz);
 ```
 
-Sends 80 clocks with CS high, then CMD0 until the card answers idle, CMD8 with its echo check, CMD59 to turn CRC checks on, ACMD41 with the HCS bit, CMD58 for the CCS bit, CMD9 for the capacity, CMD10 for the identity and CMD16 on SDSC, all at `SDSPI_INIT_HZ`. Then it switches to `hz`. Every command carries its CRC7. Each command ends with CS high and 8 clocks. Returns `0` or `SD_ERR_*`, see the [errors](#errors).
+Sends 80 clocks with CS high, then CMD0 until the card answers idle, CMD8 with its echo check, CMD59 to turn CRC checks on, ACMD41 with the HCS bit, CMD58 for the CCS bit, CMD9 for the capacity, CMD10 for the identity and CMD16 on SDSC, all at `SDSPI_INIT_HZ`. Then it switches to `hz`. Every command carries its CRC7. Each command ends with CS high and 8 clocks. Returns `0` or `SD_ERR_*`, see the [errors](#errors). It is a loop over the stepped calls below: between two steps it waits `sdspi_init_wait_us()`.
+
+```c
+int sdspi_init_start(sdspi_card_t *c, const sdspi_ops_t *ops, uint32_t hz);
+int sdspi_init_step(sdspi_card_t *c);
+uint32_t sdspi_init_wait_us(const sdspi_card_t *c);
+```
+
+The same init in steps. `sdspi_init_start()` clocks nothing and returns `SD_PENDING`, or `SD_ERR_BUS` for bad arguments. Each `sdspi_init_step()` sets `SDSPI_INIT_HZ`, runs one phase and returns `SD_PENDING`, `0` when the card is ready, or `SD_ERR_*`. The last step sets `hz`. After a final result a step returns it again.
+
+The phases are the start clocks with the first CMD0, then one per command: CMD0 again until idle, CMD8, CMD59, CMD55 with ACMD41 until ready, CMD58, CMD9, CMD10 and CMD16 on SDSC. A step clocks `SDSPI_STEP_BYTES` at most and ends with CS high and 8 clocks. `sdspi_init_wait_us()` returns how long to wait before the next step: `SDSPI_RETRY_US` after a failed try, `0` otherwise. A step run sooner still runs and spends one of the tries.
 
 ```c
 int sdspi_card_read(sdspi_card_t *c, uint64_t lba, uint8_t *buf);
@@ -237,9 +331,9 @@ Returns the CRC16-CCITT of a data block: polynomial `0x1021`, initial value `0`.
 
 | Where | What |
 |---|---|
-| `tests/host/test_sdspi.c` | The protocol against the card model: SDHC and SDSC init, CID and CSD fields, refusals of version 1 and MMC cards, each init timeout, first, last and past-the-end blocks, an unaligned buffer, 4096 blocks compared with the backing array, each injected fault, and a pulled card at every byte of an init and of a read |
-| `tests/host/test_holo.c` | The slot on the real `spi0.c` over a fake controller and GPIO, with the model behind a model of the bus buffer: safe pins at init, the debounce, the pin order, the off time, reads, detach, removal at every byte of an attach and of a read with power and bus off after, re-attach, and display frames and card reads taking turns on SPI0 |
-| `tests/target/test_holo.py` | `examples/holo` in QEMU on four boards, with card detect driven through qtest. No card can attach to SPI0, so it checks only the no-card paths, the pin levels and that the example stays responsive. |
+| `tests/host/test_sdspi.c` | The protocol against the card model: SDHC and SDSC init, CID and CSD fields, refusals of version 1 and MMC cards, each init timeout, first, last and past-the-end blocks, an unaligned buffer, 4096 blocks compared with the backing array, each injected fault, a pulled card at every byte of an init and of a read, and the stepped init: steps per card type, a card busy for n polls, the step byte bound, CS high with 8 clocks after every step and CMD55 never apart from its ACMD41 |
+| `tests/host/test_holo.c` | The slot on the real `spi0.c` over a fake controller and GPIO, with the model behind a model of the bus buffer: safe pins at init, the debounce, the pin order, the off time, reads, detach, removal at every byte of an attach and of a read with power and bus off after, re-attach, display frames and card reads taking turns on SPI0, and the stepped attach: each card type, a card busy for n polls with the step count and the longest step, the byte bound under faults, a card pulled at every step boundary and at every byte, `holo_detach()` and `holo_poll()` mid-attach, a start while one runs, and a display transfer between every two steps that finds the bus off and CS high |
+| `tests/target/test_holo.py` | `examples/holo` in QEMU on four boards, with card detect driven through qtest. No card can attach to SPI0, so it checks only the no-card paths, for `a` and for the stepped `g`, the pin levels and that the example stays responsive. |
 | Hardware | Everything else. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md#holotape-slot). |
 
 The card model in `tests/host/sdcard_model.c` also checks the driver's side and fails a test on any break: a command before 74 clocks with CS high, MOSI low while CS is high or while the card sends, CS low again or the bus off without 8 clocks after CS rose, a clock over 400 kHz before ACMD41 finished, a bad CRC7, a write command, power on with no card, the bus on with the power off, the power off with the bus on, and power on less than 100 ms after it went off. The slot test also counts any display byte sent while `HOLO_BUS` is high.
