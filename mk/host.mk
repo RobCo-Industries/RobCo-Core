@@ -243,6 +243,15 @@ HOST_GW_STATE := $(shell \
 HOST_GW_INC := $(wordlist 2,$(words $(HOST_GW_STATE)),$(HOST_GW_STATE))
 
 HOST_GW_OUT := $(HOST_BUILD)/gccwarn
+# The .d files name each stamp as the rule spelled HOST_BUILD. When the
+# spelling differs from the one in $(HOST_GW_OUT)/.spelling, the stamps
+# go, so every file compiles again and the .d files take the new spelling.
+ifneq ($(strip $(HOST_BUILD)),)
+ifneq ($(shell cat '$(HOST_GW_OUT)/.spelling' 2>/dev/null),$(HOST_GW_OUT))
+$(shell rm -rf '$(HOST_GW_OUT)' && mkdir -p '$(HOST_GW_OUT)' && \
+  printf '%s\n' '$(HOST_GW_OUT)' > '$(HOST_GW_OUT)/.spelling')
+endif
+endif
 HOST_GW_BASE = -Werror -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -idirafter "$(HOST_GW_INC)"
 HOST_GW_CC = $(HOST_GCCWARN_CC) -c -o /dev/null -MMD -MT $@ -MF $(@:.ok=.d) $(HOST_GW_BASE)
 HOST_GW_FLAGS_ci = $(filter-out -g $(HOST_SAN_FLAGS),$(HOST_CFLAGS)) $(HOST_SAN_FLAGS)

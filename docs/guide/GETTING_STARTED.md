@@ -11,7 +11,7 @@ Every command on this page was run as written. The function reference is in [API
 | `arm-none-eabi-gcc` and binutils | Any recent release. CI uses Ubuntu 24.04's `gcc-arm-none-eabi`. | Building images |
 | `qemu-system-arm` and `qemu-system-aarch64` | 10.1.x. The tests are verified on 10.1.2. | Running images |
 | mtools (`mformat`, `mcopy`, `mmd`) | Any | SD card images in tests |
-| Python 3 with `venv` | Any 3.x supported by pytest 8. CI uses 3.12. | Sealing images and the test harness |
+| Python 3 with `venv` | 3.9 or later, as Pillow 11 needs. CI uses 3.12. | Sealing images and the test harness |
 | GNU make, git, a host C compiler | Any | Build, submodules, host unit tests |
 
 Older QEMU releases model the `raspi` machines differently. Ubuntu's packaged QEMU is 8.x, which is too old. The CI container in [ci/README.md](../../ci/README.md) holds the exact versions.
@@ -130,6 +130,8 @@ Every variable `mk/robco.mk` reads:
 | `SDIMAGE_MIB` | `64` | Card size in MiB |
 
 The fragment compiles every `.c` and `.S` file under `robco-core/src/*/` into `build/librobco.a`. The linker keeps only what your image uses.
+
+`BUILD` keeps the spelling you pass, relative or absolute. GCC writes that spelling into each `.d` dependency file, so the fragment records it in `$(BUILD)/.spelling`. When you switch spelling, the fragment deletes the `.o` and `.d` files under `$(BUILD)/obj` and `$(BUILD)/robco`, plus `librobco.a`, `image.ld` and the image's `.elf`, `.map`, `.img` and `.img.tmp` files. It rebuilds them once, and header dependencies work again. It keeps every other file in `$(BUILD)`, such as `sd.img` and `sdstage/` from `make sdimage`. `mk/host.mk` does the same for its warning checks under `HOST_BUILD`.
 
 ### robco_config.h
 

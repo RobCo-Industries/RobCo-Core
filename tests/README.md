@@ -438,6 +438,142 @@ either way: tests about the keep-alive pass `keepalive=` themselves. `Qemu` obje
 builds itself, such as the canary's, have no keep-alive. Neither has
 `Qemu.run_to_exit()`, which runs without QMP, nor `python3 -m harness.run`.
 
+## QEMU outlives no test process
+
+`Qemu.start()` first starts a small shell watcher as the leader of a new
+process group, then starts QEMU inside that group. The watcher blocks on
+a pipe from the test process. When that process dies, by a timeout, a
+signal, `SIGKILL` or an exit that skips `close()`, the pipe closes and
+the watcher kills its group: QEMU and itself.
+
+The order leaves no gap. QEMU's child joins the watcher's group, then
+waits in a small launcher shell. The test process lets it exec QEMU only
+after the join, while the test process and so the watcher still live.
+`close()` sends `SIGTERM` to QEMU's own pid,
+waits 3 seconds, then sends `SIGKILL` to that pid. It never signals the
+group, so the watcher gets nothing from `close()`. It then reaps QEMU,
+closes the pipe and reaps the watcher. The watcher kills the group on
+its way out, which takes any child QEMU left. A test process killed
+while `close()` waits for a slow QEMU still takes QEMU with it.
+
+The start sequence, step by step. "Dies" means `SIGKILL` to the test
+process right after that step.
+
+| Step | Process | If the test process dies here |
+| --- | --- | --- |
+| 1. Fork and exec the watcher, new group | Test process, watcher | The watcher's pipe closes. It exits with no QEMU |
+| 2. The watcher sets its trap, prints one byte | Watcher | Same |
+| 3. Fork QEMU's child | Test process | The child holds the watcher's pipe until its exec, so the watcher waits |
+| 4. The child joins the group | Child | Same. The join comes before the exec in both forms |
+| 5. The child execs the launcher shell | Launcher | The pipe now closes. The watcher kills the group, launcher included |
+| 6. Write the pidfile | Test process | Same. The launcher also reads end of file and exits |
+| 7. Check the watcher lives, send one line | Test process | The child is in the live group: the watcher kills it |
+| 8. The launcher execs QEMU, same pid | QEMU | The watcher kills the group |
+
+Step 3 is why the watcher cannot act before the join: a forked child
+keeps every fd of its parent until the exec, the watcher's pipe too.
+Step 7 is why QEMU cannot run in a dead group: the launcher waits for a
+line that only a live test process sends, after Popen returned, which is
+after the join. A watcher that died and was not reaped yet still leaves
+its group. Step 7 refuses it and `start()` raises `QemuError`. The
+launcher costs about a tenth of a millisecond on Linux.
+
+The child calls `setpgid()` before the exec. Python 3.11 and later pass
+`process_group` to `Popen`. Older ones call `os.setpgid()` from
+`preexec_fn`. If the watcher's group is gone, the call fails in the
+child, QEMU never runs and `start()` raises `QemuError`. Set
+`ROBCO_QEMU_PGID_FALLBACK=1` to force the older form. The orphan tests
+run once with each form.
+
+The group id never names a stranger. A group id stays taken while its
+leader lives, and the watcher outlives QEMU.
+
+The watcher ignores `SIGINT`, `SIGHUP` and `SIGTERM`, so a signal sent
+to the whole group from outside leaves it in place. In the `preexec_fn`
+form the child sets them to ignored before the exec, and an ignored
+signal stays ignored across it. The `process_group` form has no hook in
+the child, so the shell's `trap` does it. The watcher then prints one
+byte, and `start()` waits for that byte before it starts QEMU. Both
+forms run the trap and the wait, which costs about a millisecond.
+
+```mermaid
+sequenceDiagram
+    participant T as test process
+    participant W as watcher
+    participant Q as QEMU
+    T->>W: start, new group, pipe
+    W->>T: one byte after its trap
+    T->>Q: start the launcher in the watcher's group
+    T->>Q: one line: exec QEMU
+    alt close()
+        T->>Q: SIGTERM to QEMU, then SIGKILL
+        T->>T: reap QEMU
+        T->>W: close the pipe
+        W->>W: kill its group, exit
+        T->>T: reap the watcher
+    else test process dies
+        T--)W: pipe closes
+        W->>Q: SIGKILL to its group
+    end
+```
+
+The table lists each moment in the life of a VM, what can die there,
+and what is left to stop QEMU. "Dies" covers any end of the test
+process: `SIGKILL`, `SIGTERM`, a `pytest-timeout` kill or an exit that
+skips `close()`.
+
+| Moment or event | Who can die | What stops QEMU |
+| --- | --- | --- |
+| Before the watcher starts | Test process | No QEMU yet |
+| Watcher started, trap not set | Test process | No QEMU yet. The pipe closes and the watcher exits |
+| Watcher ready, QEMU not started | Test process | No QEMU yet. The watcher kills its group and exits |
+| Child forked, not in the group yet | Test process | The child holds the watcher's pipe, so the watcher waits for it |
+| Launcher in the group, not released | Test process | The launcher exits at end of file, and the watcher kills the group |
+| Both running | Test process | The watcher, at end of file on its pipe |
+| `close()` before its `SIGTERM` | Test process | The watcher |
+| `close()` after its `SIGTERM`, during its waits | Test process, QEMU | The watcher, since `close()` never signals it |
+| After QEMU is reaped | Test process, watcher | Nothing left to stop |
+| `SIGINT` from a terminal | Test process | QEMU's group is not the terminal's foreground group, so only pytest gets it. pytest runs `close()`, or dies and the watcher acts |
+| `SIGHUP` when the terminal closes | Test process | Same as `SIGINT`. A `SIGHUP` that does reach the group leaves the watcher, which ignores it |
+| `SIGTERM` or `SIGINT` to the whole group | QEMU | The watcher ignores both and stays |
+| `pytest-timeout` kills the test process | Test process | The watcher |
+| `pytest-timeout` thread method, process lives | Nothing | The fixture's `close()`, or the watcher when the session ends |
+| Outside `SIGKILL` to the watcher alone | Watcher | Nothing while the test process lives |
+
+The last row is the one gap: QEMU runs on with no watcher. `close()`
+still stops it: it signals QEMU's own pid, reaps it, then reaps the dead
+watcher. If the test process dies first, the next session's sweep kills
+that QEMU, since its pidfile names a dead owner.
+
+Each VM's temp folder holds `qemu.pid`: a `v2` tag, the QEMU pid, its
+start time, the test process pid and the process group, which is the
+watcher's pid. The start time is QEMU's own: the launcher becomes QEMU
+with the same pid, so the harness reads it before QEMU runs, the way
+the sweep reads it later. A late QEMU start on a busy machine thus
+cannot hide an orphan. The sweep skips a pidfile in the older form,
+which held the watcher's start time. At session start the plugin
+calls `sweep_stale()`. It kills a QEMU only when the test process is
+gone, the pid still leads that group and started at that time. It never
+matches QEMU by name, so your own QEMU is safe.
+
+The sweep is a courtesy, so no error in it stops a session. It never
+kills a process whose start time it cannot read, for example where `ps`
+may not run, and leaves that pidfile in place with one line on stderr.
+
+The sweep trusts a folder and its pidfile only when both belong to you,
+neither is a symbolic link and no group or other user may write them.
+The harness creates the folder with mode 0700 and the pidfile with mode
+0600. The sweep also kills only a process that runs as you.
+
+A zombie counts as dead. In a container whose process 1 reaps no child,
+such as the CI one, a dead orphan stays a zombie and `os.kill(pid, 0)`
+still finds it. The harness reads the state from `/proc` on Linux and
+from `ps` on macOS.
+
+Where it can read no process state at all, a zombie counts as alive.
+The sweep then kills nothing and reports the pidfiles it skipped, and
+the zombie tests skip.
+
 ## The harness in a project
 
 A project with RobCo-Core in `external/robco-core` enables the plugin
