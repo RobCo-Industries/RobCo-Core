@@ -131,7 +131,7 @@ Every variable `mk/robco.mk` reads:
 
 The fragment compiles every `.c` and `.S` file under `robco-core/src/*/` into `build/librobco.a`. The linker keeps only what your image uses.
 
-The fragment rewrites `BUILD` to one spelling: relative to the project when the folder is inside it, absolute otherwise. `mk/host.mk` does the same for `HOST_BUILD`. Header dependencies then hold whichever spelling you pass, but rules your Makefile spells with `$(BUILD)` before the `include` keep the old spelling, so put them after it.
+`BUILD` keeps the spelling you pass, relative or absolute. GCC writes that spelling into each `.d` dependency file, so the fragment records it in `$(BUILD)/.spelling`. When you switch spelling, the fragment deletes the objects and rebuilds them once, and header dependencies work again. `mk/host.mk` does the same for its warning checks under `HOST_BUILD`.
 
 ### robco_config.h
 

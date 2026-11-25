@@ -29,11 +29,20 @@ $(error CONFIG_H is not set)
 endif
 
 BUILD   ?= build
-# One spelling for BUILD: relative to the project when it is inside it,
-# absolute otherwise. gcc names the object in each .d file as the rule
-# spelled it, so `BUILD=build` and an absolute BUILD for the same folder
-# would not share header dependencies.
-override BUILD := $(patsubst $(CURDIR)/%,%,$(abspath $(BUILD)))
+# gcc names the object in each .d file as the rule spelled BUILD, so
+# `BUILD=build` and an absolute BUILD for the same folder miss each other's
+# header dependencies. $(BUILD)/.spelling records the spelling of the last
+# run. When it changes, the objects and .d files under $(BUILD)/obj and
+# $(BUILD)/robco are deleted, so they build again in the new spelling.
+# Deleted rather than made older: GNU make 3.81 sees mtimes in whole seconds.
+ROBCO_SPELLING := $(BUILD)/.spelling
+ifneq ($(strip $(BUILD)),)
+ifneq ($(shell cat '$(ROBCO_SPELLING)' 2>/dev/null),$(BUILD))
+$(shell mkdir -p '$(BUILD)' && \
+  find '$(BUILD)/obj' '$(BUILD)/robco' \( -name '*.o' -o -name '*.d' \) -type f -exec rm -f {} + 2>/dev/null; \
+  printf '%s\n' '$(BUILD)' > '$(ROBCO_SPELLING)')
+endif
+endif
 CROSS  ?= arm-none-eabi-
 CC      := $(CROSS)gcc
 AR      := $(CROSS)ar
