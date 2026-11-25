@@ -121,6 +121,10 @@ def test_slip_measures_late_writes_and_shortened_states():
     late, short = pigpio.slip(log)
     assert late == pytest.approx(0.004)
     assert short == pytest.approx(0.004)     # the state from 14 to 20 ms lasted 6 ms
+    # A late last write makes the state longer, not shorter.
+    assert pigpio.slip([(0.0, 0.0), (0.010, 0.010), (0.020, 0.025)])[1] == 0.0
+    # A late first write shortens the state after it.
+    assert pigpio.slip([(0.0, 0.005), (0.010, 0.010)])[1] == pytest.approx(0.005)
     # Two writes planned at the same time (a bounce) never count as shortened.
     assert pigpio.slip([(0.0, 0.0), (0.0, 0.001)]) == (pytest.approx(0.001), 0.0)
     assert pigpio.slip([]) == (0.0, 0.0)
