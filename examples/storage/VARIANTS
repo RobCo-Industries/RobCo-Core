@@ -1,2 +1,3 @@
 # <build-dir> <extra cflags>
 build/ro -DROBCO_FS_READONLY=1
+build/onevol -DROBCO_FS_VOLUMES=1
