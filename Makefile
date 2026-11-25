@@ -3,7 +3,7 @@ VENV := .venv
 SPIKES := s1-uart-hello s2-sd-read s3-fb-mmu
 MACHINES := raspi0 raspi1ap raspi2b raspi3b
 
-.PHONY: venv test test-host test-tools test-canary test-spikes test-examples test-target
+.PHONY: venv test test-host test-tools test-canary test-spikes test-examples test-target boot-json
 
 venv: $(VENV)/.installed
 
@@ -20,6 +20,18 @@ test: test-host test-tools test-docs test-canary test-spikes test-examples test-
 # Unit tests for the Python tools in tools/.
 test-tools: venv
 	$(VENV)/bin/pytest tests/tools -v
+
+# boot.json from the harness's boot_args(), for tools other than the harness.
+# Stdlib only. BOOT_JSON must be an absolute path. The recipe reads it from the
+# environment, so a space or a quote in it works. Make expands a dollar sign
+# before the shell sees it, so the target refuses one.
+BOOT_JSON ?= $(CURDIR)/build/boot.json
+boot-json: export BOOT_JSON := $(BOOT_JSON)
+boot-json:
+	@$(if $(findstring $$,$(value BOOT_JSON)),echo "boot-json: BOOT_JSON must not contain a dollar sign" >&2; exit 1)
+	@case "$$BOOT_JSON" in /*) ;; *) echo "boot-json: BOOT_JSON must be an absolute path, got '$$BOOT_JSON'" >&2; exit 1 ;; esac
+	mkdir -p "$$(dirname "$$BOOT_JSON")"
+	PYTHONPATH=tests $(PYTHON) -m harness.bootjson -o "$$BOOT_JSON"
 
 # Links, API coverage, checked commands and banned words in the Markdown files.
 test-docs:

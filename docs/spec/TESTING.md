@@ -115,7 +115,7 @@ The parking does not test the parking code in `start.S`. On `raspi3b` that code 
 
 `boot.json` holds the arguments of `boot_args()` as data, so a tool other than the Python harness boots a board the same way. Studio reads it from the `pipos` package, as [SDK_PACKAGE.md](./SDK_PACKAGE.md#layout-of-pipos) says.
 
-State today: no writer exists. The harness keeps its own board table in `tests/harness/boot.py` and `tests/fwstub/a64_shim.py`. A writer in the harness will produce `boot.json` from that table, so the boot rules keep one source, and a tool test will compare the two. The example below is what `boot_args()` gives today.
+State today: `tests/harness/bootjson.py` writes `boot.json` from the board table in `tests/harness/boot.py` and `tests/fwstub/a64_shim.py`. It calls `boot_args()` with the placeholders as paths, so the boot rules keep one source. From `tests/`, `python -m harness.bootjson` prints the file and `-o <file>` writes it. `make boot-json BOOT_JSON=<path>` writes it from the repository root, to `build/boot.json` by default. `BOOT_JSON` must be an absolute path, and the target fails on a relative one. A space or a quote in the path works. Make expands a dollar sign itself, so the target refuses a path with one. `tests/tools/test_boot_json.py` fills the placeholders for every board and mode and checks the result against `boot_args()`. It also checks that the file equals the example below.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
@@ -156,7 +156,14 @@ A tool builds the command line in this order, which is the harness's order:
 
 The mode arguments do what [Firmware stub plus loader](#firmware-stub-plus-loader) and [raspi3b](#raspi3b) describe. They load the stub at `0x0`, the image at `0x8000` and the four parameter words at `0x7F00`. The flags word is 1 only for `hyp` on `raspi2b`. On `raspi3b` it stays 0 in both modes, because the shim already enters HYP or SVC. There the mode arguments also load the seven shim words at `0x80000` and start all four cores there, CPU 0 first. The shim's third word differs between the two modes.
 
-A `boot.json` with a larger `format` fails. A tool ignores a field it does not know. A board or a mode the file does not list cannot boot, and the tool says so.
+A tool ignores a field it does not know. A board or a mode the file does not list cannot boot, and the tool says so. A reader also follows these rules:
+
+- `format`: a reader accepts exactly `1` and fails on any other value, lower or higher.
+- A `default_mode` that names a mode the board does not list makes the file invalid. A reader fails when it reads the file.
+- Only `{stub}`, `{image}` and `{sd}` exist. A string with any other placeholder makes the file invalid, and a reader fails when it reads the file.
+- A string that uses `{sd}` when the tool was given no SD image fails the boot. The reader never passes a placeholder through as text.
+
+The writer checks the first three rules on what it writes, and puts `{sd}` only in `sd`.
 
 The example, for every board the harness knows:
 
