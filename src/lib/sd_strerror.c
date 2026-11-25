@@ -6,6 +6,7 @@ const char *sd_strerror(int err)
 {
     switch (err) {
     case 0:              return "ok";
+    case SD_PENDING:     return "pending";
     case SD_ERR_BOARD:   return "board";
     case SD_ERR_CLOCK:   return "clock";
     case SD_ERR_RESET:   return "reset";
@@ -17,6 +18,7 @@ const char *sd_strerror(int err)
     case SD_ERR_OLD:     return "old";
     case SD_ERR_AGAIN:   return "again";
     case SD_ERR_BUS:     return "bus";
+    case SD_ERR_SLOW:    return "slow";
     default:             return blk_strerror(err);
     }
 }

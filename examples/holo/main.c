@@ -13,6 +13,8 @@
  * Holotape slot bring-up tool. Commands, one per line:
  *   p                  show the slot's pins and state
  *   a                  attach: power, init, register holo0
+ *   g                  the same attach in steps, one per loop pass; prints
+ *                      the step count and the longest step
  *   i                  print the card's identity, no serial number
  *   s                  print the identity with the serial number and raw CID
  *   r <lba> <count>    read blocks, print the CRC-32 of all bytes and the time
@@ -92,6 +94,47 @@ static void attach(void)
     }
 }
 
+/* Stepped attach: one holo_attach_step() per loop pass, as Pip-OS runs it. */
+static void attach_steps(void)
+{
+    uint64_t deadline = timer_now_us() + ATTACH_WAIT_MS * 1000ull;
+    uint64_t t0 = timer_now_us();
+    uint32_t max_us = 0;
+    unsigned steps = 0;
+    int rc;
+
+    for (;;) {
+        report(holo_poll());
+        rc = holo_attach_start();
+        if (rc != SD_ERR_AGAIN || timer_expired(deadline)) {
+            break;
+        }
+        timer_delay_ms(10);
+    }
+    while (rc == 0) {
+        uint64_t s0;
+        uint32_t us;
+
+        report(holo_poll());
+        s0 = timer_now_us();
+        rc = holo_attach_step();
+        us = (uint32_t)(timer_now_us() - s0);
+        steps++;
+        if (us > max_us) {
+            max_us = us;
+        }
+        if (rc != SD_PENDING) {
+            break;
+        }
+        rc = 0;
+    }
+    k_printf("@RC stage=holo ev=steps rc=%s steps=%u max_us=%u ms=%u\n", sd_strerror(rc), steps,
+             (unsigned)max_us, (unsigned)((timer_now_us() - t0) / 1000u));
+    if (rc == 0) {
+        print_card(0);
+    }
+}
+
 /* Parses up to `max` unsigned decimal numbers after the command letter. */
 static int parse_args(const char *s, uint32_t *out, int max)
 {
@@ -150,6 +193,9 @@ static void command(const char *line)
         break;
     case 'a':
         attach();
+        break;
+    case 'g':
+        attach_steps();
         break;
     case 'i':
         print_card(0);

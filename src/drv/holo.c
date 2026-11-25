@@ -13,6 +13,10 @@
  *   - Before each transfer the driver sets the CS pin, MISO's pull and the
  *     SPI rate and mode again. It saves nothing and assumes nothing.
  *   - Any error, or card detect high, turns the bus and the power off.
+ *
+ * The attach runs in steps, so a cooperative loop keeps turning:
+ * holo_attach_start() powers the card, each holo_attach_step() does one
+ * protocol step with the bus on around it. holo_attach() loops over them.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -45,6 +49,13 @@ static int cd_low;          /* card detect read low at the last sample */
 static uint64_t low_since;  /* when it went low */
 static int was_present;
 static uint64_t off_at;     /* when the supply last went off */
+
+/* Stepped attach. */
+enum { AT_IDLE, AT_POWER, AT_CARD };
+static int at_state;        /* AT_IDLE once a result is final */
+static int at_result;       /* what a step returns in AT_IDLE */
+static uint64_t power_at;   /* when the supply went on */
+static int at_blocking;     /* holo_attach(): the old token budget */
 
 static int cd_reads_low(void)
 {
@@ -88,6 +99,10 @@ static void set_power(int on)
 /* Bus low, then power low. The device stays and answers BLK_ERR_NOMEDIA. */
 static void slot_off(void)
 {
+    if (at_state != AT_IDLE) {
+        at_state = AT_IDLE;
+        at_result = BLK_ERR_NOMEDIA;
+    }
     if (bus_on) {
         (void)gpio_write(slot.cs_pin, 1);
         set_bus(0);
@@ -248,6 +263,8 @@ int holo_init(const holo_config_t *c)
     card.ready = 0;
     cd_low = 0;
     was_present = 0;
+    at_state = AT_IDLE;
+    at_result = BLK_ERR_NOMEDIA;
     /* The supply may have been on before a reset: count the off time from now. */
     off_at = timer_now_us();
     dev = (blk_dev_t){0};
@@ -292,50 +309,132 @@ unsigned holo_status(void)
     if (attached) {
         s |= HOLO_ST_ATTACHED;
     }
+    if (at_state != AT_IDLE) {
+        s |= HOLO_ST_ATTACHING;
+    }
     return s;
 }
 
-int holo_attach(void)
+/* Ends the running attach with rc: the slot goes off on an error. */
+static int attach_end(int rc)
+{
+    if (rc != 0) {
+        slot_off();
+    }
+    at_state = AT_IDLE;
+    at_result = rc;
+    return rc;
+}
+
+int holo_attach_start(void)
+{
+    if (!inited) {
+        return SD_ERR_BUS;
+    }
+    if (at_state != AT_IDLE) {
+        return 0;   /* one runs: it goes on */
+    }
+    if (attached) {
+        at_result = 0;
+        return 0;
+    }
+    if (!sample()) {
+        at_result = BLK_ERR_NOMEDIA;
+        return BLK_ERR_NOMEDIA;
+    }
+    if (!settled() || timer_now_us() - off_at < HOLO_OFF_MS * 1000ull) {
+        at_result = SD_ERR_AGAIN;
+        return SD_ERR_AGAIN;
+    }
+    set_power(1);
+    power_at = timer_now_us();
+    at_blocking = 0;
+    at_state = AT_POWER;
+    at_result = SD_PENDING;
+    return 0;
+}
+
+int holo_attach_step(void)
 {
     int rc;
 
     if (!inited) {
         return SD_ERR_BUS;
     }
-    if (attached) {
-        return 0;
+    if (at_state == AT_IDLE) {
+        return at_result;
     }
-    if (!sample()) {
-        return BLK_ERR_NOMEDIA;
-    }
-    if (!settled() || timer_now_us() - off_at < HOLO_OFF_MS * 1000ull) {
-        return SD_ERR_AGAIN;
-    }
-    set_power(1);
-    timer_delay_ms(HOLO_POWER_MS);
     if (!cd_reads_low()) {
-        slot_off();
-        return BLK_ERR_NOMEDIA;
+        return attach_end(BLK_ERR_NOMEDIA);
+    }
+    if (at_state == AT_POWER) {
+        if (timer_now_us() - power_at < HOLO_POWER_MS * 1000ull) {
+            return SD_PENDING;
+        }
+        rc = sdspi_init_start(&card, &slot_ops, slot.hz);
+        if (rc != SD_PENDING) {
+            return attach_end(rc);
+        }
+        at_state = AT_CARD;
+    }
+    if (sdspi_init_wait_us(&card) > 0) {
+        return SD_PENDING;
     }
     if (prepare(SDSPI_INIT_HZ) < 0) {
-        slot_off();
-        return SD_ERR_BUS;
+        return attach_end(SD_ERR_BUS);
+    }
+    if (at_blocking) {
+        sdspi_init_set_blocking(&card);
     }
     set_bus(1);
-    rc = sdspi_card_init(&card, &slot_ops, slot.hz);
+    rc = sdspi_init_step(&card);
     set_bus(0);
     if (!cd_reads_low()) {
-        slot_off();
-        return BLK_ERR_NOMEDIA;
+        return attach_end(BLK_ERR_NOMEDIA);
+    }
+    if (rc == SD_PENDING) {
+        return rc;
     }
     if (rc != 0) {
-        slot_off();
-        return rc;
+        return attach_end(rc);
     }
     dev.block_count = card.info.capacity_blocks;
     dev.flags = BLK_FLAG_READONLY | BLK_FLAG_REMOVABLE;
     attached = 1;
-    return 0;
+    return attach_end(0);
+}
+
+/* Microseconds until the running attach has work. */
+static uint32_t attach_wait_us(void)
+{
+    uint64_t t;
+
+    if (at_state == AT_POWER) {
+        t = timer_now_us() - power_at;
+        return t >= HOLO_POWER_MS * 1000ull ? 0 : (uint32_t)(HOLO_POWER_MS * 1000ull - t);
+    }
+    return at_state == AT_CARD ? sdspi_init_wait_us(&card) : 0;
+}
+
+int holo_attach(void)
+{
+    int rc = holo_attach_start();
+    uint32_t w;
+
+    if (rc != 0) {
+        return rc;
+    }
+    at_blocking = 1;
+    for (;;) {
+        rc = holo_attach_step();
+        if (rc != SD_PENDING) {
+            return rc;
+        }
+        w = attach_wait_us();
+        if (w > 0) {
+            timer_delay_us(w);
+        }
+    }
 }
 
 void holo_detach(void)

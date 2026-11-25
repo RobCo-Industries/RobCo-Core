@@ -405,6 +405,274 @@ TEST(removal_at_every_byte_of_read)
     free(b);
 }
 
+/*
+ * Stepped init. After every step: no more than SDSPI_STEP_BYTES clocked,
+ * CS high with its 8 trailing clocks, and CMD55 never left without its
+ * ACMD41. Between two steps the test waits as told, as a caller would.
+ */
+static unsigned steps;
+static uint64_t max_step_bytes;
+static unsigned split_pairs;
+static unsigned open_steps;
+
+static int run_steps(void)
+{
+    int rc = sdspi_init_start(&sc, &ops, RUN_HZ);
+
+    steps = 0;
+    max_step_bytes = 0;
+    split_pairs = 0;
+    open_steps = 0;
+    while (rc == SD_PENDING) {
+        uint64_t b0 = sent;
+        unsigned c55 = card.cmds[55];
+        unsigned c41 = card.cmds[41];
+        uint32_t w = sdspi_init_wait_us(&sc);
+
+        now_ns += (uint64_t)w * 1000u;
+        rc = sdspi_init_step(&sc);
+        steps++;
+        if (sent - b0 > max_step_bytes) {
+            max_step_bytes = sent - b0;
+        }
+        split_pairs += card.cmds[55] - c55 != card.cmds[41] - c41;
+        open_steps += !cs_high || card.cs_low || card.clocks_since_rise == 0;
+    }
+    return rc;
+}
+
+static void stepped(int kind, int want, unsigned want_steps)
+{
+    uint64_t one_shot;
+
+    CHECK_EQ(start(kind), want);
+    one_shot = sent;
+    fresh(kind);
+    CHECK_EQ(run_steps(), want);
+    CHECK_EQ(steps, want_steps);
+    CHECK_EQ(sent, one_shot);
+    CHECK(max_step_bytes <= SDSPI_STEP_BYTES);
+    CHECK_EQ(split_pairs, 0);
+    CHECK_EQ(open_steps, 0);
+    CHECK_EQ(sc.ready, want == 0);
+    /* A final result stays. */
+    CHECK_EQ(sdspi_init_step(&sc), want);
+    CHECK_EQ(sdspi_init_step(&sc), want);
+    NO_VIOLATION();
+    printf("  kind %d: %u steps, largest %llu bytes\n", kind, steps,
+           (unsigned long long)max_step_bytes);
+}
+
+/* SDHC: start+CMD0, CMD8, CMD59, 4 ACMD41 (3 busy), CMD58, CMD9, CMD10. */
+TEST(stepped_init_sdhc) { stepped(SDM_SDHC, 0, 10); }
+/* SDSC adds CMD16. */
+TEST(stepped_init_sdsc) { stepped(SDM_SDSC, 0, 11); }
+TEST(stepped_init_v1_and_mmc)
+{
+    stepped(SDM_V1, SD_ERR_OLD, 2);
+    stepped(SDM_MMC, SD_ERR_OLD, 2);
+}
+
+TEST(stepped_init_matches_the_blocking_one)
+{
+    sd_info_t a;
+
+    CHECK_EQ(start(SDM_SDHC), 0);
+    a = sc.info;
+    fresh(SDM_SDHC);
+    CHECK_EQ(run_steps(), 0);
+    CHECK_MEM(&sc.info, &a, sizeof(a));
+    CHECK_EQ(hz, RUN_HZ);
+}
+
+/* A card busy for n ACMD41 polls takes n more steps, each one short. */
+TEST(stepped_init_busy_card)
+{
+    static const unsigned busy[] = { 0, 1, 10, 200 };
+    unsigned i;
+
+    for (i = 0; i < sizeof(busy) / sizeof(busy[0]); i++) {
+        fresh(SDM_SDHC);
+        card.acmd41_busy = busy[i];
+        CHECK_EQ(run_steps(), 0);
+        CHECK_EQ(steps, 7u + busy[i]);
+        CHECK(max_step_bytes <= SDSPI_STEP_BYTES);
+        CHECK_EQ(split_pairs, 0);
+        NO_VIOLATION();
+    }
+}
+
+/* The pause between two ACMD41 tries is a wait the caller sees, never a delay. */
+TEST(stepped_init_retry_is_a_wait)
+{
+    unsigned i;
+    int rc;
+
+    fresh(SDM_SDHC);
+    card.acmd41_busy = 5;
+    CHECK_EQ(sdspi_init_start(&sc, &ops, RUN_HZ), SD_PENDING);
+    CHECK_EQ(sent, 0);
+    /* Start clocks and CMD0, CMD8, CMD59: no wait after them. */
+    for (i = 0; i < 3; i++) {
+        CHECK_EQ(sdspi_init_step(&sc), SD_PENDING);
+        CHECK_EQ(sdspi_init_wait_us(&sc), 0);
+    }
+    CHECK_EQ(sdspi_init_step(&sc), SD_PENDING);
+    CHECK_EQ(card.cmds[41], 1);
+    rc = sdspi_init_wait_us(&sc) > SDSPI_RETRY_US - 100u;
+    CHECK_EQ(rc, 1);
+    now_ns += 400000u;
+    CHECK(sdspi_init_wait_us(&sc) < SDSPI_RETRY_US - 300u);
+    now_ns += 700000u;
+    CHECK_EQ(sdspi_init_wait_us(&sc), 0);
+}
+
+TEST(stepped_init_never_ready_times_out)
+{
+    uint64_t t0;
+
+    fresh(SDM_SDHC);
+    card.faults = SDM_F_NEVER_READY;
+    t0 = now_ns;
+    CHECK_EQ(run_steps(), SD_ERR_BUSY);
+    CHECK((now_ns - t0) / 1000u >= SDSPI_INIT_US);
+    CHECK((now_ns - t0) / 1000u <= SDSPI_INIT_US + 50000u);
+    CHECK(max_step_bytes <= SDSPI_STEP_BYTES);
+    CHECK_EQ(sc.ready, 0);
+}
+
+TEST(stepped_init_bad_args)
+{
+    CHECK_EQ(sdspi_init_start(NULL, &ops, RUN_HZ), SD_ERR_BUS);
+    CHECK_EQ(sdspi_init_start(&sc, NULL, RUN_HZ), SD_ERR_BUS);
+    CHECK_EQ(sdspi_init_step(&sc), SD_ERR_BUS);
+    CHECK_EQ(sdspi_init_start(&sc, &ops, 0), SD_ERR_BUS);
+    CHECK_EQ(sdspi_init_step(NULL), SD_ERR_BUS);
+    CHECK_STR(sd_strerror(SD_PENDING), "pending");
+}
+
+/*
+ * Late data tokens after CMD9 and CMD10. `nac` is the bytes of 0xFF the
+ * card sends before the token. 28 is the most a step holds, 600 is 6 ms
+ * of fake time, well inside the 100 ms of the blocking budget.
+ */
+static const unsigned late_nac[] = { 0, 2, 8, 15, 16, 17, 28, 29, 40, 600 };
+#define FITS_STEP(n) ((n) + 1u <= SDSPI_STEP_TOKEN_BYTES)
+
+TEST(step_token_budget_fills_a_step)
+{
+    CHECK_EQ(SDSPI_STEP_TOKEN_BYTES, 29u);
+    CHECK_EQ(7u + SDSPI_R1_BYTES + SDSPI_STEP_TOKEN_BYTES + 16u + 2u + 1u, SDSPI_STEP_BYTES);
+    CHECK_STR(sd_strerror(SD_ERR_SLOW), "slow");
+}
+
+/* Failed before the token budget: nac 16 gave SD_ERR_CMD. */
+TEST(blocking_init_late_token_nac_16)
+{
+    fresh(SDM_SDHC);
+    card.nac = 16;
+    CHECK_EQ(sdspi_card_init(&sc, &ops, RUN_HZ), 0);
+    CHECK_EQ(sc.ready, 1);
+    NO_VIOLATION();
+}
+
+TEST(blocking_init_late_token)
+{
+    unsigned i;
+    int kind;
+
+    for (kind = SDM_SDHC; kind <= SDM_SDSC; kind++) {
+        for (i = 0; i < sizeof(late_nac) / sizeof(late_nac[0]); i++) {
+            fresh(kind);
+            card.nac = late_nac[i];
+            CHECK_EQ(sdspi_card_init(&sc, &ops, RUN_HZ), 0);
+            CHECK_EQ(card.cmds[9], 1);
+            CHECK_EQ(card.cmds[10], 1);
+            CHECK_EQ(cs_high, 1);
+            NO_VIOLATION();
+        }
+    }
+}
+
+TEST(stepped_init_late_token)
+{
+    unsigned i;
+
+    for (i = 0; i < sizeof(late_nac) / sizeof(late_nac[0]); i++) {
+        unsigned n = late_nac[i];
+
+        fresh(SDM_SDHC);
+        card.nac = n;
+        if (FITS_STEP(n)) {
+            CHECK_EQ(run_steps(), 0);
+            CHECK_EQ(steps, 10);
+            CHECK_EQ(card.cmds[9], 1);
+            CHECK_EQ(card.cmds[10], 1);
+        } else {
+            CHECK_EQ(run_steps(), SD_ERR_SLOW);
+            CHECK_EQ(steps, 8u + SDSPI_TOKEN_TRIES);
+            CHECK_EQ(card.cmds[9], SDSPI_TOKEN_TRIES);
+            CHECK_EQ(card.cmds[10], 0);
+            CHECK_EQ(sc.ready, 0);
+            CHECK_EQ(sc.info.capacity_blocks, 0);
+            CHECK_EQ(sdspi_init_step(&sc), SD_ERR_SLOW);
+        }
+        CHECK(max_step_bytes <= SDSPI_STEP_BYTES);
+        CHECK_EQ(open_steps, 0);
+        CHECK_EQ(split_pairs, 0);
+        NO_VIOLATION();
+    }
+}
+
+/* A late token is a retry: the next step sends CMD9 again, after a wait. */
+static int step_until_cmd(unsigned idx, unsigned count)
+{
+    int rc = SD_PENDING;
+
+    while (rc == SD_PENDING && card.cmds[idx] < count) {
+        now_ns += (uint64_t)sdspi_init_wait_us(&sc) * 1000u;
+        rc = sdspi_init_step(&sc);
+    }
+    return rc;
+}
+
+TEST(stepped_init_late_token_retries)
+{
+    unsigned idx;
+
+    for (idx = 9; idx <= 10; idx++) {
+        fresh(SDM_SDHC);
+        CHECK_EQ(sdspi_init_start(&sc, &ops, RUN_HZ), SD_PENDING);
+        if (idx == 10) {
+            CHECK_EQ(step_until_cmd(9, 1), SD_PENDING);
+        }
+        card.nac = 40;
+        CHECK_EQ(step_until_cmd(idx, 1), SD_PENDING);
+        CHECK(sdspi_init_wait_us(&sc) > SDSPI_RETRY_US - 100u);
+        CHECK_EQ(cs_high, 1);
+        CHECK_EQ(card.clocks_since_rise > 0, 1);
+        /* The card gets faster: the next try reads the register. */
+        card.nac = 2;
+        CHECK_EQ(step_until_cmd(11, 1), 0);
+        CHECK_EQ(card.cmds[idx], 2);
+        CHECK_EQ(card.cmds[idx == 9 ? 10 : 9], 1);
+        NO_VIOLATION();
+    }
+}
+
+/* The setter gives the stepped calls the blocking budget. */
+TEST(stepped_init_set_blocking)
+{
+    fresh(SDM_SDHC);
+    card.nac = 40;
+    CHECK_EQ(sdspi_init_start(&sc, &ops, RUN_HZ), SD_PENDING);
+    sdspi_init_set_blocking(&sc);
+    CHECK_EQ(step_until_cmd(11, 1), 0);
+    CHECK_EQ(card.cmds[9], 1);
+    sdspi_init_set_blocking(NULL);
+    NO_VIOLATION();
+}
+
 /* The model's own rule: a command with no start clocks gets SD mode garbage. */
 TEST(model_command_without_start_clocks)
 {

@@ -33,6 +33,7 @@
 #define HOLO_ST_POWER       0x08u   /* HOLO_PWR driven high */
 #define HOLO_ST_BUS         0x10u   /* HOLO_BUS driven high */
 #define HOLO_ST_ATTACHED    0x20u   /* the block device is live */
+#define HOLO_ST_ATTACHING   0x40u   /* a stepped attach runs */
 
 /* holo_poll() events. */
 #define HOLO_EV_INSERTED    0x1u    /* the card became present, debounced */
@@ -72,6 +73,31 @@ unsigned holo_status(void);
  * Blocks for HOLO_POWER_MS plus the card's init, about 1 s at most.
  */
 int holo_attach(void);
+
+/*
+ * The same attach in steps, for a main loop that cannot block 1 s.
+ * holo_attach() is a loop over these.
+ *
+ * holo_attach_start() checks the card and the off time and powers the
+ * card. It returns 0 at once, or the error holo_attach() would. With an
+ * attach already running it returns 0 and that attach goes on. Already
+ * attached, it returns 0 and the next step returns 0.
+ *
+ * holo_attach_step() does one bounded piece of work and returns
+ * SD_PENDING while work remains, 0 once "holo0" is registered, or the
+ * error holo_attach() would. After a final result it returns that result
+ * until the next start. A step waits for nothing: before HOLO_POWER_MS
+ * ran, or between two ACMD41 tries, it returns SD_PENDING at once. Else
+ * it turns the bus on, clocks one protocol step, SDSPI_STEP_BYTES at
+ * most, about 1.3 ms at 400 kHz, and turns the bus off. Between two
+ * steps the bus is off and SPI0 is free for the display.
+ *
+ * holo_detach(), and holo_poll() when it sees the card gone, end a
+ * running attach: the slot goes off and the next step returns
+ * BLK_ERR_NOMEDIA.
+ */
+int holo_attach_start(void);
+int holo_attach_step(void);
 
 /* Bus low, then power low. The device stays but returns BLK_ERR_NOMEDIA. */
 void holo_detach(void);
