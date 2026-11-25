@@ -128,7 +128,8 @@ temporary directory outside the repository and builds it there.
 - `fwstub/`: the firmware stub `boot()` loads at 0x0. It parks secondary
   cores, writes ATAGS at 0x100, switches to HYP on raspi2b and enters
   the image with r0 = 0, r1 = machine id, r2 = 0x100. `a64_shim.py`
-  holds the AArch64 words that drop raspi3b to AArch32 first.
+  holds the AArch64 words that drop raspi3b to AArch32 first. All four
+  raspi3b cores run them, so the stub parks cores 1 to 3 as on raspi2b.
 - `host/`: host unit tests, `rc_test.h`, the file-backed block device
   `blk_file.c` and `fs_tool.c`.
 - `target/`: tests that boot real images. `--board NAME` picks boards
@@ -182,13 +183,14 @@ temporary directory outside the repository and builds it there.
 | V9  | raspi0, 1ap, 2b | Mailbox channel 8 answers board revision, ARM memory, UART clock (3 MHz). | Property mailbox driver and UART baud setup. |
 | V10 | raspi0, 1ap, 2b | Timer C1 match sets CS bit 1 and IRQ 1 pending. Writing CS bit 1 clears it. | Timer interrupt driver. |
 | V11 | raspi0, 1ap, 2b | `-drive if=sd` attaches to the SDHCI (EMMC) controller. Size must be a power of 2. | SD driver targets EMMC. Disk images need padding. |
-| V12 | raspi0, 1ap, 2b | GPLEV0/1 read 0. | Undriven active-low lines look pressed: the stuck-line guard turns the GPIO backend off. V18 shows how to drive them. |
+| V12 | raspi0, 1ap, 2b | GPLEV0/1 read 0. | Undriven active-low lines look pressed: the stuck-line guard turns the GPIO backend off. V19 shows how to drive them. |
 | V13 | raspi0, 1ap, 2b | QMP `screendump` works headless and writes a PPM. | Framebuffer tests in CI. |
 | V14 | raspi0, 1ap, 2b | PM_WDOG then PM_RSTC full reset emits a QMP `RESET` event. | Reboot and watchdog tests. |
 | V15 | raspi0, 1ap, 2b | First `-serial` is the PL011, second is the mini UART. | Serial capture order in tests. |
 | V16 | raspi0, 1ap, 2b, 3b | SPI0 is modelled. With nothing attached a byte completes at once and reads 0. | SPI and TFT panel tests run on every board. |
 | V17 | raspi0, 1ap, 2b, 3b | `-device pca9554,bus=i2c-bus.1` answers at 0x20 to 0x27 and 0x38 to 0x3F with the data sheet power-on values. The register pointer keeps 2 bits and a multi-byte read repeats one register. QMP `qom-get` of `pinN` gives the config bit OR the output bit, so it shows outputs and reads inputs as high. qtest `set_irq_in <path> unnamed-gpio-in N level` sets an outside level that the input register ANDs with the chip's own drive, so 1 releases a line and 0 also pulls an output driven high to 0. `qom-set pinN` makes the pin an output at that level. | `test_gpiox.py` observes outputs with `qom-get` and drives inputs with qtest, never with `qom-set`, and releases every line before pins change direction. |
-| V18 | raspi0, 1ap, 2b, 3b | `bcm2835_gpio` has 54 output lines and no input lines. A qtest `writel` to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV0/1 bit, for input pins too, and the level stays. A write to GPLEV does nothing. A pull-up leaves an undriven pin at 0. The event detect registers read 0 and GPU IRQ 49 never goes pending. An output pin reads back its level in GPLEV. Under TCG one qtest write takes under 5 ms at the median, about 0.1 ms here, and guest timer time follows host time within 5 %. | `harness/pigpio.py` drives button and dial lines with GPSET and GPCLR. Tests drive every active-low line high before the guest starts. |
+| V18 | raspi3b | Cores 1 to 3 reset at 0x0 in AArch64 EL3 and, with A32 code there, spin on the EL3 vector at 0x200. With `boot()` they sit in the stub's AArch32 `wfi` loop. | Spinning spare cores slow every MMIO access of CPU 0. |
+| V19 | raspi0, 1ap, 2b, 3b | `bcm2835_gpio` has 54 output lines and no input lines. A qtest `writel` to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV0/1 bit, for input pins too, and the level stays. A write to GPLEV does nothing. A pull-up leaves an undriven pin at 0. The event detect registers read 0 and GPU IRQ 49 never goes pending. An output pin reads back its level in GPLEV. Under TCG one qtest write takes under 5 ms at the median, about 0.1 ms here, and guest timer time follows host time within 5 %. | `harness/pigpio.py` drives button and dial lines with GPSET and GPCLR. Tests drive every active-low line high before the guest starts. |
 
 V4 and V8 are not checked here.
 
@@ -236,7 +238,7 @@ QEMU is killed when the `with` block ends, even on failure.
 `vm.qmp.set_irq_in(path, n, level)` can drive a device's GPIO inputs.
 For the Pi's own GPIO pins, `gpio_high=[...]` drives those pins high
 before the guest starts, and `PiGpio` from `harness/pigpio.py` presses
-buttons and turns a dial (V18). `tests/target/test_input_gpio.py` shows
+buttons and turns a dial (V19). `tests/target/test_input_gpio.py` shows
 how, and `docs/spec/TESTING.md` lists the functions.
 
 The guest may still be printing when a test reads its output.

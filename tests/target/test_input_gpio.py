@@ -1,4 +1,4 @@
-"""Boot examples/input with real GPIO levels driven through qtest (canary V18).
+"""Boot examples/input with real GPIO levels driven through qtest (canary V19).
 
 Every active-low line starts high, so the stuck-line guard passes. The
 guest samples on its 100 Hz tick (10 ms) with a 20 ms debounce. Host

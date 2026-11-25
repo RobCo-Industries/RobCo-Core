@@ -187,7 +187,7 @@ Sets the pins to input with their pulls, then samples every pin from a tick call
 
 #### Dial speed
 
-The GPIO backend samples on the tick and takes no GPIO edge interrupt. QEMU models neither edge detection nor the GPIO interrupt (V18), so no test could cover that path. Sampling faster than the tick would need another system timer channel, and channels 0 and 2 belong to the GPU, 1 to the tick and 3 to PCM audio. A sample gap that hides one state between two seen states costs nothing. The decoder rules under [Pure modules](#pure-modules) say why.
+The GPIO backend samples on the tick and takes no GPIO edge interrupt. QEMU models neither edge detection nor the GPIO interrupt (V19), so no test could cover that path. Sampling faster than the tick would need another system timer channel, and channels 0 and 2 belong to the GPU, 1 to the tick and 3 to PCM audio. A sample gap that hides one state between two seen states costs nothing. The decoder rules under [Pure modules](#pure-modules) say why.
 
 Measured in QEMU at a 100 Hz tick, 4 transitions per detent, 20 detents each way per rate, 10 sweeps over all four boards, at a load average of 8 to 18 from other jobs:
 
@@ -480,7 +480,7 @@ A mechanical encoder usually has A, B and a common pin: wire common to ground. M
 
 ### Testing with real lines
 
-QEMU's GPIO model takes a level from outside: a qtest write to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV bit, input pins included (V18). `tests/harness/pigpio.py` does this. Pulls are not modelled, so an undriven line reads 0. Drive every active-low line high before the guest starts, or the stuck-line guard turns the backend off:
+QEMU's GPIO model takes a level from outside: a qtest write to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV bit, input pins included (V19). `tests/harness/pigpio.py` does this. Pulls are not modelled, so an undriven line reads 0. Drive every active-low line high before the guest starts, or the stuck-line guard turns the backend off:
 
 ```python
 with boot(img, board, qtest=True, gpio_high=[5, 6, 16, 23, 24]) as vm:

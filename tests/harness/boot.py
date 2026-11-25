@@ -10,7 +10,7 @@ Stdlib only. Usage:
 The image is loaded raw at 0x8000. A firmware stub (tests/fwstub) at 0x0
 parks secondary cores, writes ATAGS at 0x100, optionally switches to HYP
 and enters the image with r0 = 0, r1 = machine id, r2 = 0x100. On raspi3b
-an AArch64 shim at 0x80000 first drops CPU0 to AArch32.
+an AArch64 shim at 0x80000 first drops all four cores to AArch32.
 """
 
 import collections
@@ -351,6 +351,11 @@ def boot_args(image, board, mode="auto", sd=None):
     args += loader_words(PARAMS_ADDR, [PARAMS_MAGIC, b.mach_id, b.mem, flags])
     if b.a64:
         args += loader_words(a64_shim.ADDR, a64_shim.words(mode), entry=a64_shim.ADDR)
+        # Cores 1 to 3 run the shim too. The stub then parks them in an
+        # AArch32 wfi loop, as on raspi2b. Left alone they start in
+        # AArch64 at 0x0 and spin on an EL3 exception (canary V18).
+        for cpu in a64_shim.SECONDARY_CPUS:
+            args += ["-device", f"loader,addr={a64_shim.ADDR:#x},cpu-num={cpu}"]
     # Without a kernel, AArch32 cores reset at 0x0, where the stub is.
     # (A loader with addr=0 means "no address", so it cannot set the PC.)
     if sd is not None:
@@ -372,7 +377,7 @@ def boot(image, board, *, mode="auto", sd=None, serial2=False, extra_args=None,
     test can drive device inputs with vm.qmp.set_irq_in().
     gpio_high lists Pi GPIO pins driven high before the guest starts,
     through qtest (needs qtest=True). QEMU has no pulls, so an undriven
-    pin reads 0 (canary V18). harness/pigpio.py drives them afterwards.
+    pin reads 0 (canary V19). harness/pigpio.py drives them afterwards.
     """
     if board not in BOARDS:
         raise ValueError(f"unknown board {board!r}, expected one of {sorted(BOARDS)}")

@@ -83,7 +83,7 @@ Some tests attach more devices:
 
 ### raspi3b
 
-`raspi3b` exists only in `qemu-system-aarch64`, and its CPU always starts in AArch64 (V5). `tests/fwstub/a64_shim.py` holds seven AArch64 words. The harness loads them at `0x80000` and starts CPU 0 there. They drop CPU 0 to AArch32 HYP at `0x0`, the firmware stub:
+`raspi3b` exists only in `qemu-system-aarch64`, and its CPU always starts in AArch64 (V5). `tests/fwstub/a64_shim.py` holds seven AArch64 words. The harness loads them at `0x80000` and starts all four cores there. They drop each core to AArch32 HYP at `0x0`, the firmware stub:
 
 | Word | Instruction |
 |---|---|
@@ -95,7 +95,21 @@ Some tests attach more devices:
 | `0xD51E4020` | `msr elr_el3, x0` |
 | `0xD69F03E0` | `eret` |
 
-For `mode="svc"` the third word is `0xD2803A60`, `mov x0, #0x1D3`. The stub then runs as on the other boards, but never issues `smc`, because the CPU is already in the right mode. The other cores stay parked by QEMU. No AArch64 toolchain is needed.
+For `mode="svc"` the third word is `0xD2803A60`, `mov x0, #0x1D3`. The stub then runs as on the other boards, but never issues `smc`, because the CPU is already in the right mode. No AArch64 toolchain is needed.
+
+The stub reads MPIDR and parks cores 1 to 3 in its AArch32 `wfi` loop, as on `raspi2b`. Real firmware also parks them before the image runs. CPU 0 alone enters the image, so `start.S` runs on CPU 0 as before.
+
+```mermaid
+flowchart LR
+    R[All cores reset in AArch64 EL3] --> S[Shim at 0x80000]
+    S --> F[AArch32 stub at 0x0]
+    F -->|MPIDR 0| K[Image at 0x8000]
+    F -->|MPIDR 1 to 3| P[wfi loop in the stub]
+```
+
+Without the harness, QEMU starts cores 1 to 3 at `0x0` in AArch64 EL3 (V18). There they run the A32 stub as A64 code, fault, and spin on the EL3 vector at `0x200`. Each spinning core keeps one host thread busy and slows every MMIO access of CPU 0. A SPI panel test took 8 seconds instead of 1. The harness avoids that by starting the spare cores in the shim.
+
+The parking does not test the parking code in `start.S`. On `raspi3b` that code never runs on cores 1 to 3. The `-kernel` ELF runs on `raspi2b` cover it, because QEMU starts every core at the entry point there (V2).
 
 ### Guest state on timeout
 
@@ -131,7 +145,7 @@ Pi 2 runs only in QEMU. Real hardware is the authority for BCM2837, GPIO input, 
 
 | Gap | Fact | Coverage |
 |---|---|---|
-| GPIO input | An undriven pin reads 0 and pulls change nothing (V12, V18). There are no input lines, edge and level events are not modelled and no GPIO interrupt comes. A qtest write to GPSET0/1 or GPCLR0/1 sets the level of any pin (V18). | `test_input_gpio.py` drives buttons and the dial through `pigpio.py` on every board, and checks the stuck-line guard with every line low. Real contacts, pulls and edges run on the hardware checklist. |
+| GPIO input | An undriven pin reads 0 and pulls change nothing (V12, V19). There are no input lines, edge and level events are not modelled and no GPIO interrupt comes. A qtest write to GPSET0/1 or GPCLR0/1 sets the level of any pin (V19). | `test_input_gpio.py` drives buttons and the dial through `pigpio.py` on every board, and checks the stuck-line guard with every line low. Real contacts, pulls and edges run on the hardware checklist. |
 | PWM audio | Not modelled. Reading PWM data-aborts on `raspi0` and `raspi1ap` (V7). On `raspi2b` and `raspi3b` writes are dropped. | Host tests for the notes, the sequencer and the PCM engine. The audio driver probes PWM and falls back to the trace backend, which the target test checks. PCM on the trace backend runs the real timer channel 3 IRQ. Sound runs on the hardware checklist. |
 | Real SPI signalling | QEMU ignores the rate, the mode and chip select. | `test_spi.py` checks the data path with the flash model. Rates, modes and chip select levels run on the hardware checklist. |
 | Watchdog countdown | `bcm2835_powermgt` resets at the PM_RSTC write and does not count PM_WDOG. A reset clears PM_RSTS to `0x1000`. | `tests/host/test_wdog.c` checks every register write. `test_wdog.py` checks that an armed watchdog resets the board and skips the kick, stop, reboot and halt cases by name. They run on the hardware checklist. |
@@ -202,7 +216,8 @@ A bad run can still change the guest's state. A dial turn tried again may have l
 | V15 | First `-serial` is the PL011, second is the mini UART | Serial capture order |
 | V16 | SPI0 is modelled on every board. With nothing attached a byte completes at once and reads 0. | The SPI and TFT panel target tests |
 | V17 | QEMU's `pca9554` model answers on I2C bus 1 with the data sheet registers. qtest `set_irq_in` drives its input pins. | The GPIO expander target test |
-| V18 | The GPIO device has no input lines. A qtest write to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV0/1 bit, input pins included, in both banks. A write to GPLEV changes nothing. A pull-up leaves an undriven pin at 0. The event detect registers read 0 and GPU IRQ 49 never goes pending. An output pin reads back its level. With the guest running, one write takes under 5 ms at the median and guest timer time follows host time within 5 %. | `pigpio.py` and the GPIO button and dial target tests |
+| V18 | `raspi3b` resets cores 1 to 3 at `0x0` in AArch64 EL3. With A32 code there they spin on the EL3 vector at `0x200`. With `boot()` they sit in the stub's AArch32 `wfi` loop. | Parking the spare `raspi3b` cores |
+| V19 | The GPIO device has no input lines. A qtest write to GPSET0/1 or GPCLR0/1 sets or clears that pin's GPLEV0/1 bit, input pins included, in both banks. A write to GPLEV changes nothing. A pull-up leaves an undriven pin at 0. The event detect registers read 0 and GPU IRQ 49 never goes pending. An output pin reads back its level. With the guest running, one write takes under 5 ms at the median and guest timer time follows host time within 5 %. | `pigpio.py` and the GPIO button and dial target tests |
 
 V4 and V8 are not checked.
 

@@ -4,6 +4,7 @@ Each test names the fact it checks (V1, V2, ...). See tests/README.md.
 """
 
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -374,7 +375,56 @@ def test_v17_pca9554_pins_from_outside(binary, machine):
         assert bus.regs(0x20) == [0x7A, 0x5A, 0x00, 0x70]
 
 
-# V18: Pi GPIO levels from outside, through qtest writes to GPSET/GPCLR.
+# V18: where raspi3b's cores 1 to 3 start, and where the harness leaves them.
+WFI = 0xE320F003
+
+
+def cpu_states(q):
+    """[(pc, state)] per core from `info registers -a`. state is "EL3h" or "hyp32"."""
+    out = []
+    for blk in q.hmp("info registers -a").split("CPU#")[1:]:
+        pc = int(re.search(r"(?:\bPC|R15)=([0-9a-f]+)", blk).group(1), 16)
+        state = re.search(r"\b(EL\d[th]|usr32|svc32|hyp32|mon32|abt32|und32|irq32|fiq32)\b", blk)
+        out.append((pc, state.group(1) if state else "?"))
+    return out
+
+
+def test_v18_raspi3b_secondaries_start_at_0_in_el3():
+    """V18a: without help, raspi3b's cores 1 to 3 reset in AArch64 EL3 at 0x0 and trap at 0x200."""
+    need(A64, "raspi3b")
+    # A32 code at 0x0, as the firmware stub is: not valid A64 for the secondaries.
+    args = loader_words(0x80000, [0x14000000], entry=0x80000) + loader_words(0x0, [LOOP]) + ["-S"]
+    with Qemu(A64, "raspi3b", args) as q:
+        cpus = cpu_states(q)
+        assert cpus[1:] == [(0x0, "EL3h")] * 3, cpus
+        run_briefly(q)
+        cpus = cpu_states(q)
+    assert len(cpus) == 4, cpus
+    assert cpus[0] == (0x80000, "EL3h"), cpus
+    # The EL3 synchronous vector with VBAR_EL3 = 0: they loop there for good.
+    assert cpus[1:] == [(0x200, "EL3h")] * 3, cpus
+
+
+def test_v18_raspi3b_harness_parks_secondaries(tmp_path):
+    """V18b: with boot(), raspi3b's cores 1 to 3 sit in the stub's AArch32 wfi loop."""
+    need(A64, "raspi3b")
+    from harness.boot import boot
+    img = tmp_path / "kernel.img"
+    img.write_bytes(struct.pack("<I", LOOP))
+    with boot(str(img), "raspi3b", keepalive=False) as vm:
+        time.sleep(0.3)
+        q = vm.qmp
+        q.execute("stop")
+        cpus = cpu_states(q)
+        words = {pc: int(q.hmp(f"xp/1wx {pc:#x}").split()[1], 16) for pc, _ in cpus[1:]}
+    assert cpus[0] == (0x8000, "hyp32"), cpus
+    for pc, state in cpus[1:]:
+        assert state == "hyp32", cpus
+        assert pc < 0x8000, cpus  # in the stub, not the image
+        assert words[pc] in (WFI, 0xEAFFFFFD), (hex(pc), hex(words[pc]))  # wfi; b <wfi>
+
+
+# V19: Pi GPIO levels from outside, through qtest writes to GPSET/GPCLR.
 GPFSEL2, GPSET0, GPSET1, GPCLR0, GPCLR1 = 0x08, 0x1C, 0x20, 0x28, 0x2C
 GPLEV0, GPLEV1, GPPUD, GPPUDCLK0 = 0x34, 0x38, 0x94, 0x98
 # Event detect: status, rising, falling, high, low, async rising, async falling.
@@ -386,8 +436,8 @@ GPIO = {m: b + 0x200000 for m, b in PERIPH.items()}
 
 
 @pytest.mark.parametrize("binary,machine", GPIO_MACHINES, ids=[m for _, m in GPIO_MACHINES])
-def test_v18_gpio_level_from_gpset(binary, machine):
-    """V18a: GPSET/GPCLR set GPLEV on input pins too; GPLEV writes, pulls and events do nothing."""
+def test_v19_gpio_level_from_gpset(binary, machine):
+    """V19a: GPSET/GPCLR set GPLEV on input pins too; GPLEV writes, pulls and events do nothing."""
     need(binary, machine)
     g = GPIO[machine]
     with Qemu(binary, machine, qtest=True) as q:
@@ -424,8 +474,8 @@ def test_v18_gpio_level_from_gpset(binary, machine):
 
 
 @pytest.mark.parametrize("binary,machine", GPIO_MACHINES, ids=[m for _, m in GPIO_MACHINES])
-def test_v18_gpio_level_while_guest_runs(binary, machine, raw_image):
-    """V18b: under TCG a qtest level write takes well under 5 ms; guest time follows host time."""
+def test_v19_gpio_level_while_guest_runs(binary, machine, raw_image):
+    """V19b: under TCG a qtest level write takes well under 5 ms; guest time follows host time."""
     need(binary, machine)
     g, clo = GPIO[machine], PERIPH[machine] + 0x3004
     with Qemu(binary, machine, ["-kernel", raw_image], qtest=True, qtest_accel=None) as q:

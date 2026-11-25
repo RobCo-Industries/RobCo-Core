@@ -2,7 +2,7 @@
 
 QEMU's bcm2835_gpio has no input lines, but a qtest write to GPSET or
 GPCLR sets or clears the GPLEV bit of any pin, inputs included (canary
-V18). Pulls are not modelled, so an undriven pin reads 0: drive every
+V19). Pulls are not modelled, so an undriven pin reads 0: drive every
 active-low line high before the guest starts, with boot(..., qtest=True,
 gpio_high=[...]).
 
@@ -12,7 +12,7 @@ gpio_high=[...]).
         io.turn(23, 24, detents=3, state_s=0.02)
 
 The sequence functions are pure and need no QEMU. Timing follows the
-host clock, which QEMU's system timer tracks (V18); one level write takes
+host clock, which QEMU's system timer tracks (V19); one level write takes
 about 0.1 ms. The host scheduler adds jitter of about a millisecond.
 """
 
