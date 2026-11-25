@@ -123,7 +123,7 @@ typedef struct {
     uint8_t reverse;
     uint8_t rest;       /* the state at init, taken as a detent position */
     int8_t dir;         /* direction of the last single transition, 0 before one */
-    uint8_t pend;       /* a double transition left a detent: the next step decides its way */
+    uint8_t pend;       /* double transitions waiting for the next single step's way, 0 to 3 */
     uint32_t invalid;   /* double transitions: a state was missed */
 } input_quad_t;
 
@@ -135,14 +135,19 @@ typedef struct {
 void input_quad_init(input_quad_t *q, unsigned per_detent, int reverse, int a, int b);
 
 /*
- * Feeds one A/B sample. Returns the detent steps completed: -1, 0 or 1.
- * A double transition means a state was missed: it counts as two steps
- * in the last direction, or nothing before the first single step. With
- * 4 per detent, a double transition that leaves a detent waits for the
- * next single transition and takes its direction, so a turn back that
- * starts with a missed state still counts. On a rest state the decoder
- * rounds to the nearest detent and starts again, so a missed state costs
- * at most one step and never shifts the phase.
+ * Feeds one A/B sample. Returns the detent steps completed: -1, 0 or 1
+ * with 2 or 4 per detent, -7 to 7 with 1 per detent.
+ * A double transition means a state was missed. It counts as two
+ * transitions in the last direction, or nothing before the first single
+ * step. Two exceptions wait for the next single transition and take its
+ * direction: with 4 per detent, a double transition that leaves a detent,
+ * and with 1 per detent, a double transition before the first single step.
+ * With 1 per detent every state is a detent, so a double transition gives
+ * two steps at once and a missed state costs nothing while the dial keeps
+ * its direction. With 2 or 4 per detent, on a rest state the decoder
+ * rounds to the nearest detent and starts again, so a missed state never
+ * shifts the phase. A missed state that hides a turn back costs 4 steps
+ * with 1 per detent, 2 with 2 per detent and 1 with 4 per detent.
  */
 int input_quad_feed(input_quad_t *q, int a, int b);
 

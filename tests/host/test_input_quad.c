@@ -456,3 +456,183 @@ TEST(quad_rest_clears_any_history)
         CHECK_EQ(turn(&q, &pos, (i & 1) ? 16 : -16), (i & 1) ? 4 : -4);
     }
 }
+
+TEST(quad_one_per_detent_missed_state_both_ways)
+{
+    input_quad_t q;
+
+    /* The review case: 00 01 [11 missed] 10 00 is four steps, not three. */
+    input_quad_init(&q, 1, 0, 0, 0);
+    CHECK_EQ(run(&q, "1"), 1);
+    CHECK_EQ(run(&q, "2"), 2);
+    CHECK_EQ(run(&q, "0"), 1);
+    CHECK_EQ(q.acc, 0);
+    CHECK_EQ(q.invalid, 1);
+    /* The other way: 00 10 [11 missed] 01 00 is minus four. */
+    input_quad_init(&q, 1, 0, 0, 0);
+    CHECK_EQ(run(&q, "210"), -4);
+    CHECK_EQ(q.acc, 0);
+    /* Reversed wiring counts the other way. */
+    input_quad_init(&q, 1, 1, 0, 0);
+    CHECK_EQ(run(&q, "120"), -4);
+    /* Before any direction: 00 [01] 11 waits, 10 gives its way, so three at once. */
+    input_quad_init(&q, 1, 0, 0, 0);
+    CHECK_EQ(run(&q, "3"), 0);
+    CHECK_EQ(q.pend, 1);
+    CHECK_EQ(run(&q, "2"), 3);
+    CHECK_EQ(q.pend, 0);
+    /* Two waiting misses: 00 [01] 11 [10] 00, then 01 gives five. */
+    input_quad_init(&q, 1, 0, 0, 0);
+    CHECK_EQ(run(&q, "30"), 0);
+    CHECK_EQ(q.pend, 2);
+    CHECK_EQ(run(&q, "1"), 5);
+    CHECK_EQ(q.acc, 0);
+}
+
+/*
+ * Feeds a walk of moves (+-1 seen, +-2 one state missed) from Gray
+ * position 0, the rest state. Returns the total; *pos gets the true end.
+ */
+static int walk_moves(input_quad_t *q, int *pos, const int *moves, int n)
+{
+    int sum = 0, i;
+
+    for (i = 0; i < n; i++) {
+        *pos += moves[i];
+        sum += feed_pos(q, *pos);
+    }
+    return sum;
+}
+
+TEST(quad_every_pair_of_double_transitions)
+{
+    static const int pers[3] = { 1, 2, 4 };
+    int pi, off, pd, d1, d2, gap;
+
+    /*
+     * Rest at 00. Reach an offset with singles in pd, then a double in
+     * d1, gap singles in d2, a double in d2, and singles in d2 back to a
+     * rest. When the dial keeps one direction the total is exact. When a
+     * double hides a turn back, each wrong double costs 4 steps with 1
+     * per detent, 2 with 2 per detent and 1 with 4 per detent.
+     */
+    for (pi = 0; pi < 3; pi++) {
+        int per = pers[pi];
+
+        for (off = 0; off < 4; off++) {
+            for (pd = -1; pd <= 1; pd += 2) {
+                for (d1 = -1; d1 <= 1; d1 += 2) {
+                    for (d2 = -1; d2 <= 1; d2 += 2) {
+                        for (gap = 0; gap <= 1; gap++) {
+                            input_quad_t q;
+                            int mv[16], n = 0, k, pos = 0, sum, err;
+
+                            input_quad_init(&q, (unsigned)per, 0, 0, 0);
+                            mv[n++] = pd;
+                            for (k = 0; k < off; k++) {
+                                mv[n++] = pd;
+                            }
+                            mv[n++] = 2 * d1;
+                            for (k = 0; k < gap; k++) {
+                                mv[n++] = d2;
+                            }
+                            mv[n++] = 2 * d2;
+                            mv[n++] = d2;
+                            sum = walk_moves(&q, &pos, mv, n);
+                            while (((pos % per) + per) % per != 0) {
+                                pos += d2;
+                                sum += feed_pos(&q, pos);
+                            }
+                            err = sum - pos / per;
+                            if (d1 == pd && d2 == pd) {
+                                CHECK_EQ(err, 0);
+                            } else if (per == 1) {
+                                CHECK(err % 4 == 0 && err >= -8 && err <= 8);
+                            } else {
+                                /* Two doubles, each 4 / per steps off at most. */
+                                CHECK(err >= -2 * (4 / per) && err <= 2 * (4 / per));
+                            }
+                            CHECK_EQ(q.invalid, 2);
+                            CHECK_EQ(q.pend, 0);
+                            if (per > 1) {
+                                CHECK_EQ(q.acc, 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*
+ * A random walk sampled with misses. A miss hides one state of a move
+ * that keeps the direction of the seen move before it, and the move after
+ * it keeps that direction too, so the direction is known. Never two
+ * misses in a row. The reference is the true position: with 1 per detent
+ * the total equals it after every seen single move; with 2 or 4 the total
+ * equals the true detents on every seen rest state. Each walk then comes
+ * back to the start, with misses on the way, and the total must be 0.
+ */
+static void random_walks(int per)
+{
+    int w;
+
+    for (w = 0; w < 300; w++) {
+        input_quad_t q;
+        int pos = 0, sum = 0, dir = 0, i, n = 50 + (int)(rnd() % 200);
+        int start_miss = per != 2;      /* 2 per detent needs a known way first */
+        int force = 0;                  /* the move after a miss keeps its way */
+
+        input_quad_init(&q, (unsigned)per, 0, 0, 0);
+        for (i = 0; i < n || pos != 0; i++) {
+            int d, miss;
+
+            if (force) {
+                d = dir;
+            } else if (i >= n) {
+                d = pos > 0 ? -1 : 1;   /* head home */
+            } else {
+                d = (rnd() % 4 == 0) ? -dir : dir;
+                if (d == 0) {
+                    d = (rnd() & 1) ? 1 : -1;
+                }
+            }
+            miss = !force && (rnd() % 3 == 0) && (dir == d || (dir == 0 && start_miss))
+                   && (i < n || (pos - 2 * d) * (pos - 2 * d) < pos * pos);
+            if (miss) {
+                pos += 2 * d;
+                force = 1;
+            } else {
+                pos += d;
+                force = 0;
+            }
+            dir = d;
+            sum += feed_pos(&q, pos);
+            if (!miss) {
+                if (per == 1) {
+                    CHECK_EQ(sum, pos);
+                } else if (((pos % per) + per) % per == 0) {
+                    CHECK_EQ(sum, pos / per);
+                }
+            }
+        }
+        if (force) {
+            /* Ended on a miss: one more seen move each way keeps the end at 0. */
+            sum += feed_pos(&q, pos + dir);
+            sum += feed_pos(&q, pos);
+        }
+        CHECK_EQ(sum, 0);
+        CHECK_EQ(q.pend, 0);
+        if (per > 1) {
+            CHECK_EQ(q.acc, 0);
+        }
+    }
+}
+
+TEST(quad_random_walks_with_misses_match_the_truth)
+{
+    random_walks(1);
+    random_walks(2);
+    random_walks(4);
+}

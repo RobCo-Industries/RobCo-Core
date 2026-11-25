@@ -53,14 +53,18 @@ int input_quad_feed(input_quad_t *q, int a, int b)
     }
     if (move == BAD) {
         q->invalid++;
-        if (per == 4 && q->acc == 0 && at_rest(q, q->prev)) {
+        if ((per == 4 && q->acc == 0 && at_rest(q, q->prev)) || (per == 1 && q->dir == 0)) {
             /*
              * One state was missed just after a detent, where the dial
-             * may have turned back. Wait for the next single transition
-             * and count this one in its direction.
+             * may have turned back, or with 1 per detent before any
+             * direction is known. Wait for the next single transition
+             * and count this one in its direction. With 1 per detent a
+             * second such miss adds to the wait.
              */
             q->prev = cur;
-            q->pend = 1;
+            if (q->pend < 3) {
+                q->pend++;
+            }
             return 0;
         }
         /* One state was missed mid-detent. Assume the dial kept its last direction. */
@@ -68,7 +72,7 @@ int input_quad_feed(input_quad_t *q, int a, int b)
     } else {
         q->dir = (int8_t)move;
         if (q->pend) {
-            move *= 3;
+            move *= 1 + 2 * q->pend;
             q->pend = 0;
         }
     }
@@ -80,7 +84,11 @@ int input_quad_feed(input_quad_t *q, int a, int b)
         q->acc = -ACC_LIMIT;
     }
 
-    if (per > 1 && at_rest(q, cur)) {
+    if (per == 1) {
+        /* Every state is a detent: report every transition, two for a missed state. */
+        step = q->acc;
+        q->acc = 0;
+    } else if (at_rest(q, cur)) {
         /*
          * A rest state is a whole number of detents from the start, so acc
          * should be 0 or +-per here. Round it to the nearest detent, at
