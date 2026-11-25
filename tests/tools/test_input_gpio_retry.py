@@ -65,9 +65,10 @@ class DialVm:
     """A guest whose dial counts what each turn is told to count, with a tick gap per turn."""
 
     def __init__(self, runs):
-        self.runs = list(runs)      # (steps counted, longest tick gap in s) per turn
+        self.runs = list(runs)      # (steps counted, longest tick gap in s[, ticks missed]) per turn
         self.dial = 0
         self.gap = 0.0
+        self.missed = 0
         self.events = []
         self.serial = ""
 
@@ -75,13 +76,14 @@ class DialVm:
         if cmd == "totals":
             return Reply(f"dial0={self.dial} dial1=0 dropped=0")
         assert cmd == "ticks"
-        return Reply(f"count=1 missed=0 maxgap={int(self.gap * 1e6)} jitter=1000")
+        return Reply(f"count=1 missed={self.missed} maxgap={int(self.gap * 1e6)} jitter=1000")
 
     def markers(self):
         return self.events
 
     def turn(self):
-        steps, self.gap = self.runs.pop(0)
+        steps, self.gap, *missed = self.runs.pop(0)
+        self.missed += missed[0] if missed else 0
         self.dial += steps
         sign = "1" if steps > 0 else "-1"
         self.events += [{"stage": "input", "ev": "event", "src": "gpio", "type": "dial",
@@ -139,3 +141,91 @@ def test_a_step_outside_every_turn_still_fails(monkeypatch):
 def test_a_judged_turn_that_lost_a_step_still_fails(monkeypatch):
     with pytest.raises(AssertionError):
         run_dial_bounce(monkeypatch, [(3, GOOD), (-4, GOOD)])
+
+
+def test_a_turn_with_a_missed_tick_and_a_small_gap_is_tried_again(monkeypatch):
+    # A stall before the first callback: the gap looks good, a tick was missed.
+    vm = run_dial_bounce(monkeypatch, [(3, GOOD, 1), (4, GOOD), (-4, GOOD)])
+    assert vm.runs == [] and vm.dial == 3
+
+
+def test_a_turn_with_no_missed_tick_and_a_good_gap_is_judged(monkeypatch):
+    vm = run_dial_bounce(monkeypatch, [(4, GOOD), (-4, GOOD)])
+    assert vm.runs == [] and vm.dial == 0
+
+
+class TapVm:
+    """A guest that gives a press and a release per tap, with a tick gap and missed ticks per tap."""
+
+    def __init__(self, runs, repeats=0):
+        self.runs = list(runs)      # (longest tick gap in s, ticks missed) per tap
+        self.repeats = repeats
+        self.gap = 0.0
+        self.missed = 0
+        self.events = []
+        self.serial = ""
+        self.taps = 0
+
+    def script(self, cmd):
+        assert cmd == "ticks"
+        return Reply(f"count=1 missed={self.missed} maxgap={int(self.gap * 1e6)} jitter=1000")
+
+    def markers(self):
+        return self.events
+
+    def tap(self, name):
+        self.taps += 1
+        self.gap, missed = self.runs.pop(0)
+        self.missed += missed
+        ev = [("1",)] + [("2",)] * self.repeats + [("0",)]
+        self.events += [{"stage": "input", "ev": "event", "src": "gpio", "type": "key",
+                         "code": name, "value": v} for (v,) in ev]
+
+
+class TapIo:
+    def __init__(self, vm):
+        self.vm = vm
+
+    def tap(self, name, hold_s):
+        self.vm.tap(name)
+
+
+def test_a_held_tap_with_a_missed_tick_and_a_small_gap_is_tried_again():
+    vm = TapVm([(0.010, 1), (0.010, 0)])
+    got = gpio_test.held_tap(vm, TapIo(vm), "select")
+    assert vm.taps == 2 and got == [("key", "select", 1), ("key", "select", 0)]
+
+
+def test_a_held_tap_with_no_missed_tick_and_a_good_gap_is_judged():
+    vm = TapVm([(0.010, 0)])
+    gpio_test.held_tap(vm, TapIo(vm), "select")
+    assert vm.taps == 1
+
+
+def run_repeat(monkeypatch, runs):
+    vm = TapVm(runs, repeats=7)
+
+    class Boot:
+        def __enter__(self):
+            return vm
+
+        def __exit__(self, *exc):
+            return False
+
+    clock = iter(range(1000))
+    monkeypatch.setattr(gpio_test, "boot", lambda *a, **k: Boot())
+    monkeypatch.setattr(gpio_test, "start", lambda v: TapIo(v))
+    # Each tap holds 1 s on the fake clock.
+    monkeypatch.setattr(gpio_test.time, "perf_counter", lambda: float(next(clock)))
+    gpio_test.test_gpio_repeat("raspi2b", lambda *a: "image")
+    return vm
+
+
+def test_a_repeat_with_a_missed_tick_and_a_small_gap_is_tried_again(monkeypatch):
+    vm = run_repeat(monkeypatch, [(0.010, 1), (0.010, 0)])
+    assert vm.taps == 2
+
+
+def test_a_repeat_with_no_missed_tick_and_a_good_gap_is_judged(monkeypatch):
+    vm = run_repeat(monkeypatch, [(0.010, 0)])
+    assert vm.taps == 1
