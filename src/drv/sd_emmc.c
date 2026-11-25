@@ -32,6 +32,7 @@
 
 #define SR_CMD_INHIBIT  (1u << 0)
 #define SR_DAT_INHIBIT  (1u << 1)
+#define SR_CARD_INSERTED (1u << 16)
 
 #define C0_POWER_3V3    (0xfu << 8)
 
@@ -618,6 +619,20 @@ static int xfer_retry(uint64_t lba, uint32_t n, uint8_t *buf, int write)
     return rc;
 }
 
+/*
+ * After a failed transfer: when the controller says no card is inserted,
+ * the card left. Report no medium until sd_init() runs again. Only failures
+ * look at the bit, so a slot whose detect line reads wrong still works.
+ */
+static int failed(int rc)
+{
+    if (rc != 0 && rc != BLK_ERR_RANGE && (rd(EMMC_STATUS) & SR_CARD_INSERTED) == 0) {
+        ready = 0;
+        return BLK_ERR_NOMEDIA;
+    }
+    return rc;
+}
+
 static int rw(uint64_t lba, uint32_t count, uint8_t *buf, int write)
 {
     if (!ready) {
@@ -640,14 +655,14 @@ static int rw(uint64_t lba, uint32_t count, uint8_t *buf, int write)
             int one = xfer_retry(lba + i, 1, buf + (size_t)i * BLK_SECTOR_SIZE, write);
 
             if (one != 0) {
-                return one;
+                return failed(one);
             }
             if (i == n - 1) {
                 rc = 0;
             }
         }
         if (rc != 0) {
-            return rc;
+            return failed(rc);
         }
         lba += n;
         count -= n;
@@ -672,7 +687,7 @@ static int sd_write(blk_dev_t *d, uint64_t lba, uint32_t count, const void *buf)
 static int sd_sync(blk_dev_t *d)
 {
     (void)d;
-    return ready ? wait_card_ready() : BLK_ERR_NOMEDIA;
+    return ready ? failed(wait_card_ready()) : BLK_ERR_NOMEDIA;
 }
 
 int sd_init(void)
