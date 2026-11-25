@@ -62,7 +62,7 @@ The Pi firmware has its own rule, and it runs before any RobCo code. It loads th
 
 ### BOOT.CFG
 
-`/ROBCO/BOOT.CFG` is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), which parses this example as it stands, section names with a space included. `tests/host/test_ini.c` reads the example from this file. MFBootAgent reads `[boot]` and the `[entry NAME]` sections. RETROS-BIOS reads `[bios]`.
+`/ROBCO/BOOT.CFG` is INI text in the syntax of [`ini.h`](../guide/api/buses.md#configuration-files-inih), which parses this example as it stands, section names with a space included. `tests/host/test_ini.c` reads the example from this file. MFBootAgent reads `[boot]` and the `[entry NAME]` sections. RETROS-BIOS reads `[bios]`. The maintenance image reads `[maint]`.
 
 ```
 [boot]
@@ -119,7 +119,7 @@ Rules:
 - `timeout` follows the number rule of `delay_ms`: one or more ASCII digits and nothing else. A value above 99 becomes 99 and counts as `clamped`. A bad value counts as `bad`, and the menu waits as with no key.
 - `timeout = 0` shows the menu, then boots the default entry at once. With no `timeout` key the menu waits for a key.
 - A `default` that names no entry in a slot, or no `default` key, means the first slot. A `default` that names a dropped or ignored section counts the same way.
-- Unknown keys, keys before the first section and keys in unknown sections count as `unknown`. MFBootAgent skips `[bios]` without a count.
+- Unknown keys, keys before the first section and keys in unknown sections count as `unknown`. MFBootAgent skips `[bios]` and `[maint]` without a count.
 - A line that does not parse makes the whole file bad. A file that parses but leaves no entry with a usable path is bad too, also an empty file.
 - A missing file, a read error or a bad file gives the menu with one entry, `UOS` at `/ROBCO/UOS.SYS`, and no timeout. The `config` marker reports each case.
 
@@ -178,6 +178,22 @@ Key names and the words of `beep` and `scheme` are case-insensitive.
 A `delay_ms` value is one or more ASCII digits and nothing else. Leading zeros are fine. A sign, a space inside the number, a unit such as `ms` or any other character makes the value bad. A run of digits past 4294967295 saturates there. A value above 10000 is then clamped to 10000. So `delay_ms = 1000000000` gives 10000, and `delay_ms = 10ms` is bad. With `delay_ms = 0` there is no key window.
 
 A bad value or an unknown key in `[bios]` is skipped and counted, and the key keeps its default. A line that does not parse as INI makes the whole file bad: every key takes its default. A missing file means the defaults too. The `config` marker reports each case.
+
+#### The `[maint]` section
+
+The [maintenance image](#maintenance-image) reads only the `[maint]` section and ignores every other section. MFBootAgent and RETROS-BIOS ignore `[maint]` without a count.
+
+| Key | Values | Default |
+|---|---|---|
+| `restore_users` | `on`, `off` | `off` |
+
+- The key name and the words are case-insensitive.
+- `on` turns the restore users tool on. Any other value keeps it off.
+- A value other than `on` or `off` is bad. It counts as `bad`, and the tool stays off.
+- An unknown key in `[maint]` counts as `unknown` and is skipped.
+- `[maint]` given twice acts as one section. A key given twice takes its last value.
+- A missing file, a read error or a line that does not parse leaves the tool off. The `config` marker of the maintenance image reports each case.
+- The shipped card leaves the key `off`.
 
 ## Registers at entry
 
@@ -343,7 +359,8 @@ A later stage keeps the screen the earlier stage left on. It passes the `fb_*` f
 | 0 | The loader used a fallback file, such as `MFBOOT.BAK` |
 | 1 | The user asked for maintenance mode |
 | 2 | The writing stage cold-booted and built the block itself |
-| 3 to 31 | Reserved, 0 |
+| 3 | Maintenance was asked by a request file. See [Maintenance request](#maintenance-request). Bit 1 is set too. |
+| 4 to 31 | Reserved, 0 |
 
 ## Trust rule
 
@@ -470,12 +487,16 @@ A marker may carry more keys than the table below lists, and a stage may print e
 | `countdown` | `state`, then `seconds` | Second stage: `state=start` with `seconds` when the menu shows with a timeout above 0, `state=stopped` when a key stops it |
 | `select` | `index name` | Second stage: the selection moved. `index` counts from 1. |
 | `choose` | `index name path via` | Second stage: an entry is to boot. `via` is `key` or `timeout`. |
+| `maint_req` | `result rc` | Second stage: the [maintenance request](#maintenance-request) check, once per boot. `result` is `none`, `found` or `clear_failed`. `rc` is `0`, or the file system code of the failed delete. |
+| `maint_open` | `why` | Second stage: the maintenance screen opened. `why` is `key`, `button`, `port`, `flag` or `request`. |
+| `tool` | `name result`, then tool keys | Maintenance image: one tool ended. See [Maintenance image markers](#maintenance-image-markers). |
 
 | Stage | Must emit |
 |---|---|
 | `bios` | `boot`, `init`, `input`, `post`, `post_done`, `mount`, `config`, `settings`, `beep`, `key_window`, `key_window_end`, `load`, `fallback`, `error`, `bootinfo`, `jump`, `shell`, `shell_cmd`, `diag`, `diag_done`, `idle` |
-| `bootagent` | `boot`, `handoff`, `input`, `screen`, `selfcheck`, `mount`, `config`, `entries`, `ready` when the menu shows, `choose`, `load`, `error`, `bootinfo`, `jump`, `idle` |
-| `uos`, `maint`, `diag` | `boot`, `handoff`, `ready` |
+| `bootagent` | `boot`, `handoff`, `input`, `screen`, `selfcheck`, `mount`, `maint_req`, `maint_open`, `config`, `entries`, `ready` when the menu shows, `choose`, `load`, `error`, `bootinfo`, `jump`, `idle` |
+| `uos`, `diag` | `boot`, `handoff`, `ready` |
+| `maint` | `boot`, `handoff`, `config`, `ready`, `tool` |
 | `pipos` | `boot`, `load`, `error`, `jump` for the ROM, `rom_exit`, `rom_kill`, `shell`, `holo_launch`, `holo_exit`, `holo_kill` |
 | `deitrix` | `boot`, `ready` |
 
@@ -525,6 +546,9 @@ Memory runs first because everything after it needs memory. Video runs before th
 | MFBootAgent | The chosen entry fails | `ev=error`. Shows the error under the menu and stays in the menu. The countdown does not start again. |
 | MFBootAgent | `BOOT.CFG` missing, bad or with no usable entry | Menu with the default entry only |
 | MFBootAgent | No card answers or no volume mounts | `ev=error code=io` with `what=sd` or `what=fat`, `BOOT HALTED` on screen, then `ev=idle`. The maintenance port keeps answering. |
+| MFBootAgent | `/ROBCO/MAINT.REQ` exists and its delete fails | `ev=maint_req result=clear_failed`. Opens the maintenance screen once with a notice. See [Maintenance request](#maintenance-request). |
+| Maintenance image | A tool fails | `ev=tool` with the result. The tool shows the error, writes nothing more and returns to the menu. |
+| Maintenance image | Boot info not trusted | Cold-boots, starts its own screen and runs |
 | UOS | Boot info not trusted | Cold-boots and runs |
 | Pip-OS | `ROM1.ROM` fails any step | `ev=error`, then the emergency shell |
 | Pip-OS | A holotape fails any step | `ev=error`. The `launch` syscall returns an error to Deitrix. |
@@ -618,9 +642,140 @@ Before the jump MFBootAgent unmounts the volume and calls `bootinfo_build()` wit
 | `boot_part_lba` | First block of its boot volume |
 | `boot_path` | `path` of the chosen entry |
 | `cmdline` | `cmdline` of the chosen entry, or empty |
-| `boot_flags` | Bit 0 cleared, since it loaded no fallback file. The other bits stay as received. |
+| `boot_flags` | Bit 0 cleared, since it loaded no fallback file. Bits 1 and 3 set when a [maintenance request](#maintenance-request) was found this boot. Bit 1 set when the person opened the maintenance screen this boot. The other bits stay as received. |
 
 It then calls `bootinfo_seal()` and jumps with r2 set to the firmware blob copy, or 0 when there is none.
+
+## Maintenance request
+
+A maintenance request asks the next boot to open the maintenance screen of MFBootAgent. It survives a reset because it is a file on the card. UOS writes it for `SET HALT /MAINTENANCE`.
+
+### The file
+
+- The request is the file `/ROBCO/MAINT.REQ` on the boot volume. Its presence is the request.
+- Its content is one optional line of at most 63 printable ASCII bytes, 0x20 to 0x7E, for a person to read, such as who asked. A line may end with CR, LF or CRLF.
+- A reader ignores a longer content or a byte outside that range, and still honours the file. An empty file is a valid request.
+- Nothing else carries a request. No register, no boot info field and no command line does.
+
+### Writer
+
+Any operating image may write the request. UOS does it this way:
+
+1. It checks that the user is privileged. That rule is UOS's own.
+2. It writes `/ROBCO/MAINT.REQ` with one atomic write, `fs_write_file_atomic()`.
+3. When the write fails, it reports the error and does not restart.
+4. It restarts the terminal through the watchdog.
+
+### Reader
+
+MFBootAgent reads the request once per boot. RETROS-BIOS never looks at it. The agent:
+
+1. Mounts the boot volume, by the rule in [Boot volume markers](#boot-volume-markers).
+2. Before the menu shows and before the countdown starts, looks for `/ROBCO/MAINT.REQ`. With no file it prints `maint_req result=none rc=0` and goes on as before.
+3. Reads the line, if any, and keeps it for the screen.
+4. Deletes the file with `fs_unlink()`. Delete first makes the request one-shot: a fault later cannot make the terminal start in maintenance for ever.
+5. Prints `maint_req result=found rc=0` when the delete worked, or `maint_req result=clear_failed rc=<code>` when it failed.
+6. Sets `boot_flags` bits 1 and 3 for the next image.
+7. Shows the menu with no countdown, then opens the maintenance screen and prints `maint_open why=request`. The screen shows the request line, if any. No image boots without a key.
+
+The agent can delete this one file. It mounts the boot volume with write support, and it writes nothing else on the card.
+
+A request and a held BACK button together count as a request: the marker says `why=request`.
+
+### Failure cases
+
+| Case | Marker | What the person sees |
+|---|---|---|
+| No file | `maint_req result=none rc=0` | The normal menu and countdown |
+| An empty file, or a content that is too long or not printable | `maint_req result=found rc=0`, `maint_open why=request` | The maintenance screen, with no request line |
+| The delete fails, for a locked or read-only card or an I/O error | `maint_req result=clear_failed rc=<code>`, `maint_open why=request` | The maintenance screen, with a notice that the request could not be cleared and comes back at each start until the file is removed |
+| The person closes the screen and picks an entry | `choose`, `load`, `jump` as usual | The chosen image starts. Bits 1 and 3 are set in its boot info. |
+
+The agent never loops on its own. Honouring a request means opening the maintenance screen, where a person decides. With a delete that keeps failing, every start opens the screen again with the notice.
+
+```mermaid
+sequenceDiagram
+    participant U as UOS
+    participant C as SD card
+    participant B as RETROS-BIOS
+    participant A as MFBootAgent
+    U->>C: Write /ROBCO/MAINT.REQ, atomic
+    U->>U: Restart through the watchdog
+    B->>C: Load /ROBCO/MFBOOT.SYS
+    B->>A: Jump
+    A->>C: Mount the boot volume
+    A->>C: Read /ROBCO/MAINT.REQ
+    A->>C: Delete /ROBCO/MAINT.REQ
+    A->>A: maint_req result=found, set boot_flags bits 1 and 3
+    A->>A: Open the maintenance screen, maint_open why=request
+```
+
+### Compatibility
+
+- An agent that predates the request ignores the file. The file then stays on the card, harmless, until a newer agent or a person removes it.
+- An operating image that predates bit 3 ignores it.
+- `boot_flags` bit 1 keeps its meaning.
+
+## Maintenance image
+
+`/ROBCO/MAINT.SYS` is the tool a person at the terminal uses when UOS cannot be used. It is an operating image: magic `BOOT`, subtype 2, loaded into the OS slot at `0x00400000`. It is built in the MFBootAgent repository, like `DIAG.SYS`. Its stage id is 4 and its marker name `maint`.
+
+### Authority
+
+The image needs no login. Physical presence at the terminal, with its card, is the authority, as for the BIOS shell. Anyone who can hold a button at power-on reaches this image. So the one tool that changes accounts, restore users, is off unless `BOOT.CFG` turns it on with `[maint] restore_users = on`. A terminal on show must not hand its accounts to a passer-by. A person who can edit `BOOT.CFG` on a computer already holds the card, so the setting gives away nothing new.
+
+### Start
+
+- The boot entry `MAINT` starts it, from the menu or from the maintenance screen.
+- It applies the [trust rule](#trust-rule). With a trusted block it adopts the agent's screen, as `DIAG.SYS` does. Alone, or with a block it does not trust, it starts its own screen.
+- It mounts the boot volume, reads the `[maint]` section of `BOOT.CFG`, then shows its menu and prints `ready`.
+- It is driven by the console keys, the six buttons and the maintenance port, with a menu like `DIAG.SYS`.
+
+### Tools
+
+Version 1 has these tools and no other.
+
+| Tool | Reads | Writes |
+|---|---|---|
+| Check card | Every folder and every file of the boot volume, each file whole | Nothing. Reports each error with its path, and the free space. |
+| Check images | Every image file in `/ROBCO`, validated with the steps of [IMAGE_FORMAT.md](./IMAGE_FORMAT.md) | Nothing. Shows the result per file. |
+| View file | One text file, shown in a pager. `BOOT.CFG`, `UOS.CFG`, `DEVICES.CFG` and `TERMINAL.CFG` are offered by name. It does not parse them. | Nothing |
+| Set clock | The DS1338 real-time clock, when one answers | The time on the clock. With no clock, the tool says so. |
+| Restore users | `/UOS/SYSUAF.DEF` | `/UOS/SYSUAF.DAT`. Off unless `[maint] restore_users = on`. |
+| Restart | Nothing | Nothing. Restarts the terminal through the watchdog. |
+
+Restore users is the way back in when every password is lost. It copies bytes and knows nothing of the format. It:
+
+1. Shows that the setting disables it, and does nothing, when `restore_users` is not `on`.
+2. Checks that `/UOS/SYSUAF.DEF` exists and is not empty. Otherwise it says so and changes nothing.
+3. Asks a question that names both files and takes an explicit yes.
+4. Writes a temporary file, then renames it over `/UOS/SYSUAF.DAT`, with `fs_write_file_atomic()`. A power cut leaves the old or the new file whole.
+
+### Writes
+
+- Every tool that writes says what it will write before it does, and writes nothing without a yes.
+- Check card, check images and view file never write. A write guard in front of the card counts and refuses any write while they run, as in `DIAG.SYS`. A count above 0 fails the tool.
+
+### Maintenance image markers
+
+The image prints `boot`, `handoff`, `ready`, then:
+
+| Event | Keys | Meaning |
+|---|---|---|
+| `config` | `result path restore_users bad unknown`, or `why` | Reading `[maint]`. `result` is `ok`, `missing` or `bad`. `restore_users` is `on` or `off`. |
+| `tool` | `name result`, then tool keys | One tool ended. `name` is `check_card`, `check_images`, `view_file`, `set_clock`, `restore_users` or `restart`. `result` is `ok`, `fail`, `absent`, `off` or `refused`. The read-only tools add `writes`, the guard's count. |
+
+`restart` prints its `tool`, then `reboot`.
+
+### Out of scope
+
+Version 1 does not edit a config file, format the card, repair a file system, change one user's password or use the network.
+
+### What each project does
+
+- MFBootAgent reads and clears the request as [Reader](#reader) states, skips `[maint]` in `BOOT.CFG` without a count, offers the `MAINT` entry on its maintenance screen, and builds `MAINT.SYS`.
+- UOS writes the request for `SET HALT /MAINTENANCE`, and ships `/UOS/SYSUAF.DEF` on its card image.
+- RETROS-BIOS does nothing.
 
 ## Third-stage markers
 
