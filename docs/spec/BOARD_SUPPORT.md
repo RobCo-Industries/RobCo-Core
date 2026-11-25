@@ -150,7 +150,7 @@ GPIO 24, the usual reset pin in panel guides, is Dial B in the input mapping abo
 
 ### SD card pin routing
 
-On boards with WiFi (Pi 3, Zero W, Zero 2 W) the firmware routes the card to the SDHOST controller on GPIO 48 to 53 and the EMMC controller to the WiFi chip on GPIO 34 to 39. `sd_init()` drives the card through EMMC. It sets GPIO 34 to 39 to input when any of them is at ALT3, and GPIO 48 to 53 to ALT3 when any of them is not. WiFi stops working after this. The routing is pending hardware validation on the Pi 3 and the Zero 2 W.
+On boards with WiFi (Pi 3, Zero W, Zero 2 W) the firmware routes the card to the SDHOST controller on GPIO 48 to 53 and the EMMC controller to the WiFi chip on GPIO 34 to 39. `sd_init()` drives the card through EMMC. It sets GPIO 34 to 39 to input when any of them is at ALT3, and GPIO 48 to 53 to ALT3 when any of them is not. WiFi stops working after this. On a Zero W 1.1, `sd_init()` brought up an SDHC card through EMMC and read it on 2026-11-24, see [the sdraw result](../HARDWARE_VALIDATION.md#zero-w-11-examplessdraw-2026-11-24). So that board needs no SDHOST driver to read the card. The pin states before and after were not captured. The routing is pending hardware validation on the Pi 3 and the Zero 2 W.
 
 ## config.txt
 

@@ -315,7 +315,7 @@ Sharp edges:
 | WiFi is lost. | The pin routing above takes EMMC away from the WiFi chip. |
 | No card detect. | A card pulled out after init shows up as timeouts or I/O errors. Call `sd_init()` again. |
 
-Pending hardware validation: the pin routing, the 25 MHz clock and the retry path are verified in QEMU only. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md).
+Pending hardware validation: the pin routing, the 25 MHz clock and the retry path are verified in QEMU only, with one exception. On a Zero W 1.1, `sd_init()` and reads up to 256 blocks worked with one SDHC card on 2026-11-24, with the driver set to 25 MHz. Writes, SDSC cards, retries and every other board are still unvalidated. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md#zero-w-11-examplessdraw-2026-11-24).
 
 From [`examples/sdraw`](../../../examples/sdraw/main.c), which reads and writes raw blocks from UART commands:
 
