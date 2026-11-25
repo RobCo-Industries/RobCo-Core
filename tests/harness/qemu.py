@@ -358,6 +358,19 @@ def loader_words(addr, words, entry=None):
     return args
 
 
+def parse_hmp_registers(text):
+    """`info registers` text to a dict of QEMU register name -> int."""
+    regs = {}
+    for tok in text.replace("\r", "").split():
+        if "=" in tok:
+            k, _, v = tok.partition("=")
+            try:
+                regs[k] = int(v, 16)
+            except ValueError:
+                pass
+    return regs
+
+
 class Qemu:
     def __init__(self, binary, machine, args=(), qmp=True, qtest=False,
                  serial_count=0, timeout=20.0, null_serial=True, qtest_accel="qtest"):
@@ -857,16 +870,31 @@ class Qemu:
         return self.command("human-monitor-command", {"command-line": command}, timeout)
 
     def registers(self):
-        """Parse `info registers` into a dict of name -> int (CPU0)."""
-        regs = {}
-        for tok in self.hmp("info registers").replace("\r", "").split():
-            if "=" in tok:
-                k, _, v = tok.partition("=")
-                try:
-                    regs[k] = int(v, 16)
-                except ValueError:
-                    pass
-        return regs
+        """Parse `info registers` into a dict of name -> int (CPU0).
+
+        The keys are QEMU's names. AArch32 state gives R00..R15 and PSR.
+        AArch64 state gives X00..X30, SP, PC and PSTATE, with no R15:
+        raspi3b runs its AArch64 shim first. Use registers_a32() to read
+        AArch32 names right after start.
+        """
+        return parse_hmp_registers(self.hmp("info registers"))
+
+    def registers_a32(self, timeout=5.0, interval=0.01):
+        """Wait until CPU0 is in AArch32 state, then return registers().
+
+        Raises QemuError with the last dump if CPU0 is still in AArch64
+        state after `timeout` seconds.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            text = self.hmp("info registers")
+            regs = parse_hmp_registers(text)
+            if "R15" in regs:
+                return regs
+            if time.monotonic() >= deadline:
+                raise QemuError(f"CPU0 not in AArch32 state after {timeout} s; "
+                                f"last `info registers`:\n{text.strip()}")
+            time.sleep(interval)
 
     # -- qtest -----------------------------------------------------------
 

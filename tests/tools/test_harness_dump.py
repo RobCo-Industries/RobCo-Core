@@ -8,7 +8,7 @@ import pytest
 
 from harness import dump
 from harness.boot import Vm
-from harness.qemu import QemuError
+from harness.qemu import Qemu, QemuError
 
 FIX = os.path.join(os.path.dirname(__file__), "fixtures", "dump")
 BOARDS = ["raspi0", "raspi1ap", "raspi2b", "raspi3b"]
@@ -414,3 +414,34 @@ def test_failed_stop_and_cont_leave_the_state_unknown():
     assert "device registers: VM run state unknown (QMP stop and cont failed)" in text
     assert "cpu0 samples, VM run state unknown" in text
     assert "while running" not in text
+
+
+class _FakeHmp(Qemu):
+    """A Qemu whose `info registers` replies come from a list of fixtures."""
+
+    def __init__(self, replies):
+        super().__init__("qemu-none", "none")
+        self.replies = list(replies)
+
+    def hmp(self, command, timeout=None):
+        assert command == "info registers"
+        return self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+
+
+def test_registers_in_aarch64_state_have_no_r15():
+    # The V23 flake: raspi3b read during its AArch64 shim.
+    r = _FakeHmp([fixture("info-registers-raspi3b-a64.txt")]).registers()
+    assert "R15" not in r and r["PC"] == 0x80000
+
+
+def test_registers_a32_waits_out_the_aarch64_shim():
+    a64, a32 = fixture("info-registers-raspi3b-a64.txt"), fixture("info-registers-raspi3b.txt")
+    q = _FakeHmp([a64, a64, a32])
+    r = q.registers_a32(timeout=5, interval=0)
+    assert r["R15"] == 0x9740 and q.replies == [a32]
+
+
+def test_registers_a32_fails_with_the_dump_if_never_aarch32():
+    q = _FakeHmp([fixture("info-registers-raspi3b-a64.txt")])
+    with pytest.raises(QemuError, match=r"not in AArch32 state(.|\n)*PC=0000000000080000"):
+        q.registers_a32(timeout=0.05, interval=0.01)
