@@ -1,8 +1,10 @@
 # Pip-OS ABI
 
-This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.3, `abi_version = 0x00010003` in the image header.
+This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.4, `abi_version = 0x00010004` in the image header.
 
-Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.3 also runs on a 1.0, 1.1 or 1.2 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back. Version 1.3 adds `hw_flags` to `sys_info`. A Pip-OS before 1.3 writes 0 there, so an image that reads `hw_flags` first checks that `abi_version` in `sys_info` or in `pipos_startup_t` is at least `0x00010003`.
+Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.4 also runs on a 1.0 to 1.3 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back. Version 1.3 adds `hw_flags` to `sys_info`. A Pip-OS before 1.3 writes 0 there, so an image that reads `hw_flags` first checks that `abi_version` in `sys_info` or in `pipos_startup_t` is at least `0x00010003`. Version 1.4 adds removable holotapes: `PIP_HW_TAPE`, the `flags` field of `pip_holo_info_t`, the `PIP_EV_TAPE` event and the `holo_eject_event` mask. See [Holotapes](#holotapes).
+
+An image ignores an event type and a flag bit it does not know. A field the spec marks as reserved may carry a value in a later minor version.
 
 Rows marked "draft" in a status column may change before 1.0 is frozen. Rows marked "stable" will not change within major version 1.
 
@@ -87,7 +89,7 @@ Pip-OS writes the struct and the exit trampoline at the bottom of the image's st
 #define PIP_ERANGE    34   /* value out of range */
 #define PIP_ENOSYS    38   /* unknown syscall */
 #define PIP_ENOEXEC   40   /* holotape failed validation */
-#define PIP_ENODEV    41   /* hardware not present */
+#define PIP_ENODEV    41   /* hardware not present or removed */
 #define PIP_ETIMEDOUT 42   /* wait timed out */
 ```
 
@@ -145,9 +147,9 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 | `0x56` | `file_close` | `int32 handle` | 0 | draft |
 | `0x57` | `dir_list` | `const char *path, pip_dirent_t *out, uint32 max, uint32 start` | Entries written | draft |
 | `0x60` | `holo_enumerate` | `pip_holo_info_t *out, uint32 max` | Entries written | draft |
-| `0x61` | `holo_launch` | `const char *name, const char *args` | Holotape exit status, 0 to 255. ROM only. | draft |
+| `0x61` | `holo_launch` | `const char *name, const char *args` | Holotape exit status, 0 to 255. `-PIP_ENODEV` when the slot card was pulled while the tape ran. ROM only. | draft |
 | `0x62` | `holo_last_status` | none | Result of the last `holo_launch`, or `-PIP_ENOENT` | draft |
-| `0x63` | `holo_eject_event` | none | 1 if a holotape was inserted or removed since the last call. Always 0 in ABI 1.0. | draft |
+| `0x63` | `holo_eject_event` | none | Mask of `PIP_HOLO_EV_*` bits since the caller's last call, 0 for nothing. Clears the mask. 1 meant insert or remove before 1.4, and Pip-OS always returned 0. | draft |
 
 The existing Pip-OS calls `read_save` and `write_save` took a byte offset. They now take a save name, so their argument lists are draft.
 
@@ -262,6 +264,15 @@ typedef struct __attribute__((packed)) pip_event {
 |---|---|---|---|
 | 1 | `PIP_EV_BUTTON` | Button number 0 to 6, the bit position from `read_buttons` | 1 press, 0 release, 2 repeat while held |
 | 2 | `PIP_EV_DIAL` | 0 | Signed detents. Positive is clockwise. |
+| 3 | `PIP_EV_TAPE` | 0 | `PIP_HOLO_EV_*` bits for one change of the holotape slot, a read error on a mounted card included. Since ABI 1.4. See [Holotapes](#holotapes). |
+
+```c
+#define PIP_EV_BUTTON  1
+#define PIP_EV_DIAL    2
+#define PIP_EV_TAPE    3   /* holotape slot change, since ABI 1.4 */
+```
+
+An image ignores an event whose `type` it does not know.
 
 `time_ms` is the `ticks_ms` time when Pip-OS registered the event. GPIO buttons and the dial are sampled every 10 ms, so their stamp comes within about 10 ms of the change, after the 20 ms button debounce. Input from the serial console or the script channel is stamped when Pip-OS reads it, which can be later than the key press. It is never later than the `ticks_ms` value an image reads after it gets the event. Stamps follow `ticks_ms`, so they wrap when it wraps. Between wraps, stamps of successive events never go backwards. Compare stamps the way the `ticks_ms` row of the syscall table says to compare `ticks_ms` values.
 
@@ -343,6 +354,7 @@ typedef struct __attribute__((packed)) pip_sys_info {
 
 #define PIP_HW_RTC    (1u << 0)  /* a clock chip answered at boot */
 #define PIP_HW_AUDIO  (1u << 2)  /* the audio driver started */
+#define PIP_HW_TAPE   (1u << 3)  /* a holotape slot exists, since ABI 1.4 */
 
 typedef struct __attribute__((packed)) pip_mem_info {
     uint32_t heap_base;
@@ -369,11 +381,12 @@ typedef struct __attribute__((packed)) pip_mem_info {
 | 0 | `PIP_HW_RTC` | A real-time clock chip answered at boot. It says nothing about a later write. See below. |
 | 1 | | Reserved, 0. `gfx_info` already reports the display backend. |
 | 2 | `PIP_HW_AUDIO` | The audio driver started at boot, so the sound calls can play |
-| 3 to 31 | | Reserved, 0 |
+| 3 | `PIP_HW_TAPE` | `PIPOS.CFG` sets `[holotape] slot = on` and the slot driver started at boot. It says a slot exists, not that a card is in. Since ABI 1.4. |
+| 4 to 31 | | Reserved, 0 |
 
 What a ROM can tell its user: a set time lasts past power-off only when `PIP_HW_RTC` is set, the time lies in 946684800 to 4102444799, and `set_time` returns 0. With the bit set and a time outside that range, the time lasts until power-off. With `-PIP_EIO` the chip write failed and the time lasts until power-off. With the bit clear the time is always lost at power-off.
 
-The struct keeps its size of 32 bytes. `hw_flags` takes the place of the first reserved word, which every Pip-OS before 1.3 writes as 0. So a ROM cannot tell "no clock chip" from "an older Pip-OS" by `hw_flags` alone: it checks `abi_version` first. A ROM built for 1.3 that runs on an older Pip-OS treats the flags as unknown.
+The struct keeps its size of 32 bytes. `hw_flags` takes the place of the first reserved word, which every Pip-OS before 1.3 writes as 0. So a ROM cannot tell "no clock chip" from "an older Pip-OS" by `hw_flags` alone: it checks `abi_version` first. A ROM built for 1.3 that runs on an older Pip-OS treats the flags as unknown. A ROM ignores a `hw_flags` bit it does not know.
 
 `log` takes at most 255 bytes of text. With no NUL in the first 256 bytes it returns `-PIP_EINVAL`. Bytes other than printable ASCII, newline and tab print as `?`.
 
@@ -395,7 +408,7 @@ On a read-only card, `read_save` and `save_info` read the file the recovery step
 
 ## Files
 
-File calls are read only.
+File calls are read only. They reach the boot card only, never the holotape slot.
 
 - A path is absolute, uses `/`, and is at most 127 bytes before the NUL. Pip-OS upper-cases the path.
 - Each component is an 8.3 name: 1 to 8 characters, then an optional dot and 1 to 3 characters. The characters are `A-Z`, `0-9` and ``! # $ % & ' ( ) - @ ^ _ ` { } ~``.
@@ -419,15 +432,31 @@ typedef struct __attribute__((packed)) pip_dirent {
 
 ## Holotapes
 
-A holotape is a file `/PIPBOY/HOLO/<NAME>.HTP` in the `ROBCO78` image format.
+A holotape is a file in the `ROBCO78` image format. It lives in one of two places:
 
-`holo_enumerate` reads `/PIPBOY/HOLO` in directory order and lists the files named `NAME.HTP` whose header passes the magic, version and size checks. It does not check the CRC. It writes at most `max` entries, 1 to 32, and returns the count. A missing folder gives 0 entries. Pip-OS checks the whole `max` entries of `out` before it reads the card. A file with a long name is listed under its 8.3 alias. A file too short for a header is skipped.
+- On the boot card, as `/PIPBOY/HOLO/<NAME>.HTP`.
+- On the card in the holotape slot, as `<NAME>.HTP` in its root folder. Since ABI 1.4.
+
+### The holotape slot
+
+The Pip-Boy board has one holotape slot: an SD card in SPI mode, driven by RobCo-Core's [`holo.h`](../guide/api/holo.md). `PIPOS.CFG` turns it on with `[holotape] slot = on`. The default is `off`. With `off`, Pip-OS never touches the slot pins and behaves as ABI 1.3 in every call. `PIP_HW_TAPE` in `hw_flags` is set when the setting is `on` and the slot driver started at boot.
+
+The slot card is a FAT volume that the library can mount. Pip-OS mounts it as the library volume `tape` with `FS_MOUNT_RDONLY`, and ignores the lock tab. The driver's device is read-only too. The boot card stays the only writable volume. Pip-OS reads only the `NAME.HTP` files in the root folder of the slot card, under the name rule below. It skips dot names, hidden entries and system entries, as the library listing does.
+
+`file_open`, `dir_list` and the save calls never reach the slot card. A slot tape saves to `/PIPBOY/SAVE` on the boot card, like any holotape. A data holotape on the slot cannot be launched either.
+
+### Listing
+
+`holo_enumerate` lists the slot tapes first, in directory order. Then it reads `/PIPBOY/HOLO` on the boot card in directory order and lists the tapes whose file name is not already listed. So a slot file shadows a boot card tape with the same file name, compared without case. It shadows by name alone: a slot file `NAME.HTP` that fails the header checks hides the boot card tape too, and neither is listed. `holo_launch` of that name returns `-PIP_ENOEXEC`. Pulling the slot card brings the boot card tape back. A listed file is named `NAME.HTP` and its header passes the magic, version and size checks. It does not check the CRC. It writes at most `max` entries, 1 to 32, counting both places together, and returns the count. A missing folder gives 0 entries. Pip-OS checks the whole `max` entries of `out` before it reads a card. A file with a long name is listed under its 8.3 alias. A file too short for a header is skipped.
+
+The slot never makes `holo_enumerate` fail. A slot that is empty, still settling, or holds a card it cannot use adds no entry and no error. A read error on the slot card during the listing drops every slot entry, and the call still lists the boot card, including the tapes those entries shadowed. That error also makes the card bad, as [Slot changes](#slot-changes) says, so later calls list none of its tapes either. A read error on the boot card returns `-PIP_EIO`.
 
 | Holotape call error | Cause |
 |---|---|
 | `-PIP_EINVAL` | A bad name, `max` outside 1 to 32, or `args` without a NUL in the first 100 bytes |
-| `-PIP_EFAULT` | A NULL or bad pointer |
-| `-PIP_EIO` | A card read error in `holo_enumerate` or `holo_launch`. The entries in `out` are then undefined. |
+| `-PIP_EFAULT` | A NULL or bad pointer, or the holotape faulted |
+| `-PIP_EIO` | A boot card read error in `holo_enumerate`, or a read error in `holo_launch`. The entries in `out` are then undefined. |
+| `-PIP_ENODEV` | `holo_launch` only: the slot card was pulled while its tape ran |
 | `-PIP_EPERM` | A holotape calls `holo_launch` |
 
 A name is a plain 8.3 `NAME.HTP`: 1 to 8 characters from the file path set in [Files](#files), then `.HTP`. It is case-insensitive. A folder, `.`, `..`, a wildcard, a space or a longer name is a bad name. Names that start with `#` or `~` are ordinary tapes.
@@ -436,29 +465,98 @@ A name is a plain 8.3 `NAME.HTP`: 1 to 8 characters from the file path set in [F
 typedef struct __attribute__((packed)) pip_holo_info {
     char     file[13];        /* 8.3 file name, for holo_launch */
     uint8_t  subtype;         /* 0 game, 1 utility, 2 data */
-    uint16_t reserved;        /* 0 */
+    uint16_t flags;           /* PIP_HOLO_*, since ABI 1.4. 0 before. */
     uint32_t size;            /* file size in bytes */
     uint32_t image_version;
     char     name[16];        /* from the image header */
     char     title[64];       /* from the META block, or empty */
     uint8_t  icon[128];       /* from the META block, or zero */
 } pip_holo_info_t;            /* 232 bytes */
+
+#define PIP_HOLO_SLOT  (1u << 0)  /* the tape is on the slot card */
 ```
 
-`holo_launch` takes a file name from `holo_enumerate`, without a folder, and an argument string of at most 99 bytes. It runs these steps:
+`flags` was `reserved` before ABI 1.4 and was always 0. The struct size and every offset stay the same. Bits 1 to 15 are 0.
 
-1. Load and validate the file, with every step from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). A failure returns `-PIP_ENOENT` for a missing file, `-PIP_EIO` for a card error and `-PIP_ENOEXEC` for any other failed step. A name that the card resolves to a folder, or to a file listed under another name, counts as missing. A data holotape, subtype 2, fails validation.
+### Launching
+
+`holo_launch` takes a file name from `holo_enumerate`, without a folder, and an argument string of at most 99 bytes. It looks for the name on the slot card first, then on the boot card. It runs these steps:
+
+1. Load and validate the file, with every step from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). A failure returns `-PIP_ENOENT` for a missing file, `-PIP_EIO` for a card error and `-PIP_ENOEXEC` for any other failed step. A name that the card resolves to a folder, or to a file listed under another name, counts as missing. A data holotape, subtype 2, fails validation. A slot card pulled before or during the load gives `-PIP_ENOENT` when the file can no longer be found and `-PIP_EIO` when a read failed midway. The call then does not try a boot card tape of the same name. A read error on a slot card that stays in also returns `-PIP_EIO` and makes the card bad. A pull sets `REMOVED`, not `BAD`. While no slot volume is mounted, because the slot is empty, settling or holds a bad card, the name is looked up on the boot card only.
 2. Stop the sound, empty the event queue, clear the back buffer, and give the holotape a fresh drawing state.
 3. Run the holotape. The ROM waits inside `holo_launch`.
 4. When the holotape ends, close its files, stop the sound, empty the event queue and restore the ROM's drawing state.
 
-`holo_launch` returns the holotape's exit status, 0 to 255, or `-PIP_EFAULT` when Pip-OS killed it. The back buffer holds whatever the holotape drew, so the ROM redraws its screen.
+The image is loaded whole before it runs. Still, when the slot card is pulled while its tape runs, Pip-OS ends the tape no later than the tape's next syscall of any kind after Pip-OS saw the card leave. A tape that makes no syscall runs on. When Pip-OS ends the tape, it prints `ev=holo_kill reason=eject pc=<pc>`, where `pc` is the tape's program counter at the syscall where Pip-OS ended it, in the same format as for a fault. Then `holo_launch` returns `-PIP_ENODEV`. Step 4 runs as for any ended tape. The slot does not affect a tape launched from the boot card. A read error on the slot card does not end a running slot tape either, since its image is in memory. Only a removal ends it.
+
+`holo_launch` returns the holotape's exit status, 0 to 255, `-PIP_EFAULT` when Pip-OS killed it after a fault, or `-PIP_ENODEV` as above. The back buffer holds whatever the holotape drew, so the ROM redraws its screen.
 
 While a holotape runs, every call sees it as the caller: its kind, its memory for pointer checks and its heap in `mem_info`. It has its own 8 file handles. The ROM's handles stay open but do not work for the holotape.
 
 `holo_last_status` returns what the ROM's last `holo_launch` call returned, whatever it was, argument errors included. It returns `-PIP_ENOENT` when the ROM made no call since boot. A holotape's refused `holo_launch` does not change it.
 
-Holotapes are files on the card, so nothing can be inserted or removed while Pip-OS runs. `holo_eject_event` returns 0. It is kept for hardware with a tape slot.
+### Slot changes
+
+`holo_eject_event` returns a mask of what happened on the slot since the caller's last call, and clears it. 0 means nothing happened. It has no error code.
+
+```c
+#define PIP_HOLO_EV_INSERTED  (1u << 0)  /* a card came in and its volume is mounted */
+#define PIP_HOLO_EV_REMOVED   (1u << 1)  /* the card left */
+#define PIP_HOLO_EV_BAD       (1u << 2)  /* the card in the slot cannot be used */
+```
+
+| Bit | Name | Meaning |
+|---|---|---|
+| 0 | `PIP_HOLO_EV_INSERTED` | A card was inserted and its volume is mounted. A `holo_enumerate` made after this bit lists its tapes. |
+| 1 | `PIP_HOLO_EV_REMOVED` | A card reported by `INSERTED` or `BAD` left |
+| 2 | `PIP_HOLO_EV_BAD` | The card in the slot cannot be used. At insertion, `holo_attach()` returned an `SD_ERR_*` code other than `SD_ERR_AGAIN`, or the mount found no FAT volume. Later, a read error hit the mounted card while it stayed in. None of its tapes is listed, and Pip-OS does not try the card again until it leaves. |
+| 3 to 31 | | 0 |
+
+- A card that is in at boot reports `INSERTED` or `BAD` once, after boot.
+- A card that leaves before Pip-OS reported `INSERTED` or `BAD` for it sets no bit, at whatever step it leaves: the debounce, `holo_attach()` returning `BLK_ERR_NOMEDIA`, or the mount. `REMOVED` is set only for a card that was reported.
+- A read error on a mounted slot card that stays in sets `BAD`. The call that met the error still returns its own result: `-PIP_EIO` from `holo_launch`, or a list without slot entries from `holo_enumerate`.
+- A mounted card pulled during a call, such as a load in `holo_launch` or a listing, sets `REMOVED` only, never `BAD`. Pip-OS tells the two cases apart with the slot's card detect. The call still returns its own result.
+- Several changes between two calls set several bits, and their order is lost. A ROM that sees `REMOVED` with `INSERTED` enumerates again.
+- A holotape that calls it gets 0, and the mask is not cleared: the bits wait for the ROM.
+- With `PIP_HW_TAPE` clear it returns 0.
+
+Each change also puts a `PIP_EV_TAPE` event in the ROM's event queue, so `wait_event` wakes. Its `value` holds the bits for that one change. The queue is emptied around `holo_launch` and can drop events, so the event is a hint and `holo_eject_event` is the truth. A running holotape never gets `PIP_EV_TAPE`.
+
+A change is reported after the driver's 250 ms card detect debounce, `HOLO_SETTLE_MS`, and, for an insertion, after the mount. While `holo_attach()` returns `SD_ERR_AGAIN`, the card is still settling: Pip-OS tries again and sets no bit.
+
+On a removal, Pip-OS detaches the `tape` volume with the library's `fs_eject()`. It needs no card and does no I/O, so the volume slot is free and the next card mounts. After a read error on a mounted slot card that stays in, the driver detaches the card, and Pip-OS detaches the `tape` volume the same way and reports `BAD`. The card stays bad until it leaves. See [Several volumes and removable media](../guide/api/storage.md#several-volumes-and-removable-media). Pip-OS does its slot work at least inside these calls: `sleep_ms`, `poll_event`, `wait_event`, `read_buttons`, `read_dial`, `file_read`, `holo_enumerate` and `holo_eject_event`. A ROM that makes none of them sees no slot change.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Empty
+    Empty --> Settling: card detect low
+    Settling --> Empty: card left in the debounce, the attach or the mount, no bit
+    Settling --> Mounted: debounce over, mount ok / INSERTED
+    Settling --> Bad: debounce over, card or mount refused / BAD
+    Mounted --> Empty: card pulled / REMOVED
+    Mounted --> Bad: read error, card still in / BAD
+    Bad --> Empty: card pulled / REMOVED
+```
+
+### What a ROM does
+
+1. At start, read `hw_flags`. With `PIP_HW_TAPE` clear, the list of tapes changes only when the ROM changes the boot card itself.
+2. Call `holo_enumerate` and show the list. `PIP_HOLO_SLOT` tells which tapes sit on the slot.
+3. On each `PIP_EV_TAPE`, and after each `holo_launch` returns, call `holo_eject_event`.
+4. When it returns a non-zero mask, call `holo_enumerate` again. A ROM may show a message on `BAD` and drop it on `REMOVED`.
+
+The loop also covers a read error. A `holo_launch` that returns `-PIP_EIO` for a slot tape is followed by `holo_eject_event`, which returns `BAD`, and the ROM enumerates again without the slot tapes.
+
+### Compatibility
+
+- A ROM built for 1.3 runs unchanged on 1.4. It sees a non-zero value only in the old `reserved` field of `pip_holo_info_t`, and an event type it does not know. It ignores both.
+- A ROM built for 1.4 on a 1.3 Pip-OS sees `PIP_HW_TAPE` clear, `flags` 0 in every entry, no `PIP_EV_TAPE`, and `holo_eject_event` returning 0. Every tape is on the boot card.
+
+### Not specified
+
+- No time bound between a card change and its report.
+- No file access to the slot card. `file_open` and `dir_list` reach the boot card only.
+- One slot. A second slot needs a new ABI version.
 
 ## Sandbox
 
@@ -517,3 +615,4 @@ include $(PIPOS_SDK)/pipos-app.mk
 | 1.1 | `sample_queue` |
 | 1.2 | Button 6, Back |
 | 1.3 | `hw_flags` in `sys_info`. Pip-OS implements it in its own repository later. Until then it reports ABI 1.2 and writes 0. |
+| 1.4 | Removable holotapes: `[holotape] slot` in `PIPOS.CFG`, `PIP_HW_TAPE`, `flags` in `pip_holo_info_t`, `PIP_EV_TAPE`, the `holo_eject_event` mask, `-PIP_ENODEV` from `holo_launch`. Pip-OS implements it in its own repository later. Until then it reports ABI 1.3, returns 0 from `holo_eject_event` and never sets the new bits. |
