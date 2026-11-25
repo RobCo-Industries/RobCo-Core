@@ -65,7 +65,7 @@ test-examples:
 # BOARD picks one QEMU board, or all of them (default).
 BOARD ?= all
 test-target: venv
-	$(VENV)/bin/pytest tests/target -v --board $(BOARD)
+	$(VENV)/bin/pytest tests/target -v -rs --board $(BOARD)
 
 # Host unit tests: src/lib built with the host cc, ASan and UBSan.
 include mk/host.mk
