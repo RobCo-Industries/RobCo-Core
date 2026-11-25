@@ -167,6 +167,83 @@ int rimg_self_check(void);
 
 /* The @RC name of a rimg_err_t code, such as "crc". "unknown" for others. */
 const char *rimg_strerror(int code);
+
+/*
+ * Sealing and packing, src/lib/rimg_seal.c. See IMAGE_FORMAT.md,
+ * "Sealing and packing". They give the same bytes and codes as
+ * tools/rimg.py seal and pack. Touches no hardware.
+ */
+
+/* Icon file formats, as rimg.py --icon-format. */
+typedef enum rimg_icon_format {
+    RIMG_ICON_AUTO = 0,     /* 128 bytes is raw, any other length is PBM */
+    RIMG_ICON_RAW  = 1,     /* exactly 128 bytes in the META layout */
+    RIMG_ICON_PBM  = 2,     /* a 32x32 PBM, P1 or P4 */
+} rimg_icon_format_t;
+
+/*
+ * Seal inputs. A NULL pointer, or a has_ flag of 0, is an absent input.
+ *   name           NUL-terminated text.
+ *   image_version  (X << 16) | (Y << 8) | Z, already parsed by the caller.
+ *   title          NUL-terminated text.
+ *   icon           The icon file's bytes, icon_len of them. The function
+ *                  decodes them by icon_format before any step.
+ */
+typedef struct rimg_seal_opts {
+    const char        *name;
+    int                has_image_version;
+    uint32_t           image_version;
+    const char        *title;
+    const uint8_t     *icon;
+    size_t             icon_len;
+    rimg_icon_format_t icon_format;
+} rimg_seal_opts_t;
+
+/*
+ * Pack inputs. seal holds name, image_version, title and icon. Pack writes
+ * image_version into the header at step 7, 0 when absent, and seals with
+ * the rest. The numbers are signed and 64 bits wide so that step 2 and
+ * step 4 see a value out of range, as rimg.py does.
+ *   magic        NUL-terminated: "BOOT", "ROM1" or "ROBCO78".
+ *   abi_version  (MAJOR << 16) | MINOR. Absent: the ABI major of the magic, minor 0.
+ *   meta         -1 follows the magic, 0 no META block, 1 a META block.
+ */
+typedef struct rimg_pack_opts {
+    rimg_seal_opts_t seal;
+    const char      *magic;
+    int64_t          subtype;
+    int64_t          load_addr;
+    int              has_mem_size;
+    int64_t          mem_size;
+    int              has_abi_version;
+    uint32_t         abi_version;
+    int              meta;
+    int64_t          entry;
+} rimg_pack_opts_t;
+
+/*
+ * Seals the len bytes at image into out, which holds len bytes and does
+ * not overlap image. Runs icon decoding, then seal steps 1 to 12.
+ * Returns RIMG_OK, or the code of the first failed step. On a failure the
+ * bytes of out are undefined and the caller writes no file.
+ * A NULL image, opts or out returns RIMG_E_IO before any step.
+ */
+int rimg_seal(const void *image, size_t len, const rimg_seal_opts_t *opts, void *out);
+
+/*
+ * Packs payload_len bytes into out, which holds out_cap bytes and does not
+ * overlap payload. The image is payload_len + 0x60 bytes, or
+ * payload_len + 0x120 with a META block. Runs icon decoding, then pack
+ * steps 1 to 9. At step 5 a payload too long for a 32-bit file_size gives
+ * RIMG_E_SIZE, then an out_cap below the image length gives RIMG_E_IO.
+ * Returns RIMG_OK and sets *out_len to the image length, or the code of
+ * the first failed check. On a failure *out_len is 0 and the bytes of out
+ * are undefined. A NULL opts, out or out_len, a NULL payload with a
+ * non-zero payload_len, or a meta other than -1, 0 or 1, returns
+ * RIMG_E_IO before any step. *out_len is 0 then too, if out_len is not NULL.
+ */
+int rimg_pack(const void *payload, size_t payload_len, const rimg_pack_opts_t *opts,
+              void *out, size_t out_cap, size_t *out_len);
 #endif
 
 #endif

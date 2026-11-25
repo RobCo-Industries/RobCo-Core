@@ -30,7 +30,7 @@ This page maps the repository and shows where new code and tests go. To use the 
 | `src/drv/` | Drivers: mailbox, PL011 and mini UART, system timer, interrupt controller, tick, GPIO, power, RNG, framebuffer, SD card, input backends, audio, I2C, RTC, SPI | Yes |
 | `src/gfx/` | Screen console, colour schemes, font table | Through `fb.h` |
 | `src/fs/` | The FAT file system layer over FatFs, its configuration `ffconf.h`, its glue to `blk.h` and the file side of the stage loader | No |
-| `src/lib/` | klibc, `k_printf`, CRC-32, heap, `rimg_validate()`, boot info, the stage loader core, RAM disk, partitions, input queue and decoders, audio sequencer and notes, date and time, the RTC register codec, INI parser | No |
+| `src/lib/` | klibc, `k_printf`, CRC-32, heap, `rimg_validate()`, `rimg_seal()` and `rimg_pack()`, boot info, the stage loader core, RAM disk, partitions, input queue and decoders, audio sequencer and notes, date and time, the RTC register codec, INI parser | No |
 
 `src/lib/` holds only code that runs unchanged on the host. It must not read registers, call drivers, use assembly or assume 32-bit pointers. `make test-host` builds every `src/lib/*.c` with the host compiler, ASan and UBSan and runs the tests in `tests/host/`. Code that needs hardware goes in one of the other directories.
 

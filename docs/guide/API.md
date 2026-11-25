@@ -1119,6 +1119,14 @@ Runs validation steps 1 to 5 on the first `0x60` bytes of an image before the re
 
 To load an image from the SD card with these checks and the fallback rule, use the [stage loader](./api/storage.md#stage-loader-loaderh).
 
+```c
+int rimg_seal(const void *image, size_t len, const rimg_seal_opts_t *opts, void *out);
+int rimg_pack(const void *payload, size_t payload_len, const rimg_pack_opts_t *opts,
+              void *out, size_t out_cap, size_t *out_len);
+```
+
+The C sealer and packer, in `src/lib/rimg_seal.c`. They follow [Sealing and packing](../spec/IMAGE_FORMAT.md#sealing-and-packing) and give the same bytes and codes as `tools/rimg.py seal` and `pack`, with one known difference: they refuse a PBM width or height such as `+32`, `3_2` or `0000000032`, which `tools/rimg.py` still accepts. `out` of `rimg_seal()` holds `len` bytes. `rimg_pack()` needs `payload_len + 0x60` bytes, or `payload_len + 0x120` with a META block. On a failure the bytes of `out` are undefined: write no file. They allocate nothing and touch no hardware. `tests/host/test_rimg_seal.c` runs every vector of `tests/vectors/rimg/vectors.ini` through them.
+
 ## Boot info block (`bootinfo.h`)
 
 `bootinfo.h` defines the 320-byte block one stage passes to the next at `0x00100000`. It carries the board, memory, UART, framebuffer and console state, the firmware registers and a copy of the firmware's ATAGS or DTB. See [the boot info spec](../spec/BOOT_PROTOCOL.md#boot-info).
