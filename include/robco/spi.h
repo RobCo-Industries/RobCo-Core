@@ -7,7 +7,7 @@
 /*
  * SPI0 master, polled, main context only. Pins at ALT0: GPIO 8 (CE0),
  * 7 (CE1), 9 (MISO), 10 (MOSI), 11 (SCLK). 8-bit words, MSB first.
- * Every wait has a deadline on the system timer.
+ * Every wait fails after 20 ms plus four byte times with no byte moved.
  */
 
 #define SPI_CS_COUNT        2u      /* CE0 and CE1 */

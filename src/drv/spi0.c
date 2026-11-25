@@ -30,7 +30,13 @@
 /* Bytes in flight. Keeps the RX FIFO from overflowing on any FIFO depth. */
 #define IN_FLIGHT_MAX   16u
 
-#define DEADLINE_BASE_US 20000u
+/*
+ * Progress rule: a wait fails only after this long with no byte moved,
+ * plus four times the wire time of one byte at the line's rate. The
+ * window restarts at every byte, so a slow but healthy transfer of any
+ * length completes.
+ */
+#define STALL_BASE_US   20000u
 
 static const uint8_t pins[] = { 7, 8, 9, 10, 11 };
 
@@ -165,11 +171,10 @@ int spi_begin(unsigned cs)
     return 0;
 }
 
-static uint64_t deadline_for(unsigned cs, size_t len)
+/* Stall window for `cs`, in microseconds. */
+static uint32_t stall_us(unsigned cs)
 {
-    uint64_t bits = ((uint64_t)len + 1u) * 8u;
-
-    return timer_now_us() + DEADLINE_BASE_US + bits * 4000000u / spi_get_hz(cs);
+    return STALL_BASE_US + (uint32_t)(8u * 4000000ull / spi_get_hz(cs));
 }
 
 /* Releases chip select and clears the FIFOs. */
@@ -195,9 +200,10 @@ int spi_end(unsigned cs)
     if (active != (int)cs) {
         return SPI_ERR_BUSY;
     }
-    deadline = deadline_for(cs, 1);
+    deadline = timer_now_us() + stall_us(cs);
     while (!(mmio_read(base + REG_CS) & CS_DONE)) {
-        if (timer_expired(deadline)) {
+        /* Read once more after the deadline: a host pause is not a stall. */
+        if (timer_expired(deadline) && !(mmio_read(base + REG_CS) & CS_DONE)) {
             stop();
             return SPI_ERR_TIMEOUT;
         }
@@ -213,6 +219,7 @@ int spi_transfer(unsigned cs, const void *tx, void *rx, size_t len)
     size_t sent = 0;
     size_t got = 0;
     uint64_t deadline;
+    uint32_t window;
     uint32_t s;
     uint32_t b;
     int own;
@@ -237,7 +244,8 @@ int spi_transfer(unsigned cs, const void *tx, void *rx, size_t len)
             return rc;
         }
     }
-    deadline = deadline_for(cs, len);
+    window = stall_us(cs);
+    deadline = timer_now_us() + window;
     while (got < len) {
         s = mmio_read(base + REG_CS);
         if (sent < len && sent - got < IN_FLIGHT_MAX && (s & CS_TXD)) {
@@ -250,7 +258,9 @@ int spi_transfer(unsigned cs, const void *tx, void *rx, size_t len)
                 r[got] = (uint8_t)b;
             }
             got++;
-        } else if (timer_expired(deadline)) {
+            deadline = timer_now_us() + window;
+        } else if (timer_expired(deadline) && !(mmio_read(base + REG_CS) & CS_RXD)) {
+            /* No byte for a whole window, checked once more after it. */
             stop();
             return SPI_ERR_TIMEOUT;
         }

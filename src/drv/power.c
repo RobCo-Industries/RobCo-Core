@@ -26,10 +26,20 @@ static uint32_t pm_base(void)
     return b->periph_base ? b->periph_base + PM_OFFSET : 0;
 }
 
+/*
+ * Masks IRQs and FIQs for good: a wdog_kick() in a handler would reload
+ * the long timeout between our two writes and delay the reset.
+ */
+static void mask_interrupts(void)
+{
+    __asm__ volatile("cpsid if" : : : "memory");
+}
+
 static void __attribute__((noreturn)) pm_reset(uint32_t pm)
 {
     uint32_t rstc;
 
+    mask_interrupts();
     if (pm != 0) {
         rstc = mmio_read(pm + PM_RSTC) & PM_RSTC_WRCFG_CLR;
         mmio_write(pm + PM_WDOG, PM_PASSWORD | (WDOG_TICKS & PM_WDOG_TIME_MASK));
@@ -51,6 +61,7 @@ void power_halt(void)
     uint32_t pm = pm_base();
     uint32_t rsts;
 
+    mask_interrupts();
     if (pm != 0) {
         /* Keep the other bits, set the halt partition. Drop the old password byte. */
         rsts = mmio_read(pm + PM_RSTS) & ~(0xff000000u | PM_RSTS_PART_MASK);
