@@ -130,3 +130,33 @@ def test_make_target_writes_the_file(tmp_path):
     subprocess.run(["make", "-s", "-C", ROOT, "boot-json", f"BOOT_JSON={path}",
                     f"PYTHON={sys.executable}"], check=True, capture_output=True)
     assert path.read_text(encoding="utf-8") == bootjson.dumps()
+
+
+def _make(*args, cwd=None):
+    return subprocess.run(["make", "-s", "-C", os.path.abspath(ROOT), "boot-json", *args],
+                          cwd=cwd, capture_output=True, text=True)
+
+
+def test_make_target_with_relative_python(tmp_path):
+    venv_py = os.path.join(ROOT, ".venv", "bin", "python")
+    if not os.path.exists(venv_py):
+        pytest.skip("no .venv")
+    path = tmp_path / "boot.json"
+    r = _make(f"BOOT_JSON={path}", "PYTHON=.venv/bin/python")
+    assert r.returncode == 0, r.stderr
+    assert path.read_text(encoding="utf-8") == bootjson.dumps()
+
+
+def test_make_target_through_make_c_from_another_folder(tmp_path):
+    path = tmp_path / "out" / "boot.json"
+    r = _make(f"BOOT_JSON={path}", f"PYTHON={sys.executable}", cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert path.read_text(encoding="utf-8") == bootjson.dumps()
+
+
+def test_make_target_refuses_relative_output(tmp_path):
+    r = _make("BOOT_JSON=rel/boot.json", f"PYTHON={sys.executable}", cwd=tmp_path)
+    assert r.returncode != 0
+    assert "must be an absolute path" in r.stderr
+    assert not (tmp_path / "rel").exists()
+    assert not os.path.exists(os.path.join(ROOT, "rel"))

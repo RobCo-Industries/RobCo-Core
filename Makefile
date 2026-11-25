@@ -22,12 +22,12 @@ test-tools: venv
 	$(VENV)/bin/pytest tests/tools -v
 
 # boot.json from the harness's boot_args(), for tools other than the harness.
-# Stdlib only. BOOT_JSON is relative to this folder; give an absolute path
-# when calling through make -C.
-BOOT_JSON ?= build/boot.json
+# Stdlib only. BOOT_JSON must be an absolute path.
+BOOT_JSON ?= $(CURDIR)/build/boot.json
 boot-json:
-	mkdir -p $(dir $(abspath $(BOOT_JSON)))
-	cd tests && $(PYTHON) -m harness.bootjson -o $(abspath $(BOOT_JSON))
+	@case "$(BOOT_JSON)" in /*) ;; *) echo "boot-json: BOOT_JSON must be an absolute path, got '$(BOOT_JSON)'" >&2; exit 1 ;; esac
+	mkdir -p $(dir $(BOOT_JSON))
+	PYTHONPATH=tests $(PYTHON) -m harness.bootjson -o $(BOOT_JSON)
 
 # Links, API coverage, checked commands and banned words in the Markdown files.
 test-docs:
