@@ -14,6 +14,14 @@ FIXEDSYS = "third_party/fixedsys-excelsior/FSEX302.ttf"
 GLYPH_COUNT = 95 + 23
 
 
+def need_pil():
+    """Pillow is in tests/requirements.txt, so a missing one fails the test."""
+    try:
+        import PIL  # noqa: F401
+    except ModuleNotFoundError:
+        pytest.fail("Pillow is missing: run make venv to install tests/requirements.txt")
+
+
 def run(*args, ok=True):
     r = subprocess.run([sys.executable, TOOL, *args], cwd=ROOT, capture_output=True, text=True)
     if ok:
@@ -49,7 +57,7 @@ def full_ascii(skip=()):
 ])
 def test_table_regenerates_identically(tmp_path, src, name, select, committed):
     if src.endswith(".ttf"):
-        pytest.importorskip("PIL")
+        need_pil()
     out = tmp_path / "font8x16.c"
     run(src, "--name", name, "--select", select, "-o", str(out))
     with open(os.path.join(ROOT, committed)) as f:
@@ -116,7 +124,7 @@ def test_unknown_type(tmp_path):
 
 
 def test_ttf(tmp_path):
-    pytest.importorskip("PIL")
+    need_pil()
     out = tmp_path / "f.c"
     r = run(FIXEDSYS, "--name", "ttf-test", "-o", str(out))
     text = out.read_text()

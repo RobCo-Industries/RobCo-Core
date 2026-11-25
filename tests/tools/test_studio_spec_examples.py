@@ -16,7 +16,16 @@ import re
 
 import pytest
 
-tomllib = pytest.importorskip("tomllib")
+try:
+    import tomllib
+except ModuleNotFoundError:
+    # Python 3.9 and 3.10: tomli is the parser that became tomllib, and
+    # tests/requirements.txt installs it there. No test here skips for want of it.
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        raise ModuleNotFoundError(
+            "no TOML parser: run make venv to install tomli from tests/requirements.txt") from None
 
 SPEC = pathlib.Path(__file__).resolve().parents[2] / "docs" / "spec"
 CLI = (SPEC / "STUDIO_CLI.md").read_text(encoding="utf-8")
