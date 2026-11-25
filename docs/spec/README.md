@@ -6,10 +6,12 @@ These files are the contracts for RobCo-Core and every repo built on it. Code fo
 |---|---|---|
 | [BOARD_SUPPORT.md](./BOARD_SUPPORT.md) | Boards, runtime detection, UART, `config.txt`, startup sequence | stable |
 | [MEMORY_MAP.md](./MEMORY_MAP.md) | Address ranges for both chains, lore vs real numbers | stable |
-| [IMAGE_FORMAT.md](./IMAGE_FORMAT.md) | The `rimg` format, validation order, SD card files, `tools/rimg.py` | stable |
+| [IMAGE_FORMAT.md](./IMAGE_FORMAT.md) | The `rimg` format, validation order, SD card files, `tools/rimg.py`, sealing and packing rules with test vectors | stable |
 | [BOOT_PROTOCOL.md](./BOOT_PROTOCOL.md) | Stage loading, register handoff, entry API, boot info, `@RC` markers, failure handling | stable |
 | [PIPOS_ABI.md](./PIPOS_ABI.md) | Pip-OS entry state, syscalls, display, saves, sandbox, SDK | draft |
-| [TESTING.md](./TESTING.md) | Test layers, QEMU boot methods, canary suite, SD images, CI, hardware checklists | stable |
+| [TESTING.md](./TESTING.md) | Test layers, QEMU boot methods, `boot.json`, canary suite, SD images, CI, hardware checklists | stable |
+| [STUDIO_PROJECT.md](./STUDIO_PROJECT.md) | The Studio project files `robco.toml` and `robco.lock` | draft |
+| [SDK_PACKAGE.md](./SDK_PACKAGE.md) | SDK packages, `sdk.json`, `flags.json`, the firmware pins, the SDK index, version and hash rules | draft |
 
 Spots marked "pending hardware validation" may change after tests on real boards.
 
@@ -73,6 +75,9 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Firmware download with pinned hashes, `tools/fetch_firmware.sh`, and boot directory, `tools/mkbootdir.sh` | Implemented |
 | Filling the META block in `tools/rimg.py` | Specified |
 | Loading images from the SD card, `loader_load()` | Implemented, pending hardware validation |
+| Sealing and packing rules in `tools/rimg.py` | Implemented |
+| Seal and pack test vectors in `tests/vectors/rimg/`, checked against `tools/rimg.py` | Implemented |
+| `rimg_seal()` and `rimg_pack()` in C | Specified |
 
 ### BOOT_PROTOCOL.md
 
@@ -94,6 +99,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Part | State |
 |---|---|
 | Everything | Specified |
+| Hiding calls newer than `PIPOS_ABI_TARGET` in the SDK headers | Specified |
 
 ### TESTING.md
 
@@ -114,3 +120,16 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Game logic and UI host tests, file fault tests | Specified |
 | `expect.py`, `screen.py`, `inputs.py` | Specified |
 | Reusable workflow for sibling repos | Implemented |
+| `boot.json` and its writer in the harness | Specified |
+
+### STUDIO_PROJECT.md
+
+| Part | State |
+|---|---|
+| Everything. No tool reads or writes these files yet. | Specified |
+
+### SDK_PACKAGE.md
+
+| Part | State |
+|---|---|
+| Everything. No package or index is built yet. | Specified |
