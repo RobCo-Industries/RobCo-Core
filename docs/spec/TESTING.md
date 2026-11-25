@@ -163,6 +163,20 @@ A project test can drive the Pi's own button and dial lines. Boot with `qtest=Tr
 
 QEMU's guest tick is irregular when the host is busy. Each timed check in `test_input_gpio.py` judges a run only when the host timing of that run was good enough. A run is good enough when it missed no tick and stayed within the check's own bound on the tick gap or jitter. One helper, `judged()`, applies both rules to every check. It tries a bad run 3 times, then skips the test through `hosttiming.skip()`. That is a host timing skip. Its reason starts with `host timing:` and gives the numbers of the last run.
 
+One rule fixes when `timed()` measures. The window opens before the first pin change of a run. It closes only after the guest processed the last effect of the run. That effect is the last event the run can cause. A run that must cause no event settles for 100 ms instead, inside the window. That covers a late sample, the debounce and one more tick. The callable that `timed()` wraps does the wait, so every check obeys the rule by construction. A wait asks for one event, not a count that earlier events can reach.
+
+| Check | Last effect | How the test knows |
+|---|---|---|
+| Button tap | Release of that key | `until(released(name))` sees the release, then settles |
+| Glitch, chatter | No event | `settle()` |
+| Repeat | Release of `up` | `until(released("up"))` sees the release, then settles. The press and the first repeat cannot end the wait. |
+| Dial slow, bounce, hidden states | Last detent of the turn | `until(turned(detents))` sees the count of that sign reach the turn's detents, then settles and reads the total |
+| Dial at the limit | Last detent of the turn | Same as the other turns |
+| Wiggle | No event | `settle()` |
+| Dial push | Release of `dial_push` | Same as a button tap |
+
+A wait gives up after 2 s, so a lost event fails the check that follows. A stall that long also misses ticks, so the run is tried again first.
+
 A bad run can still change the guest's state. A dial turn tried again may have lost or added a step, and that step stays in the dial total. So a check of the whole total leaves out the change of each run tried again, and still fails on a step outside every run. The next run starts clean: each turn ends at the rest state, and the decoder clears its partial count there. `quad_rest_clears_any_history` in `tests/host/test_input_quad.c` proves that rule.
 
 `tests/target/conftest.py` counts host timing skips in each session. A session allows 1 per selected board: 1 for `--board raspi0`, 4 for `--board all`. A session over the limit fails, and its summary lists each counted skip with its numbers. Other skips, such as a board QEMU lacks, do not count. On a loaded machine, `--timing-skips-max=N` sets another limit for the whole session. `make test-target` passes `-rs`, so the log shows every skip reason. Project tests get this rule only by copying the target conftest, since `harness.plugin` does not include it.
