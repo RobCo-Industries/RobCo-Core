@@ -4,11 +4,58 @@ QEMU runs every target test, but it cannot prove the items below. Run them on a 
 
 Every item needs a 3.3 V USB serial adapter on GPIO 14 and 15 for the `@RC` lines. [GETTING_STARTED.md](./guide/GETTING_STARTED.md#put-it-on-an-sd-card) shows how to build the card and wire the adapter. The groups below list what you need on top of it.
 
+## Results
+
+### Zero W 1.1, `examples/hello`, 2026-11-24
+
+| Item | Value |
+|---|---|
+| Board | Raspberry Pi Zero W rev 1.1, revision code `0x009000c1` |
+| Library | RobCo-Core `4249632` |
+| Image | `examples/hello`, default variant, as `HELLO.IMG` |
+| Firmware | `bootcode.bin`, `start.elf`, `fixup.dat` from tag `1.20260915`, SHA-256 checked by `tools/fetch_firmware.sh` |
+| Card | 16 GB, MBR, one FAT32 partition, holding only the five files `tools/mkbootdir.sh` wrote. No `.dtb`, no `overlays/`. |
+| Serial | CP2102 adapter, 3.3 V, header pins 6, 8 and 10, 115200 8N1 |
+
+The complete output:
+
+```
+@RC stage=hello ev=boot midr=0x410fb767 soc=bcm2835 base=0x20000000 board_rev=0x009000c1 mem=0x1c000000 entry_mode=svc
+@RC stage=hello ev=probe pwm=ok gpio=ok
+@RC stage=hello ev=ready
+```
+
+Sending the 10 bytes `RobCo 123\r` gave back `RobCo 123\r\n`.
+
+On this board, this run confirms:
+
+- The firmware loads a sealed image as `kernel=` with `arm_64bit=0` and no DTB.
+- The start code reaches `robco_main()` in SVC mode.
+- MIDR `0x410fb767` gives BCM2835 and base `0x20000000`.
+- The property mailbox answers. `board_get()` reads `board_rev` with tag `0x00010002` and `mem` with tag `0x00010005`. `0x1c000000` is 448 MiB, which matches `gpu_mem=64` on a 512 MiB board.
+- `0x009000c1` is the code that `tests/host/test_board_model.c` maps to `Raspberry Pi Zero W`. As a new-style code it reads revision 1, type `0x0c` Zero W, processor BCM2835, Sony UK, 512 MB.
+- The PL011 on GPIO 14 and 15 sends and receives at 115200, with Bluetooth on the board and no `dtoverlay`.
+- `mmio_probe()` reads the PWM block at base + `0x20c000` and GPFSEL0 at base + `0x200000` without a data abort. This shows the reads do not abort. It does not test PWM or GPIO function.
+
+This run does not show: HDMI output, since no screen was connected; the UART clock value, which the hello line does not print; any BCM2836 or BCM2837 board; the mini UART; SD access by RobCo-Core, since only the firmware read the card. Every other row below stays open.
+
+### How this run was done
+
+Build the boot directory as in [GETTING_STARTED.md](./guide/GETTING_STARTED.md#put-it-on-an-sd-card). On macOS, find the card with `diskutil list`, then format it. This erases the whole card, so check the disk number twice:
+
+```sh
+diskutil eraseDisk FAT32 ROBCO MBRFormat /dev/diskN
+cp sdboot/* /Volumes/ROBCO/
+diskutil eject /dev/diskN
+```
+
+Wire the adapter to header pins 6, 8 and 10 as the guide shows. Open the port before you power the Pi, for example `screen /dev/tty.usbserial-XXXX 115200`. To keep a log, use `script -q hello.log screen /dev/tty.usbserial-XXXX 115200`.
+
 ## Serial adapter only
 
 | Component | Boards | Run | Look for |
 |---|---|---|---|
-| UART | All | `spikes/s1-uart-hello` | The hello line and the echo on every board. On a Pi 3 or Zero 2 W, the PL011 works without `dtoverlay=disable-bt`. |
+| UART | All | `spikes/s1-uart-hello` or `examples/hello` | The hello line and the echo on every board. On a Pi 3 or Zero 2 W, the PL011 works without `dtoverlay=disable-bt`. Done on a Zero W 1.1 only, with `examples/hello`, on 2026-11-24: see [results](#results). Open on every other board. |
 | MMU | All | `examples/mmu` | `ev=bench caches=on` with `fill_us` and `copy_us` well below the `caches=off` line |
 | Mailbox with caches | All | `examples/mmu` | `ev=mbox phase=on mismatches=0`, and the same rev, clock and raw values before, on and after |
 | Misaligned mailbox buffer with caches | All | `examples/mmu`, then the same image in a loop of many boots or with `LOOPS` raised | `ev=guard loops=100 bad_guard=0 bad_reply=0` on every run: replies stay right and the neighbouring guards survive |
