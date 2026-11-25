@@ -162,6 +162,8 @@ A project test can drive the Pi's own button and dial lines. Boot with `qtest=Tr
 
 QEMU's guest tick is irregular when the host is busy. Each timed check in `test_input_gpio.py` judges a run only when the host timing of that run was good enough. It tries a bad run 3 times, then skips the test through `hosttiming.skip()`. That is a host timing skip. Its reason starts with `host timing:` and gives the numbers of the last run.
 
+A bad run can still change the guest's state. A dial turn tried again may have lost or added a step, and that step stays in the dial total. So a check of the whole total leaves out the change of each run tried again, and still fails on a step outside every run. The next run starts clean: each turn ends at the rest state, and the decoder clears its partial count there. `quad_rest_clears_any_history` in `tests/host/test_input_quad.c` proves that rule.
+
 `tests/target/conftest.py` counts host timing skips in each session. A session allows 1 per selected board: 1 for `--board raspi0`, 4 for `--board all`. A session over the limit fails, and its summary lists each counted skip with its numbers. Other skips, such as a board QEMU lacks, do not count. On a loaded machine, `--timing-skips-max=N` sets another limit for the whole session. `make test-target` passes `-rs`, so the log shows every skip reason. Project tests get this rule only by copying the target conftest, since `harness.plugin` does not include it.
 
 ## Canary suite
