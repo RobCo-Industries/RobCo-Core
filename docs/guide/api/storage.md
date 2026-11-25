@@ -302,7 +302,7 @@ Transfers through `sd_blkdev()`:
 | Writes | `write` returns after the card is back in the transfer state. `sync` polls CMD13 until the card is ready, for up to 1 s. |
 | Buffers | Any alignment. Word-aligned buffers take a faster path. |
 | Timeouts | 100 ms per command, 1 s per data block. |
-| Errors | `BLK_ERR_NOMEDIA` before a successful init. `BLK_ERR_RANGE` past the end of the card or for an address error from the card, with no retry. `BLK_ERR_TIMEOUT` when the card or controller does not answer. `BLK_ERR_IO` for CRC and other errors. |
+| Errors | `BLK_ERR_NOMEDIA` before a successful init, and after a failed transfer when the present state register says the slot is empty. `BLK_ERR_RANGE` past the end of the card or for an address error from the card, with no retry. `BLK_ERR_TIMEOUT` when the card or controller does not answer. `BLK_ERR_IO` for CRC and other errors. |
 
 Pin routing: on boards with WiFi (Pi 3, Zero W, Zero 2 W) the firmware routes the card to the SDHOST controller on GPIO 48 to 53 (ALT0), and EMMC to the WiFi chip on GPIO 34 to 39 (ALT3). `sd_init()` sets GPIO 34 to 39 to input when any of them is ALT3. It sets GPIO 48 to 53 to ALT3 when any of them is not ALT3. It never selects ALT0. WiFi stops working after this.
 
@@ -313,7 +313,7 @@ Sharp edges:
 | Main context only. | The driver has no locks. Do not call it from an IRQ handler or a tick callback. |
 | Busy waits. | A large transfer busy-waits for its whole length. |
 | WiFi is lost. | The pin routing above takes EMMC away from the WiFi chip. |
-| No card detect. | A card pulled out after init shows up as timeouts or I/O errors. Call `sd_init()` again. |
+| Card detect only on failure. | The driver reads the card inserted bit only after a transfer fails. When the bit is clear it returns `BLK_ERR_NOMEDIA` until `sd_init()` runs again. When the bit stays set, a pulled card shows up as timeouts or I/O errors. QEMU sets the bit. On real boards it is not validated. |
 
 Pending hardware validation: the pin routing, the 25 MHz clock and the retry path are verified in QEMU only, with one exception. On a Zero W 1.1, `sd_init()` and reads up to 256 blocks worked with one SDHC card on 2026-11-24, with the driver set to 25 MHz. Writes, SDSC cards, retries and every other board are still unvalidated. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md#zero-w-11-examplessdraw-2026-11-24).
 
@@ -343,9 +343,9 @@ if (rc == 0) {
 |---|---|
 | Paths | `"sd:/DIR/FILE.EXT"`. Without `vol:`, a path uses the default volume: the first one mounted, or the last one passed to `fs_chdir()`. `/` and `\` both separate. `.` and `..` work. |
 | Names | Long names, UTF-8, at most 255 bytes. Lookups ignore case. Every long name also gets an 8.3 alias. |
-| Volumes | Two at a time. |
+| Volumes | Two at a time by default. Set `ROBCO_FS_VOLUMES` in `robco_config.h` to change it. See [Several volumes and removable media](#several-volumes-and-removable-media). |
 | Size limits | Files up to 4 GiB - 1. Devices are seen as at most `0xFFFFFFFF` blocks. No exFAT. |
-| Memory | No heap. A static table holds two volume slots, each with a 512-byte sector buffer. Long names share one static 512-byte buffer. Each `fs_file_t` holds its own 512-byte buffer. `fs_mkfs()` puts a 512-byte work buffer on the stack. |
+| Memory | No heap. A static table holds one slot per volume, about 590 bytes each, mostly a 512-byte sector buffer. Long names share one static 512-byte buffer. Each `fs_file_t` holds its own 512-byte buffer. `fs_mkfs()` puts a 512-byte work buffer on the stack. |
 | Locking | None. Call from one context at a time. |
 | Open files | Do not open the same file twice for writing, and do not unlink or rename an open file. FatFs does not check. |
 | Time | New and modified files get the time of the library clock when it is set, else 2026-01-01 00:00. See [File time stamps](#file-time-stamps). |
@@ -378,6 +378,7 @@ Every function returns `FS_OK` (`0`) or a count on success, or a negative code:
 | `FS_ERR_MKFS` | `-19` | `cannot format` | The device cannot hold the requested FAT type |
 | `FS_ERR_TOOBIG` | `-20` | `file too big` | The file is larger than the buffer |
 | `FS_ERR_MOUNTED` | `-21` | `device already mounted` | A mounted volume already uses the device or some of its blocks |
+| `FS_ERR_GONE` | `-22` | `medium removed` | The volume's medium left. Unmount the volume and mount it again |
 
 Device errors map as follows:
 
@@ -385,14 +386,14 @@ Device errors map as follows:
 |---|---|
 | `BLK_ERR_IO` | `FS_ERR_IO` |
 | `BLK_ERR_TIMEOUT` | `FS_ERR_TIMEOUT` |
-| `BLK_ERR_NOMEDIA` | `FS_ERR_NOTREADY` |
+| `BLK_ERR_NOMEDIA` | `FS_ERR_NOTREADY` during `fs_mount()`, `FS_ERR_GONE` on a mounted volume |
 | `BLK_ERR_RO` | `FS_ERR_RO` |
 | `BLK_ERR_PARAM` | `FS_ERR_INVAL` |
 | `BLK_ERR_RANGE` | `FS_ERR_CORRUPT` |
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `FS_VOLUMES` | `2u` | Volumes mounted at the same time |
+| `FS_VOLUMES` | `ROBCO_FS_VOLUMES`, `2` by default | Volumes mounted at the same time |
 | `FS_VOL_MAX` | `7u` | Longest volume name |
 | `FS_PATH_MAX` | `255u` | Longest path, volume prefix included |
 | `FS_NAME_MAX` | `255u` | Longest name in bytes of UTF-8 |
@@ -409,6 +410,7 @@ Returns the message in the table above. Unknown codes give `"unknown error"`.
 
 ```c
 int fs_mount(const char *volume, blk_dev_t *dev);
+int fs_mount_flags(const char *volume, blk_dev_t *dev, unsigned flags);
 int fs_unmount(const char *volume);
 ```
 
@@ -424,9 +426,11 @@ int fs_unmount(const char *volume);
 
 A read-only device mounts, and every write then returns `FS_ERR_RO`.
 
+`fs_mount_flags()` is `fs_mount()` with flags. `FS_MOUNT_RDONLY` makes the volume read-only at run time: every write returns `FS_ERR_RO` and the device sees no write. Other flag bits return `FS_ERR_INVAL`. To mount one partition, pass a `part_open()` device.
+
 Two volumes over one medium keep separate caches and corrupt it at the first write, so `fs_mount()` checks the device first. It compares the device pointer, then follows `part_open()` devices down to their parent with `part_parent_of()` and compares block ranges. A device of unknown size counts as reaching the end of its parent. Other wrapper devices are opaque: the check cannot see that two of them share a medium, so never mount two such views of one card.
 
-`fs_unmount()` calls `blk_sync()` on the device first. If that fails, it returns the device error and the volume stays mounted, so you can call it again. Then it forgets the volume. It does not flush open files: close them first. Handles still open on the volume return `FS_ERR_BADF` afterwards, even after a new mount. Returns `FS_ERR_NOVOL` for a name that is not mounted. If the volume was the default, the default moves to the other mounted volume, if any.
+`fs_unmount()` calls `blk_sync()` on the device first. If that fails, it returns the device error and the volume stays mounted, so you can call it again. On a gone volume it skips the sync. Then it forgets the volume. It does not flush open files: close them first. Handles still open on the volume return `FS_ERR_BADF` afterwards, even after a new mount. Returns `FS_ERR_NOVOL` for a name that is not mounted. If the volume was the default, the default moves to the other mounted volume, if any.
 
 ```c
 int fs_statvfs(const char *volume, fs_statvfs_t *out);
@@ -475,6 +479,92 @@ int fs_chdir(const char *path);
 ```
 
 Sets the current directory of the path's volume and makes that volume the default. Relative paths start there.
+
+### Several volumes and removable media
+
+A device can hold a boot card and a removable holotape card. Each is a volume with its own name. A path picks the volume by name, such as `"tape:/GAMES/ROBCO.HOL"`. A path without a name uses the default volume, so code written for one volume keeps working. A handle stays on the volume it was opened on.
+
+```c
+#define FS_MOUNT_RDONLY 0x1u
+
+int fs_eject(const char *volume);
+int fs_probe(const char *volume);
+uint32_t fs_changes(void);
+```
+
+| Function | What it does |
+|---|---|
+| `fs_mount_flags()` | Mounts with flags. The tape uses `FS_MOUNT_RDONLY`. |
+| `fs_unmount()` | Flushes and detaches. On a gone volume it does no I/O and returns `FS_OK`. |
+| `fs_eject()` | Detaches at once with no I/O, whether or not the medium is there. Data not yet written is lost. Handles return `FS_ERR_BADF` after it. |
+| `fs_probe()` | Reads the volume's first block. Returns `FS_OK`, `FS_ERR_GONE`, `FS_ERR_NOVOL` or a device error. |
+| `fs_changes()` | A counter that moves on every mount, unmount, eject and lost medium. |
+
+Every function runs in main context only. None of them waits beyond the device calls, and none calls back.
+
+A volume is gone once its device returns `BLK_ERR_NOMEDIA`, from any call. The device driver decides that. For the EMMC slot, see the sharp edges of [SD card](#sd-card-sdh).
+
+| Situation | What the library guarantees |
+|---|---|
+| The call that meets the pull | Returns `FS_ERR_GONE`. FatFs gets no more device calls for the volume. |
+| Every later call on the volume, by path or by handle | Returns `FS_ERR_GONE`. No device call, no cached data, no wait. This covers `fs_tell()` and `fs_size()`, which never touch the device. |
+| `fs_close()` and `fs_closedir()` on a gone volume | Return `FS_ERR_GONE` and release the handle. Handles live in caller memory, so nothing leaks. |
+| `fs_unmount()` or `fs_eject()` on a gone volume | Return `FS_OK` with no I/O and free the slot. |
+| A handle from before, after a new mount of the slot | Returns `FS_ERR_BADF`. It never reads the new card. |
+| A new mount after a new card | Reads the boot sector, FAT and directories from the new card. No sector of the old card is kept. |
+| The other volumes | Keep working throughout. |
+| A failed mount of a missing card | Returns `FS_ERR_NOTREADY` and leaves the slot free. |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Mounted: fs_mount_flags
+    Mounted --> Gone: device returns BLK_ERR_NOMEDIA
+    Mounted --> Free: fs_unmount or fs_eject
+    Gone --> Free: fs_unmount or fs_eject, no I/O
+    Free --> Mounted: fs_mount_flags on a new card
+```
+
+A ROM or shell polls the counter from its main loop. When the counter moves, it lists the volumes again. To notice a pull while nothing reads the card, call `fs_probe()` from time to time. To notice a new card, ask the driver, for example `sd_init()`.
+
+```c
+static uint32_t seen;
+
+void poll_tape(void)
+{
+    if (fs_probe("tape") == FS_ERR_GONE) {
+        fs_unmount("tape");
+    }
+    if (fs_changes() != seen) {
+        seen = fs_changes();
+        refresh_tape_list();
+    }
+}
+```
+
+What FatFs does alone, and what the glue adds:
+
+| FatFs behaviour | The hole | What the glue does |
+|---|---|---|
+| A read error invalidates the sector window and marks the open file with an error. A directory or another file of the volume keeps its own cached sector. | A later call could serve a cached sector of the old card. | The glue checks a gone flag before every call and returns `FS_ERR_GONE`. |
+| `validate()` checks `disk_status()` on every handle call, and every path call asks `disk_status()` too. When it reports `STA_NOINIT`, FatFs calls `disk_initialize()` and mounts the drive again. | A new card in the slot would be mounted behind the caller's back, while old handles point to the old one. | `disk_status()` and `disk_initialize()` report `STA_NOINIT` and `STA_NODISK` for a gone volume. Only `fs_mount()` clears that. |
+| After an error, FatFs may still try to write back its window or a file buffer. | Writes to a card that left, or to a new card. | `disk_read()`, `disk_write()` and `disk_ioctl()` return `RES_NOTRDY` for a gone volume without calling the device. |
+| `f_tell()` and `f_size()` are macros on the handle, with no check. | Stale positions and sizes after a pull. | Each handle keeps the mount number of its slot. Every handle call compares it. |
+| `f_close()` leaves the handle open when it fails. | A handle that cannot be closed. | The glue marks the handle closed in every case. With `FF_FS_LOCK` at `0`, FatFs keeps no open file table. |
+| `f_mount()` resets the work area of the slot. | None. | The glue mounts with `f_mount()` every time. |
+
+FatFs stays unmodified. The glue changes only `ffconf.h`, `fs_glue.c` and `fs.c`.
+
+A writable volume pulled during a write is treated like a power cut. The call returns `FS_ERR_GONE` and nothing hangs. On the next mount of that card, `fs_atomic_recover()` leaves each atomic file with its complete old or complete new content, as after a power cut. Not guaranteed: files written with `fs_write()` and not yet closed, the free cluster count, and anything when the card itself corrupts a sector it was writing as it lost power. Run a FAT checker on a card pulled during a write.
+
+Cost: each volume slot takes about 590 bytes of BSS. The removal checks add about 1.1 KiB of code to an image that uses the file system. A project that needs one volume sets `ROBCO_FS_VOLUMES` to `1` and saves one slot.
+
+| `examples/storage` without its removal commands | Image | BSS |
+|---|---|---|
+| Before removal support, 2 volumes | 54,908 bytes | 167,232 bytes |
+| With removal support, 2 volumes | 56,004 bytes | 167,264 bytes |
+| With removal support, 1 volume | 55,348 bytes | 166,672 bytes |
+
+Removal is tested on the host with fake devices and in QEMU on the EMMC card. Nothing here is validated on real hardware. See [HARDWARE_VALIDATION.md](../../HARDWARE_VALIDATION.md#card-removal).
 
 ### Files
 
@@ -789,4 +879,4 @@ Builds an SD card image file from a directory tree with mtools, without root: an
 
 ### Storage example
 
-Mounts the first partition of the card as `sd`, then reads commands on the PL011, one per line, and answers each with one marker: `ls`, `cat`, `put`, `atomic`, `recover`, `rm`, `mv`, `mkdir`, `df`, `ini`, `sync`, `umount` and `mount`. `put` and `atomic` write byte `i` of the file as `((seed + i) * 2654435761 mod 2^32) >> 24`. `tests/target/test_storage.py` drives it. See [examples/storage](../../../examples/storage/main.c).
+Mounts the first partition of the card as `sd`, then reads commands on the PL011, one per line, and answers each with one marker: `ls`, `cat`, `put`, `atomic`, `recover`, `rm`, `mv`, `mkdir`, `df`, `ini`, `sync`, `umount`, `mount` and `mount ro`. For removal tests it also has `hopen`, `hread` and `hclose` for one file held open, `probe`, `changes`, `eject`, `sdinit` and `ramfs`, which mounts a RAM volume `ram` next to the card. `put` and `atomic` write byte `i` of the file as `((seed + i) * 2654435761 mod 2^32) >> 24`. `tests/target/test_storage.py` and `tests/target/test_storage_removal.py` drive it. See [examples/storage](../../../examples/storage/main.c).
