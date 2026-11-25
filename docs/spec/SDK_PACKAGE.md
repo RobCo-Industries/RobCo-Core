@@ -928,6 +928,21 @@ The checks come in the order of the table: the location, the read, the syntax, `
 
 A skipped tool entry does not exist for this tool. No other field of it is checked. It is never resolved, never installed, never listed by `robco sdk list` and never written to a lock. It cannot be reached from a lock either: a lock may hold only `gcc` and `qemu`, as [Keys](./STUDIO_PROJECT.md#keys) says, and the tool installs a tool only when the locked `pipos` package names it. The reason for skipping in place of refusing: an index serves every version of the tool, and a later index may list a tool that only a later version needs. Refusing it would break every older version for a tool they never use. A change that an older version must not miss raises `format` of the index.
 
+### A closed index
+
+An index is closed. An index that is not closed is invalid. It is closed when each entry of `packages` meets two rules:
+
+1. Each of its `requires` entries is met in the same index: some `packages` entry has that `name`, and fits by rules 2 and 3 of [Version and ABI rules](#version-and-abi-rules), with the `abi` of the `requires` entry.
+2. Each tool it names in `tools` has a `tools` entry with that `name` and `version`, and that entry holds at least one archive.
+
+Rule 4 plays no part here. The party that writes the index cannot know which formats a reader knows.
+
+The party that writes an index checks that it is closed before it publishes the index. It must refuse to write an index that is not closed. This is the duty of the index writer alone.
+
+A reader does not check the whole index for closure. That check would make every command pay for it. A reader meets an index that is not closed only through a resolution, as `sdk: no package` with the detail of [Resolving requires](#resolving-requires), or as `sdk: no tool`. When that detail names a requirement that a package listed in the index states, the index is broken, not the project.
+
+A host is not part of closure. A tool may lack an archive for some host. A resolution on that host fails with `index: host`, by [Tools a package names](#tools-a-package-names).
+
 ## Version and ABI rules
 
 A version is `X.Y.Z`. Versions compare part by part as integers, X first.
@@ -971,6 +986,8 @@ The resolver keeps a set of requirements and one pick per name. It runs in passe
 3. The resolver adds to the set each `requires` entry of each picked version.
 4. When step 3 added a requirement, it goes back to step 2. Otherwise the passes end.
 
+The resolver does not search. For each name, the highest version that fits every requirement on it is the answer, or the resolution fails. A failure never falls back to an older version of a package picked in an earlier pass. The reason: a search costs complexity and brings surprise, such as a build that quietly takes an older SDK because a newer one is broken. The index is small and has one publisher, who keeps it closed by [A closed index](#a-closed-index).
+
 A requirement stays in the set once added, even when a later pass passes over the version that stated it. So a pick only ever moves to a lower version, or to none, as the set grows. The set can hold only the root and `requires` entries of the index, so there are at most as many passes as that number, plus one. Each pass reads the whole set and every pick at once, so the result does not depend on the order of the index, of a `requires` array, or of the passes.
 
 When the passes end, the resolution holds the root package and each package that a picked version requires, and each package those require, by name. A name in the set that no such chain reaches is left out. The lock lists the packages sorted by name in byte order, by [How the tool writes the lock](./STUDIO_PROJECT.md#how-the-tool-writes-the-lock). Each package of the resolution meets every requirement that a package of the resolution states on it.
@@ -989,6 +1006,17 @@ sdk: no package: <name>: <requirement>, <requirement>
 It lists every requirement of the set on that name. The root comes first, as `robco.toml abi <abi>` or `command line <argument>`. Each `requires` entry follows as `<package> <version> abi <abi>`, the package and version that state it, sorted by package name and then by version. When a version met every requirement on the name but for rule 4, the detail ends with `; <version> needs a newer tool: <format> <value>`, for the highest such version and the first of its formats by name that the tool does not know.
 
 The example `requires` index at the end of [Examples](#examples) shows two paths that require one package.
+
+Because the resolver never goes back, it can fail where an older pick would have worked. An index that is not closed causes this. Take a project with `abi = "1.3"`, where `pipos` 1.4.0 requires `gfx` at ABI 1.4, which the index does not hold, and `pipos` 1.3.0 requires `gfx` at ABI 1.3, which it holds. The resolver picks `pipos` 1.4.0 and fails, though `pipos` 1.3.0 would resolve. A closed index cannot hold that `pipos` 1.4.0 entry.
+
+A closed index does not remove every such failure. This is the limit of version 1 of the resolver. Two cases remain:
+
+| Case | Example |
+|---|---|
+| A required version fails rule 4 for this tool | `app` 2.0.0 requires `log` at ABI 1.5, and `log` 1.5.0 uses a format this tool does not know. `app` 1.0.0 requires `log` at ABI 1.0, which `log` 1.4.0 meets. The index is closed. The resolver picks `app` 2.0.0 and fails, and the detail says a newer tool is needed. |
+| Two picked packages require one name at different ABI majors | `app` 2.0.0 requires `log` at ABI 2.0 and `ui` 1.0.0, and `ui` 1.0.0 requires `log` at ABI 1.0. `app` 1.0.0 requires `log` at ABI 1.0 alone. The index holds `log` 1.0.0 and `log` 2.0.0, so it is closed. The resolver picks `app` 2.0.0 and fails on `log`. |
+
+The examples at the end of [Examples](#examples) show the index that is not closed and the first case.
 
 ## Hashes
 
@@ -1225,5 +1253,40 @@ A `requires` index, for [Resolving requires](#resolving-requires). `app` require
 
 ```text
 sdk: no package: log: net 1.0.0 abi 1.4, ui 1.0.0 abi 1.5
+```
+
+An index that is not closed, for [A closed index](#a-closed-index). `pipos` 1.4.0 requires `gfx` at ABI 1.4, and the index holds no such `gfx`. As above, the entries show only the fields the resolver reads.
+
+```json
+[
+  {"name": "pipos", "version": "1.3.0", "abi": "1.3", "requires": [{"name": "gfx", "abi": "1.3"}], "formats": {}},
+  {"name": "pipos", "version": "1.4.0", "abi": "1.4", "requires": [{"name": "gfx", "abi": "1.4"}], "formats": {}},
+  {"name": "gfx", "version": "1.3.0", "abi": "1.3", "requires": [], "formats": {}}
+]
+```
+
+A project with `abi = "1.3"` on this index fails with:
+
+```text
+sdk: no package: gfx: pipos 1.4.0 abi 1.4
+```
+
+The index writer refuses to write this index. Without the `pipos` 1.4.0 entry, it is closed, and the project resolves to `gfx` 1.3.0 and `pipos` 1.3.0.
+
+A closed index where the resolver still fails, the first case of the limit in [Resolving requires](#resolving-requires). `log` 1.5.0 carries `flags` 2, which this tool does not know.
+
+```json
+[
+  {"name": "app", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "log", "abi": "1.0"}], "formats": {}},
+  {"name": "app", "version": "2.0.0", "abi": "2.0", "requires": [{"name": "log", "abi": "1.5"}], "formats": {}},
+  {"name": "log", "version": "1.4.0", "abi": "1.4", "requires": [], "formats": {}},
+  {"name": "log", "version": "1.5.0", "abi": "1.5", "requires": [], "formats": {"flags": 2}}
+]
+```
+
+`robco sdk install app` on this index fails with:
+
+```text
+sdk: no package: log: app 2.0.0 abi 1.5; 1.5.0 needs a newer tool: flags 2
 ```
 

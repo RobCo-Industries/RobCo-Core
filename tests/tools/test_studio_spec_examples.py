@@ -929,7 +929,15 @@ def resolve_requires(entries, root_name, root_fits, root_text):
             parts = [f"{s[0]} {s[1]} abi {abi}" for s, _, abi in listed]
             if root[1] == name:
                 parts.insert(0, root_text)
-            return f"sdk: no package: {name}: " + ", ".join(parts)
+            line = f"sdk: no package: {name}: " + ", ".join(parts)
+            # Versions that met every requirement but for rule 4.
+            near = [e for e in entries if e["name"] == name and unknown_formats(e) and root[1] != name
+                    and all(fits_requires(e, r[2], rule4=False) for r in on)]
+            if near:
+                e = max(near, key=lambda e: vkey(e["version"]))
+                fmt = unknown_formats(e)[0]
+                line += f"; {e['version']} needs a newer tool: {fmt} {e['formats'][fmt]}"
+            return line
         added = {((e["name"], e["version"]), q["name"], q["abi"])
                  for e in picks.values() for q in e.get("requires", [])} - reqs
         if not added:
@@ -948,13 +956,77 @@ def versions(picks):
     return {n: e["version"] for n, e in picks.items()}
 
 
-def fits_requires(entry, abi):
-    """Rules 2, 3 and 4, with the abi of a requires entry."""
+def unknown_formats(entry):
+    """The formats of an entry that this tool does not know, sorted by name."""
+    return sorted(f for f, v in entry["formats"].items() if f not in KNOWN_FORMATS or v != 1)
+
+
+def fits_requires(entry, abi, rule4=True):
+    """Rules 2, 3 and 4, with the abi of a requires entry. Rule 4 only when rule4 is set."""
     if "abi" not in entry:
         return False
     have, want = vkey(entry["abi"]), vkey(abi)
-    known = set(entry["formats"]) <= KNOWN_FORMATS and set(entry["formats"].values()) <= {1}
-    return have[0] == want[0] and have[1] >= want[1] and known
+    return have[0] == want[0] and have[1] >= want[1] and not (rule4 and unknown_formats(entry))
+
+
+def closed(packages, tools=None):
+    """True when the index is closed, by "A closed index". Rule 4 plays no part."""
+    for entry in packages:
+        for q in entry.get("requires", []):
+            if not any(e["name"] == q["name"] and fits_requires(e, q["abi"], rule4=False)
+                       for e in packages):
+                return False
+        for named in entry.get("tools", []):
+            if not any((t["name"], t["version"]) == (named["name"], named["version"]) and t["archives"]
+                       for t in tools or []):
+                return False
+    return True
+
+
+def spec_arrays():
+    """The JSON arrays of the Examples section: the requires, open and limit indexes."""
+    text = section(PACKAGE, "Examples", "##")
+    return [json.loads(b) for b in blocks(text, "json") if b.lstrip().startswith("[")], text
+
+
+def test_closed_index_and_the_limit_of_the_resolver():
+    (requires, open_index, limit), text = spec_arrays()
+    index = package_json('"packages"')
+    # The writer accepts the other example indexes and refuses the one that is not closed.
+    assert closed(index["packages"], index["tools"]) and closed(requires) and closed(limit)
+    assert not closed(open_index)
+    assert not closed(index["packages"], [t for t in index["tools"] if t["name"] != "qemu"])
+    lines = [b.strip() for b in blocks(text, "text")]
+    # The index that is not closed: the newest pipos is picked, and nothing goes back.
+    wanted = next(x for x in lines if "no package: gfx" in x)
+    abi13 = lambda e: fits(e, "pipos", "1.3")
+    assert resolve_requires(open_index, "pipos", abi13, "robco.toml abi 1.3") == wanted
+    assert wanted == "sdk: no package: gfx: pipos 1.4.0 abi 1.4"
+    fixed = [e for e in open_index if e["version"] != "1.4.0"]
+    assert closed(fixed)
+    assert versions(resolve_requires(fixed, "pipos", abi13, "robco.toml abi 1.3")) == \
+        {"gfx": "1.3.0", "pipos": "1.3.0"}
+    # A closed index where rule 4 still strands the resolver, though app 1.0.0 would resolve.
+    any_app = lambda e: not unknown_formats(e)
+    wanted = next(x for x in lines if "needs a newer tool" in x)
+    assert resolve_requires(limit, "app", any_app, "command line app") == wanted
+    older = [e for e in limit if (e["name"], e["version"]) != ("app", "2.0.0")]
+    assert versions(resolve_requires(older, "app", any_app, "command line app")) == \
+        {"app": "1.0.0", "log": "1.4.0"}
+    # Two majors of one name: closed, and the resolver still fails on it.
+    majors = [
+        {"name": "app", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "log", "abi": "1.0"}],
+         "formats": {}},
+        {"name": "app", "version": "2.0.0", "abi": "2.0",
+         "requires": [{"name": "log", "abi": "2.0"}, {"name": "ui", "abi": "1.0"}], "formats": {}},
+        {"name": "ui", "version": "1.0.0", "abi": "1.0", "requires": [{"name": "log", "abi": "1.0"}],
+         "formats": {}},
+        {"name": "log", "version": "1.0.0", "abi": "1.0", "requires": [], "formats": {}},
+        {"name": "log", "version": "2.0.0", "abi": "2.0", "requires": [], "formats": {}},
+    ]
+    assert closed(majors)
+    assert resolve_requires(majors, "app", any_app, "command line app") == \
+        "sdk: no package: log: app 2.0.0 abi 2.0, ui 1.0.0 abi 1.0"
 
 
 def test_requires_example_resolves_by_name_over_every_requirement():
