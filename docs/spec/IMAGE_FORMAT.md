@@ -289,7 +289,7 @@ Sealing fills in the fields that only exist once the image is linked and writes 
 | Implementation | State |
 |---|---|
 | `seal()` and `pack()` in `tools/rimg.py`, behind the `seal` and `pack` commands | Exists |
-| `rimg_seal()` and `rimg_pack()` in C, beside `rimg_validate()` | To be written, with the signatures of [C functions](#c-functions) |
+| `rimg_seal()` and `rimg_pack()` in C, beside `rimg_validate()` | Exists, in `src/lib/rimg_seal.c`, with the signatures of [C functions](#c-functions) |
 
 Both give the same bytes for the same inputs and fail with the same code at the same step. The [test vectors](#test-vectors) prove it. The code is a `rimg_err_t` value and its `@RC` name, as in [Validation](#validation).
 
