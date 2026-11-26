@@ -102,7 +102,8 @@ jobs:
           git config --global --add safe.directory "$top"
           find "$top" -name .gitmodules -type f | while IFS= read -r file; do
             base=$(dirname "$file")
-            git config --file "$file" --get-regexp '^submodule\..*\.path$' |
+            # Exit code 1 means no path key: treat it as an empty list.
+            { git config --file "$file" --get-regexp '^submodule\..*\.path$' || [ $? -eq 1 ]; } |
               while read -r _ path; do
                 git config --global --add safe.directory "$base/$path"
               done
@@ -152,7 +153,8 @@ jobs:
           git config --global --add safe.directory "$top"
           find "$top" -name .gitmodules -type f | while IFS= read -r file; do
             base=$(dirname "$file")
-            git config --file "$file" --get-regexp '^submodule\..*\.path$' |
+            # Exit code 1 means no path key: treat it as an empty list.
+            { git config --file "$file" --get-regexp '^submodule\..*\.path$' || [ $? -eq 1 ]; } |
               while read -r _ path; do
                 git config --global --add safe.directory "$base/$path"
               done
