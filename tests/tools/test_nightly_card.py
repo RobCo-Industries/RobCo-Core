@@ -8,6 +8,8 @@ import sys
 
 import pytest
 
+from harness.env import minimal_env
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PACK = os.path.join(ROOT, "tools", "nightly", "pack_card.py")
 sys.path.insert(0, os.path.join(ROOT, "tools", "nightly"))
@@ -40,7 +42,7 @@ def test_firmware_names_in_any_folder_and_case():
 needs_mtools = pytest.mark.skipif(not shutil.which("mformat"), reason="mtools is not installed")
 
 
-MTOOLS_ENV = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+MTOOLS_ENV = minimal_env(MTOOLS_SKIP_CHECK="1")
 
 
 def make_card(tmp_path, names, size="64", attrib=()):
