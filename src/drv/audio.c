@@ -153,7 +153,12 @@ static int mix_req_set;
 static volatile int rest_mid;
 static uint8_t ramp[RAMP_LEN];
 
-/* Tick context only. */
+/*
+ * Tick context only. Widths: clock_ms and every t_ms wrap at 2^32 ms, 49
+ * days, as tick_ms() does, and the trace prints them modulo 2^32. last_us
+ * and acc_us hold one tick period plus a remainder under 1000, far below
+ * 2^32 us.
+ */
 static audio_seq_t seq;
 static audio_note_t cur_tone;
 static uint32_t clock_ms;
@@ -161,7 +166,13 @@ static uint32_t last_us;
 static uint32_t acc_us;
 static uint32_t sounding;
 
-/* IRQ context only: the tick starts and halts, the channel 3 IRQ runs. */
+/*
+ * IRQ context only: the tick starts and halts, the channel 3 IRQ runs.
+ * pcm_t0_us is 64 bits: every duration since the start comes from it, so a
+ * looped play can pass the 32-bit wrap. pcm_total and pcm.n count samples
+ * modulo 2^32: they wrap after 54 hours at 22050 Hz, which the trace and
+ * audio_pcm_samples() report as is.
+ */
 static audio_pcm_t pcm;
 static uint32_t pcm_t0_ms;
 static uint64_t pcm_t0_us;
@@ -377,6 +388,7 @@ static void pcm_begin(void)
     }
     pcm_t0_ms = clock_ms;
     pcm_t0_us = timer_now_us();
+    /* The engine works on the low word and rebases, so its times wrap safely. */
     pcm.origin_us = (uint32_t)pcm_t0_us;
     mix_drop();
     if (mix_req_set) {
@@ -649,16 +661,42 @@ const char *audio_probe_name(int result)
     }
 }
 
-/* Something plays, or a request waits for the tick. IRQs masked. */
+/*
+ * Something plays: true from the moment a sound, a stop or the rest ramp
+ * is accepted until the pin is back at rest. That covers a request that
+ * waits for its tick, a tone, a sequence or a PCM play that sounds, and a
+ * stop or cut not yet applied. Every busy rule starts here. IRQs masked.
+ */
 static int busy_locked(void)
 {
     return req.valid || playing;
 }
 
-/* Something plays or will play: a pending stop does not count. IRQs masked. */
-static int sound_pending_locked(void)
+/* A stop waits for its tick and nothing was accepted after it. IRQs masked. */
+static int stop_pending_locked(void)
 {
-    return req.valid ? !req.stop : playing;
+    return req.valid && req.stop;
+}
+
+/*
+ * A new sound without AUDIO_PRIORITY is refused while something plays. It
+ * may take the place of a pending stop: the tick still ends the old sound
+ * with its stop line first. IRQs masked.
+ */
+static int start_refused_locked(void)
+{
+    return busy_locked() && !stop_pending_locked();
+}
+
+/*
+ * IRQs masked, PCM active. The next sample time of the play that is not in
+ * the past, from one timer read, which *now gets in 64 bits. Everything new
+ * that joins a running play starts there: an overlay, a queued buffer.
+ */
+static uint32_t pcm_join_locked(uint64_t *now)
+{
+    *now = timer_now_us();
+    return audio_pcm_join_us(&pcm, (uint32_t)*now);
 }
 
 /* Queues a request. `tone` is used when notes is NULL. */
@@ -671,7 +709,7 @@ static int submit(const audio_note_t *notes, size_t count, unsigned flags,
         return AUDIO_ERR_NO_INIT;
     }
     s = irq_save();
-    if (!replace && sound_pending_locked()) {
+    if (!replace && start_refused_locked()) {
         irq_restore(s);
         return AUDIO_ERR_BUSY;
     }
@@ -800,7 +838,7 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
      */
     if (!(flags & AUDIO_PRIORITY)) {
         s = irq_save();
-        ret = sound_pending_locked();
+        ret = start_refused_locked();
         irq_restore(s);
         if (ret) {
             return AUDIO_ERR_BUSY;
@@ -812,7 +850,7 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
         crc = crc32(data, len);
     }
     s = irq_save();
-    if (!(flags & AUDIO_PRIORITY) && sound_pending_locked()) {
+    if (!(flags & AUDIO_PRIORITY) && start_refused_locked()) {
         irq_restore(s);
         return AUDIO_ERR_BUSY;
     }
@@ -832,9 +870,9 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
 static audio_pcm_t *queue_target_locked(void)
 {
     if (req.valid) {
-        return req.pcm && !req.stop ? &pcm_req : 0;
+        return req.pcm && !req.stop && !pcm_req_full ? &pcm_req : 0;
     }
-    return pcm.active ? &pcm : 0;
+    return pcm.active && !pcm_full ? &pcm : 0;
 }
 
 /* 0 when a buffer can be queued now, else AUDIO_ERR_STATE or AUDIO_ERR_BUSY. IRQs masked. */
@@ -875,7 +913,15 @@ int audio_pcm_queue(const uint8_t *data, size_t len)
     s = irq_save();
     ret = queue_check_locked();
     if (!ret) {
-        audio_pcm_chain(queue_target_locked(), data, len);
+        audio_pcm_t *t = queue_target_locked();
+        uint64_t now;
+
+        if (t == &pcm) {
+            /* An end already passed, the IRQ still due: start at the join point. */
+            audio_pcm_chain_at(t, data, len, pcm_join_locked(&now));
+        } else {
+            audio_pcm_chain(t, data, len);
+        }
         pcm_next_crc = crc;
     }
     irq_restore(s);
@@ -901,10 +947,10 @@ static audio_pcm_t *mix_target_locked(int *pending)
 {
     if (req.valid) {
         *pending = 1;
-        return req.pcm && !req.stop ? &pcm_req : 0;
+        return req.pcm && !req.stop && !pcm_req_full ? &pcm_req : 0;
     }
     *pending = 0;
-    return pcm.active ? &pcm : 0;
+    return pcm.active && !pcm_full ? &pcm : 0;
 }
 
 /* 0 when an overlay can start now, else AUDIO_ERR_STATE or AUDIO_ERR_BUSY. IRQs masked. */
@@ -963,13 +1009,16 @@ int audio_pcm_mix(const uint8_t *data, size_t len)
         mix_req_crc = crc;
         mix_req_set = 1;
     } else {
-        /* From the next sample of the play, on the same grid. */
-        m.origin_us = audio_pcm_next_us(&pcm);
+        uint64_t now;
+
+        /* From the play's next sample that has not passed, on its grid. */
+        m.origin_us = pcm_join_locked(&now);
         mix = m;
         mix_val = 128;
         if (backend != AUDIO_BACKEND_PWM) {
+            /* 64 bits: a looped play can run past the 32-bit wrap. The join lies after the read, never before. */
             audio_trace_pcm_mix(m.len, crc, pcm_t0_ms,
-                                (uint32_t)(m.origin_us - (uint32_t)pcm_t0_us));
+                                (now - pcm_t0_us) + (uint32_t)(m.origin_us - (uint32_t)now));
         }
     }
     irq_restore(s);
@@ -1016,8 +1065,9 @@ int audio_rest_mid(void)
     if (!pcm_irq) {
         return AUDIO_ERR_NO_IRQ;
     }
+    /* A pending stop counts: the ramp starts from rest, after the stop. */
     s = irq_save();
-    if (sound_pending_locked()) {
+    if (busy_locked()) {
         irq_restore(s);
         return AUDIO_ERR_BUSY;
     }
@@ -1032,11 +1082,10 @@ int audio_rest_mid(void)
         irq_restore(s);
         return 0;
     }
-    if (sound_pending_locked()) {
+    if (busy_locked()) {
         irq_restore(s);
         return AUDIO_ERR_BUSY;
     }
-    pcm_cut_locked();
     pcm_req = p;
     pcm_req_crc = crc;
     pcm_req_full = 1;
@@ -1072,7 +1121,7 @@ int audio_play_rtttl(const char *text, unsigned flags)
      * safe once the request is in, all with IRQs masked.
      */
     s = irq_save();
-    if (!(flags & AUDIO_PRIORITY) && sound_pending_locked()) {
+    if (!(flags & AUDIO_PRIORITY) && start_refused_locked()) {
         irq_restore(s);
         return AUDIO_ERR_BUSY;
     }
