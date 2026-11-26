@@ -470,7 +470,7 @@ RobCo-Core's own `.github/workflows/ci.yml` runs on pushes to `main` and on pull
 | `canary` | `make venv && make test-canary` |
 | `test` | `make venv && make test-tools test-docs test-spikes test-examples test-target` |
 
-`host`, `canary` and `test` run inside the container and need `image`. With `workflows`, they run every target `make test` runs. The container runs as root, and socket paths stay under the system temporary directory.
+`image` needs `workflows`: the job that can write packages starts only after the guard passed. `host`, `canary` and `test` run inside the container and need `image`. With `workflows`, they run every target `make test` runs. The container runs as root, and socket paths stay under the system temporary directory.
 
 Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` from RobCo-Core with the tag from `ci/IMAGE_TAG` in its RobCo-Core submodule. It checks out with `submodules: recursive` and runs two jobs in the container:
 
