@@ -57,7 +57,7 @@ Set these in `robco_config.h`. All are optional.
 | `ROBCO_AUDIO_VOLUME` | `100` | Start volume in percent. The build stops above `100`. |
 | `ROBCO_AUDIO_BEEP_HZ`, `ROBCO_AUDIO_BEEP_MS` | `1000`, `80` | The standard beep. The build stops when the frequency is outside `AUDIO_HZ_MIN` to `AUDIO_HZ_MAX` or the length is `0`. |
 | `ROBCO_AUDIO_TONE_PEAK` | `127` | Height in steps of a tone at volume `100` once the rest level is the midpoint. The build stops outside `0` to `127`. See [Rest level](#rest-level). |
-| `ROBCO_AUDIO_TONE_RATE` | `37500` | Sample grid of such a tone, in hertz. The build stops outside `AUDIO_PCM_RATE_MIN` to `AUDIO_PCM_RATE_MAX`. `18750` halves the IRQ load. |
+| `ROBCO_AUDIO_TONE_RATE` | `37500` | Sample grid of such a tone, in hertz. The build stops outside `16000` to `AUDIO_PCM_RATE_MAX`. `16000` is twice the highest note, B8 at 7902 Hz, rounded up, so every note of a sequence keeps its pitch. `18750` halves the IRQ load. |
 | `ROBCO_AUDIO_TUNE_MAX` | `64` | Notes in the `audio_play_rtttl()` buffer. The call also puts that many notes (8 bytes each) on the stack. |
 | `ROBCO_AUDIO_TRACE_QUEUE` | `64` | Trace records held between two `audio_poll()` calls |
 | `ROBCO_STAGE_NAME` | `"robco"` | `stage=` field of the trace markers |
@@ -414,6 +414,7 @@ The per-sample rule, in integers, so another tool can render the same bytes:
 
 ```c
 half = (rate * 128 + hz / 2) / hz;   /* once per note; hz 0, a rest, writes 128 */
+if (hz && half < 256) half = 256;    /* never under one sample */
 /* note start: sign = +1, left = half */
 acc = 0; units = 256;                /* one sample */
 while (units >= left) { acc += sign * left; units -= left; sign = -sign; left = half; }
@@ -422,7 +423,7 @@ x = amp * acc;
 out = 128 + (x >= 0 ? (x + 128) / 256 : -((128 - x) / 256));   /* C's truncating divide */
 ```
 
-`rate` is `ROBCO_AUDIO_TONE_RATE`. `half` is the half period in 1/256 of a sample, so a sample that holds an edge takes the mean of the two levels by the edge's place in it. That is what the pin's own pulse does over one carrier period. At 20000 Hz and 37500 Hz `half` is `240`, and a sample can hold two edges: the walk handles it. An edge exactly at the end of a sample flips there. Each note starts at an edge going up, so its first sample is high. A late IRQ skips samples. A skip of up to `AUDIO_SQUARE_SKIP_MAX`, `64` samples, walks the skipped units and keeps the phase. A longer skip, or a grid sample that goes backwards, restarts the note at an edge going up: the walk then stays at most 69 turns in the IRQ, and a skip that long already held one level for over 1.7 ms. Both ends of a tone step by at most `amp` from `128`.
+`rate` is `ROBCO_AUDIO_TONE_RATE`. `half` is the half period in 1/256 of a sample, so a sample that holds an edge takes the mean of the two levels by the edge's place in it. That is what the pin's own pulse does over one carrier period. `half` is never under `256`, one sample, so a pitch above half the tone rate plays at exactly half the tone rate: the samples alternate `128 + amp` and `128 - amp`. That is 18750 Hz on the default grid and 9375 Hz on the 18750 grid. Without the floor, a pitch of exactly half the rate would average every sample to `128`, silence. So a sample holds at most one edge. An edge exactly at the end of a sample flips there. Each note starts at an edge going up, so its first sample is high. A late IRQ skips samples. A skip of up to `AUDIO_SQUARE_SKIP_MAX`, `64` samples, walks the skipped units and keeps the phase. A longer skip, or a grid sample that goes backwards, restarts the note at an edge going up: the walk then stays at most 69 turns in the IRQ, and a skip that long already held one level for over 1.7 ms. Both ends of a tone step by at most `amp` from `128`.
 
 Aliasing, by arithmetic only, not measured: at 37500 Hz a 3000 Hz square at full height puts its largest component under 8 kHz, at 4500 Hz, about 37 dB below the tone. A bare square that switches only at sample edges puts it about 20 dB below.
 
