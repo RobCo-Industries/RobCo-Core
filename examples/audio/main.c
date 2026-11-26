@@ -149,6 +149,18 @@ static void play_pcm_fast(void)
     case_end("pcm_fast", ret);
 }
 
+/* 3750 samples at 37500 Hz, the top rate: 100 ms. */
+static void play_pcm_top(void)
+{
+    int ret;
+
+    case_begin("pcm_top");
+    pcm_fill(3750);
+    ret = audio_play_pcm(pcm_buf, 3750, AUDIO_PCM_RATE_MAX, 0);
+    audio_wait();
+    case_end("pcm_top", ret);
+}
+
 /* One second, stopped after 200 ms. */
 static void play_pcm_stop(void)
 {
@@ -470,6 +482,7 @@ static void play_pcm_all(void)
 {
     play_pcm();
     play_pcm_fast();
+    play_pcm_top();
     play_pcm_stop();
     play_pcm_swap();
     play_pcm_cut();

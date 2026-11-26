@@ -54,8 +54,8 @@ TONE_CASES = ["beep", "seq", "tune", "loop", "interrupt"]
 # The trace rule cases, each run RULE_RUNS times in a row.
 RULE_RUNS = 5
 RULE_CASES = ["stop_pcm"] * RULE_RUNS + ["stop_rest"] * RULE_RUNS
-PCM_CASES = ["pcm", "pcm_fast", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick", "pcm_args",
-             "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under", "pcm_mix"]
+PCM_CASES = ["pcm", "pcm_fast", "pcm_top", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick",
+             "pcm_args", "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under", "pcm_mix"]
 # Last in the run: the rest level then stays at the midpoint.
 REST_CASES = ["rest"]
 ALL_CASES = TONE_CASES + PCM_CASES + RULE_CASES + REST_CASES
@@ -150,6 +150,8 @@ def check_pcm_play(marks, rate, n, vol):
 def check_pcm(vm, c):
     check_pcm_play(c["pcm"], 8000, 800, 100)
     check_pcm_play(c["pcm_fast"], 22050, 2205, 50)
+    # The top rate, one sample per PWM carrier period.
+    check_pcm_play(c["pcm_top"], 37500, 3750, 100)
 
     # Stopped after 200 ms of a 1 s play: a stop line, no pcm_end.
     marks = c["pcm_stop"]
