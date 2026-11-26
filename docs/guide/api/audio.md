@@ -474,8 +474,8 @@ Pending hardware validation: QEMU has no PWM, so the `pwm` backend, the default 
 | Sound on the jack or GPIO 18 | Same | Beep, arpeggio, tune, looped alarm and the cut-short 440 Hz tone. Press `b`, `s`, `t`, `l`, `i` or `a` on the serial console to replay. |
 | PCM sound | Same | A 100 ms rising chirp. Press `p` to replay it. The PCM IRQ cost on the ARM1176 is not measured yet. |
 | Queued PCM | Same | Three chunks of the chirp play as one 300 ms sound, with no click between chunks. Press `c` to replay it. |
-| Overlay | Same | The `pcm_mix` case: two chirps, each with a second chirp over part of it. No click where the overlay starts or ends. |
-| Voice | Same | The `pcm_voice` case: 100 ms at 37500 Hz, a 1000 Hz note that glides up and fades, with a chirp over its start. Press `v` to replay it. No click at the span edges. Measure the IRQ handler time. |
+| Overlay | Same | The `pcm_mix` case: two chirps, each with a second chirp over part of it. The overlays start and end mid-wave, so expect a click there. |
+| Voice | Same | The `pcm_voice` case: 200 ms at 37500 Hz, a note that fades in at 1000 Hz, glides up to 2000 Hz and fades out, with a 500 Hz burst over it from 80 ms in. Press `v` after the run, when the idle level is the midpoint, to replay it. No click at the span edges or where the burst starts and ends. Measure the IRQ handler time. |
 | Rest at the midpoint | Same | The `rest` case: one soft ramp, no thump, then a 440 Hz tone. After it the pin idles at half duty on the 37.5 kHz carrier: listen for hiss or whine, feel the amplifier, measure the idle current. |
 
 ### Wiring
