@@ -294,7 +294,10 @@ int audio_pcm_chain(audio_pcm_t *p, const uint8_t *data, size_t len);
 /* Time in us, wrapping, when the next sample is due. */
 uint32_t audio_pcm_next_us(const audio_pcm_t *p);
 
-/* Volume around the midpoint: 128 + (s - 128) * vol / 100, vol capped at 100. */
+/*
+ * Volume around the midpoint: 128 + (s - 128) * vol / 100, rounded to the
+ * nearest step, a half step away from 128. vol is capped at 100.
+ */
 uint8_t audio_pcm_scale(uint8_t s, unsigned vol);
 
 /* PWM data value for sample `s` at range `rng`: s * rng / 256. */

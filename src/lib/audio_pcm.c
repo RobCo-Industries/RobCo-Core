@@ -199,10 +199,15 @@ uint32_t audio_pcm_next_us(const audio_pcm_t *p)
 
 uint8_t audio_pcm_scale(uint8_t s, unsigned vol)
 {
+    int d;
+
     if (vol > 100) {
         vol = 100;
     }
-    return (uint8_t)(128 + ((int)s - 128) * (int)vol / 100);
+    d = ((int)s - 128) * (int)vol;
+    /* Nearest step, a half step away from the midpoint: the same on both sides. */
+    d = d >= 0 ? (d + 50) / 100 : -((50 - d) / 100);
+    return (uint8_t)(128 + d);
 }
 
 uint32_t audio_pcm_duty(uint8_t s, uint32_t rng)

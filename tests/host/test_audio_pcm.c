@@ -521,11 +521,51 @@ TEST(volume_scale)
     CHECK_EQ(audio_pcm_scale(255, 100), 255);
     CHECK_EQ(audio_pcm_scale(0, 50), 64);
     CHECK_EQ(audio_pcm_scale(128, 50), 128);
-    CHECK_EQ(audio_pcm_scale(255, 50), 191);
+    /* 127 * 50 / 100 is 63.5: a half step rounds away from 128. */
+    CHECK_EQ(audio_pcm_scale(255, 50), 192);
     CHECK_EQ(audio_pcm_scale(0, 0), 128);
     CHECK_EQ(audio_pcm_scale(128, 0), 128);
     CHECK_EQ(audio_pcm_scale(255, 0), 128);
     CHECK_EQ(audio_pcm_scale(0, 500), 0);
+}
+
+/* Reference: the nearest step to 128 + (s - 128) * vol / 100, halves away from 128. */
+static int ref_scale(int s, int vol)
+{
+    int num = (s - 128) * vol;
+    int lo = num >= 0 ? num / 100 : -((-num) / 100);
+    int r = lo;
+
+    /* Twice the distance to each candidate, in hundredths. */
+    if (num >= 0 && 2 * (num - lo * 100) >= 100) {
+        r = lo + 1;
+    } else if (num < 0 && 2 * (lo * 100 - num) >= 100) {
+        r = lo - 1;
+    }
+    return 128 + r;
+}
+
+TEST(volume_scale_rounds_to_nearest)
+{
+    int s, vol;
+
+    for (vol = 0; vol <= 100; vol++) {
+        for (s = 0; s < 256; s++) {
+            CHECK_EQ(audio_pcm_scale((uint8_t)s, (unsigned)vol), ref_scale(s, vol));
+            /* Symmetric around the midpoint. */
+            if (s > 0) {
+                CHECK_EQ(audio_pcm_scale((uint8_t)s, (unsigned)vol) - 128,
+                         128 - audio_pcm_scale((uint8_t)(256 - s), (unsigned)vol));
+            }
+        }
+    }
+    /* A quiet sine keeps its shape: one step either side survives at 50. */
+    CHECK_EQ(audio_pcm_scale(129, 50), 129);
+    CHECK_EQ(audio_pcm_scale(127, 50), 127);
+    CHECK_EQ(audio_pcm_scale(130, 25), 129);
+    CHECK_EQ(audio_pcm_scale(126, 25), 127);
+    /* A cut toward 128 gave 3 here. */
+    CHECK_EQ(audio_pcm_scale(1, 99), 2);
 }
 
 TEST(duty)
