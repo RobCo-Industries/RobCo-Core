@@ -214,7 +214,7 @@ TEST(every_vector)
     int i, passed = 0, seal = 0, pack = 0;
 
     CHECK(read_vectors());
-    CHECK(nvecs >= 54);
+    CHECK(nvecs >= 69);
     for (i = 0; i < nvecs; i++) {
         passed += run_vector(&vecs[i]);
         seal += strcmp(vecs[i].val[K_OP], "seal") == 0;

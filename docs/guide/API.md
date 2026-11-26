@@ -1125,7 +1125,7 @@ int rimg_pack(const void *payload, size_t payload_len, const rimg_pack_opts_t *o
               void *out, size_t out_cap, size_t *out_len);
 ```
 
-The C sealer and packer, in `src/lib/rimg_seal.c`. They follow [Sealing and packing](../spec/IMAGE_FORMAT.md#sealing-and-packing) and give the same bytes and codes as `tools/rimg.py seal` and `pack`, with one known difference: they refuse a PBM width or height such as `+32`, `3_2` or `0000000032`, which `tools/rimg.py` still accepts. `out` of `rimg_seal()` holds `len` bytes. `rimg_pack()` needs `payload_len + 0x60` bytes, or `payload_len + 0x120` with a META block. On a failure the bytes of `out` are undefined: write no file. They allocate nothing and touch no hardware. `tests/host/test_rimg_seal.c` runs every vector of `tests/vectors/rimg/vectors.ini` through them.
+The C sealer and packer, in `src/lib/rimg_seal.c`. They follow [Sealing and packing](../spec/IMAGE_FORMAT.md#sealing-and-packing) and give the same bytes and codes as `tools/rimg.py seal` and `pack`. `out` of `rimg_seal()` holds `len` bytes. `rimg_pack()` needs `payload_len + 0x60` bytes, or `payload_len + 0x120` with a META block. On a failure the bytes of `out` are undefined: write no file. They allocate nothing and touch no hardware. `tests/host/test_rimg_seal.c` runs every vector of `tests/vectors/rimg/vectors.ini` through them.
 
 ## Boot info block (`bootinfo.h`)
 

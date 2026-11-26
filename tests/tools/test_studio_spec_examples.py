@@ -792,7 +792,7 @@ def test_pbm_number_forms_match_the_tables_of_the_image_spec():
     for token in refused:
         assert pbm_number(token) is None, token
     # Every token the refused table and the vector list spell out follows the rule.
-    refused_table = text[text.index("These forms are refused"):text.index("State today")]
+    refused_table = text[text.index("These forms are refused"):text.index("State: ")]
     for token in re.findall(r"`([^`]+)`", refused_table):
         if token not in ("io", "size", "0x0B", "0x0C", "0x30", "0x39", "32"):
             assert pbm_number(token.encode()) is None, token

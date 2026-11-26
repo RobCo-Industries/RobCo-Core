@@ -70,6 +70,13 @@ ICONS = {
     "icon_16.pbm": pbm_p1(16, 16),
     "icon_badchar.pbm": pbm_p1().replace(b"0 0 0", b"0 2 0", 1),
     "icon_100.bin": pattern(100, 5),
+    "icon_num_plus.pbm": pbm_p1().replace(b"32 32", b"+32 32", 1),
+    "icon_num_minus.pbm": pbm_p1().replace(b"32 32", b"-32 32", 1),
+    "icon_num_sep.pbm": pbm_p1().replace(b"32 32", b"3_2 32", 1),
+    "icon_num_long.pbm": pbm_p1().replace(b"32 32", b"0000000032 32", 1),
+    "icon_num_vt.pbm": pbm_p1().replace(b"32 32", b"32\x0b 32", 1),
+    "icon_num_height.pbm": pbm_p1().replace(b"32 32", b"32 +32", 1),
+    "icon_num_zeros.pbm": pbm_p1().replace(b"32 32", b"032 000000032", 1),
 }
 
 PAYLOAD = pattern(0x40, 1)
@@ -118,6 +125,13 @@ CASES = [
     ("seal_err_icon_char", "seal", raw_image(), {"icon": "icon_badchar.pbm"}),
     ("seal_err_icon_raw_len", "seal", raw_image(), {"icon": "icon_100.bin", "icon_format": "raw"}),
     ("seal_err_icon_pbm_128", "seal", raw_image(), {"icon": "icon_raw.bin", "icon_format": "pbm"}),
+    ("seal_err_icon_num_plus", "seal", raw_image(), {"icon": "icon_num_plus.pbm"}),
+    ("seal_err_icon_num_minus", "seal", raw_image(), {"icon": "icon_num_minus.pbm"}),
+    ("seal_err_icon_num_sep", "seal", raw_image(), {"icon": "icon_num_sep.pbm"}),
+    ("seal_err_icon_num_long", "seal", raw_image(), {"icon": "icon_num_long.pbm"}),
+    ("seal_err_icon_num_vt", "seal", raw_image(), {"icon": "icon_num_vt.pbm"}),
+    ("seal_err_icon_num_height", "seal", raw_image(), {"icon": "icon_num_height.pbm"}),
+    ("seal_holo_icon_num_zeros", "seal", raw_image(), {"icon": "icon_num_zeros.pbm"}),
     ("pack_holo_plain", "pack", PAYLOAD,
      {"magic": "ROBCO78", "subtype": "0", "load_addr": "0x00800000"}),
     ("pack_holo_full", "pack", PAYLOAD,
