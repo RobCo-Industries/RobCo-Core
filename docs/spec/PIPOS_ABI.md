@@ -2,7 +2,7 @@
 
 This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.5, `abi_version = 0x00010005` in the image header.
 
-Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.5 also runs on a 1.0 to 1.4 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back. Version 1.3 adds `hw_flags` to `sys_info`. A Pip-OS before 1.3 writes 0 there, so an image that reads `hw_flags` first checks that `abi_version` in `sys_info` or in `pipos_startup_t` is at least `0x00010003`. Version 1.4 adds removable holotapes: `PIP_HW_TAPE`, the `flags` field of `pip_holo_info_t`, the `PIP_EV_TAPE` event and the `holo_eject_event` mask. See [Holotapes](#holotapes). Version 1.5 adds `sample_rate`. See [Sample rate](#sample-rate).
+Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.5 also runs on a 1.0 to 1.4 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back. Version 1.3 adds `hw_flags` to `sys_info`. A Pip-OS before 1.3 writes 0 there, so an image that reads `hw_flags` first checks that `abi_version` in `sys_info` or in `pipos_startup_t` is at least `0x00010003`. Version 1.4 adds removable holotapes: `PIP_HW_TAPE`, the `flags` field of `pip_holo_info_t`, the `PIP_EV_TAPE` event and the `holo_eject_event` mask. See [Holotapes](#holotapes). Version 1.5 adds `sample_rate` and the `PIP_HW_AUDIO_MID` flag. See [Sample rate](#sample-rate) and [Rest level](#rest-level).
 
 An image ignores an event type and a flag bit it does not know. A field the spec marks as reserved may carry a value in a later minor version.
 
@@ -288,7 +288,7 @@ There is one voice. `tone`, `sample` and `play_seq` return at once and the sound
 | Call | Rules |
 |---|---|
 | `tone` | `freq_hz` 20 to 20000. `duration_ms` 1 to 60000. |
-| `sample` | 8-bit unsigned mono at the rate set by `sample_rate`, 8000 Hz unless set. 128 is silence. 1 to 65536 bytes, so length 0 returns `-PIP_EINVAL`. Pip-OS checks the length before the pointer. It copies the data before it returns. |
+| `sample` | 8-bit unsigned mono at the rate set by `sample_rate`, 8000 Hz unless set. 128 is silence. A sample that starts and ends at 128 makes no step when the output rests at its midpoint, see [Rest level](#rest-level). 1 to 65536 bytes, so length 0 returns `-PIP_EINVAL`. Pip-OS checks the length before the pointer. It copies the data before it returns. |
 | `play_seq` | `count` is 1 to 256. Pip-OS checks every note before anything plays. One bad note refuses the whole sequence. It copies the notes before it returns. |
 | `volume` | 0 to 100. Returns the previous level. The start value comes from `PIPOS.CFG`, 100 without one. A new level applies to a playing `sample` at once, and to a tone or sequence from its next note. At 0 sounds still play silently and `audio_status` reports them. |
 | `audio_status` | 1 while a sound the image started plays, or a queued sample waits. The power-on beep does not count. |
@@ -322,6 +322,20 @@ typedef struct __attribute__((packed)) pip_note {
     uint16_t duration_ms;  /* 1 to 60000 */
 } pip_note_t;              /* 4 bytes */
 ```
+
+### Rest level
+
+Between two sounds the audio output rests at one level. `PIP_HW_AUDIO_MID` in the `hw_flags` of [`sys_info`](#system-information) tells which one. ABI 1.5 adds the bit.
+
+Pip-OS sets it when it moved the rest level to the midpoint at boot and that move completed. The move is the rest ramp of the [audio guide](../guide/api/audio.md#rest-level). Otherwise the bit is clear and the output rests at its low level.
+
+| | `PIP_HW_AUDIO_MID` set | `PIP_HW_AUDIO_MID` clear |
+|---|---|---|
+| Rest level | The midpoint, the level of the sample value 128 | The low level |
+| `sample` and `sample_queue` | A sample that starts and ends at 128 starts and ends at the rest level, with no step | Every sample play begins and ends with a step. A speaker turns it into a thump, as it always did. |
+| `tone` and `play_seq` | A tone is a square centred on the rest level. Its height follows the volume. | A tone is a pulse. Its width follows the volume. |
+
+An image may read the bit to decide whether it plays short sample effects. The bit never changes while an image runs. It means something only with `PIP_HW_AUDIO` set, and it reads 0 with `PIP_HW_AUDIO` clear. A Pip-OS before 1.5 writes 0 there and says nothing by it. An image treats that as clear.
 
 ### Sample rate
 
@@ -402,9 +416,10 @@ typedef struct __attribute__((packed)) pip_sys_info {
     uint32_t reserved;       /* 0 */
 } pip_sys_info_t;            /* 32 bytes */
 
-#define PIP_HW_RTC    (1u << 0)  /* a clock chip answered at boot */
-#define PIP_HW_AUDIO  (1u << 2)  /* the audio driver started */
-#define PIP_HW_TAPE   (1u << 3)  /* a holotape slot exists, since ABI 1.4 */
+#define PIP_HW_RTC        (1u << 0)  /* a clock chip answered at boot */
+#define PIP_HW_AUDIO      (1u << 2)  /* the audio driver started */
+#define PIP_HW_TAPE       (1u << 3)  /* a holotape slot exists, since ABI 1.4 */
+#define PIP_HW_AUDIO_MID  (1u << 4)  /* the audio output rests at its midpoint, since ABI 1.5 */
 
 typedef struct __attribute__((packed)) pip_mem_info {
     uint32_t heap_base;
@@ -432,7 +447,8 @@ typedef struct __attribute__((packed)) pip_mem_info {
 | 1 | | Reserved, 0. `gfx_info` already reports the display backend. |
 | 2 | `PIP_HW_AUDIO` | The audio driver started at boot, so the sound calls can play |
 | 3 | `PIP_HW_TAPE` | `PIPOS.CFG` sets `[holotape] slot = on` and the slot driver started at boot. It says a slot exists, not that a card is in. Since ABI 1.4. |
-| 4 to 31 | | Reserved, 0 |
+| 4 | `PIP_HW_AUDIO_MID` | The audio output rests at its midpoint: `PIPOS.CFG` sets `[audio] system_sound = yes` and the rest ramp reached its end at boot. 0 when `PIP_HW_AUDIO` is clear. Since ABI 1.5. See [Rest level](#rest-level). |
+| 5 to 31 | | Reserved, 0 |
 
 What a ROM can tell its user: a set time lasts past power-off only when `PIP_HW_RTC` is set, the time lies in 946684800 to 4102444799, and `set_time` returns 0. With the bit set and a time outside that range, the time lasts until power-off. With `-PIP_EIO` the chip write failed and the time lasts until power-off. With the bit clear the time is always lost at power-off.
 
@@ -698,6 +714,6 @@ A project that also has a `robco.toml` sets `ABI` to the value of `target.abi`, 
 | 1.2 | Button 6, Back |
 | 1.3 | `hw_flags` in `sys_info` |
 | 1.4 | Removable holotapes: `[holotape] slot` in `PIPOS.CFG`, `PIP_HW_TAPE`, `flags` in `pip_holo_info_t`, `PIP_EV_TAPE`, the `holo_eject_event` mask, `-PIP_ENODEV` from `holo_launch` |
-| 1.5 | `sample_rate`: `sample` and `sample_queue` play at 8000 or 37500 Hz. Pip-OS implements it in its own repository later. Until then it reports ABI 1.4 and returns `-PIP_ENOSYS` for number `0x27`. |
+| 1.5 | `sample_rate`: `sample` and `sample_queue` play at 8000 or 37500 Hz. `PIP_HW_AUDIO_MID` in `hw_flags`: the audio output rests at its midpoint. Pip-OS implements both in its own repository later. Until then it reports ABI 1.4, returns `-PIP_ENOSYS` for number `0x27` and never sets the bit. |
 
 Pip-OS implements every version up to 1.4 and reports ABI 1.4.
