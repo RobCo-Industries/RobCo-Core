@@ -77,9 +77,9 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Filling the META block in `tools/rimg.py` | Implemented |
 | Loading images from the SD card, `loader_load()` | Implemented, pending hardware validation |
 | Sealing and packing rules in `tools/rimg.py` | Implemented |
-| The form of a number in a PBM header | Specified. `tools/rimg.py` accepts five forms it must refuse. |
+| The form of a number in a PBM header | Implemented in `tools/rimg.py` and in C, checked by seven vectors |
 | Seal and pack test vectors in `tests/vectors/rimg/`, checked against `tools/rimg.py` | Implemented |
-| `rimg_seal()` and `rimg_pack()` in C, checked against every vector by `tests/host/test_rimg_seal.c` | Implemented. They refuse the five PBM number forms `tools/rimg.py` still accepts. |
+| `rimg_seal()` and `rimg_pack()` in C, checked against every vector by `tests/host/test_rimg_seal.c` | Implemented |
 
 ### BOOT_PROTOCOL.md
 
