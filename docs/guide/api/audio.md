@@ -24,7 +24,7 @@ Init order: after step 10 of the [initialisation order](../API.md#initialisation
 | `AUDIO_ERR_PIN` | `-12` | `audio_init()` could not switch a pin to its PWM function |
 | `AUDIO_ERR_TIMER` | `-13` | The system timer does not advance |
 | `AUDIO_HZ_MIN`, `AUDIO_HZ_MAX` | `20u`, `20000u` | Accepted tone range. `0` is a rest. |
-| `AUDIO_PCM_RATE_MIN`, `AUDIO_PCM_RATE_MAX` | `4000u`, `22050u` | Accepted PCM sample rate |
+| `AUDIO_PCM_RATE_MIN`, `AUDIO_PCM_RATE_MAX` | `4000u`, `37500u` | Accepted PCM sample rate. The top rate is the PWM carrier rate in PCM mode, one sample per carrier period. |
 | `AUDIO_PCM_LEN_MAX` | `0x7fffffffu` | Longest PCM buffer in bytes |
 | `AUDIO_PCM_PWM_RANGE` | `256u` | PWM range in PCM mode: a 37.5 kHz carrier at 9.6 MHz |
 | `AUDIO_PCM_NONE`, `_SAMPLE`, `_END` | `0` to `2` | `audio_pcm_poll()` results |
@@ -151,7 +151,7 @@ How it plays: the start arms compare channel 3. Channels 0 and 2 belong to the G
 
 Each sample is scaled by the volume around the midpoint: `128 + (s - 128) * vol / 100`, rounded to the nearest step. A half step rounds away from 128, so both sides of a wave scale alike. A quiet sine keeps its shape at any volume. A volume change applies from the next sample. On the PWM backend the PWM runs at a fixed range of `AUDIO_PCM_PWM_RANGE`, a 37.5 kHz carrier from the 9.6 MHz PWM clock, and each IRQ writes the duty. A PCM start switches the PWM to that range. A tone sets its own range again. A stop, a replacement or the end of a play sets the duty to `0`, the same silence as tones. After `audio_rest_mid()`, that silence is the PCM range at duty `128` instead, see [Rest level](#rest-level).
 
-CPU cost: one IRQ per sample, up to 22050 a second. The handler does 64-bit multiplies but no 64-bit divide. A looped buffer adds a 32-bit modulo per sample after its first pass. On the trace backend the call also computes the CRC-32 of `data` in the caller's context. The handler cost on a real ARM1176 is not measured.
+CPU cost: one IRQ per sample, up to 37500 a second at the top rate, one every 26.7 us. The handler does 64-bit multiplies but no 64-bit divide. A looped buffer adds a 32-bit modulo per sample after its first pass. On the trace backend the call also computes the CRC-32 of `data` in the caller's context. The handler cost on a real ARM1176 is not measured.
 
 Not done: one overlay only, see `audio_pcm_mix()`. No DMA, no FIFO, 8-bit mono only.
 
@@ -404,11 +404,11 @@ Sharp edges:
 | `audio_play()` keeps the pointer. | Do not pass a stack array that goes out of scope while it plays. |
 | Late ticks skip notes. | A tick delayed past several steps reports each change in order, at its due time. After 16 in one tick, the rest are skipped and only the final state is output. |
 | Square wave tones. | Volume changes the duty cycle, which also changes the tone colour. PCM volume scales the samples instead. |
-| One IRQ per PCM sample. | At 22050 Hz that is 22050 IRQs a second, and other IRQs wait behind each one. Use the lowest rate that sounds right. |
+| One IRQ per PCM sample. | At 37500 Hz that is 37500 IRQs a second, one every 26.7 us, and other IRQs wait behind each one. A handler that takes most of a period makes the next compare already past: the handler polls again at most 4 times, then arms with `timer_oneshot_arm()`, and the late samples are skipped. It never spins. Use the lowest rate that sounds right. |
 | `audio_play_pcm()` keeps the pointer. | The buffer must stay valid until the play ends, or until `audio_stop()` or a call that replaces the sound returns. |
 | `audio_pcm_queue()` keeps the pointer. | Two buffers can be in use: the one that plays and the one that waits. Reuse a buffer only once `audio_pcm_can_queue()` turns `1` after the queue call that followed it. |
 | One buffer waits. | A ROM that refills late lets the sound end. The next chunk then needs `audio_play_pcm()`, with a gap. |
-| Fewer PCM IRQs on QEMU. | Under QEMU 10.1 on a macOS host, the guest got about one system timer IRQ per millisecond: 81 IRQs for 800 samples at 8000 Hz, and 1243 for one second at 22050 Hz. We did not look for the cause or measure other hosts. On QEMU, `n` can be far below `len` while the play still ends on time. The tests therefore do not assert an IRQ per sample. |
+| Fewer PCM IRQs on QEMU. | Under QEMU 10.1 on a macOS host, the guest got about one system timer IRQ per millisecond: 81 IRQs for 800 samples at 8000 Hz, 1243 for one second at 22050 Hz, and 121 to 147 for 100 ms at 37500 Hz. We did not look for the cause or measure other hosts. On QEMU, `n` can be far below `len` while the play still ends on time. The tests therefore do not assert an IRQ per sample. |
 | PWM on real hardware. | The probe writes RNG1 with the PWM clock running. If it reads back wrong on a real board, auto picks `trace`: force PWM to try anyway. |
 | Pin mux errors are silent. | `audio_init()` ignores a `gpio_set_function()` failure on the PWM backend. |
 
