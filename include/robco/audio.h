@@ -170,6 +170,36 @@ int audio_pcm_queue(const uint8_t *data, size_t len);
 int audio_pcm_can_queue(void);
 
 /*
+ * Adds one overlay buffer to the PCM that plays, from its next sample, at
+ * its rate: each output sample is play + data - 128, clamped to 0 to 255,
+ * then scaled by the volume. Like audio_pcm_queue(), it also takes a play
+ * that still waits for its tick; both then start on the same sample. The
+ * end or a cut of the play drops the overlay, so an overlay longer than
+ * what is left of the play stops with it. The library does not copy:
+ * `data` must stay valid until the overlay ends or is dropped.
+ * Returns 0, or AUDIO_ERR_NO_INIT, AUDIO_ERR_ARG (NULL, len 0, len above
+ * AUDIO_PCM_LEN_MAX), AUDIO_ERR_STATE when no PCM plays or waits to start,
+ * AUDIO_ERR_BUSY when an overlay already runs or waits.
+ */
+int audio_pcm_mix(const uint8_t *data, size_t len);
+
+/* 1 while an overlay plays or waits for its play to start. */
+int audio_pcm_mix_busy(void);
+
+/*
+ * Moves the rest level to the midpoint. The first call plays a ramp from
+ * duty 0 to duty 128 at range AUDIO_PCM_PWM_RANGE: 882 samples at 22050 Hz
+ * on the curve 3t^2 - 2t^3, at full scale whatever the volume. From then
+ * on every silence the driver writes is that range at duty 128: the end of
+ * a play, a cut, a stop, the end of a tone. Later calls do nothing and
+ * return 0. Until the first call, the rest level stays duty 0.
+ * Returns 0, or AUDIO_ERR_NO_INIT, AUDIO_ERR_NO_IRQ (another handler holds
+ * the timer channel 3 IRQ), AUDIO_ERR_BUSY when something plays or waits:
+ * the rest level is then unchanged and a later call can try again.
+ */
+int audio_rest_mid(void);
+
+/*
  * Samples output since audio_init(). If `play` is not NULL, it gets the
  * samples output by the current or last PCM play, counted from
  * audio_play_pcm() over every queued buffer that followed. For tests.

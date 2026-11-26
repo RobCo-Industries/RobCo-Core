@@ -22,6 +22,15 @@
  * `pcm` when it plays or into `pcm_req` when its start waits for the tick.
  * The engine switches to it in the channel 3 IRQ, on the same time base.
  * A cut drops the waiting buffer with the playing one.
+ *
+ * Overlay: audio_pcm_mix() adds a second buffer to the PCM that plays, or
+ * to the one that waits for its tick. The channel 3 IRQ polls a second
+ * engine state, `mix`, with the same clock value, so the pure engine stays
+ * as it is. The end or a cut of the play drops the overlay.
+ *
+ * Rest level: until audio_rest_mid() runs, silence is duty 0, as tones
+ * rest. Its first call plays a short ramp up to the midpoint, and from
+ * then on every silence the driver writes is the PCM range at duty 128.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -90,12 +99,18 @@ int audio_pwm_probe(void);
 int audio_pwm_setup(int pin0, unsigned fn0, int pin1, unsigned fn1);
 void audio_pwm_out(uint32_t hz, unsigned vol);
 void audio_pwm_pcm_mode(void);
+void audio_pwm_pcm_mode_at(uint32_t dat);
 void audio_pwm_sample(uint32_t dat);
 void audio_trace_out(uint32_t hz, unsigned vol, uint32_t t_ms);
 void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms);
 void audio_trace_pcm_end(uint32_t n, uint32_t last, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
+void audio_trace_pcm_mix(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_flush(void);
+
+/* The rest ramp: duty 0 to 128 on 3t^2 - 2t^3 over this many samples at this rate. */
+#define RAMP_LEN                882u
+#define RAMP_RATE               22050u
 
 static int backend = -1;            /* AUDIO_BACKEND_PWM or _TRACE once initialised */
 static int forced = ROBCO_AUDIO_BACKEND;
@@ -126,6 +141,18 @@ static uint32_t pcm_req_crc;
 /* CRC of the buffer queued with audio_pcm_queue(), for its trace line. IRQs masked. */
 static uint32_t pcm_next_crc;
 
+/* The play in pcm_req ignores the volume: the rest ramp. */
+static int pcm_req_full;
+
+/* Overlay for a play that waits for its tick, prepared with IRQs masked. */
+static audio_pcm_t mix_req;
+static uint32_t mix_req_crc;
+static int mix_req_set;
+
+/* Set by the first audio_rest_mid(): silence is the midpoint from then on. */
+static volatile int rest_mid;
+static uint8_t ramp[RAMP_LEN];
+
 /* Tick context only. */
 static audio_seq_t seq;
 static audio_note_t cur_tone;
@@ -140,6 +167,9 @@ static uint32_t pcm_t0_ms;
 static uint64_t pcm_t0_us;
 static int pcm_cut;                 /* cut by a call: the tick still halts it */
 static uint32_t pcm_total;          /* samples output since audio_init() */
+static int pcm_full;                /* the play ignores the volume */
+static audio_pcm_t mix;             /* the overlay, on the play's clock */
+static uint8_t mix_val = 128;       /* the overlay sample that sounds now */
 
 static audio_note_t tune[ROBCO_AUDIO_TUNE_MAX];
 static const audio_note_t beep = { ROBCO_AUDIO_BEEP_HZ, ROBCO_AUDIO_BEEP_MS };
@@ -185,6 +215,16 @@ static void default_pins(void)
 #endif
 }
 
+/* IRQ context, or IRQs masked. Silence on PWM: duty 0, or the midpoint in rest mode. */
+static void pwm_silence(void)
+{
+    if (rest_mid) {
+        audio_pwm_pcm_mode();
+    } else {
+        audio_pwm_out(0, 0);
+    }
+}
+
 static void output(uint32_t t_ms)
 {
     uint32_t hz = seq.hz;
@@ -195,28 +235,68 @@ static void output(uint32_t t_ms)
     }
     sounding = hz;
     if (backend == AUDIO_BACKEND_PWM) {
-        audio_pwm_out(hz, vol);
+        if (rest_mid && (hz == 0 || vol == 0)) {
+            audio_pwm_pcm_mode();
+        } else {
+            audio_pwm_out(hz, vol);
+        }
     } else {
         audio_trace_out(hz, vol, t_ms);
     }
 }
 
-/* IRQ context. One sample at the current volume. */
-static void pcm_out(uint32_t pos)
+/* IRQ context. The overlay sample due at `now`, held between its samples. */
+static uint8_t mix_at(uint32_t now)
 {
+    uint32_t pos;
+    int r;
+
+    if (!mix.active) {
+        return 128;
+    }
+    r = audio_pcm_poll(&mix, now, &pos);
+    if (r == AUDIO_PCM_SAMPLE) {
+        mix_val = mix.data[pos];
+    } else if (r == AUDIO_PCM_END) {
+        mix_val = 128;
+    }
+    return mix_val;
+}
+
+/* Play sample plus overlay sample around the midpoint, clamped to 0 to 255. */
+static uint8_t mix_add(uint8_t a, uint8_t b)
+{
+    int v = (int)a + (int)b - 128;
+
+    return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+}
+
+/* IRQ context. One sample, with the overlay, at the current volume. */
+static void pcm_out(uint32_t pos, uint32_t now)
+{
+    uint8_t s = mix_add(pcm.data[pos], mix_at(now));
+
     pcm_total++;
     if (backend == AUDIO_BACKEND_PWM) {
-        audio_pwm_sample(audio_pcm_duty(audio_pcm_scale(pcm.data[pos], volume),
+        audio_pwm_sample(audio_pcm_duty(audio_pcm_scale(s, pcm_full ? 100 : volume),
                                         AUDIO_PCM_PWM_RANGE));
     }
+}
+
+/* IRQ context, or IRQs masked. Drops the overlay. */
+static void mix_drop(void)
+{
+    mix.active = 0;
+    mix_val = 128;
 }
 
 /* IRQ context. The last sample has played: silence, no more IRQs. */
 static void pcm_finish(void)
 {
     irq_disable(IRQ_TIMER3);
+    mix_drop();
     if (backend == AUDIO_BACKEND_PWM) {
-        audio_pwm_out(0, 0);
+        pwm_silence();
     } else {
         audio_trace_pcm_end(pcm.n, pcm.last, pcm_t0_ms, timer_now_us() - pcm_t0_us);
     }
@@ -250,7 +330,7 @@ static void pcm_run(uint32_t now)
             return;
         }
         if (r == AUDIO_PCM_SAMPLE) {
-            pcm_out(pos);
+            pcm_out(pos, now);
         }
         next = audio_pcm_next_us(&pcm);
         if (++tries >= PCM_ARM_TRIES) {
@@ -284,14 +364,30 @@ static void pcm_begin(void)
     unsigned vol = volume;
 
     pcm = pcm_req;
+    pcm_full = pcm_req_full;
     if (backend == AUDIO_BACKEND_PWM) {
-        audio_pwm_pcm_mode();
+        if (pcm_full) {
+            /* The ramp starts from its first sample, not from the midpoint. */
+            audio_pwm_pcm_mode_at(audio_pcm_duty(pcm.data[0], AUDIO_PCM_PWM_RANGE));
+        } else {
+            audio_pwm_pcm_mode();
+        }
     } else {
-        audio_trace_pcm(pcm.rate, pcm.len, vol, pcm_req_crc, clock_ms);
+        audio_trace_pcm(pcm.rate, pcm.len, pcm_full ? 100 : vol, pcm_req_crc, clock_ms);
     }
     pcm_t0_ms = clock_ms;
     pcm_t0_us = timer_now_us();
     pcm.origin_us = (uint32_t)pcm_t0_us;
+    mix_drop();
+    if (mix_req_set) {
+        /* The overlay waited with the play: both start on this sample. */
+        mix = mix_req;
+        mix.origin_us = pcm.origin_us;
+        mix_req_set = 0;
+        if (backend != AUDIO_BACKEND_PWM) {
+            audio_trace_pcm_mix(mix.len, mix_req_crc, clock_ms, 0);
+        }
+    }
     timer_compare_clear(PCM_CHANNEL);
     irq_enable(IRQ_TIMER3);
     pcm_run(pcm.origin_us);
@@ -305,16 +401,19 @@ static void pcm_begin(void)
  */
 static void pcm_cut_locked(void)
 {
+    /* An overlay that waits goes with the request it waits on. */
+    mix_req_set = 0;
     if (!pcm.active) {
         return;
     }
     pcm.active = 0;
     pcm.next = 0;
     pcm_cut = 1;
+    mix_drop();
     irq_disable(IRQ_TIMER3);
     timer_compare_clear(PCM_CHANNEL);
     if (backend == AUDIO_BACKEND_PWM) {
-        audio_pwm_out(0, 0);
+        pwm_silence();
     }
 }
 
@@ -324,10 +423,11 @@ static void pcm_halt(void)
     pcm.active = 0;
     pcm.next = 0;
     pcm_cut = 0;
+    mix_drop();
     irq_disable(IRQ_TIMER3);
     timer_compare_clear(PCM_CHANNEL);
     if (backend == AUDIO_BACKEND_PWM) {
-        audio_pwm_out(0, 0);
+        pwm_silence();
     }
 }
 
@@ -719,6 +819,7 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
     pcm_cut_locked();
     pcm_req = p;
     pcm_req_crc = crc;
+    pcm_req_full = 0;
     req.stop = 0;
     req.pcm = 1;
     req.notes = 0;
@@ -790,6 +891,162 @@ int audio_pcm_can_queue(void)
     ok = queue_check_locked() == 0;
     irq_restore(s);
     return ok;
+}
+
+/*
+ * The play an overlay would join, as for queue_target_locked(). Sets
+ * *pending when that play still waits for its tick. IRQs masked.
+ */
+static audio_pcm_t *mix_target_locked(int *pending)
+{
+    if (req.valid) {
+        *pending = 1;
+        return req.pcm && !req.stop ? &pcm_req : 0;
+    }
+    *pending = 0;
+    return pcm.active ? &pcm : 0;
+}
+
+/* 0 when an overlay can start now, else AUDIO_ERR_STATE or AUDIO_ERR_BUSY. IRQs masked. */
+static int mix_check_locked(void)
+{
+    int pending;
+
+    if (!mix_target_locked(&pending)) {
+        return AUDIO_ERR_STATE;
+    }
+    return (pending ? mix_req_set : mix.active) ? AUDIO_ERR_BUSY : 0;
+}
+
+int audio_pcm_mix(const uint8_t *data, size_t len)
+{
+    audio_pcm_t m;
+    audio_pcm_t *t;
+    uint32_t crc = 0;
+    uint32_t rate;
+    uint32_t s;
+    int pending;
+    int ret;
+
+    if (backend < 0) {
+        return AUDIO_ERR_NO_INIT;
+    }
+    ret = audio_pcm_check(data, len, AUDIO_PCM_RATE_MIN, 0);
+    if (ret) {
+        return ret;
+    }
+    /* Fail fast before the CRC scans the buffer. The check repeats below. */
+    s = irq_save();
+    ret = mix_check_locked();
+    rate = ret ? 0 : mix_target_locked(&pending)->rate;
+    irq_restore(s);
+    if (ret) {
+        return ret;
+    }
+    if (backend == AUDIO_BACKEND_TRACE) {
+        crc = crc32(data, len);
+    }
+    /* The 64-bit divides of the start run here. The rate can change below: then redo them. */
+    audio_pcm_start(&m, data, len, rate, 0, 0);
+    s = irq_save();
+    ret = mix_check_locked();
+    if (ret) {
+        irq_restore(s);
+        return ret;
+    }
+    t = mix_target_locked(&pending);
+    if (t->rate != rate) {
+        audio_pcm_start(&m, data, len, t->rate, 0, 0);
+    }
+    if (pending) {
+        mix_req = m;
+        mix_req_crc = crc;
+        mix_req_set = 1;
+    } else {
+        /* From the next sample of the play, on the same grid. */
+        m.origin_us = audio_pcm_next_us(&pcm);
+        mix = m;
+        mix_val = 128;
+        if (backend != AUDIO_BACKEND_PWM) {
+            audio_trace_pcm_mix(m.len, crc, pcm_t0_ms,
+                                (uint32_t)(m.origin_us - (uint32_t)pcm_t0_us));
+        }
+    }
+    irq_restore(s);
+    return 0;
+}
+
+int audio_pcm_mix_busy(void)
+{
+    uint32_t s;
+    int b;
+
+    s = irq_save();
+    b = mix_req_set || mix.active;
+    irq_restore(s);
+    return b;
+}
+
+/* 0 to 128 on 3t^2 - 2t^3, t = i / (RAMP_LEN - 1), rounded to the nearest step. */
+static void ramp_fill(void)
+{
+    const uint64_t n = RAMP_LEN - 1;
+    const uint64_t n3 = n * n * n;
+    uint64_t i;
+
+    for (i = 0; i < RAMP_LEN; i++) {
+        uint64_t f = 3 * i * i * n - 2 * i * i * i;
+
+        ramp[i] = (uint8_t)((128 * f + n3 / 2) / n3);
+    }
+}
+
+int audio_rest_mid(void)
+{
+    audio_pcm_t p;
+    uint32_t crc = 0;
+    uint32_t s;
+
+    if (backend < 0) {
+        return AUDIO_ERR_NO_INIT;
+    }
+    if (rest_mid) {
+        return 0;
+    }
+    if (!pcm_irq) {
+        return AUDIO_ERR_NO_IRQ;
+    }
+    s = irq_save();
+    if (sound_pending_locked()) {
+        irq_restore(s);
+        return AUDIO_ERR_BUSY;
+    }
+    irq_restore(s);
+    ramp_fill();
+    audio_pcm_start(&p, ramp, RAMP_LEN, RAMP_RATE, 0, 0);
+    if (backend == AUDIO_BACKEND_TRACE) {
+        crc = crc32(ramp, RAMP_LEN);
+    }
+    s = irq_save();
+    if (rest_mid) {
+        irq_restore(s);
+        return 0;
+    }
+    if (sound_pending_locked()) {
+        irq_restore(s);
+        return AUDIO_ERR_BUSY;
+    }
+    pcm_cut_locked();
+    pcm_req = p;
+    pcm_req_crc = crc;
+    pcm_req_full = 1;
+    req.stop = 0;
+    req.pcm = 1;
+    req.notes = 0;
+    req.valid = 1;
+    rest_mid = 1;
+    irq_restore(s);
+    return 0;
 }
 
 int audio_play_rtttl(const char *text, unsigned flags)
