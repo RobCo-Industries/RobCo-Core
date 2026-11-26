@@ -16,6 +16,15 @@ env:
   IMAGE_NAME: ghcr.io/robco-industries/robco-ci
 
 jobs:
+  workflows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check the workflows
+        run: make check-workflows
+
   image:
     runs-on: ubuntu-latest
     permissions:
