@@ -315,7 +315,8 @@ TEST(every_pitch_stays_in_range)
                     RC_FAIL("%u Hz at %u: acc %d", (unsigned)hz, (unsigned)rates[r], (int)acc);
                     return;
                 }
-                if (audio_square_out(acc, 127) < 1 || audio_square_out(acc, 127) > 255) {
+                /* The rule itself keeps the byte within 1 to 255, with no clamp. */
+                if (audio_square_out(acc, 127) != ref_out(acc, 127)) {
                     RC_FAIL("%u Hz: out of range", (unsigned)hz);
                     return;
                 }

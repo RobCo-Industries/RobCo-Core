@@ -167,8 +167,8 @@ static void trace_run(int ramp, char *dst, size_t n)
 
 TEST(trace_lines_match_the_run_without_the_ramp)
 {
-    static char with[4096];
-    static char without[4096];
+    static char with[sizeof(out)];
+    static char without[sizeof(out)];
 
     trace_run(1, with, sizeof(with));
     trace_run(0, without, sizeof(without));
