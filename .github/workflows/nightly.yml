@@ -267,6 +267,14 @@ jobs:
         run: >-
           python3 -I lib/tools/nightly/pack_card.py --card w/UOS/build/sd.img
           --name robco-terminal.img --versions versions/VERSIONS.txt --out card
+      # Nothing is kept that was not booted: boot a copy of the packed bytes,
+      # snapshot on, through every stage up to the UOS login screen. The
+      # upload below runs only when this passed.
+      - name: Boot the packed card
+        run: >-
+          python3 -I lib/tools/nightly/boot_card.py --chain terminal --board raspi2b
+          --first stage/RETROS-BIOS/build/retros.img --card card/robco-terminal.img
+          --sums card/SHA256SUMS --timeout 120
       - name: Upload the card
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -330,6 +338,12 @@ jobs:
           python3 -I lib/tools/nightly/pack_card.py --card w/Deitrix/build/pipos/sd.img
           --name robco-pipboy.img --extra w/Deitrix/build/pipos/pipos.img
           --versions versions/VERSIONS.txt --out card
+      # The packed Pip-OS kernel boots the packed card up to the ROM's ready line.
+      - name: Boot the packed card
+        run: >-
+          python3 -I lib/tools/nightly/boot_card.py --chain pipboy --board raspi0
+          --first card/pipos.img --card card/robco-pipboy.img
+          --sums card/SHA256SUMS --timeout 120
       - name: Upload the card
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
