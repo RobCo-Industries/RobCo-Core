@@ -1,0 +1,6 @@
+# Files whose bytes a test compares or hashes. No end-of-line conversion.
+tests/vectors/** -text
+tests/golden/** -text
+tests/host/icon.pbm -text
+tests/fixtures/check-pins/** -text
+tests/tools/fixtures/** -text
