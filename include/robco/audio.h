@@ -76,6 +76,30 @@ typedef struct {
     uint32_t ms;
 } audio_note_t;
 
+/*
+ * One span of a voice, see audio_play_voice(). Sample i of the span,
+ * counted from 0, has the phase phase + i * inc + dinc * i * (i - 1) / 2
+ * and the level amp + i * damp. 28 bytes, little-endian, no padding.
+ */
+typedef struct {
+    uint32_t n;         /* samples in this span, 1 to AUDIO_VOICE_N_MAX */
+    uint32_t phase;     /* phase at its first sample, 2^32 is one cycle */
+    uint32_t inc;       /* phase step per sample at its first sample, up to AUDIO_VOICE_INC_MAX */
+    int32_t  dinc;      /* change of inc per sample */
+    int32_t  amp;       /* peak at its first sample, 1/65536 of a step, 0 to AUDIO_VOICE_AMP_MAX */
+    int32_t  damp;      /* change of amp per sample; amp stays in range over the span */
+    uint32_t p2;        /* gain of a partial at twice the pitch, 32768 is equal, 0 is none */
+} audio_voice_span_t;
+
+/* Voice span limits. */
+#define AUDIO_VOICE_N_MAX   65535u
+#define AUDIO_VOICE_INC_MAX 0x7fffffffu
+#define AUDIO_VOICE_AMP_MAX (127 << 16)
+#define AUDIO_VOICE_P2_MAX  32768u
+
+/* Entries in audio_sine[], one cycle. */
+#define AUDIO_SINE_LEN      1024u
+
 /* Front end, src/drv/audio.c. */
 
 /* Forces a backend before audio_init(). Overrides ROBCO_AUDIO_BACKEND. */
@@ -191,6 +215,27 @@ int audio_pcm_mix(const uint8_t *data, size_t len);
 
 /* 1 while an overlay plays or waits for its play to start. */
 int audio_pcm_mix_busy(void);
+
+/*
+ * Plays a voice: a note computed live in the sample IRQ from `count`
+ * spans, played in order at `rate_hz`. No buffer: the play's length is
+ * the sum of every span's n. It runs on the PCM engine like a sample play,
+ * on one grid from its start: a late IRQ skips samples, an
+ * audio_pcm_mix() overlay mixes over it, and it ends with op=pcm_end.
+ * The output is one rounding of the voice, on 1/256 of a step, plus the
+ * overlay, times the volume. The library does not copy: `spans` must stay
+ * valid until playback ends, or until audio_stop() or a call that
+ * replaces the sound returns, as a sample buffer does.
+ * flags: AUDIO_PRIORITY only. audio_pcm_queue() refuses a voice.
+ * Main context only: the call checks every span, and on the trace
+ * backend it takes the CRC-32 of the span bytes.
+ * Returns 0 or AUDIO_ERR_* (NO_INIT, ARG for NULL, count 0, AUDIO_LOOP or
+ * unknown flags, a span outside the limits, an amp that leaves its range
+ * within a span, or a sum of n above AUDIO_PCM_LEN_MAX, RANGE for the
+ * rate, NO_IRQ, BUSY when something plays and AUDIO_PRIORITY is not set).
+ */
+int audio_play_voice(const audio_voice_span_t *spans, size_t count, uint32_t rate_hz,
+                     unsigned flags);
 
 /*
  * Moves the rest level to the midpoint. The call plays a ramp from duty 0
@@ -373,5 +418,44 @@ uint8_t audio_pcm_scale(uint8_t s, unsigned vol);
 
 /* PWM data value for sample `s` at range `rng`: s * rng / 256. */
 uint32_t audio_pcm_duty(uint8_t s, uint32_t rng);
+
+/* Voice engine, src/lib/audio_voice.c. */
+
+/* floor(32767 * sin(2 pi k / 1024) + 0.5) for k 0 to 1023. */
+extern const int16_t audio_sine[AUDIO_SINE_LEN];
+
+/* Voice state. Treat the fields as private. */
+typedef struct {
+    const audio_voice_span_t *spans;
+    size_t count;
+    size_t span;            /* the span that holds sample base */
+    uint32_t base;          /* first sample of that span */
+} audio_voice_t;
+
+/*
+ * Checks audio_play_voice() arguments and stores the sum of n in *len.
+ * Returns 0, AUDIO_ERR_ARG or AUDIO_ERR_RANGE. It reads every span.
+ */
+int audio_voice_check(const audio_voice_span_t *spans, size_t count, uint32_t rate_hz,
+                      unsigned flags, uint32_t *len);
+
+/* Starts at sample 0. Arguments must pass audio_voice_check(). */
+void audio_voice_start(audio_voice_t *v, const audio_voice_span_t *spans, size_t count);
+
+/* Sample i of one span, on 1/256 of a step, in closed form. */
+int32_t audio_voice_span_at(const audio_voice_span_t *s, uint32_t i);
+
+/*
+ * Sample `pos` of the voice, counted from its start, on 1/256 of a step.
+ * 0 past the end. Forward moves walk at most to the span that holds pos,
+ * so a skip of any length costs no more than the spans it passes.
+ */
+int32_t audio_voice_at(audio_voice_t *v, uint32_t pos);
+
+/*
+ * Output byte: 128 + round((q + (mix - 128) * 256) * vol / 25600), a
+ * half step away from 128, clamped to 0 to 255. vol is capped at 100.
+ */
+uint8_t audio_voice_out(int32_t q, uint8_t mix, unsigned vol);
 
 #endif
