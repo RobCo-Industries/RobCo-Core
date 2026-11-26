@@ -242,6 +242,29 @@ uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us)
     return p->origin_us + (uint32_t)time_of(p, join_q(p, now_us));
 }
 
+/*
+ * The join sample's position, counted on 64 bits from the current buffer's
+ * start, lies in the current buffer or the waiting one. A looped play has
+ * no end.
+ */
+int audio_pcm_join_plays(const audio_pcm_t *p, uint32_t now_us)
+{
+    int64_t at;
+    int64_t end = p->len;
+
+    if (!p->active) {
+        return 0;
+    }
+    if (p->flags & AUDIO_LOOP) {
+        return 1;
+    }
+    if (p->next) {
+        end += p->next_len;
+    }
+    at = (int64_t)(int32_t)p->origin_pos + join_q(p, now_us);
+    return at < end;
+}
+
 int audio_pcm_chain_at(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t now_us)
 {
     uint32_t q;

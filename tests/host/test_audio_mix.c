@@ -474,3 +474,125 @@ TEST(a_mix_stays_on_the_play_grid_at_every_join_offset)
         }
     }
 }
+
+/*
+ * The end window: the play's last sample has sounded and its end IRQ is
+ * still due. The clock sits `late` us past that due time, the IRQ not run.
+ */
+static void to_end_window(uint32_t last, uint32_t late)
+{
+    unsigned guard = 0;
+
+    while (pcm.active && pcm.last != last && guard++ < 10000) {
+        fake_step(fake_due - fake_us);
+        pcm_isr(IRQ_TIMER3, 0);
+    }
+    CHECK(pcm.active);
+    CHECK_EQ(pcm.last, last);
+    fake_step(fake_due - fake_us + late);
+}
+
+TEST(a_mix_after_a_one_shot_last_sample_is_refused)
+{
+    static const uint32_t lates[] = { 0, 1, 124, 125, 100000 };
+    size_t i;
+
+    fill();
+    for (i = 0; i < sizeof(lates) / sizeof(lates[0]); i++) {
+        fresh(AUDIO_BACKEND_TRACE);
+        CHECK_EQ(audio_play_pcm(play, sizeof(play), 8000, 0), 0);
+        tick(10);
+        to_end_window(sizeof(play) - 1, lates[i]);
+        clear_logs();
+        CHECK_EQ(audio_pcm_mix(over, sizeof(over)), AUDIO_ERR_STATE);
+        CHECK_EQ(audio_pcm_mix_busy(), 0);
+        CHECK_EQ(audio_busy(), 1);
+        CHECK_EQ(mix.active, 0);
+        CHECK_EQ(mix_req_set, 0);
+        audio_trace_flush();
+        CHECK(strstr(out, "op=pcm_mix") == 0);
+        pcm_isr(IRQ_TIMER3, 0);
+        CHECK(!pcm.active);
+        CHECK_EQ(audio_pcm_mix(over, sizeof(over)), AUDIO_ERR_STATE);
+    }
+}
+
+TEST(an_overlay_in_the_end_window_keeps_busy_and_refuses_a_second)
+{
+    fill();
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(play, sizeof(play), 8000, 0), 0);
+    tick(10);
+    run_us(99000);
+    CHECK_EQ(audio_pcm_mix(longer, sizeof(longer)), 0);
+    to_end_window(sizeof(play) - 1, 0);
+    /* No play sample left: the state error comes before the busy one. */
+    CHECK_EQ(audio_pcm_mix(over, sizeof(over)), AUDIO_ERR_STATE);
+    CHECK_EQ(audio_pcm_mix_busy(), 1);
+    pcm_isr(IRQ_TIMER3, 0);
+    CHECK_EQ(audio_pcm_mix_busy(), 0);
+}
+
+TEST(a_mix_after_a_looped_last_sample_sounds_from_byte_0)
+{
+    char want[160];
+
+    fill();
+    fresh(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_play_pcm(play, sizeof(play), 8000, AUDIO_LOOP), 0);
+    tick(10);
+    to_end_window(sizeof(play) - 1, 0);
+    clear_logs();
+    CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
+    audio_trace_flush();
+    snprintf(want, sizeof(want), "@RC stage=host ev=audio op=pcm_mix len=%u crc=%08x t_ms=1110\n",
+             (unsigned)sizeof(over), (unsigned)crc_of(over, sizeof(over)));
+    CHECK_STR(out, want);
+    backend = AUDIO_BACKEND_PWM;
+    pwm_count = 0;
+    pcm_isr(IRQ_TIMER3, 0);
+    CHECK_EQ(pcm.last, 0);
+    CHECK_EQ(pwm_count, 1);
+    CHECK_EQ(pwm_samples[0], audio_pcm_duty((uint8_t)clamp(play[0] + over[0] - 128),
+                                            AUDIO_PCM_PWM_RANGE));
+}
+
+TEST(a_mix_after_the_last_sample_before_a_queued_buffer_sounds_in_it)
+{
+    fill();
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(play, sizeof(play), 8000, 0), 0);
+    CHECK_EQ(audio_pcm_queue(longer, sizeof(longer)), 0);
+    tick(10);
+    to_end_window(sizeof(play) - 1, 0);
+    CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
+    CHECK_EQ(audio_pcm_mix_busy(), 1);
+    pwm_count = 0;
+    pcm_isr(IRQ_TIMER3, 0);
+    CHECK_EQ(pcm.last, 0);
+    CHECK_EQ(pcm.data, longer);
+    CHECK_EQ(pwm_count, 1);
+    CHECK_EQ(pwm_samples[0], audio_pcm_duty((uint8_t)clamp(longer[0] + over[0] - 128),
+                                            AUDIO_PCM_PWM_RANGE));
+}
+
+TEST(a_queue_after_a_one_shot_last_sample_sounds_its_byte_0)
+{
+    fill();
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(play, sizeof(play), 8000, 0), 0);
+    tick(10);
+    to_end_window(sizeof(play) - 1, 300);
+    CHECK_EQ(audio_pcm_can_queue(), 1);
+    CHECK_EQ(audio_pcm_queue(longer, sizeof(longer)), 0);
+    /* Byte 0 sounds at the next grid sample. */
+    pwm_count = 0;
+    pcm_isr(IRQ_TIMER3, 0);
+    CHECK_EQ(pwm_count, 0);
+    run_us(125);
+    CHECK_EQ(pwm_count, 1);
+    CHECK(pcm.active);
+    CHECK_EQ(pcm.data, longer);
+    CHECK_EQ(pcm.last, 0);
+    CHECK_EQ(pwm_samples[0], audio_pcm_duty(longer[0], AUDIO_PCM_PWM_RANGE));
+}

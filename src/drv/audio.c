@@ -28,7 +28,7 @@
  * stores the play's grid sample `at` where its byte 0 sounds, and each
  * play sample with grid sample `at + k` sounds byte k. So the overlay and
  * the play share one grid by construction. The end or a cut of the play
- * drops the overlay.
+ * drops the overlay. A play with no sample left takes no overlay.
  *
  * Rest level: silence is duty 0, as tones rest, until a ramp from
  * audio_rest_mid() reaches its last sample. The ramp never moves the duty
@@ -1031,12 +1031,18 @@ static audio_pcm_t *mix_target_locked(int *pending)
     return pcm.active && !pcm_full ? &pcm : 0;
 }
 
-/* 0 when an overlay can start now, else AUDIO_ERR_STATE or AUDIO_ERR_BUSY. IRQs masked. */
-static int mix_check_locked(void)
+/*
+ * 0 when an overlay can start at `now`, else AUDIO_ERR_STATE or
+ * AUDIO_ERR_BUSY. A play whose last sample has passed, its end IRQ still
+ * due, counts as no play: the overlay's first byte would never sound.
+ * IRQs masked.
+ */
+static int mix_check_locked(uint32_t now)
 {
     int pending;
+    audio_pcm_t *t = mix_target_locked(&pending);
 
-    if (!mix_target_locked(&pending)) {
+    if (!t || (!pending && !audio_pcm_join_plays(t, now))) {
         return AUDIO_ERR_STATE;
     }
     return (pending ? mix_req_set : mix.active) ? AUDIO_ERR_BUSY : 0;
@@ -1045,6 +1051,7 @@ static int mix_check_locked(void)
 int audio_pcm_mix(const uint8_t *data, size_t len)
 {
     mix_t m = { data, (uint32_t)len, 0, 1 };
+    uint64_t now;
     uint32_t crc = 0;
     uint32_t s;
     int pending;
@@ -1059,7 +1066,7 @@ int audio_pcm_mix(const uint8_t *data, size_t len)
     }
     /* Fail fast before the CRC scans the buffer. The check repeats below. */
     s = irq_save();
-    ret = mix_check_locked();
+    ret = mix_check_locked(timer_now_lo());
     irq_restore(s);
     if (ret) {
         return ret;
@@ -1068,7 +1075,8 @@ int audio_pcm_mix(const uint8_t *data, size_t len)
         crc = crc32(data, len);
     }
     s = irq_save();
-    ret = mix_check_locked();
+    now = timer_now_us();
+    ret = mix_check_locked((uint32_t)now);
     if (ret) {
         irq_restore(s);
         return ret;
@@ -1079,7 +1087,6 @@ int audio_pcm_mix(const uint8_t *data, size_t len)
         mix_req_crc = crc;
         mix_req_set = 1;
     } else {
-        uint64_t now = timer_now_us();
 
         /* From the play's next grid sample that has not passed. */
         m.at = audio_pcm_join(&pcm, (uint32_t)now);

@@ -179,7 +179,9 @@ int audio_pcm_can_queue(void);
  * what is left of the play stops with it. The library does not copy:
  * `data` must stay valid until the overlay ends or is dropped.
  * Returns 0, or AUDIO_ERR_NO_INIT, AUDIO_ERR_ARG (NULL, len 0, len above
- * AUDIO_PCM_LEN_MAX), AUDIO_ERR_STATE when no PCM plays or waits to start,
+ * AUDIO_PCM_LEN_MAX), AUDIO_ERR_STATE when no PCM plays or waits to start
+ * or a one-shot play's last sample has already sounded, so byte 0 would
+ * never sound,
  * AUDIO_ERR_BUSY when an overlay already runs or waits.
  */
 int audio_pcm_mix(const uint8_t *data, size_t len);
@@ -345,6 +347,13 @@ uint32_t audio_pcm_join(const audio_pcm_t *p, uint32_t now_us);
 
 /* The time, wrapping, of the grid sample audio_pcm_join() returns. */
 uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us);
+
+/*
+ * 1 when the grid sample audio_pcm_join() returns still plays: it lies in
+ * the current buffer or the waiting one, or the play loops. 0 when the
+ * play is not active or its last sample has already passed.
+ */
+int audio_pcm_join_plays(const audio_pcm_t *p, uint32_t now_us);
 
 /*
  * audio_pcm_chain(), and when the current buffer's end lies before
