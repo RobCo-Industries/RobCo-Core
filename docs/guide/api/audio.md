@@ -149,11 +149,11 @@ Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`data` `NUL
 
 How it plays: the start arms compare channel 3. Channels 0 and 2 belong to the GPU and channel 1 to the tick. Each IRQ reads the clock and outputs sample `elapsed_us * rate / 1000000`, then arms the compare for the next sample. The position comes from the clock, not from a count of IRQs, so nothing drifts and a late IRQ skips samples instead of slowing the sound. When the compare value is already in the past, the handler polls again, and after 4 misses it arms with `timer_oneshot_arm()`. A non-looped play ends at the first IRQ after `len / rate` seconds.
 
-Each sample is scaled by the volume around the midpoint: `128 + (s - 128) * vol / 100`, rounded to the nearest step. A half step rounds away from 128, so both sides of a wave scale alike. A quiet sine keeps its shape at any volume. A volume change applies from the next sample. On the PWM backend the PWM runs at a fixed range of `AUDIO_PCM_PWM_RANGE`, a 37.5 kHz carrier from the 9.6 MHz PWM clock, and each IRQ writes the duty. A PCM start switches the PWM to that range. A tone sets its own range again. A stop, a replacement or the end of a play sets the duty to `0`, the same silence as tones.
+Each sample is scaled by the volume around the midpoint: `128 + (s - 128) * vol / 100`, rounded to the nearest step. A half step rounds away from 128, so both sides of a wave scale alike. A quiet sine keeps its shape at any volume. A volume change applies from the next sample. On the PWM backend the PWM runs at a fixed range of `AUDIO_PCM_PWM_RANGE`, a 37.5 kHz carrier from the 9.6 MHz PWM clock, and each IRQ writes the duty. A PCM start switches the PWM to that range. A tone sets its own range again. A stop, a replacement or the end of a play sets the duty to `0`, the same silence as tones. After `audio_rest_mid()`, that silence is the PCM range at duty `128` instead, see [Rest level](#rest-level).
 
 CPU cost: one IRQ per sample, up to 22050 a second. The handler does 64-bit multiplies but no 64-bit divide. A looped buffer adds a 32-bit modulo per sample after its first pass. On the trace backend the call also computes the CRC-32 of `data` in the caller's context. The handler cost on a real ARM1176 is not measured.
 
-Not done: no mixing, no DMA, no FIFO, 8-bit mono only.
+Not done: one overlay only, see `audio_pcm_mix()`. No DMA, no FIFO, 8-bit mono only.
 
 ```c
 uint32_t audio_pcm_samples(uint32_t *play);
@@ -202,6 +202,25 @@ void stream(void)
 ```
 
 `fill()` is yours: it writes up to `max` bytes and returns how many, `0` at the end. Each `fill()` writes the buffer that does not play. The first loop fills `buf[1]`, which never played. After that, the wait ends when the queued buffer takes over, so the other one is free. The wait also ends when the sound has ended: then neither buffer plays, and the next queue call returns `AUDIO_ERR_STATE`. The loop then starts the sound again from that buffer, with a gap. After that restart, `audio_pcm_can_queue()` is `1` at once, and the other buffer is free.
+
+```c
+int audio_pcm_mix(const uint8_t *data, size_t len);
+int audio_pcm_mix_busy(void);
+```
+
+`audio_pcm_mix()` adds one overlay buffer to the PCM that plays, a second voice. Each output sample is `play + data - 128`, clamped to `0` to `255`, then scaled by the volume. The overlay runs at the play's rate and starts at the play's next sample, on the same clock grid. Like `audio_pcm_queue()`, the call also takes a play that still waits for its tick: both then start on the same sample. The overlay carries on across a queued buffer. It ends at its own end, or when the play ends or is cut, whichever comes first, so an overlay longer than what is left of the play stops with it. A looped play keeps looping after its overlay ends. The library does not copy: `data` must stay valid until the overlay ends, or until a call that ends the play returns.
+
+Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`data` `NULL`, `len` `0` or above `AUDIO_PCM_LEN_MAX`), `AUDIO_ERR_STATE` (no PCM plays or waits to start, or a stop or a tone waits for the tick) or `AUDIO_ERR_BUSY` (an overlay already runs or waits). On the trace backend the call computes the CRC-32 of `data`, after the state checks.
+
+`audio_pcm_mix_busy()` returns `1` while an overlay plays or waits for its play to start.
+
+How it runs: the channel 3 IRQ polls a second engine state with the same clock value as the play. Between two overlay samples it holds the last one. The pure engine in `src/lib/audio_pcm.c` is the same for both.
+
+```c
+int audio_rest_mid(void);
+```
+
+Moves the rest level to the midpoint. See [Rest level](#rest-level). Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_NO_IRQ` (another handler holds `IRQ_TIMER3`) or `AUDIO_ERR_BUSY` (something plays or waits to start). After an error the rest level is unchanged and a later call can try again. Once the first call has succeeded, later calls return `0` and do nothing.
 
 ```c
 int audio_play_rtttl(const char *text, unsigned flags);
@@ -296,6 +315,22 @@ Fills `divi`, `clock_hz`, `rng` and `dat` of an `audio_pwm_cfg_t`. The divisor i
 | Oscillator, 19200000 | 440 | `2` | `9600000` | `21818` | `10909` |
 | PLLD, 500000000 | 440 | `52` | `9615384` | `21853` | `10926` |
 
+### Rest level
+
+Until `audio_rest_mid()` runs, the pin rests at duty `0` between sounds, as it always did. A kernel that never calls it keeps the same pin levels and the same trace.
+
+The first call plays a ramp as an ordinary PCM play: 882 samples at 22050 Hz, 40 ms, from duty `0` to duty `128` on the curve `3t^2 - 2t^3`, at full scale whatever the volume. On the PWM backend the play switches to PCM mode at the ramp's first sample, duty `0`, not at the midpoint. On the trace backend it prints a plain `op=pcm rate=22050 len=882 vol=100` and its `op=pcm_end`. `audio_busy()` is non-zero while it plays, so `audio_wait()` waits for it.
+
+From that call on, every silence the driver writes is range `AUDIO_PCM_PWM_RANGE` at duty `128`: the end of a play, a cut, a stop, a rest step, the end of a tone, and a tone at volume `0`. A sample that starts near `128` then makes no jump. Tones still set their own range and sound as before. The trace lines do not change.
+
+Sharp edges of the rest mode:
+
+| Edge | Detail |
+|---|---|
+| A call that replaces the ramp cuts it. | The pin then goes to the midpoint at once, from wherever the ramp was. |
+| The carrier stays on. | An idle pin carries the 37.5 kHz carrier at half duty all the time. A filter with a corner near 18 kHz lets much of it through to the amplifier. Not checked on a board. |
+| There is no way back. | The rest level stays at the midpoint until reset. |
+
 ### Context rules
 
 | Function | Context |
@@ -303,9 +338,12 @@ Fills `divi`, `clock_hz`, `rng` and `dat` of an `audio_pwm_cfg_t`. The divisor i
 | `audio_select()`, `audio_set_pins()`, `audio_get_pins()`, `audio_init()` | Main context. `audio_init()` busy-waits for the tick. |
 | `audio_tone()`, `audio_beep()`, `audio_play()`, `audio_stop()`, `audio_busy()`, `audio_set_volume()`, `audio_pcm_samples()` | Main or IRQ context. They mask IRQs for a few instructions. |
 | `audio_play_rtttl()` | Main context: it parses with a buffer on the stack |
-| `audio_play_pcm()`, `audio_pcm_queue()` | Main context: on the trace backend they compute a CRC over the whole buffer |
-| `audio_pcm_can_queue()` | Main or IRQ context. It masks IRQs for a few instructions. |
+| `audio_play_pcm()`, `audio_pcm_mix()` | Main context, or a tick callback for a short buffer, see below |
+| `audio_pcm_queue()`, `audio_rest_mid()` | Main context: on the trace backend they compute a CRC over the whole buffer |
+| `audio_pcm_can_queue()`, `audio_pcm_mix_busy()` | Main or IRQ context. They mask IRQs for a few instructions. |
 | `audio_poll()`, `audio_wait()` | Main context only. They print with `k_printf()`. |
+
+`audio_play_pcm()` and `audio_pcm_mix()` may run in a tick callback when the buffer is short. They mask IRQs only for a few instructions, which nests inside an IRQ handler. The cost is the condition: on the trace backend each call computes the CRC-32 of the whole buffer, and `audio_play_pcm()` does a few 64-bit divides, all inside the tick IRQ. The PCM IRQ, the tick and every other IRQ wait until the callback returns, and a late PCM IRQ skips samples. So keep such a buffer short, and keep the long ones for the main context. The cost per byte on a real ARM1176 is not measured. A play started from a callback that runs before the audio callback starts on that same tick, otherwise on the next one. Never call `audio_poll()` or `audio_wait()` there.
 
 The trace backend never prints from an IRQ. The UART driver and `k_printf()` have no lock, so a print from IRQ context could interleave with the main flow. The tick and the PCM IRQ put each record in a queue of `ROBCO_AUDIO_TRACE_QUEUE` entries, and `audio_poll()` or `audio_wait()` prints them. When the queue is full, records are dropped and the next poll prints:
 
@@ -329,7 +367,10 @@ PCM prints three markers. The trace backend runs the same engine with the same t
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm rate=<hz> len=<bytes> vol=<n> crc=<8 hex> t_ms=<ms>
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_next len=<bytes> crc=<8 hex> t_ms=<ms>
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_end n=<count> last=<index> t_ms=<ms>
+@RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_mix len=<bytes> crc=<8 hex> t_ms=<ms>
 ```
+
+`op=pcm_mix` marks the start of an overlay, with its length and CRC. Its `t_ms` is the start time of the play plus the time to the overlay's first sample. An overlay given to a play that waits for its tick prints right after that play's `op=pcm`, with the same `t_ms`. The end or the drop of an overlay prints nothing.
 
 `op=pcm` is the start. `crc` is the CRC-32 of the data, as `crc32()` computes it. `op=pcm_next` means a queued buffer took over, with its length and CRC. Its `t_ms` is the start time plus the system timer time until the IRQ that switched. `op=pcm_end` is the natural end, printed once, when the last buffer ends: `n` counts the IRQs that output a sample over the whole play, queued buffers included, and `last` is the last index output, in the last buffer. Its `t_ms` is the start time plus the system timer time the play took. A stop or a replacement prints the `op=stop` line instead, at the next tick. The PCM output itself stops when the call returns.
 
@@ -340,7 +381,7 @@ Sharp edges:
 | Tick resolution. | Changes happen on ticks. At 100 Hz a 25 ms note sounds for 30 ms. Use a faster tick for clicks. |
 | Requests start on the next tick. | A second `audio_tone()` or `audio_beep()` before the next tick replaces the first one, which never sounds. Two key clicks in one tick period give one click. |
 | The tick must run first. | `audio_init()` checks it. Calls before a successful init return `AUDIO_ERR_NO_INIT`. |
-| One voice. | A new sound replaces the old one. There is no mixing. |
+| One voice, plus one overlay. | A new sound replaces the old one. `audio_pcm_mix()` adds one sample buffer over a PCM play, nothing more. Tones do not mix. |
 | `audio_play()` keeps the pointer. | Do not pass a stack array that goes out of scope while it plays. |
 | Late ticks skip notes. | A tick delayed past several steps reports each change in order, at its due time. After 16 in one tick, the rest are skipped and only the final state is output. |
 | Square wave tones. | Volume changes the duty cycle, which also changes the tone colour. PCM volume scales the samples instead. |
@@ -352,7 +393,7 @@ Sharp edges:
 | PWM on real hardware. | The probe writes RNG1 with the PWM clock running. If it reads back wrong on a real board, auto picks `trace`: force PWM to try anyway. |
 | Pin mux errors are silent. | `audio_init()` ignores a `gpio_set_function()` failure on the PWM backend. |
 
-Pending hardware validation: QEMU has no PWM, so the `pwm` backend, the default pins and the sound itself are only checked on real boards. See [hardware validation](../../HARDWARE_VALIDATION.md).
+Pending hardware validation: QEMU has no PWM, so the `pwm` backend, the default pins and the sound itself are only checked on real boards. The overlay and the midpoint rest level never ran on a board: QEMU and the host tests check their trace lines and the duty values the driver would write, not the sound. See [hardware validation](../../HARDWARE_VALIDATION.md).
 
 | Check | Boards | Look for |
 |---|---|---|
@@ -360,6 +401,8 @@ Pending hardware validation: QEMU has no PWM, so the `pwm` backend, the default 
 | Sound on the jack or GPIO 18 | Same | Beep, arpeggio, tune, looped alarm and the cut-short 440 Hz tone. Press `b`, `s`, `t`, `l`, `i` or `a` on the serial console to replay. |
 | PCM sound | Same | A 100 ms rising chirp. Press `p` to replay it. The PCM IRQ cost on the ARM1176 is not measured yet. |
 | Queued PCM | Same | Three chunks of the chirp play as one 300 ms sound, with no click between chunks. Press `c` to replay it. |
+| Overlay | Same | The `pcm_mix` case: two chirps, each with a second chirp over part of it. No click where the overlay starts or ends. |
+| Rest at the midpoint | Same | The `rest` case: one soft ramp, no thump, then a 440 Hz tone. After it the pin idles at half duty on the 37.5 kHz carrier: listen for hiss or whine, feel the amplifier, measure the idle current. |
 
 ### Wiring
 
