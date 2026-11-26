@@ -8,6 +8,8 @@
 #include <robco/timer.h>
 #include <robco/uart.h>
 
+#include "voice_demo.h"
+
 #define TICK_HZ     100
 
 /* A rising C major arpeggio. */
@@ -466,39 +468,25 @@ static void play_pcm_mix(void)
 }
 
 /*
- * A 100 ms voice at the top rate in three spans: 1000 Hz, then a glide up
- * with a second partial, then a fade to almost nothing. Each span starts
- * with the phase and step the last one ended on. 114532461 is
- * floor(1000 * 2^32 / 37500). The arithmetic is unsigned and wraps.
- */
-#define VOICE_INC       114532461u
-#define VOICE_N         1250u
-#define VOICE_DINC      40u
-static const audio_voice_span_t voice_spans[] = {
-    { VOICE_N, 0, VOICE_INC, 0, 20 << 16, 0, 0 },
-    { VOICE_N, VOICE_N * VOICE_INC, VOICE_INC, (int32_t)VOICE_DINC, 20 << 16, 0, 8192 },
-    { VOICE_N, 2u * VOICE_N * VOICE_INC + VOICE_DINC * (VOICE_N * (VOICE_N - 1u) / 2u),
-      VOICE_INC + VOICE_N * VOICE_DINC, 0, 20 << 16, -1049, 0 },
-};
-#define VOICE_SPANS     (sizeof(voice_spans) / sizeof(voice_spans[0]))
-
-/*
- * The voice with an overlay given while it waits for its tick, so both
- * start on its first sample. Prints the codes of the calls around it.
+ * The voice of voice_demo.h with its overlay, given while the voice waits
+ * for its tick, so both start on its first sample. The overlay's burst
+ * starts 80 ms in. Prints the codes of the calls around it.
  */
 static void play_pcm_voice(void)
 {
+    static audio_voice_span_t spans[VOICE_SPANS];
     int loop, none, ret, mix, queue, can, busy;
 
     case_begin("pcm_voice");
-    pcm_fill(1000);
-    loop = audio_play_voice(voice_spans, VOICE_SPANS, AUDIO_PCM_RATE_MAX, AUDIO_LOOP);
-    none = audio_play_voice(voice_spans, 0, AUDIO_PCM_RATE_MAX, 0);
-    ret = audio_play_voice(voice_spans, VOICE_SPANS, AUDIO_PCM_RATE_MAX, 0);
-    mix = audio_pcm_mix(pcm_buf, 1000);
-    queue = audio_pcm_queue(pcm_buf, 1000);
+    voice_demo_spans(spans);
+    voice_demo_mix(pcm_buf);
+    loop = audio_play_voice(spans, VOICE_SPANS, VOICE_RATE, AUDIO_LOOP);
+    none = audio_play_voice(spans, 0, VOICE_RATE, 0);
+    ret = audio_play_voice(spans, VOICE_SPANS, VOICE_RATE, 0);
+    mix = audio_pcm_mix(pcm_buf, VOICE_MIX_LEN);
+    queue = audio_pcm_queue(pcm_buf, VOICE_MIX_LEN);
     can = audio_pcm_can_queue();
-    busy = audio_play_voice(voice_spans, VOICE_SPANS, AUDIO_PCM_RATE_MAX, 0);
+    busy = audio_play_voice(spans, VOICE_SPANS, VOICE_RATE, 0);
     audio_wait();
     k_printf("@RC stage=audio ev=pcm_voice loop=%d none=%d mix=%d queue=%d can=%d busy=%d\n",
              loop, none, mix, queue, can, busy);

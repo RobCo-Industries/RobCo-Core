@@ -1,5 +1,6 @@
 """Boot examples/audio through boot() on every board: backend choice and trace markers."""
 
+import math
 import re
 import struct
 import zlib
@@ -330,31 +331,66 @@ def check_pcm_mix(vm):
                    "null": ERR_ARG, "ret2": 0, "mix1": 0, "live": 1, "done": 0}, m
 
 
-# The voice of examples/audio/main.c: three spans of 1250 samples at 37500 Hz.
-VOICE_INC, VOICE_N, VOICE_DINC = 114532461, 1250, 40
-VOICE_SPANS = [
-    (VOICE_N, 0, VOICE_INC, 0, 20 << 16, 0, 0),
-    (VOICE_N, (VOICE_N * VOICE_INC) & 0xFFFFFFFF, VOICE_INC, VOICE_DINC, 20 << 16, 0, 8192),
-    (VOICE_N, (2 * VOICE_N * VOICE_INC + VOICE_DINC * (VOICE_N * (VOICE_N - 1) // 2)) & 0xFFFFFFFF,
-     VOICE_INC + VOICE_N * VOICE_DINC, 0, 20 << 16, -1049, 0),
-]
+# The voice of examples/audio/voice_demo.h, in the same integer maths.
+VOICE_RATE, VOICE_FADE_N, VOICE_GLIDE_N = 37500, 1875, 3750
+VOICE_INC, VOICE_DINC, VOICE_DAMP, VOICE_P2 = 114532461, 30542, 1398, 8192
+VOICE_MIX_INC, VOICE_MIX_DELAY, VOICE_MIX_BURST, VOICE_MIX_PEAK = 57266230, 3000, 1500, 30
+U32 = 0xFFFFFFFF
+
+
+def voice_spans():
+    """The three spans as (n, phase, inc, dinc, amp, damp, p2); each carries the last."""
+    def carry(s):
+        n, phase, inc, dinc, amp, damp, _ = s
+        return ((phase + n * inc + dinc * (n * (n - 1) // 2)) & U32, (inc + n * dinc) & U32,
+                amp + n * damp)
+
+    s0 = (VOICE_FADE_N, 0, VOICE_INC, 0, 0, VOICE_DAMP, VOICE_P2)
+    ph, inc, amp = carry(s0)
+    s1 = (VOICE_GLIDE_N, ph, inc, VOICE_DINC, amp, 0, VOICE_P2)
+    ph, inc, amp = carry(s1)
+    s2 = (VOICE_FADE_N, ph, inc, 0, amp, -VOICE_DAMP, VOICE_P2)
+    return [s0, s1, s2]
 
 
 def voice_bytes():
     """The span array as the library sees it: 28 bytes each, little-endian."""
-    return b"".join(struct.pack("<IIIiiiI", *s) for s in VOICE_SPANS)
+    return b"".join(struct.pack("<IIIiiiI", *s) for s in voice_spans())
+
+
+def audio_sine():
+    """src/lib/audio_voice.c audio_sine[]: floor(32767 * sin(2 pi k / 1024) + 0.5)."""
+    table = [math.floor(32767 * math.sin(2 * math.pi * k / 1024) + 0.5) for k in range(1024)]
+    assert zlib.crc32(struct.pack("<1024h", *table)) == 0x05067686
+    return table
+
+
+def voice_mix():
+    """voice_demo_mix(): 128 for the delay, then the burst on a triangle envelope."""
+    sine = audio_sine()
+    out = bytearray([128] * VOICE_MIX_DELAY)
+    den = (VOICE_MIX_BURST - 1) * 32768
+    for k in range(VOICE_MIX_BURST):
+        s = sine[((k * VOICE_MIX_INC) & U32) >> 22] * min(k, VOICE_MIX_BURST - 1 - k)
+        num = s * 2 * VOICE_MIX_PEAK
+        v = abs(num) // den * (1 if num >= 0 else -1)   # C division truncates toward 0
+        out.append(128 + v)
+    return bytes(out)
 
 
 def check_pcm_voice_trace(marks):
-    """op=voice, its overlay on the same t_ms, then the end after 100 ms."""
+    """op=voice, its overlay on the same t_ms, then the end after 200 ms."""
     assert [m["op"] for m in marks] == ["voice", "pcm_mix", "pcm_end"], marks
     start, mix, end = marks
-    length = sum(s[0] for s in VOICE_SPANS)
+    spans = voice_spans()
+    length = sum(s[0] for s in spans)
+    assert length == 7500
     assert (int(start["rate"]), int(start["spans"]), int(start["len"]), int(start["vol"])) == \
-        (37500, len(VOICE_SPANS), length, 100), start
+        (VOICE_RATE, len(spans), length, 100), start
     assert start["crc"] == "%08x" % zlib.crc32(voice_bytes()), start
-    assert int(mix["len"]) == 1000, mix
-    assert mix["crc"] == "%08x" % zlib.crc32(pcm_data(1000)), mix
+    mix_data = voice_mix()
+    assert int(mix["len"]) == len(mix_data), mix
+    assert mix["crc"] == "%08x" % zlib.crc32(mix_data), mix
     assert mix["t_ms"] == start["t_ms"], marks
     nominal = length * 1000 // 37500
     took = int(end["t_ms"]) - int(start["t_ms"])
