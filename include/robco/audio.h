@@ -458,4 +458,46 @@ int32_t audio_voice_at(audio_voice_t *v, uint32_t pos);
  */
 uint8_t audio_voice_out(int32_t q, uint8_t mix, unsigned vol);
 
+/*
+ * Centred square engine, src/lib/audio_square.c: the tone once the pin
+ * rests at the midpoint. See the integer rule in that file and in the
+ * audio guide.
+ */
+
+/* Longest skip, in samples, that keeps the phase. A longer one restarts the note. */
+#define AUDIO_SQUARE_SKIP_MAX 64u
+
+/* Square state. Treat the fields as private. */
+typedef struct {
+    uint32_t half;          /* half period in 1/256 of a sample, 0 for a rest */
+    uint32_t left;          /* units to the next edge */
+    uint32_t next;          /* grid sample expected next */
+    int32_t sign;           /* +1 high, -1 low */
+    int32_t amp;            /* height in steps */
+    int fresh;              /* the next sample starts the note */
+} audio_square_t;
+
+/* Height of a note in steps: (peak * vol + 50) / 100. vol is capped at 100. */
+unsigned audio_square_amp(unsigned peak, unsigned vol);
+
+/*
+ * Starts a note of `hz` at grid `rate`, `amp` steps high. hz 0 is a rest.
+ * The next sample asked for, whatever its grid number, starts the note at
+ * an edge going up.
+ */
+void audio_square_start(audio_square_t *q, uint32_t hz, uint32_t rate, unsigned amp);
+
+/*
+ * The signed area of grid sample `pos`, -256 to 256. Samples between the
+ * last one asked for and `pos` are walked when there are at most
+ * AUDIO_SQUARE_SKIP_MAX of them; past that the note restarts at an edge.
+ */
+int32_t audio_square_acc(audio_square_t *q, uint32_t pos);
+
+/* 128 + round(amp * acc / 256), a half step away from 128, clamped to 0 to 255. */
+uint8_t audio_square_out(int32_t acc, int32_t amp);
+
+/* audio_square_out() of audio_square_acc() at the note's height. */
+uint8_t audio_square_at(audio_square_t *q, uint32_t pos);
+
 #endif
