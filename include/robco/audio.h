@@ -492,6 +492,8 @@ unsigned audio_square_amp(unsigned peak, unsigned vol);
 
 /*
  * Starts a note of `hz` at grid `rate`, `amp` steps high. hz 0 is a rest.
+ * The half period is never under one sample, so a pitch above rate / 2
+ * plays at rate / 2.
  * The next sample asked for, whatever its grid number, starts the note at
  * an edge going up.
  */

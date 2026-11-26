@@ -3,8 +3,12 @@
  * midpoint. Pure: no hardware, so the host tests and the driver share it.
  *
  * Integer rule, the same in any tool that renders a tone:
- * - half = (rate * 128 + hz / 2) / hz, the half period in 1/256 of a
- *   sample, taken once per note. A rest, hz 0, has half 0 and writes 128.
+ * - half = max(256, (rate * 128 + hz / 2) / hz), the half period in
+ *   1/256 of a sample, taken once per note. A rest, hz 0, has half 0 and
+ *   writes 128. The floor of 256 keeps a half period at one sample or
+ *   more, so a pitch above rate / 2 plays at rate / 2: the samples
+ *   alternate 128 + amp and 128 - amp. Without it a pitch of exactly
+ *   rate / 2 has half 128 and every sample averages to 128, silence.
  * - A note starts at an edge going up: the sign is +1 and the next edge
  *   lies half units ahead.
  * - Each sample walks 256 units. Before each edge it meets, it adds its
@@ -17,9 +21,18 @@
  *   round_half_away(x / 256) is (x + 128) / 256 for x >= 0 and
  *   -((128 - x) / 256) below 0, with C's truncating divide.
  *
- * half is at least 240 at 20000 Hz and 37500 Hz, so a sample meets at
- * most two edges. At the lowest grid, 4000 Hz, it is at least 25, so a
- * sample meets at most 11. No divide runs per sample.
+ * half is at least 256, so one sample meets at most one edge. The walk
+ * still loops over edges: a skip walks up to AUDIO_SQUARE_SKIP_MAX
+ * samples at once, and the loop keeps walk() right for any half above 0.
+ * No divide runs per sample.
+ *
+ * Bounds, at the extremes: rate * 128 is at most 37500 * 128 = 4800000.
+ * The largest half is 20 Hz on the 37500 grid: 4800010 / 20 = 240000
+ * units, which fits int32_t. walk() adds q->left to acc only when it is
+ * at most units, and units is at most 64 * 256 = 16384 for a skip or 256
+ * for a sample, so acc stays within 16384 and the 256 of a sample. In
+ * audio_square_acc() skip is at most 64 before skip * 256, so 16384.
+ * amp * acc is at most 127 * 256 = 32512. No step overflows.
  */
 #include <stdint.h>
 
@@ -35,7 +48,9 @@ unsigned audio_square_amp(unsigned peak, unsigned vol)
 
 void audio_square_start(audio_square_t *q, uint32_t hz, uint32_t rate, unsigned amp)
 {
-    q->half = hz ? (rate * 128u + hz / 2u) / hz : 0;
+    uint32_t half = hz ? (rate * 128u + hz / 2u) / hz : 0;
+
+    q->half = hz && half < 256u ? 256u : half;
     q->left = q->half;
     q->sign = 1;
     q->amp = (int32_t)amp;

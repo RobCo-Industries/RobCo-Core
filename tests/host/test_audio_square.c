@@ -11,9 +11,12 @@
 
 #define RATE    37500u
 
+/* The rule's half period, with its floor of one sample. */
 static uint32_t half_of(uint32_t hz, uint32_t rate)
 {
-    return (rate * 128u + hz / 2u) / hz;
+    uint32_t half = (rate * 128u + hz / 2u) / hz;
+
+    return half < 256u ? 256u : half;
 }
 
 /*
@@ -90,23 +93,17 @@ TEST(hand_3000)
     check_first(3000, want, sizeof(want));
 }
 
-/* half 240: an edge in every sample. */
+/*
+ * 20000 Hz is above half the grid, so half is 256, not 240: the note
+ * plays at 18750 Hz. Each sample is one whole level, an edge at its end.
+ */
 TEST(hand_20000)
 {
-    static const uint8_t want[] = {
-        239,    /* +240 -16 = 224 */
-        33,     /* -224 +32 = -192 */
-        207,    /* +208 -48 = 160 */
-        64,     /* -192 +64 = -128 */
-        176,    /* +176 -80 = 96 */
-        96,     /* -160 +96 = -64 */
-        144,    /* +144 -112 = 32 */
-        128,    /* -128 +128 = 0 */
-        112,    /* +112 -144 = -32 */
-    };
+    static const uint8_t want[] = { 255, 1, 255, 1, 255, 1, 255, 1, 255, 1 };
 
-    CHECK_EQ(half_of(20000, RATE), 240);
+    CHECK_EQ(half_of(20000, RATE), 256);
     check_first(20000, want, sizeof(want));
+    check_first(18750, want, sizeof(want));
 }
 
 /* Many periods against the 64-bit reference, at every height. */
@@ -251,15 +248,23 @@ TEST(a_grid_sample_that_goes_back_restarts)
     CHECK_EQ(audio_square_acc(&q, 50), 256);
 }
 
-TEST(two_edges_in_one_sample)
+/*
+ * Two edges in one sample. audio_square_start() no longer reaches this:
+ * half is at least 256. The walk still handles any half above 0, so this
+ * test sets half 253 by hand, the value 19000 Hz had before the floor,
+ * to keep that part of the walk checked.
+ */
+TEST(two_edges_in_one_sample_by_hand)
 {
     audio_square_t q;
-    uint32_t half = half_of(19000, RATE);
+    uint32_t half = 253;
     uint32_t j;
     int found = 0;
 
-    CHECK_EQ(half, 253);
     audio_square_start(&q, 19000, RATE, 127);
+    CHECK_EQ(q.half, 256);
+    q.half = half;
+    q.left = half;
     for (j = 0; j < 2000; j++) {
         uint64_t lo = 256ull * j;
         uint64_t hi = lo + 256;
@@ -277,6 +282,83 @@ TEST(two_edges_in_one_sample)
         }
     }
     CHECK(found > 0);
+}
+
+/* At most one edge per sample through the public path, at every pitch. */
+static void check_samples_alternate(uint32_t hz, uint32_t rate)
+{
+    audio_square_t q;
+    int64_t sum = 0;
+    uint32_t j;
+
+    audio_square_start(&q, hz, rate, 127);
+    for (j = 0; j < 1000; j++) {
+        uint8_t s = audio_square_at(&q, j);
+
+        if (s != (j % 2 ? 1 : 255)) {
+            RC_FAIL("%u Hz at %u sample %u: %u", (unsigned)hz, (unsigned)rate, (unsigned)j, s);
+            return;
+        }
+        sum += s;
+    }
+    CHECK_EQ(sum, 1000 * 128);
+}
+
+TEST(a_pitch_above_half_the_grid_plays_half_the_grid)
+{
+    check_samples_alternate(18750, 18750);
+    check_samples_alternate(12000, 18750);
+    check_samples_alternate(9375, 18750);
+    check_samples_alternate(20000, 37500);
+    check_samples_alternate(18750, 37500);
+}
+
+TEST(a_pitch_just_under_half_the_grid_is_untouched)
+{
+    audio_square_t q;
+
+    /* 9374 Hz: (18750 * 128 + 4687) / 9374 = 256, the floor is not needed. */
+    CHECK_EQ((18750u * 128u + 4687u) / 9374u, 256);
+    audio_square_start(&q, 9374, 18750, 127);
+    CHECK_EQ(q.half, 256);
+    /* 9300 Hz: 258, above the floor, taken as is. */
+    audio_square_start(&q, 9300, 18750, 127);
+    CHECK_EQ(q.half, (18750u * 128u + 4650u) / 9300u);
+    CHECK_EQ(q.half, 258);
+    audio_square_start(&q, 18000, RATE, 127);
+    CHECK_EQ(q.half, 267);
+    check_ref(18000, 20000, 127);
+}
+
+/* No pitch is silent: every one swings at least amp each way of 128. */
+TEST(no_pitch_is_silent)
+{
+    static const uint32_t rates[] = { AUDIO_PCM_RATE_MIN, 18750, RATE };
+    size_t r;
+
+    for (r = 0; r < 3; r++) {
+        uint32_t hz;
+
+        for (hz = AUDIO_HZ_MIN; hz <= AUDIO_HZ_MAX; hz++) {
+            audio_square_t q;
+            uint32_t n = 2u * (rates[r] / hz) + 4u;
+            uint32_t j;
+            int lo = 255;
+            int hi = 0;
+
+            audio_square_start(&q, hz, rates[r], 64);
+            for (j = 0; j < n; j++) {
+                int s = audio_square_at(&q, j);
+
+                lo = s < lo ? s : lo;
+                hi = s > hi ? s : hi;
+            }
+            if (hi - lo < 64) {
+                RC_FAIL("%u Hz at %u: swing %d", (unsigned)hz, (unsigned)rates[r], hi - lo);
+                return;
+            }
+        }
+    }
 }
 
 TEST(a_rest_writes_128)
