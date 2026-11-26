@@ -421,3 +421,56 @@ TEST(a_queue_joins_after_an_overdue_end)
         CHECK_EQ(pwm_samples[sizeof(play) + j], over[j]);
     }
 }
+
+/*
+ * The overlay joins a running play at every microsecond inside one sample
+ * period, at several rates, one of them odd. Over a play at the midpoint,
+ * the output is the overlay alone: each byte sounds exactly once, in
+ * order, from the play's next sample on. A second clock for the overlay
+ * would repeat a byte and skip the next at rates like 22050 Hz.
+ */
+TEST(a_mix_stays_on_the_play_grid_at_every_join_offset)
+{
+    static const uint32_t rates[] = { 8000, 11025, 16000, 22050, 7993 };
+    static uint8_t mid[2400];  /* 100 ms at the highest rate */
+    static uint8_t ramp_up[64];
+    size_t i, j;
+
+    memset(mid, 128, sizeof(mid));
+    for (j = 0; j < sizeof(ramp_up); j++) {
+        ramp_up[j] = (uint8_t)(j + 1);
+    }
+    for (i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+        uint32_t r = rates[i];
+        uint32_t period = (1000000u + r - 1) / r;
+        uint32_t d;
+
+        for (d = 0; d < period; d++) {
+            size_t at;
+
+            fresh(AUDIO_BACKEND_PWM);
+            CHECK_EQ(audio_play_pcm(mid, r / 10, r, 0), 0);
+            tick(10);
+            run_us(5000);
+            /* Up to a grid point, its sample output, then d us into the period. */
+            run_us(fake_due - fake_us);
+            pcm_isr(IRQ_TIMER3, 0);
+            at = pwm_count;
+            fake_step(d);
+            CHECK_EQ(audio_pcm_mix(ramp_up, sizeof(ramp_up)), 0);
+            run_us(200000);
+            CHECK(!pcm.active);
+            CHECK_EQ(pwm_count, r / 10);
+            for (j = 0; j < pwm_count; j++) {
+                uint8_t s = j >= at && j < at + sizeof(ramp_up) ? ramp_up[j - at] : 128;
+
+                if (pwm_samples[j] != audio_pcm_duty(s, AUDIO_PCM_PWM_RANGE)) {
+                    RC_FAIL("rate %u, d %u, sample %u: %u, want %u", (unsigned)r, (unsigned)d,
+                            (unsigned)j, (unsigned)pwm_samples[j],
+                            (unsigned)audio_pcm_duty(s, AUDIO_PCM_PWM_RANGE));
+                    break;
+                }
+            }
+        }
+    }
+}

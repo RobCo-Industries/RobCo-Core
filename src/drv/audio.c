@@ -24,9 +24,11 @@
  * A cut drops the waiting buffer with the playing one.
  *
  * Overlay: audio_pcm_mix() adds a second buffer to the PCM that plays, or
- * to the one that waits for its tick. The channel 3 IRQ polls a second
- * engine state, `mix`, with the same clock value, so the pure engine stays
- * as it is. The end or a cut of the play drops the overlay.
+ * to the one that waits for its tick. It has no clock of its own: it
+ * stores the play's grid sample `at` where its byte 0 sounds, and each
+ * play sample with grid sample `at + k` sounds byte k. So the overlay and
+ * the play share one grid by construction. The end or a cut of the play
+ * drops the overlay.
  *
  * Rest level: silence is duty 0, as tones rest, until a ramp from
  * audio_rest_mid() reaches its last sample. From then on every silence the
@@ -146,8 +148,16 @@ static uint32_t pcm_next_crc;
 /* The play in pcm_req ignores the volume: the rest ramp. */
 static int pcm_req_full;
 
+/* An overlay: byte k sounds with the play's grid sample at + k. */
+typedef struct {
+    const uint8_t *data;
+    uint32_t len;
+    uint32_t at;
+    int active;
+} mix_t;
+
 /* Overlay for a play that waits for its tick, prepared with IRQs masked. */
-static audio_pcm_t mix_req;
+static mix_t mix_req;
 static uint32_t mix_req_crc;
 static int mix_req_set;
 
@@ -183,8 +193,7 @@ static uint64_t pcm_t0_us;
 static int pcm_cut;                 /* cut by a call: the tick still halts it */
 static uint32_t pcm_total;          /* samples output since audio_init() */
 static int pcm_full;                /* the play ignores the volume */
-static audio_pcm_t mix;             /* the overlay, on the play's clock */
-static uint8_t mix_val = 128;       /* the overlay sample that sounds now */
+static mix_t mix;                   /* the overlay, on the play's grid */
 
 static audio_note_t tune[ROBCO_AUDIO_TUNE_MAX];
 static const audio_note_t beep = { ROBCO_AUDIO_BEEP_HZ, ROBCO_AUDIO_BEEP_MS };
@@ -260,22 +269,27 @@ static void output(uint32_t t_ms)
     }
 }
 
-/* IRQ context. The overlay sample due at `now`, held between its samples. */
-static uint8_t mix_at(uint32_t now)
+/*
+ * IRQ context. The overlay byte for the play sample just polled: byte k
+ * goes with grid sample at + k. Before `at` it adds nothing; past its last
+ * byte it ends. A play sample the clock skips skips its overlay byte too.
+ */
+static uint8_t mix_at(void)
 {
-    uint32_t pos;
-    int r;
+    uint32_t k;
 
     if (!mix.active) {
         return 128;
     }
-    r = audio_pcm_poll(&mix, now, &pos);
-    if (r == AUDIO_PCM_SAMPLE) {
-        mix_val = mix.data[pos];
-    } else if (r == AUDIO_PCM_END) {
-        mix_val = 128;
+    k = pcm.last_n - mix.at;
+    if ((int32_t)k < 0) {
+        return 128;
     }
-    return mix_val;
+    if (k >= mix.len) {
+        mix.active = 0;
+        return 128;
+    }
+    return mix.data[k];
 }
 
 /* Play sample plus overlay sample around the midpoint, clamped to 0 to 255. */
@@ -287,9 +301,9 @@ static uint8_t mix_add(uint8_t a, uint8_t b)
 }
 
 /* IRQ context. One sample, with the overlay, at the current volume. */
-static void pcm_out(uint32_t pos, uint32_t now)
+static void pcm_out(uint32_t pos)
 {
-    uint8_t s = mix_add(pcm.data[pos], mix_at(now));
+    uint8_t s = mix_add(pcm.data[pos], mix_at());
 
     pcm_total++;
     if (backend == AUDIO_BACKEND_PWM) {
@@ -302,7 +316,6 @@ static void pcm_out(uint32_t pos, uint32_t now)
 static void mix_drop(void)
 {
     mix.active = 0;
-    mix_val = 128;
 }
 
 /* IRQ context. The last sample has played: silence, no more IRQs. */
@@ -350,7 +363,7 @@ static void pcm_run(uint32_t now)
             return;
         }
         if (r == AUDIO_PCM_SAMPLE) {
-            pcm_out(pos, now);
+            pcm_out(pos);
         }
         next = audio_pcm_next_us(&pcm);
         if (++tries >= PCM_ARM_TRIES) {
@@ -401,9 +414,8 @@ static void pcm_begin(void)
     pcm.origin_us = (uint32_t)pcm_t0_us;
     mix_drop();
     if (mix_req_set) {
-        /* The overlay waited with the play: both start on this sample. */
+        /* The overlay waited with the play: both start on grid sample 0. */
         mix = mix_req;
-        mix.origin_us = pcm.origin_us;
         mix_req_set = 0;
         if (backend != AUDIO_BACKEND_PWM) {
             audio_trace_pcm_mix(mix.len, mix_req_crc, clock_ms, 0);
@@ -699,17 +711,6 @@ static int start_refused_locked(void)
     return busy_locked() && !stop_pending_locked();
 }
 
-/*
- * IRQs masked, PCM active. The next sample time of the play that is not in
- * the past, from one timer read, which *now gets in 64 bits. Everything new
- * that joins a running play starts there: an overlay, a queued buffer.
- */
-static uint32_t pcm_join_locked(uint64_t *now)
-{
-    *now = timer_now_us();
-    return audio_pcm_join_us(&pcm, (uint32_t)*now);
-}
-
 /* Queues a request. `tone` is used when notes is NULL. */
 static int submit(const audio_note_t *notes, size_t count, unsigned flags,
                   uint32_t hz, uint32_t ms, int replace)
@@ -925,11 +926,10 @@ int audio_pcm_queue(const uint8_t *data, size_t len)
     ret = queue_check_locked();
     if (!ret) {
         audio_pcm_t *t = queue_target_locked();
-        uint64_t now;
 
         if (t == &pcm) {
-            /* An end already passed, the IRQ still due: start at the join point. */
-            audio_pcm_chain_at(t, data, len, pcm_join_locked(&now));
+            /* An end already passed, the IRQ still due: start at the join sample. */
+            audio_pcm_chain_at(t, data, len, timer_now_lo());
         } else {
             audio_pcm_chain(t, data, len);
         }
@@ -977,10 +977,8 @@ static int mix_check_locked(void)
 
 int audio_pcm_mix(const uint8_t *data, size_t len)
 {
-    audio_pcm_t m;
-    audio_pcm_t *t;
+    mix_t m = { data, (uint32_t)len, 0, 1 };
     uint32_t crc = 0;
-    uint32_t rate;
     uint32_t s;
     int pending;
     int ret;
@@ -995,7 +993,6 @@ int audio_pcm_mix(const uint8_t *data, size_t len)
     /* Fail fast before the CRC scans the buffer. The check repeats below. */
     s = irq_save();
     ret = mix_check_locked();
-    rate = ret ? 0 : mix_target_locked(&pending)->rate;
     irq_restore(s);
     if (ret) {
         return ret;
@@ -1003,33 +1000,32 @@ int audio_pcm_mix(const uint8_t *data, size_t len)
     if (backend == AUDIO_BACKEND_TRACE) {
         crc = crc32(data, len);
     }
-    /* The 64-bit divides of the start run here. The rate can change below: then redo them. */
-    audio_pcm_start(&m, data, len, rate, 0, 0);
     s = irq_save();
     ret = mix_check_locked();
     if (ret) {
         irq_restore(s);
         return ret;
     }
-    t = mix_target_locked(&pending);
-    if (t->rate != rate) {
-        audio_pcm_start(&m, data, len, t->rate, 0, 0);
-    }
+    mix_target_locked(&pending);
     if (pending) {
         mix_req = m;
         mix_req_crc = crc;
         mix_req_set = 1;
     } else {
-        uint64_t now;
+        uint64_t now = timer_now_us();
 
-        /* From the play's next sample that has not passed, on its grid. */
-        m.origin_us = pcm_join_locked(&now);
+        /* From the play's next grid sample that has not passed. */
+        m.at = audio_pcm_join(&pcm, (uint32_t)now);
         mix = m;
-        mix_val = 128;
         if (backend != AUDIO_BACKEND_PWM) {
-            /* 64 bits: a looped play can run past the 32-bit wrap. The join lies after the read, never before. */
+            /*
+             * The trace time is derived from the play's grid, never stored.
+             * 64 bits: a looped play can run past the 32-bit wrap. The join
+             * lies after the read, never before, and within one sample.
+             */
             audio_trace_pcm_mix(m.len, crc, pcm_t0_ms,
-                                (now - pcm_t0_us) + (uint32_t)(m.origin_us - (uint32_t)now));
+                                (now - pcm_t0_us) +
+                                (uint32_t)(audio_pcm_join_us(&pcm, (uint32_t)now) - (uint32_t)now));
         }
     }
     irq_restore(s);

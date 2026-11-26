@@ -197,7 +197,6 @@ static void fresh(int which)
     k_memset(&seq, 0, sizeof(seq));
     k_memset(&pcm, 0, sizeof(pcm));
     k_memset(&mix, 0, sizeof(mix));
-    mix_val = 128;
     mix_req_set = 0;
     k_memset(&pcm_req, 0, sizeof(pcm_req));
     pcm_req_full = 0;
