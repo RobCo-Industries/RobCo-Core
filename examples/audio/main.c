@@ -568,21 +568,27 @@ static void play_rule(void)
 
 /*
  * The rest level moves to the midpoint with a ramp; a second call does
- * nothing. A tone then still sounds. Last, as the level stays there.
+ * nothing. A tone then still sounds, now as a centred square on the
+ * sample path, so the sample count grows while it plays. Last, as the
+ * level stays there.
  */
 static void play_rest(void)
 {
     int ret, again, tone;
+    uint32_t s0, s1;
 
     case_begin("rest");
     audio_set_volume(50);
     ret = audio_rest_mid();
     audio_wait();
     again = audio_rest_mid();
+    s0 = audio_pcm_samples(0);
     tone = audio_tone(440, 50);
     audio_wait();
+    s1 = audio_pcm_samples(0);
     audio_set_volume(100);
-    k_printf("@RC stage=audio ev=rest again=%d tone=%d\n", again, tone);
+    k_printf("@RC stage=audio ev=rest again=%d tone=%d grew=%u\n", again, tone,
+             (unsigned)(s1 - s0));
     case_end("rest", ret);
 }
 

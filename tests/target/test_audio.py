@@ -421,6 +421,8 @@ def check_rest(vm, marks):
     assert int(stop["t_ms"]) - int(tone["t_ms"]) >= 50, marks
     m = events(vm, "rest")[-1]
     assert (int(m["again"]), int(m["tone"])) == (0, 0), m
+    # The centred tone runs on the sample path: the count grows, with no op=pcm line.
+    assert int(m["grew"]) > 0, m
 
 
 def check_pcm_args(vm):
@@ -613,3 +615,4 @@ def test_audio_forced_pwm(board, example_image):
             check_pcm_voice(vm)
             m = events(vm, "rest")[-1]
             assert (int(m["again"]), int(m["tone"])) == (0, 0), m
+            assert int(m["grew"]) > 0, m
