@@ -26,6 +26,9 @@ jobs:
         run: make check-workflows
 
   image:
+    # The guard passes first: this job can write packages, so no step of
+    # it runs while a workflow line is unchecked.
+    needs: workflows
     runs-on: ubuntu-latest
     permissions:
       contents: read
