@@ -20,6 +20,9 @@ TEST(check_limits)
     CHECK_EQ(audio_pcm_check(buf, 1, AUDIO_PCM_RATE_MAX, AUDIO_LOOP | AUDIO_PRIORITY), 0);
     CHECK_EQ(audio_pcm_check(buf, 1, AUDIO_PCM_RATE_MIN - 1, 0), AUDIO_ERR_RANGE);
     CHECK_EQ(audio_pcm_check(buf, 1, AUDIO_PCM_RATE_MAX + 1, 0), AUDIO_ERR_RANGE);
+    /* The top rate is the PWM carrier rate. */
+    CHECK_EQ(audio_pcm_check(buf, 1, 37500, 0), 0);
+    CHECK_EQ(audio_pcm_check(buf, 1, 37501, 0), AUDIO_ERR_RANGE);
     CHECK_EQ(audio_pcm_check(buf, 1, 0, 0), AUDIO_ERR_RANGE);
     CHECK_EQ(audio_pcm_check(rc_launder(NULL), 1, 8000, 0), AUDIO_ERR_ARG);
     CHECK_EQ(audio_pcm_check(buf, 0, 8000, 0), AUDIO_ERR_ARG);
@@ -591,8 +594,8 @@ TEST(join_matches_reference_on_many_rates)
     }
 }
 
-/* Rates for the grid tests: four common ones, one above AUDIO_PCM_RATE_MAX, one odd. */
-static const uint32_t grid_rates[] = { 8000, 11025, 16000, 22050, 44100, 7993 };
+/* Rates for the grid tests: five common ones with the top rate, one above it, one odd. */
+static const uint32_t grid_rates[] = { 8000, 11025, 16000, 22050, 37500, 44100, 7993 };
 
 /* Time of grid sample g after the origin: ceil(g * 10^6 / rate), on 64 bits. */
 static uint64_t ref_time(uint64_t g, uint32_t rate)
@@ -700,6 +703,94 @@ TEST(late_queues_keep_the_first_grid)
                 g = ref_grid_at(late, r);
             }
         }
+    }
+}
+
+/*
+ * The top rate: 3 samples every 80 us. Polled at each sample's 64-bit
+ * reference time for an hour, past rebases and the 32-bit wrap, byte k
+ * comes at exactly that time and not 1 us before.
+ */
+TEST(top_rate_keeps_its_grid_for_an_hour)
+{
+    const uint32_t r = 37500;
+    const uint32_t t0 = 0xfff00000u;
+    const uint64_t hour = (uint64_t)r * 3600;
+    uint64_t g;
+    audio_pcm_t p;
+
+    audio_pcm_start(&p, buf, 1000, r, AUDIO_LOOP, t0);
+    CHECK_EQ(p.unit_us, 80);
+    CHECK_EQ(p.unit_n, 3);
+    CHECK_EQ(ref_time(3, r), 80);
+    for (g = 0; g <= hour; g++) {
+        uint32_t t = t0 + (uint32_t)ref_time(g, r);
+        uint32_t pos;
+
+        if (audio_pcm_next_us(&p) != t) {
+            RC_FAIL("sample %llu: next %u, want %u", (unsigned long long)g,
+                    (unsigned)(audio_pcm_next_us(&p) - t0), (unsigned)(t - t0));
+            break;
+        }
+        if (g && audio_pcm_poll(&p, t - 1, &pos) != AUDIO_PCM_NONE) {
+            RC_FAIL("sample %llu: early", (unsigned long long)g);
+            break;
+        }
+        if (audio_pcm_poll(&p, t, &pos) != AUDIO_PCM_SAMPLE || pos != g % 1000 ||
+            p.last_n != (uint32_t)g) {
+            RC_FAIL("sample %llu: pos %u", (unsigned long long)g, (unsigned)pos);
+            break;
+        }
+    }
+    CHECK_EQ(ref_time(hour, r), 3600000000u);
+    CHECK_EQ(p.n, (uint32_t)(hour + 1));
+}
+
+/*
+ * At the top rate, a join and a late one-byte queue at every microsecond
+ * of an 80 us window, so every offset inside a 3-sample unit: each lands
+ * on the first grid sample at or after its time, checked on 64 bits.
+ */
+TEST(top_rate_join_and_late_queue_at_every_offset)
+{
+    static const uint8_t one[1];
+    const uint32_t r = 37500;
+    const uint32_t t0 = 0xfc000000u;
+    const uint64_t g0 = (uint64_t)r * 70;
+    uint32_t d;
+    uint64_t g;
+    audio_pcm_t p;
+
+    audio_pcm_start(&p, buf, AUDIO_PCM_LEN_MAX, r, 0, t0);
+    for (g = 0; g <= g0; g += r) {
+        CHECK_EQ(audio_pcm_poll(&p, t0 + (uint32_t)ref_time(g, r), 0), AUDIO_PCM_SAMPLE);
+    }
+    for (d = 0; d < 80; d++) {
+        audio_pcm_t q = p;
+        uint64_t at = ref_time(g0, r) + d;
+        uint64_t want = ref_grid_at(at, r);
+
+        if (want <= g0) {
+            want = g0 + 1;
+        }
+        CHECK_EQ(audio_pcm_join(&q, t0 + (uint32_t)at), (uint32_t)want);
+        CHECK_EQ(audio_pcm_join_us(&q, t0 + (uint32_t)at), t0 + (uint32_t)ref_time(want, r));
+    }
+    for (d = 0; d < 80; d++) {
+        uint32_t s0 = 0xfff00000u;
+        uint64_t late = ref_time(1, r) + d;
+        uint64_t want = ref_grid_at(late, r);
+        uint32_t pos = 9;
+        audio_pcm_t q;
+
+        audio_pcm_start(&q, one, 1, r, 0, s0);
+        CHECK_EQ(audio_pcm_poll(&q, s0, &pos), AUDIO_PCM_SAMPLE);
+        CHECK_EQ(audio_pcm_chain_at(&q, one, 1, s0 + (uint32_t)late), 0);
+        CHECK_EQ(audio_pcm_next_us(&q), s0 + (uint32_t)ref_time(want, r));
+        CHECK_EQ(audio_pcm_poll(&q, s0 + (uint32_t)ref_time(want, r) - 1, &pos), AUDIO_PCM_NONE);
+        CHECK_EQ(audio_pcm_poll(&q, s0 + (uint32_t)ref_time(want, r), &pos), AUDIO_PCM_SAMPLE);
+        CHECK_EQ(pos, 0);
+        CHECK_EQ(q.last_n, (uint32_t)want);
     }
 }
 

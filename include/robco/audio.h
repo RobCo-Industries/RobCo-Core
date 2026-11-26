@@ -30,9 +30,12 @@
 #define AUDIO_HZ_MIN        20u
 #define AUDIO_HZ_MAX        20000u
 
-/* PCM sample rates accepted by audio_play_pcm(). */
+/*
+ * PCM sample rates accepted by audio_play_pcm(). The top rate is the PWM
+ * carrier rate in PCM mode: one sample per carrier period.
+ */
 #define AUDIO_PCM_RATE_MIN  4000u
-#define AUDIO_PCM_RATE_MAX  22050u
+#define AUDIO_PCM_RATE_MAX  37500u
 
 /* Longest PCM buffer, in bytes. */
 #define AUDIO_PCM_LEN_MAX   0x7fffffffu

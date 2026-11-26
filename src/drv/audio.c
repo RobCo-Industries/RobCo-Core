@@ -192,7 +192,7 @@ static uint32_t sounding;
  * IRQ context only: the tick starts and halts, the channel 3 IRQ runs.
  * pcm_t0_us is 64 bits: every duration since the start comes from it, so a
  * looped play can pass the 32-bit wrap. pcm_total and pcm.n count samples
- * modulo 2^32: they wrap after 54 hours at 22050 Hz, which the trace and
+ * modulo 2^32: they wrap after 31 hours at 37500 Hz, which the trace and
  * audio_pcm_samples() report as is.
  */
 static audio_pcm_t pcm;

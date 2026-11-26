@@ -17,6 +17,14 @@
 
 #define US_PER_S        1000000u
 
+/*
+ * Bounds at the top rate, AUDIO_PCM_RATE_MAX = 37500. mul is 161061273,
+ * under 2^32. elapsed * rate is under 2^32 * 37500, under 2^48. A sample
+ * count over 2^32 us is under 1.62 * 10^8, under 2^28, so join_q() and a
+ * rebase stay far under 2^31. time_of() compares t * rate with m * 10^6,
+ * under 2^52 for any m under 2^32. At 37500 a unit is 80 us and 3 samples.
+ */
+
 /* Rebase the origin once this much time has passed: keeps products in 64 bits. */
 #define REBASE_US       (1u << 26)
 
