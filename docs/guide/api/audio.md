@@ -220,7 +220,7 @@ How it runs: the channel 3 IRQ polls a second engine state with the same clock v
 int audio_rest_mid(void);
 ```
 
-Moves the rest level to the midpoint. See [Rest level](#rest-level). Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_NO_IRQ` (another handler holds `IRQ_TIMER3`) or `AUDIO_ERR_BUSY` (something plays or waits to start, a stop that waits for its tick included: the stop still applies at that tick, and a later call starts the ramp from rest). After an error the rest level is unchanged and a later call can try again. Once the first call has succeeded, later calls return `0` and do nothing.
+Moves the rest level to the midpoint. See [Rest level](#rest-level). Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_NO_IRQ` (another handler holds `IRQ_TIMER3`) or `AUDIO_ERR_BUSY` (something plays or waits to start, a stop that waits for its tick included: the stop still applies at that tick, and a later call starts the ramp from rest). After an error the rest level is unchanged and a later call can try again. While the ramp waits or plays, and once it has reached its end, later calls return `0` and do nothing. A ramp that ends early leaves the rest level at duty `0`, and a later call can try again.
 
 ```c
 int audio_play_rtttl(const char *text, unsigned flags);
@@ -244,7 +244,9 @@ Every busy rule starts from one question: does something play? The answer is yes
 | A tone or sequence waits for its tick, or sounds | `1` | `AUDIO_ERR_BUSY` | `AUDIO_ERR_BUSY` | `AUDIO_ERR_STATE` |
 | A sample play waits for its tick, or plays | `1` | `AUDIO_ERR_BUSY` | `AUDIO_ERR_BUSY` | `0` |
 | A stop or cut waits for its tick | `1` | `0`, the tick prints the stop first | `AUDIO_ERR_BUSY` | `AUDIO_ERR_STATE` |
-| The ramp waits for its tick, or plays | `1` | `AUDIO_ERR_BUSY` | `0` | `AUDIO_ERR_STATE` |
+| The ramp waits for its tick, or plays | `1` | `AUDIO_ERR_BUSY` | `0`, does nothing | `AUDIO_ERR_STATE` |
+
+The rest level becomes the midpoint only when the ramp reaches its last sample. A ramp that ends early leaves it at duty `0`: a stop or a priority start before the ramp starts, and a stop, a cut or a priority start while it plays. The table then reads "Nothing plays" or the row of the new sound, and `audio_rest_mid()` can start the ramp again.
 
 ```c
 void audio_poll(void);
@@ -314,7 +316,7 @@ uint8_t audio_pcm_scale(uint8_t s, unsigned vol);
 uint32_t audio_pcm_duty(uint8_t s, uint32_t rng);
 ```
 
-The PCM engine the IRQ uses. Treat the `audio_pcm_t` fields as private, except `n`, the samples output over every chained buffer, and `last`, the last index output in the current buffer. `audio_pcm_check()` returns `0`, `AUDIO_ERR_ARG` or `AUDIO_ERR_RANGE` with the rules of `audio_play_pcm()`. `audio_pcm_start()` puts sample `0` at `now_us` and does the 64-bit divides, so the IRQ does not. `audio_pcm_poll()` returns `AUDIO_PCM_SAMPLE` and stores the index in `*pos` when a sample not output yet is due, `AUDIO_PCM_NONE` before that, and `AUDIO_PCM_END` once a non-looped buffer has played. `audio_pcm_chain()` puts `data` behind the current buffer. When the position passes the end, the engine switches to it and the position continues at `pos - len`, with the same origin time. A poll that comes late lands at the right index of the new buffer, and one that passes the new buffer's end too returns `AUDIO_PCM_END`. It returns `0`, `AUDIO_ERR_STATE` (not active, or looped) or `AUDIO_ERR_BUSY` (a buffer waits). `audio_pcm_next_us()` says when the next sample is due. `audio_pcm_join_us()` gives the first grid point at or after a time that is not before that sample: where an overlay or a late queued buffer starts. `audio_pcm_chain_at()` chains like `audio_pcm_chain()` and moves the new buffer's start to that point when the current buffer's end has passed. A poll before the origin returns `AUDIO_PCM_NONE`. Times wrap at 2^32 us. The engine moves its origin forward by whole sample groups every 2^26 us, so a loop can run for hours without drift. `audio_pcm_scale()` applies the volume, capped at `100`. `audio_pcm_duty()` returns `s * rng / 256`.
+The PCM engine the IRQ uses. Treat the `audio_pcm_t` fields as private, except `n`, the samples output over every chained buffer, and `last`, the last index output in the current buffer. `audio_pcm_check()` returns `0`, `AUDIO_ERR_ARG` or `AUDIO_ERR_RANGE` with the rules of `audio_play_pcm()`. `audio_pcm_start()` puts sample `0` at `now_us` and does the 64-bit divides, so the IRQ does not. `audio_pcm_poll()` returns `AUDIO_PCM_SAMPLE` and stores the index in `*pos` when a sample not output yet is due, `AUDIO_PCM_NONE` before that, and `AUDIO_PCM_END` once a non-looped buffer has played. `audio_pcm_chain()` puts `data` behind the current buffer. When the position passes the end, the engine switches to it and the position continues at `pos - len`, with the same origin time. A poll that comes late lands at the right index of the new buffer, and one that passes the new buffer's end too returns `AUDIO_PCM_END`. It returns `0`, `AUDIO_ERR_STATE` (not active, or looped) or `AUDIO_ERR_BUSY` (a buffer waits). `audio_pcm_next_us()` says when the next sample is due. `audio_pcm_join_us()` gives the first grid point at or after a time that is not before that sample: where an overlay or a late queued buffer starts. `audio_pcm_chain_at()` chains like `audio_pcm_chain()` and moves the new buffer's start to that point when the current buffer's end has passed. It decides that by counting samples on 64 bits, so a buffer that ends hours away is never taken as ended. Sample times are computed on 64 bits, and no engine loop runs more than a few turns, whatever the buffer length. A poll before the origin returns `AUDIO_PCM_NONE`. Times wrap at 2^32 us. The engine moves its origin forward by whole sample groups every 2^26 us, so a loop can run for hours without drift. `audio_pcm_scale()` applies the volume, capped at `100`. `audio_pcm_duty()` returns `s * rng / 256`.
 
 ```c
 int audio_pwm_calc(uint32_t src_hz, uint32_t hz, unsigned vol, audio_pwm_cfg_t *out);
@@ -331,15 +333,15 @@ Fills `divi`, `clock_hz`, `rng` and `dat` of an `audio_pwm_cfg_t`. The divisor i
 
 Until `audio_rest_mid()` runs, the pin rests at duty `0` between sounds, as it always did. A kernel that never calls it keeps the same pin levels and the same trace.
 
-The first call plays a ramp as an ordinary PCM play: 882 samples at 22050 Hz, 40 ms, from duty `0` to duty `128` on the curve `3t^2 - 2t^3`, at full scale whatever the volume. On the PWM backend the play switches to PCM mode at the ramp's first sample, duty `0`, not at the midpoint. On the trace backend it prints a plain `op=pcm rate=22050 len=882 vol=100` and its `op=pcm_end`. `audio_busy()` is non-zero while it plays, so `audio_wait()` waits for it.
+The call plays a ramp as an ordinary PCM play: 882 samples at 22050 Hz, 40 ms, from duty `0` to duty `128` on the curve `3t^2 - 2t^3`, at full scale whatever the volume. On the PWM backend the play switches to PCM mode at the ramp's first sample, duty `0`, not at the midpoint. On the trace backend it prints a plain `op=pcm rate=22050 len=882 vol=100` and its `op=pcm_end`. `audio_busy()` is non-zero while it plays, so `audio_wait()` waits for it.
 
-From that call on, every silence the driver writes is range `AUDIO_PCM_PWM_RANGE` at duty `128`: the end of a play, a cut, a stop, a rest step, the end of a tone, and a tone at volume `0`. A sample that starts near `128` then makes no jump. Tones still set their own range and sound as before. The trace lines do not change.
+Once the ramp reaches its last sample, every silence the driver writes is range `AUDIO_PCM_PWM_RANGE` at duty `128`: the end of a play, a cut, a stop, a rest step, the end of a tone, and a tone at volume `0`. A sample that starts near `128` then makes no jump. Tones still set their own range and sound as before. The trace lines do not change.
 
 Sharp edges of the rest mode:
 
 | Edge | Detail |
 |---|---|
-| A call that replaces the ramp cuts it. | The pin then goes to the midpoint at once, from wherever the ramp was. |
+| A call that ends the ramp early cancels it. | `audio_stop()`, a cut or a priority start, before the ramp starts or while it plays. The rest level stays duty `0`. A ramp that had started drops to duty `0` at once, from wherever it was. One that had not started leaves the pin untouched. Call `audio_rest_mid()` again to retry. |
 | The carrier stays on. | An idle pin carries the 37.5 kHz carrier at half duty all the time. A filter with a corner near 18 kHz lets much of it through to the amplifier. Not checked on a board. |
 | There is no way back. | The rest level stays at the midpoint until reset. |
 
