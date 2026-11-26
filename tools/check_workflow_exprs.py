@@ -47,6 +47,21 @@ needs no comment, since check_pins.sh ties it to the submodule. A
 docker:// image names a sha256 digest. A local "./" action or workflow
 passes: it runs at the caller's own commit. Any other uses: value fails.
 
+The second rule fails closed too. Any structure line that holds the word
+uses, in any case, outside a comment, must take one plain form: spaces as
+indent, an optional "- ", the bare key uses, a colon, one space, an
+unquoted reference, and an optional " # comment". The line must sit under a
+bare "KEY:" line, as for the first rule, and no deeper line may continue
+the value. Every other spelling fails as a form the guard cannot check: a
+space before the colon, a quoted key or value, a flow mapping or sequence,
+a tab, a block scalar, a multi-line value, uses after other content, and
+the word uses in any other key or value. An anchor, an alias, a merge key,
+a second YAML document, a byte order mark or a carriage return fails the
+file when it holds the word uses.
+
+The rule does not check container: or services: images, nor any image:
+key. Their tags can move.
+
 Usage: check_workflow_exprs.py [--no-pins] FILE...
 --no-pins skips the second rule.
 Exit 0 when clean, 1 with one line per hit, 2 on a usage error.
@@ -150,24 +165,70 @@ def findings(text):
             yield num, "${{ in a continuation line"
 
 
-USES = re.compile(r"^[ \t]*(?:- )?uses:[ \t]*(.*)$")
-UNQUOTED = re.compile(r"^([\"']?)([^\s\"'#]+)\1(.*)$")
+USES_WORD = re.compile(r"\buses\b", re.IGNORECASE)
+COMMENT = re.compile(r"(?:^|[ \t])#")
+PLAIN_USES = re.compile(r"^( *)(?:- )?uses: ([^\s\"'#{}\[\],&*!|>%@`][^\s\"'#{}\[\],]*)(.*)$")
+TAIL = re.compile(r"^(?: #.*)?$")
+DOC_MARK = re.compile(r"^(?:---|\.\.\.)(?:[ \t].*)?$")
 COMMIT = re.compile(r"@[0-9a-f]{40}$")
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 TAG_COMMENT = re.compile(r"^[ \t]+#[ \t]*\S")
+FORM = "uses: in a form the guard cannot check"
+
+
+def code_part(line):
+    """The line up to its comment, if any."""
+    found = COMMENT.search(line)
+    return line[: found.start()] if found else line
+
+
+def continues(all_lines, index, key_col):
+    """True when a line below is indented deeper than the key: the value goes on."""
+    for line in all_lines[index + 1:]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        return len(line) - len(line.lstrip(" \t")) > key_col
+    return False
 
 
 def pin_findings(text):
-    """Yield (line number, reason) for each uses: line not pinned by commit."""
-    for num, line in enumerate(text.splitlines(), 1):
-        match = USES.match(line)
-        if not match:
+    """Yield (line number, reason) for each uses line not plain or not pinned.
+
+    A line triggers when the word uses stands outside a comment and outside
+    block text, which block_text_lines finds as for the first rule.
+    """
+    all_lines = text.split("\n")
+    if all_lines and all_lines[-1] == "":
+        all_lines.pop()
+    text_lines = block_text_lines(all_lines)
+    structure = [n for n in range(1, len(all_lines) + 1) if n not in text_lines]
+    triggers = [n for n in structure if USES_WORD.search(code_part(all_lines[n - 1]))]
+    if not triggers:
+        return
+    whole = None
+    if text.startswith("\ufeff"):
+        whole = "a byte order mark"
+    elif "\r" in text:
+        whole = "a carriage return"
+    elif any(ANCHOR.match(all_lines[n - 1]) for n in structure):
+        whole = "an anchor, an alias or a merge key"
+    elif [n for n in structure if DOC_MARK.match(all_lines[n - 1])] not in ([], [1]):
+        whole = "more than one YAML document"
+    if whole:
+        yield triggers[0], "%s with %s in the file" % (FORM, whole)
+        return
+    for num in triggers:
+        line = all_lines[num - 1]
+        match = PLAIN_USES.match(line)
+        if (
+            not match
+            or not TAIL.match(match.group(3))
+            or not under_opener(all_lines, num - 1)
+            or continues(all_lines, num - 1, key_indent(line))
+        ):
+            yield num, FORM
             continue
-        value = UNQUOTED.match(match.group(1))
-        if not value:
-            yield num, "uses: with no plain value"
-            continue
-        ref, rest = value.group(2), value.group(3)
+        ref, rest = match.group(2), match.group(3)
         if ref.startswith("./"):
             continue
         if ref.startswith("docker://"):
@@ -196,7 +257,10 @@ def main(argv):
             bad += 1
         if pins:
             for num, reason in pin_findings(text):
-                print("%s:%d: %s; write uses: OWNER/REPO@<commit> # <tag>" % (path, num, reason))
+                print(
+                    "%s:%d: %s; write uses: OWNER/REPO@<commit> # <tag>, "
+                    "indented with spaces, one space after the colon" % (path, num, reason)
+                )
                 bad += 1
     return 1 if bad else 0
 

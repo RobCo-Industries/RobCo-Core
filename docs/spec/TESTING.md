@@ -486,6 +486,10 @@ Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` f
 - A `${{ }}` expression passes only on a plain `KEY: value` line, closed on that line, under a bare `KEY:` line. The key must not be `run`, `script`, `shell`, `args` or `entrypoint`. The value holds no quote outside the expression and is not a flow value. An expression in block text fails, and so does an anchor or an alias. A script reads the value from `env:`, so a branch or tag name cannot run as shell code.
 - Each `uses:` names a full 40 hex digit commit. An action adds its tag in a comment, as in `uses: actions/checkout@<commit> # v4.4.0`. A reusable workflow called by path needs the commit and no comment. A `docker://` image needs a `sha256` digest. A local `./` action passes.
 
+The second rule fails closed too. Any line that holds the word `uses` outside a comment and outside block text must take one plain form: spaces as indent, an optional `- `, the bare key `uses`, a colon, one space, the unquoted reference, and for an action ` # <tag>`. The line sits under a bare `KEY:` line, and no deeper line continues the value. Every other spelling fails as a form the guard cannot check. That covers a space before the colon, a quoted key or value, a flow mapping or sequence, a tab, a block scalar, a value over two lines, an explicit `?` key, a `!` tag, `uses` after other content and the word in any other key or value. A file that holds the word fails once on an anchor, an alias, a merge key, a second YAML document, a byte order mark or a carriage return.
+
+The rule covers `jobs.<id>.uses` and `docker://` actions. It does not check `container:`, `services:` or any `image:` key. Their tags can move.
+
 It prints one line per finding and exits 1, or exits 0 when clean. `--no-pins` skips the second rule.
 
 A project that includes `mk/robco.mk` gets `make check-workflows`, which checks every file in `.github/workflows`. Add it to the `make-targets` of the reusable workflow, or to `make test`, so CI runs it.

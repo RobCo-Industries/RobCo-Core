@@ -155,7 +155,6 @@ PIN_FAIL = {
 
 PIN_PASS = {
     "action": "      - uses: actions/checkout@%s # v4.4.0\n" % SHA,
-    "quoted action": "      - uses: 'actions/checkout@%s' # v4.4.0\n" % SHA,
     "subfolder action": "        uses: github/codeql-action/init@%s # v3.1.0\n" % SHA,
     "workflow": (
         "    uses: RobCo-Industries/RobCo-Core/.github/workflows/robco-ci.yml@%s\n" % SHA
@@ -163,7 +162,42 @@ PIN_PASS = {
     "local action": "      - uses: ./.github/actions/setup\n",
     "local workflow": "    uses: ./.github/workflows/build.yml\n",
     "docker digest": "      - uses: docker://alpine@sha256:%s\n" % ("a" * 64),
-    "not a uses key": "      - name: uses: actions/checkout@v4\n",
+    "word inside another word": "      - name: The check refuses a host\n",
+    "word in a comment": "      # uses: actions/checkout@v4\n",
+    "word in block text": "      - run: |\n          echo uses: x@v4\n",
+}
+
+TAG = "actions/checkout@v4"
+PIN_FORM = {
+    "space before colon": "      - uses : %s\n" % TAG,
+    "double quoted key": '      - "uses": %s\n' % TAG,
+    "single quoted key": "      - 'uses': %s\n" % TAG,
+    "flow mapping": "      - { uses: %s }\n" % TAG,
+    "flow sequence": "    steps: [{uses: %s}]\n" % TAG,
+    "quoted value": "      - uses: '%s@%s' # v4\n" % (TAG[:-3], SHA),
+    "double quoted value": '      - uses: "%s"\n' % TAG,
+    "tab indent": "\t- uses: %s\n" % TAG,
+    "tab separator": "      - uses:\t%s\n" % TAG,
+    "two spaces": "      - uses:  %s\n" % TAG,
+    "after other content": "      - name: x uses: %s\n" % TAG,
+    "after a key": "      - name: uses: %s\n" % TAG,
+    "upper case key": "      - Uses: %s\n" % TAG,
+    "block scalar": "      - uses: |\n          %s\n" % TAG,
+    "folded scalar": "      - uses: >-\n          %s\n" % TAG,
+    "multi-line value": "    steps:\n      - uses: actions/checkout\n          @v4\n",
+    "value on next line": "    steps:\n      - uses:\n          %s\n" % TAG,
+    "continuation": "    steps:\n      - run: echo a\n          uses: %s\n" % TAG,
+    "explicit key": "      - ? uses\n        : %s\n" % TAG,
+    "tagged value": "      - uses: !!str %s\n" % TAG,
+}
+
+PIN_FORM_FILE = {
+    "anchor": "x: &a 1\nsteps:\n  - uses: %s@%s # v4\n" % (TAG[:-3], SHA),
+    "alias": "steps:\n  - uses: *a\n",
+    "merge key": "steps:\n  - <<: {}\n    uses: %s@%s # v4\n" % (TAG[:-3], SHA),
+    "two documents": "a: 1\n---\nsteps:\n  - uses: %s@%s # v4\n" % (TAG[:-3], SHA),
+    "byte order mark": "\ufeffsteps:\n  - uses: %s@%s # v4\n" % (TAG[:-3], SHA),
+    "carriage return": "steps:\r\n  - uses: %s@%s # v4\r\n" % (TAG[:-3], SHA),
 }
 
 
@@ -180,6 +214,41 @@ class Pins(unittest.TestCase):
         for name, text in PIN_PASS.items():
             with self.subTest(name):
                 self.assertEqual(self.pins(text), [], name)
+
+    def test_form_fails(self):
+        for name, text in PIN_FORM.items():
+            with self.subTest(name):
+                found = list(cwe.pin_findings(text))
+                self.assertTrue(found, name)
+                self.assertEqual({r for _, r in found}, {cwe.FORM}, name)
+
+    def test_form_fails_file(self):
+        for name, text in PIN_FORM_FILE.items():
+            with self.subTest(name):
+                found = list(cwe.pin_findings(text))
+                self.assertEqual(len(found), 1, name)
+                self.assertTrue(found[0][1].startswith(cwe.FORM), name)
+
+    def test_plain_form(self):
+        good = "    steps:\n      - uses: %s@%s # v4\n" % (TAG[:-3], SHA)
+        self.assertEqual(list(cwe.pin_findings(good)), [])
+        bad = "    steps:\n      - uses: %s\n" % TAG
+        self.assertEqual(
+            list(cwe.pin_findings(bad)), [(2, "uses: not pinned by a full commit")]
+        )
+        first = "---\n" + good
+        self.assertEqual(list(cwe.pin_findings(first)), [])
+
+    def test_cli_names_the_plain_form(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "w.yml")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(PIN_FORM["space before colon"])
+            run = subprocess.run(
+                [sys.executable, "-I", TOOL, path], capture_output=True, text=True
+            )
+            self.assertEqual(run.returncode, 1)
+            self.assertIn("cannot check; write uses: OWNER/REPO@<commit> # <tag>", run.stdout)
 
     def test_cli_runs_both_rules_and_no_pins_skips_one(self):
         with tempfile.TemporaryDirectory() as tmp:
