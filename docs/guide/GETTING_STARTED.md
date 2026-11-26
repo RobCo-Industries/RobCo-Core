@@ -435,6 +435,8 @@ external/pip-os/external/robco-core/tools/check_doc_links.sh --repo RobCo-Indust
 external/pip-os/external/robco-core/tools/check_doc_links.sh . external/pip-os/external/robco-core
 ```
 
+The container runs as root on a checkout owned by the runner user, so git refuses it. The workflow marks the checkout and every submodule folder as safe for git right after the checkout. Your make targets can call git, such as `git ls-files`.
+
 The inputs are documented at the top of [robco-ci.yml](../../.github/workflows/robco-ci.yml).
 
 ## Build a card image for QEMU
