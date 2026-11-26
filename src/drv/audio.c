@@ -37,6 +37,13 @@
  * driver writes is the PCM range at duty 128. A ramp that ends early, by a
  * stop, a cut or a new sound, pending or playing, leaves the rest level at
  * duty 0 and writes that silence, and a later call can try again.
+ *
+ * Centred tones: once the rest level is the midpoint, a tone is a square
+ * around 128 made in the sample IRQ, a play of kind tone on the PCM
+ * engine. The tick starts it when a sequence first sounds and halts it in
+ * the tick where the sequence ends. Each note restarts the square on the
+ * same grid, and a rest writes 128. The trace lines stay those of a tone.
+ * Before the ramp ends, a tone stays the PWM's own pulse.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -64,6 +71,14 @@
 #ifndef ROBCO_AUDIO_VOLUME
 #define ROBCO_AUDIO_VOLUME      100
 #endif
+/* Height in steps of a tone at volume 100 once the rest is the midpoint. */
+#ifndef ROBCO_AUDIO_TONE_PEAK
+#define ROBCO_AUDIO_TONE_PEAK   127
+#endif
+/* Sample grid of a tone once the rest is the midpoint. */
+#ifndef ROBCO_AUDIO_TONE_RATE
+#define ROBCO_AUDIO_TONE_RATE   37500
+#endif
 
 /* Checked at build time: a bad value stops the build instead of a silent beep. */
 _Static_assert(ROBCO_AUDIO_BEEP_HZ >= AUDIO_HZ_MIN && ROBCO_AUDIO_BEEP_HZ <= AUDIO_HZ_MAX,
@@ -71,6 +86,11 @@ _Static_assert(ROBCO_AUDIO_BEEP_HZ >= AUDIO_HZ_MIN && ROBCO_AUDIO_BEEP_HZ <= AUD
 _Static_assert(ROBCO_AUDIO_BEEP_MS > 0, "ROBCO_AUDIO_BEEP_MS must be above 0");
 _Static_assert(ROBCO_AUDIO_VOLUME <= 100,
                "ROBCO_AUDIO_VOLUME must be 0 to 100");
+_Static_assert(ROBCO_AUDIO_TONE_PEAK >= 0 && ROBCO_AUDIO_TONE_PEAK <= 127,
+               "ROBCO_AUDIO_TONE_PEAK must be 0 to 127");
+_Static_assert(ROBCO_AUDIO_TONE_RATE >= AUDIO_PCM_RATE_MIN &&
+               ROBCO_AUDIO_TONE_RATE <= AUDIO_PCM_RATE_MAX,
+               "ROBCO_AUDIO_TONE_RATE must be within AUDIO_PCM_RATE_MIN to AUDIO_PCM_RATE_MAX");
 #ifdef ROBCO_AUDIO_PIN0
 _Static_assert(ROBCO_AUDIO_PIN0 >= 0 && ROBCO_AUDIO_PIN0 < GPIO_PIN_COUNT && ROBCO_AUDIO_FN0 <= 7,
                "ROBCO_AUDIO_PIN0 must be a GPIO pin and ROBCO_AUDIO_FN0 a GPIO_FN_* code");
@@ -159,6 +179,7 @@ static uint32_t pcm_next_crc;
 #define KIND_SAMPLE             0
 #define KIND_RAMP               1
 #define KIND_VOICE              2
+#define KIND_TONE               3
 
 /* The kind of the play in pcm_req. IRQs masked. */
 static int pcm_req_kind;
@@ -216,6 +237,10 @@ static uint32_t pcm_total;          /* samples output since audio_init() */
 static int pcm_kind;                /* KIND_* of the play */
 static audio_voice_t voice;         /* the play's spans, when it is a voice */
 static mix_t mix;                   /* the overlay, on the play's grid */
+static audio_square_t square;       /* the note, when the play is a tone */
+
+/* A tone play with sample 0 at time 0, made in the main context by audio_rest_mid(). */
+static audio_pcm_t tone_pcm;
 
 static audio_note_t tune[ROBCO_AUDIO_TUNE_MAX];
 static const audio_note_t beep = { ROBCO_AUDIO_BEEP_HZ, ROBCO_AUDIO_BEEP_MS };
@@ -271,6 +296,8 @@ static void pwm_silence(void)
     }
 }
 
+static void tone_note(uint32_t hz, unsigned vol);
+
 static void output(uint32_t t_ms)
 {
     uint32_t hz = seq.hz;
@@ -280,12 +307,15 @@ static void output(uint32_t t_ms)
         return;
     }
     sounding = hz;
-    if (backend == AUDIO_BACKEND_PWM) {
-        if (rest_mid && (hz == 0 || vol == 0)) {
-            audio_pwm_pcm_mode();
-        } else {
-            audio_pwm_out(hz, vol);
+    if (rest_mid) {
+        tone_note(hz, vol);
+        if (backend != AUDIO_BACKEND_PWM) {
+            audio_trace_out(hz, vol, t_ms);
         }
+        return;
+    }
+    if (backend == AUDIO_BACKEND_PWM) {
+        audio_pwm_out(hz, vol);
     } else {
         audio_trace_out(hz, vol, t_ms);
     }
@@ -333,7 +363,10 @@ static void pcm_out(uint32_t pos)
 {
     uint8_t s;
 
-    if (pcm_kind == KIND_VOICE) {
+    if (pcm_kind == KIND_TONE) {
+        /* The height holds the volume of the note's start. No overlay. */
+        s = audio_square_at(&square, pcm.last_n);
+    } else if (pcm_kind == KIND_VOICE) {
         int32_t q = audio_voice_at(&voice, pos);
 
         s = audio_voice_out(q, mix_at(), volume);
@@ -564,6 +597,41 @@ static void pcm_halt(void)
     }
 }
 
+/*
+ * Tick context. Starts a tone play: sample 0 sounds now, on its own grid
+ * at ROBCO_AUDIO_TONE_RATE. The template holds no divide to do here. It
+ * prints no trace line: output() prints the tone's own.
+ */
+static void tone_begin(void)
+{
+    pcm = tone_pcm;
+    pcm_kind = KIND_TONE;
+    pcm_t0_ms = clock_ms;
+    pcm_t0_us = timer_now_us();
+    pcm.origin_us = (uint32_t)pcm_t0_us;
+    mix_drop();
+    if (backend == AUDIO_BACKEND_PWM) {
+        audio_pwm_pcm_mode();
+    }
+    timer_compare_clear(PCM_CHANNEL);
+    irq_enable(IRQ_TIMER3);
+    pcm_run(pcm.origin_us);
+}
+
+/*
+ * Tick context, rest at the midpoint only. A new note, or a rest, of the
+ * sequence: the next sample starts it at an edge going up, at the volume
+ * of now. The first sounding note starts the play.
+ */
+static void tone_note(uint32_t hz, unsigned vol)
+{
+    audio_square_start(&square, hz, ROBCO_AUDIO_TONE_RATE,
+                       audio_square_amp(ROBCO_AUDIO_TONE_PEAK, vol));
+    if (hz && !(pcm.active && pcm_kind == KIND_TONE)) {
+        tone_begin();
+    }
+}
+
 /* IRQ context. */
 static void audio_tick(void)
 {
@@ -615,6 +683,10 @@ static void audio_tick(void)
     }
     if (n > EVENTS_PER_TICK) {
         output(clock_ms);
+    }
+    if (pcm.active && pcm_kind == KIND_TONE && !seq.active) {
+        /* The sequence has ended: the pin goes back to 128 from the last sample. */
+        pcm_halt();
     }
     playing = seq.active || pcm.active;
 }
@@ -1110,7 +1182,8 @@ int audio_pcm_can_queue(void)
 }
 
 /*
- * The play an overlay would join: a sample play or a voice, not the ramp.
+ * The play an overlay would join: a sample play or a voice, not the ramp
+ * or a tone. A tone never waits in pcm_req: the tick starts it.
  * Sets *pending when that play still waits for its tick. IRQs masked.
  */
 static audio_pcm_t *mix_target_locked(int *pending)
@@ -1120,7 +1193,7 @@ static audio_pcm_t *mix_target_locked(int *pending)
         return req.pcm && !req.stop && pcm_req_kind != KIND_RAMP ? &pcm_req : 0;
     }
     *pending = 0;
-    return pcm.active && pcm_kind != KIND_RAMP ? &pcm : 0;
+    return pcm.active && (pcm_kind == KIND_SAMPLE || pcm_kind == KIND_VOICE) ? &pcm : 0;
 }
 
 /*
@@ -1250,6 +1323,12 @@ int audio_rest_mid(void)
     irq_restore(s);
     ramp_fill();
     audio_pcm_start(&p, ramp, RAMP_LEN, RAMP_RATE, 0, 0);
+    /*
+     * The tone play's divides run here, in the main context. It loops so
+     * it never ends by itself: the tick halts it. The square follows
+     * last_n, which does not wrap with the loop.
+     */
+    audio_pcm_start(&tone_pcm, 0, AUDIO_PCM_LEN_MAX, ROBCO_AUDIO_TONE_RATE, AUDIO_LOOP, 0);
     if (backend == AUDIO_BACKEND_TRACE) {
         crc = crc32(ramp, RAMP_LEN);
     }

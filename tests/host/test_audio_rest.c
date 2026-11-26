@@ -37,6 +37,40 @@ static void enter_rest(int which)
     clear_logs();
 }
 
+/*
+ * A centred tone plays: the play is of kind tone, no pulse write, and the
+ * sample writes from `from` on are the square of `hz` at full height for
+ * one whole period at least.
+ */
+static void check_centred_tone(const char *what, size_t from, uint32_t hz)
+{
+    audio_square_t q;
+    uint32_t half = (ROBCO_AUDIO_TONE_RATE * 128u + hz / 2u) / hz;
+    size_t period = 2u * half / 256u + 1u;
+    size_t i;
+
+    if (!pcm.active || pcm_kind != KIND_TONE || strstr(pwm_log, "out ")) {
+        RC_FAIL("%s: no tone play, PWM writes \"%s\"", what, pwm_log);
+        return;
+    }
+    run_us((uint32_t)(period * 1000000u / ROBCO_AUDIO_TONE_RATE + 100u));
+    if (pwm_count < from + period) {
+        RC_FAIL("%s: %u sample writes, want %u", what, (unsigned)pwm_count,
+                (unsigned)(from + period));
+        return;
+    }
+    audio_square_start(&q, hz, ROBCO_AUDIO_TONE_RATE, audio_square_amp(ROBCO_AUDIO_TONE_PEAK, 100));
+    for (i = 0; i < period; i++) {
+        uint32_t want = audio_pcm_duty(audio_square_at(&q, (uint32_t)i), AUDIO_PCM_PWM_RANGE);
+
+        if (pwm_samples[from + i] != want) {
+            RC_FAIL("%s: sample %u is %u, want %u", what, (unsigned)i,
+                    (unsigned)pwm_samples[from + i], (unsigned)want);
+            return;
+        }
+    }
+}
+
 /* The last PWM write of the record is the midpoint, and no write sets duty 0. */
 static void check_rests_mid(const char *what)
 {
@@ -262,16 +296,21 @@ TEST(rest_after_a_queued_pcm_cut)
 
 TEST(rest_after_pcm_replaced_by_a_tone_that_ends)
 {
+    size_t from;
+
     fill();
     enter_rest(AUDIO_BACKEND_PWM);
     CHECK_EQ(audio_play_pcm(buf, sizeof(buf), 8000, 0), 0);
     tick(10);
     run_us(20000);
     CHECK_EQ(audio_tone(440, 30), 0);
+    from = pwm_count;
     tick(10);
-    CHECK(strstr(pwm_log, "out 440 100;") != 0);
+    CHECK(strstr(pwm_log, "mid;mid;") != 0);
+    check_centred_tone("pcm, then a tone", from, 440);
     tick(40);
     check_rests_mid("pcm, then a tone");
+    CHECK(!pcm.active);
 }
 
 TEST(a_tone_after_the_call_sounds_and_ends_at_the_rest_level)
@@ -279,9 +318,12 @@ TEST(a_tone_after_the_call_sounds_and_ends_at_the_rest_level)
     enter_rest(AUDIO_BACKEND_PWM);
     CHECK_EQ(audio_tone(440, 30), 0);
     tick(10);
-    CHECK_STR(pwm_log, "out 440 100;");
+    CHECK_STR(pwm_log, "mid;");
+    check_centred_tone("tone after the call", 0, 440);
     tick(40);
-    CHECK_STR(pwm_log, "out 440 100;mid;");
+    CHECK_STR(pwm_log, "mid;mid;");
+    CHECK(!pcm.active);
+    CHECK(!audio_busy());
 }
 
 TEST(rest_after_a_tone_stop)
@@ -289,9 +331,14 @@ TEST(rest_after_a_tone_stop)
     enter_rest(AUDIO_BACKEND_PWM);
     CHECK_EQ(audio_tone(440, 3000), 0);
     tick(10);
+    check_centred_tone("tone before its stop", 0, 440);
     audio_stop();
+    /* The stop cuts the play before it returns: the pin is at 128 already. */
+    CHECK_STR(pwm_log, "mid;mid;");
+    CHECK(!pcm.active);
     tick(10);
-    CHECK_STR(pwm_log, "out 440 100;mid;");
+    CHECK_STR(pwm_log, "mid;mid;mid;");
+    CHECK(!audio_busy());
 }
 
 TEST(rest_in_a_sequence_rest_and_after_its_stop)
@@ -299,8 +346,21 @@ TEST(rest_in_a_sequence_rest_and_after_its_stop)
     enter_rest(AUDIO_BACKEND_PWM);
     CHECK_EQ(audio_play(seq_rest, 2, AUDIO_LOOP), 0);
     tick(10);
+    check_centred_tone("sequence note", 0, 440);
     tick(110);
-    CHECK_STR(pwm_log, "out 440 100;mid;");
+    /* In the rest the play goes on and writes 128. */
+    CHECK_STR(pwm_log, "mid;");
+    CHECK(pcm.active && pcm_kind == KIND_TONE);
+    {
+        size_t from = pwm_count;
+        size_t i;
+
+        run_us(2000);
+        CHECK(pwm_count > from + 50);
+        for (i = from; i < pwm_count && i < 4096; i++) {
+            CHECK_EQ(pwm_samples[i], 128);
+        }
+    }
     audio_stop();
     tick(10);
     check_rests_mid("sequence stop");
