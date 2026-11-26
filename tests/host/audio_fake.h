@@ -203,6 +203,7 @@ static void fresh(int which)
     pcm_req_full = 0;
     pcm_full = 0;
     rest_mid = 0;
+    rest_ramp = 0;
     pcm_cut = 0;
     sounding = 0;
     playing = 0;

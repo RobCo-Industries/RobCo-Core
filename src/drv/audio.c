@@ -28,9 +28,11 @@
  * engine state, `mix`, with the same clock value, so the pure engine stays
  * as it is. The end or a cut of the play drops the overlay.
  *
- * Rest level: until audio_rest_mid() runs, silence is duty 0, as tones
- * rest. Its first call plays a short ramp up to the midpoint, and from
- * then on every silence the driver writes is the PCM range at duty 128.
+ * Rest level: silence is duty 0, as tones rest, until a ramp from
+ * audio_rest_mid() reaches its last sample. From then on every silence the
+ * driver writes is the PCM range at duty 128. A ramp that ends early, by a
+ * stop, a cut or a new sound, pending or playing, leaves the rest level at
+ * duty 0 and writes that silence, and a later call can try again.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -149,8 +151,10 @@ static audio_pcm_t mix_req;
 static uint32_t mix_req_crc;
 static int mix_req_set;
 
-/* Set by the first audio_rest_mid(): silence is the midpoint from then on. */
+/* Set when the ramp reaches its end: silence is the midpoint from then on. */
 static volatile int rest_mid;
+/* A ramp from audio_rest_mid() waits for its tick or plays. IRQs masked. */
+static volatile int rest_ramp;
 static uint8_t ramp[RAMP_LEN];
 
 /*
@@ -306,6 +310,11 @@ static void pcm_finish(void)
 {
     irq_disable(IRQ_TIMER3);
     mix_drop();
+    if (pcm_full && rest_ramp) {
+        /* The ramp has reached the midpoint: that is the rest level now. */
+        rest_ramp = 0;
+        rest_mid = 1;
+    }
     if (backend == AUDIO_BACKEND_PWM) {
         pwm_silence();
     } else {
@@ -415,6 +424,8 @@ static void pcm_cut_locked(void)
 {
     /* An overlay that waits goes with the request it waits on. */
     mix_req_set = 0;
+    /* A ramp that waits or plays ends early: the rest level stays duty 0. */
+    rest_ramp = 0;
     if (!pcm.active) {
         return;
     }
@@ -1059,7 +1070,7 @@ int audio_rest_mid(void)
     if (backend < 0) {
         return AUDIO_ERR_NO_INIT;
     }
-    if (rest_mid) {
+    if (rest_mid || rest_ramp) {
         return 0;
     }
     if (!pcm_irq) {
@@ -1078,7 +1089,7 @@ int audio_rest_mid(void)
         crc = crc32(ramp, RAMP_LEN);
     }
     s = irq_save();
-    if (rest_mid) {
+    if (rest_mid || rest_ramp) {
         irq_restore(s);
         return 0;
     }
@@ -1093,7 +1104,7 @@ int audio_rest_mid(void)
     req.pcm = 1;
     req.notes = 0;
     req.valid = 1;
-    rest_mid = 1;
+    rest_ramp = 1;
     irq_restore(s);
     return 0;
 }

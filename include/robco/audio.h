@@ -187,15 +187,19 @@ int audio_pcm_mix(const uint8_t *data, size_t len);
 int audio_pcm_mix_busy(void);
 
 /*
- * Moves the rest level to the midpoint. The first call plays a ramp from
- * duty 0 to duty 128 at range AUDIO_PCM_PWM_RANGE: 882 samples at 22050 Hz
- * on the curve 3t^2 - 2t^3, at full scale whatever the volume. From then
- * on every silence the driver writes is that range at duty 128: the end of
- * a play, a cut, a stop, the end of a tone. Later calls do nothing and
- * return 0. Until the first call, the rest level stays duty 0.
+ * Moves the rest level to the midpoint. The call plays a ramp from duty 0
+ * to duty 128 at range AUDIO_PCM_PWM_RANGE: 882 samples at 22050 Hz on the
+ * curve 3t^2 - 2t^3, at full scale whatever the volume. The rest level
+ * becomes the midpoint only when the ramp reaches its last sample. From
+ * then on every silence the driver writes is that range at duty 128: the
+ * end of a play, a cut, a stop, the end of a tone. A ramp that ends early,
+ * by audio_stop(), a cut or a new sound, whether it waits for its tick or
+ * plays, leaves the rest level at duty 0: the driver writes duty 0 if the
+ * ramp had started, and a later call can try again. Calls while the ramp
+ * waits or plays, or once it has ended, do nothing and return 0.
  * Returns 0, or AUDIO_ERR_NO_INIT, AUDIO_ERR_NO_IRQ (another handler holds
- * the timer channel 3 IRQ), AUDIO_ERR_BUSY when something plays or waits:
- * the rest level is then unchanged and a later call can try again.
+ * the timer channel 3 IRQ), AUDIO_ERR_BUSY when something else plays or
+ * waits: the rest level is then unchanged and a later call can try again.
  */
 int audio_rest_mid(void);
 

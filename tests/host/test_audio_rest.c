@@ -252,6 +252,131 @@ TEST(rest_after_a_pcm_replaced_by_pcm)
     check_rests_mid("pcm replaced by pcm");
 }
 
+/*
+ * After a ramp that ended early: the rest level is still duty 0, no ramp
+ * is left, and a second call plays the ramp to its end.
+ */
+static void check_retry(const char *what)
+{
+    if (rest_mid || rest_ramp) {
+        RC_FAIL("%s: rest_mid %d rest_ramp %d", what, rest_mid, rest_ramp);
+    }
+    CHECK(!audio_busy());
+    clear_logs();
+    CHECK_EQ(audio_rest_mid(), 0);
+    CHECK_EQ(rest_mid, 0);
+    tick(10);
+    run_us(50000);
+    tick(10);
+    if (!rest_mid || strcmp(pwm_log, "at 0;mid;") != 0) {
+        RC_FAIL("%s: retry rest_mid %d PWM writes \"%s\"", what, rest_mid, pwm_log);
+    }
+}
+
+TEST(a_call_during_the_ramp_does_nothing)
+{
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    CHECK_EQ(audio_rest_mid(), 0);
+    CHECK_EQ(rest_mid, 0);
+    run_us(50000);
+    tick(10);
+    CHECK_EQ(rest_mid, 1);
+    CHECK_STR(pwm_log, "at 0;mid;");
+}
+
+TEST(a_stop_before_the_ramp_starts_leaves_duty_0)
+{
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    audio_stop();
+    tick(10);
+    /* The ramp never started: the pin stays at its initial duty 0. */
+    CHECK_STR(pwm_log, "");
+    check_retry("stop before the ramp");
+}
+
+TEST(a_stop_during_the_ramp_writes_duty_0)
+{
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    run_us(10000);
+    audio_stop();
+    CHECK_STR(pwm_log, "at 0;out 0 0;");
+    tick(10);
+    CHECK_STR(pwm_log, "at 0;out 0 0;out 0 0;");
+    check_retry("stop during the ramp");
+}
+
+TEST(a_priority_pcm_cuts_the_playing_ramp)
+{
+    fill();
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    run_us(10000);
+    CHECK_EQ(audio_play_pcm(buf, 80, 8000, AUDIO_PRIORITY), 0);
+    tick(10);
+    run_us(20000);
+    tick(10);
+    /* The cut, the play, then its end at duty 0. */
+    CHECK_STR(pwm_log, "at 0;out 0 0;out 0 0;mid;out 0 0;");
+    check_retry("priority pcm during the ramp");
+}
+
+TEST(a_priority_pcm_replaces_the_pending_ramp)
+{
+    fill();
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    CHECK_EQ(audio_play_pcm(buf, 80, 8000, AUDIO_PRIORITY), 0);
+    tick(10);
+    run_us(20000);
+    tick(10);
+    CHECK_STR(pwm_log, "mid;out 0 0;");
+    check_retry("priority pcm before the ramp");
+}
+
+TEST(a_tone_replaces_the_pending_ramp)
+{
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    CHECK_EQ(audio_tone(440, 30), 0);
+    tick(10);
+    tick(40);
+    CHECK_STR(pwm_log, "out 440 100;out 0 100;");
+    check_retry("tone before the ramp");
+}
+
+TEST(a_tone_cuts_the_playing_ramp)
+{
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    run_us(10000);
+    CHECK_EQ(audio_tone(440, 30), 0);
+    tick(10);
+    tick(40);
+    CHECK_STR(pwm_log, "at 0;out 0 0;out 0 0;out 440 100;out 0 100;");
+    check_retry("tone during the ramp");
+}
+
+TEST(a_trace_ramp_stopped_early_leaves_duty_0)
+{
+    fresh(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    run_us(10000);
+    audio_stop();
+    tick(10);
+    CHECK_EQ(rest_mid, 0);
+    CHECK_EQ(rest_ramp, 0);
+    CHECK(!audio_busy());
+}
+
 TEST(trace_of_tones_unchanged_in_rest_mode)
 {
     enter_rest(AUDIO_BACKEND_TRACE);
