@@ -166,9 +166,9 @@ int audio_pcm_queue(const uint8_t *data, size_t len);
 int audio_pcm_can_queue(void);
 ```
 
-`audio_pcm_queue()` queues the next buffer behind the PCM that plays. It starts with no gap when the current buffer ends, at the same rate and volume. The first sample of the queued buffer is due one sample period after the last sample of the current one, on the same clock grid: the engine does not restart its time base, so many chunks in a row do not drift. One buffer can wait. The call works while the play still waits for its tick. The library does not copy: `data` must stay valid until that buffer has finished playing, or until `audio_stop()` or a call that replaces the sound returns. Those calls drop the waiting buffer and stop reading both buffers before they return.
+`audio_pcm_queue()` queues the next buffer behind the PCM that plays. It starts with no gap when the current buffer ends, at the same rate and volume. The first sample of the queued buffer is due one sample period after the last sample of the current one, on the same clock grid: the engine does not restart its time base, so many chunks in a row do not drift. When the current buffer's end has already passed and its IRQ is late, the queued buffer starts at the play's next grid point instead, so none of its bytes is skipped. One buffer can wait. The call works while the play still waits for its tick. The library does not copy: `data` must stay valid until that buffer has finished playing, or until `audio_stop()` or a call that replaces the sound returns. Those calls drop the waiting buffer and stop reading both buffers before they return.
 
-Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`data` `NULL`, `len` `0` or above `AUDIO_PCM_LEN_MAX`), `AUDIO_ERR_STATE` (no PCM plays or waits to start, or the PCM loops) or `AUDIO_ERR_BUSY` (a buffer already waits). On the trace backend the call computes the CRC-32 of `data`, after the state checks.
+Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`data` `NULL`, `len` `0` or above `AUDIO_PCM_LEN_MAX`), `AUDIO_ERR_STATE` (no PCM plays or waits to start, the PCM loops, or the play is the `audio_rest_mid()` ramp) or `AUDIO_ERR_BUSY` (a buffer already waits). On the trace backend the call computes the CRC-32 of `data`, after the state checks.
 
 `audio_pcm_can_queue()` returns `1` when `audio_pcm_queue()` would accept a buffer now: PCM plays or waits to start, it does not loop, and no buffer waits. When it turns `1` again after a queue call, the queued buffer has taken over, and the buffer that played at the time of that call is free.
 
@@ -208,9 +208,9 @@ int audio_pcm_mix(const uint8_t *data, size_t len);
 int audio_pcm_mix_busy(void);
 ```
 
-`audio_pcm_mix()` adds one overlay buffer to the PCM that plays, a second voice. Each output sample is `play + data - 128`, clamped to `0` to `255`, then scaled by the volume. The overlay runs at the play's rate and starts at the play's next sample, on the same clock grid. Like `audio_pcm_queue()`, the call also takes a play that still waits for its tick: both then start on the same sample. The overlay carries on across a queued buffer. It ends at its own end, or when the play ends or is cut, whichever comes first, so an overlay longer than what is left of the play stops with it. A looped play keeps looping after its overlay ends. The library does not copy: `data` must stay valid until the overlay ends, or until a call that ends the play returns.
+`audio_pcm_mix()` adds one overlay buffer to the PCM that plays, a second voice. Each output sample is `play + data - 128`, clamped to `0` to `255`, then scaled by the volume. The overlay runs at the play's rate and starts at the play's next sample that has not passed when the call reads the timer, on the same clock grid. A sample IRQ that is late when the call runs, from a tick callback for one, does not skip the overlay's first bytes. Like `audio_pcm_queue()`, the call also takes a play that still waits for its tick: both then start on the same sample. The overlay carries on across a queued buffer. It ends at its own end, or when the play ends or is cut, whichever comes first, so an overlay longer than what is left of the play stops with it. A looped play keeps looping after its overlay ends. The library does not copy: `data` must stay valid until the overlay ends, or until a call that ends the play returns.
 
-Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`data` `NULL`, `len` `0` or above `AUDIO_PCM_LEN_MAX`), `AUDIO_ERR_STATE` (no PCM plays or waits to start, or a stop or a tone waits for the tick) or `AUDIO_ERR_BUSY` (an overlay already runs or waits). On the trace backend the call computes the CRC-32 of `data`, after the state checks.
+Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`data` `NULL`, `len` `0` or above `AUDIO_PCM_LEN_MAX`), `AUDIO_ERR_STATE` (no PCM plays or waits to start, a stop or a tone waits for the tick, or the play is the `audio_rest_mid()` ramp) or `AUDIO_ERR_BUSY` (an overlay already runs or waits). On the trace backend the call computes the CRC-32 of `data`, after the state checks.
 
 `audio_pcm_mix_busy()` returns `1` while an overlay plays or waits for its play to start.
 
@@ -220,7 +220,7 @@ How it runs: the channel 3 IRQ polls a second engine state with the same clock v
 int audio_rest_mid(void);
 ```
 
-Moves the rest level to the midpoint. See [Rest level](#rest-level). Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_NO_IRQ` (another handler holds `IRQ_TIMER3`) or `AUDIO_ERR_BUSY` (something plays or waits to start). After an error the rest level is unchanged and a later call can try again. Once the first call has succeeded, later calls return `0` and do nothing.
+Moves the rest level to the midpoint. See [Rest level](#rest-level). Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_NO_IRQ` (another handler holds `IRQ_TIMER3`) or `AUDIO_ERR_BUSY` (something plays or waits to start, a stop that waits for its tick included: the stop still applies at that tick, and a later call starts the ramp from rest). After an error the rest level is unchanged and a later call can try again. Once the first call has succeeded, later calls return `0` and do nothing.
 
 ```c
 int audio_play_rtttl(const char *text, unsigned flags);
@@ -235,6 +235,16 @@ void audio_set_volume(unsigned percent);
 ```
 
 `audio_stop()` stops PCM output before it returns. A tone or sequence stops at the next tick. Before `audio_init()` it does nothing. `audio_busy()` is non-zero while a tone, rest, sequence or PCM buffer plays, or a request (a stop included) waits for the tick. After `audio_stop()` it turns `0` at the next tick, even for PCM. `audio_set_volume()` sets the PWM duty cycle from `0` (silent) to `100` (50%, the loudest square wave). It applies from the next step change, or from the next PCM sample. Values above 100 count as 100. The trace backend records it in `vol=`.
+
+Every busy rule starts from one question: does something play? The answer is yes from the moment a sound, a stop or the rest ramp is accepted until the pin is back at rest. The calls then answer as follows. "Start" means `audio_play()`, `audio_play_pcm()` and `audio_play_rtttl()` without `AUDIO_PRIORITY`. With it, every start returns `0`.
+
+| State | `audio_busy()` | Start | `audio_rest_mid()` | `audio_pcm_mix()`, `audio_pcm_queue()` |
+|---|---|---|---|---|
+| Nothing plays | `0` | `0` | `0` | `AUDIO_ERR_STATE` |
+| A tone or sequence waits for its tick, or sounds | `1` | `AUDIO_ERR_BUSY` | `AUDIO_ERR_BUSY` | `AUDIO_ERR_STATE` |
+| A sample play waits for its tick, or plays | `1` | `AUDIO_ERR_BUSY` | `AUDIO_ERR_BUSY` | `0` |
+| A stop or cut waits for its tick | `1` | `0`, the tick prints the stop first | `AUDIO_ERR_BUSY` | `AUDIO_ERR_STATE` |
+| The ramp waits for its tick, or plays | `1` | `AUDIO_ERR_BUSY` | `0` | `AUDIO_ERR_STATE` |
 
 ```c
 void audio_poll(void);
@@ -298,11 +308,13 @@ void audio_pcm_start(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t r
 int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos);
 int audio_pcm_chain(audio_pcm_t *p, const uint8_t *data, size_t len);
 uint32_t audio_pcm_next_us(const audio_pcm_t *p);
+uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us);
+int audio_pcm_chain_at(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t now_us);
 uint8_t audio_pcm_scale(uint8_t s, unsigned vol);
 uint32_t audio_pcm_duty(uint8_t s, uint32_t rng);
 ```
 
-The PCM engine the IRQ uses. Treat the `audio_pcm_t` fields as private, except `n`, the samples output over every chained buffer, and `last`, the last index output in the current buffer. `audio_pcm_check()` returns `0`, `AUDIO_ERR_ARG` or `AUDIO_ERR_RANGE` with the rules of `audio_play_pcm()`. `audio_pcm_start()` puts sample `0` at `now_us` and does the 64-bit divides, so the IRQ does not. `audio_pcm_poll()` returns `AUDIO_PCM_SAMPLE` and stores the index in `*pos` when a sample not output yet is due, `AUDIO_PCM_NONE` before that, and `AUDIO_PCM_END` once a non-looped buffer has played. `audio_pcm_chain()` puts `data` behind the current buffer. When the position passes the end, the engine switches to it and the position continues at `pos - len`, with the same origin time. A poll that comes late lands at the right index of the new buffer, and one that passes the new buffer's end too returns `AUDIO_PCM_END`. It returns `0`, `AUDIO_ERR_STATE` (not active, or looped) or `AUDIO_ERR_BUSY` (a buffer waits). `audio_pcm_next_us()` says when the next sample is due. Times wrap at 2^32 us. The engine moves its origin forward by whole sample groups every 2^26 us, so a loop can run for hours without drift. `audio_pcm_scale()` applies the volume, capped at `100`. `audio_pcm_duty()` returns `s * rng / 256`.
+The PCM engine the IRQ uses. Treat the `audio_pcm_t` fields as private, except `n`, the samples output over every chained buffer, and `last`, the last index output in the current buffer. `audio_pcm_check()` returns `0`, `AUDIO_ERR_ARG` or `AUDIO_ERR_RANGE` with the rules of `audio_play_pcm()`. `audio_pcm_start()` puts sample `0` at `now_us` and does the 64-bit divides, so the IRQ does not. `audio_pcm_poll()` returns `AUDIO_PCM_SAMPLE` and stores the index in `*pos` when a sample not output yet is due, `AUDIO_PCM_NONE` before that, and `AUDIO_PCM_END` once a non-looped buffer has played. `audio_pcm_chain()` puts `data` behind the current buffer. When the position passes the end, the engine switches to it and the position continues at `pos - len`, with the same origin time. A poll that comes late lands at the right index of the new buffer, and one that passes the new buffer's end too returns `AUDIO_PCM_END`. It returns `0`, `AUDIO_ERR_STATE` (not active, or looped) or `AUDIO_ERR_BUSY` (a buffer waits). `audio_pcm_next_us()` says when the next sample is due. `audio_pcm_join_us()` gives the first grid point at or after a time that is not before that sample: where an overlay or a late queued buffer starts. `audio_pcm_chain_at()` chains like `audio_pcm_chain()` and moves the new buffer's start to that point when the current buffer's end has passed. A poll before the origin returns `AUDIO_PCM_NONE`. Times wrap at 2^32 us. The engine moves its origin forward by whole sample groups every 2^26 us, so a loop can run for hours without drift. `audio_pcm_scale()` applies the volume, capped at `100`. `audio_pcm_duty()` returns `s * rng / 256`.
 
 ```c
 int audio_pwm_calc(uint32_t src_hz, uint32_t hz, unsigned vol, audio_pwm_cfg_t *out);
