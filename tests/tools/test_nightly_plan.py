@@ -97,7 +97,7 @@ def test_plan_writes_six_matrices(tmp_path, work):
     stages = outputs["stages"]["include"]
     assert [e["repo"] for e in stages] == ["RETROS-BIOS", "MFBootAgent"]
     assert stages[0] == {"pairing": "pins", "repo": "RETROS-BIOS", "sha": shas["RETROS-BIOS"],
-                         "core_sha": "", "pipos_sha": "", "tag": "abc123def456"}
+                         "core_sha": shas["core-first"], "pipos_sha": "", "tag": "abc123def456"}
     assert outputs["card_terminal"]["include"][0]["sha"] == shas["UOS"]
     pip = outputs["card_pipboy"]["include"][0]
     assert (pip["repo"], pip["sha"], pip["pipos_sha"]) == ("Deitrix", shas["Deitrix"], shas["Pip-OS"])
@@ -114,9 +114,9 @@ def test_table_counts_commits_behind_main(tmp_path, work):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     rows = {line.split("|")[1].strip(): [c.strip() for c in line.split("|")[2:-1]]
             for line in summary.splitlines() if line.startswith("| ") and "---" not in line}
-    assert rows["RobCo-Core"][3] == "0"
+    assert rows["RobCo-Core"][4] == "0"
     assert rows["UOS"] == ["`my-branch`", f"`{shas['UOS'][:12]}`",
-                           f"`{shas['core-first'][:12]}`", "2", "`abc123def456`"]
+                           f"`{shas['core-first'][:12]}`", "none", "2", "`abc123def456`", ""]
     assert rows["RETROS-BIOS"][0] == "`default branch`"
     assert f"Deitrix pins Pip-OS `{shas['pipos-old'][:12]}`, 1 commit behind" in summary
 
@@ -177,3 +177,71 @@ def test_empty_image_tag_fails(tmp_path, work):
     proc, _, _, _ = run_plan(tmp_path, w)
     assert proc.returncode == 1
     assert "IMAGE_TAG is empty" in proc.stdout
+
+
+def scenario_work(tmp_path, case):
+    """A fake work folder for one row of the version table test.
+
+    Returns the folder and, per repository, the (commit, library, Pip-OS,
+    tag) the nightly builds it with."""
+    w = tmp_path / "w"
+    core = w / "RobCo-Core"
+    old = commit(core, {"ci/IMAGE_TAG": "tagold000000\n"})
+    new = commit(core, {"ci/IMAGE_TAG": "tagnew000000\n"})
+    built = {"RobCo-Core": (new, "", "", "tagnew000000")}
+    for name in ("RETROS-BIOS", "MFBootAgent", "UOS"):
+        tag = "tagown000000" if case == "sibling-own-tag" and name == "UOS" else "tagold000000"
+        sha = commit(w / name, SIBLING_FILES, {"external/robco-core": old})
+        core_copy(w / name / "external" / "robco-core", tag)
+        built[name] = (sha, old, "", tag)
+    pipos = w / "Pip-OS"
+    pinned_pipos = commit(pipos, SIBLING_FILES, {"external/robco-core": old})
+    head_core, head_tag = old, "tagold000000"
+    if case in ("deitrix-behind", "pipos-newer-core"):
+        if case == "pipos-newer-core":
+            head_core, head_tag = new, "tagnew000000"
+        commit(pipos, links={"external/robco-core": head_core}, message="head")
+    core_copy(pipos / "external" / "robco-core", head_tag)
+    head = git(pipos, "rev-parse", "HEAD")
+    built["Pip-OS"] = (head, head_core, "", head_tag)
+    deitrix = commit(w / "Deitrix", SIBLING_FILES, {"external/pip-os": pinned_pipos})
+    inner = w / "Deitrix" / "external" / "pip-os"
+    commit(inner, links={"external/robco-core": old})
+    core_copy(inner / "external" / "robco-core", "tagold000000")
+    built["Deitrix"] = (deitrix, head_core, head, head_tag)
+    return w, built, pinned_pipos
+
+
+def summary_rows(text):
+    return {line.split("|")[1].strip(): [c.strip() for c in line.split("|")[2:-1]]
+            for line in text.splitlines()
+            if line.startswith("| ") and "---" not in line and "Repository" not in line}
+
+
+@pytest.mark.parametrize("case", ["at-pins", "deitrix-behind", "pipos-newer-core",
+                                  "sibling-own-tag"])
+def test_matrix_summary_and_versions_agree(tmp_path, case):
+    w, built, pinned_pipos = scenario_work(tmp_path, case)
+    proc, outputs, summary, versions = run_plan(tmp_path, w)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    from_summary = summary_rows(summary)
+    from_versions = summary_rows(versions.read_text())
+    entries = [e for m in outputs.values() for e in m["include"]]
+    for repo, (sha, core, pipos, tag) in built.items():
+        short = [f"`{x[:12]}`" if x else "none" for x in (sha, core, pipos)]
+        for rows in (from_summary, from_versions):
+            assert rows[repo][1:4] == short, (repo, rows[repo])
+            assert rows[repo][5] == f"`{tag}`", (repo, rows[repo])
+        for e in (e for e in entries if e["repo"] == repo):
+            assert (e["sha"], e["core_sha"], e["pipos_sha"], e["tag"]) == (sha, core, pipos, tag)
+    assert {e["repo"] for e in entries} == {"RETROS-BIOS", "MFBootAgent", "UOS", "Deitrix"}
+    note = from_summary["Deitrix"][6]
+    if case == "at-pins":
+        assert note == ""
+    if case in ("deitrix-behind", "pipos-newer-core"):
+        assert f"Pip-OS: pinned `{pinned_pipos[:12]}`, built with `{built['Pip-OS'][0][:12]}`" in note
+    if case == "pipos-newer-core":
+        assert "library: pinned" in note and "image tag: pinned `tagold000000`, built with " \
+            "`tagnew000000`" in note
+    else:
+        assert "library" not in note and "image tag" not in note

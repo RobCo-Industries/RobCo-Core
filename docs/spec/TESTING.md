@@ -500,7 +500,7 @@ A project that includes `mk/robco.mk` gets `make check-workflows`, which checks 
 
 | Job | What it runs |
 |---|---|
-| `plan` | Checks out the six repositories, runs `tools/nightly/plan.py`. It resolves every ref to a commit once, runs each sibling's `check_pins.sh`, reads each image tag from `ci/IMAGE_TAG` in the library the sibling builds on, and writes the version table to the run summary. |
+| `plan` | Checks out the six repositories, runs `tools/nightly/plan.py`. It resolves every ref to a commit once, runs each sibling's `check_pins.sh`, reads each image tag from `ci/IMAGE_TAG` in the library the sibling builds on, and writes the version table to the run summary. The matrices and the table read one record per built repository: its commit, the library and Pip-OS commits it builds with and its image tag. Deitrix takes the library and tag of the Pip-OS head, and its row says where each differs from its own pin. |
 | `stages` | `make CI=1 all` in RETROS-BIOS and in MFBootAgent. Uploads their images for the later jobs. |
 | `card-terminal` | `make CI=1 all sdimage CHAIN=1` in UOS with the two stage images. Uploads `card-terminal-pins`. |
 | `card-pipboy` | `make CI=1 all sdimage kernel` in Deitrix. Uploads `card-pipboy-pins`. |
