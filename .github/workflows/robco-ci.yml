@@ -14,6 +14,14 @@
 # Both jobs run "make CI=1 ...". The robco-ci package must be readable
 # by the calling repository.
 #
+# Git in the container: both jobs run as root on a checkout owned by
+# the runner user, so git refuses it. A step after the checkout marks
+# the top folder and every submodule folder, at any depth, as a git
+# safe.directory, then runs git rev-parse HEAD in each folder that has
+# a .git entry. The job fails if git still refuses one. The step is
+# inline because a script in RobCo-Core sits at a different submodule
+# path in each caller.
+#
 # Pinning: call this workflow at the full commit hash your RobCo-Core
 # submodule points at, never @main, and pass the tag from ci/IMAGE_TAG
 # at that commit. Both are literals, so they drift when the submodule
@@ -84,6 +92,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # The checkout belongs to the runner user and the container runs as
+      # root, so git refuses it. Mark the top folder and each submodule
+      # folder as safe, then run git in each folder that has a .git entry.
+      - name: Mark the checkout safe for git
+        shell: bash
+        run: |
+          top="$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$top"
+          find "$top" -name .gitmodules -type f | while IFS= read -r file; do
+            base=$(dirname "$file")
+            # Exit code 1 means no path key: treat it as an empty list.
+            { git config --file "$file" --get-regexp '^submodule\..*\.path$' || [ $? -eq 1 ]; } |
+              while read -r _ path; do
+                git config --global --add safe.directory "$base/$path"
+              done
+          done
+          find "$top" -name .git -prune | while IFS= read -r dotgit; do
+            git -C "$(dirname "$dotgit")" rev-parse HEAD
+          done
       - name: Build
         env:
           MAKE_TARGETS: ${{ inputs.make-targets }}
@@ -116,6 +143,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # The checkout belongs to the runner user and the container runs as
+      # root, so git refuses it. Mark the top folder and each submodule
+      # folder as safe, then run git in each folder that has a .git entry.
+      - name: Mark the checkout safe for git
+        shell: bash
+        run: |
+          top="$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$top"
+          find "$top" -name .gitmodules -type f | while IFS= read -r file; do
+            base=$(dirname "$file")
+            # Exit code 1 means no path key: treat it as an empty list.
+            { git config --file "$file" --get-regexp '^submodule\..*\.path$' || [ $? -eq 1 ]; } |
+              while read -r _ path; do
+                git config --global --add safe.directory "$base/$path"
+              done
+          done
+          find "$top" -name .git -prune | while IFS= read -r dotgit; do
+            git -C "$(dirname "$dotgit")" rev-parse HEAD
+          done
       - name: Test on ${{ matrix.board }}
         env:
           TEST_TARGETS: ${{ inputs.test-targets }}
