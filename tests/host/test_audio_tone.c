@@ -76,6 +76,29 @@ TEST(a_tone_writes_samples_and_no_pulse)
     CHECK(!audio_busy());
 }
 
+/* 20000 Hz is above half the grid: it plays at half the grid, not as silence. */
+TEST(a_top_pitch_is_not_silent)
+{
+    size_t i;
+    int moved = 0;
+
+    enter_rest(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_tone(20000, 30), 0);
+    tick(10);
+    CHECK(pcm.active && pcm_kind == KIND_TONE);
+    run_us(10000);
+    CHECK(pwm_count >= 300);
+    for (i = 1; i < 300; i++) {
+        if (pwm_samples[i] != pwm_samples[i - 1]) {
+            moved++;
+        }
+    }
+    CHECK(moved > 100);
+    CHECK_EQ(pwm_samples[0], 128 + amp_at(100));
+    CHECK_EQ(pwm_samples[1], 128 - amp_at(100));
+    tick(40);
+}
+
 /* The first write and the last one sit within the square's own step of 128. */
 TEST(the_ends_step_no_more_than_the_square)
 {

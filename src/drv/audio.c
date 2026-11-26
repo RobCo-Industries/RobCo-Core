@@ -91,6 +91,17 @@ _Static_assert(ROBCO_AUDIO_TONE_PEAK >= 0 && ROBCO_AUDIO_TONE_PEAK <= 127,
 _Static_assert(ROBCO_AUDIO_TONE_RATE >= AUDIO_PCM_RATE_MIN &&
                ROBCO_AUDIO_TONE_RATE <= AUDIO_PCM_RATE_MAX,
                "ROBCO_AUDIO_TONE_RATE must be within AUDIO_PCM_RATE_MIN to AUDIO_PCM_RATE_MAX");
+/*
+ * Floor of the tone grid. A centred tone plays at most half its grid, see
+ * audio_square.c. The highest note of the note table, B8 from
+ * audio_note_hz(11, 8), is 7902 Hz, so a grid of 15804 Hz or more plays
+ * every note of a sequence at its own pitch. 16000 rounds that up and
+ * stays under 18750, the lighter grid the guide offers. A plain tone
+ * above half the grid still plays, at half the grid.
+ */
+#define AUDIO_TONE_RATE_FLOOR   16000
+_Static_assert(ROBCO_AUDIO_TONE_RATE >= AUDIO_TONE_RATE_FLOOR,
+               "ROBCO_AUDIO_TONE_RATE must be 16000 or more: the highest note, 7902 Hz, needs twice its pitch");
 #ifdef ROBCO_AUDIO_PIN0
 _Static_assert(ROBCO_AUDIO_PIN0 >= 0 && ROBCO_AUDIO_PIN0 < GPIO_PIN_COUNT && ROBCO_AUDIO_FN0 <= 7,
                "ROBCO_AUDIO_PIN0 must be a GPIO pin and ROBCO_AUDIO_FN0 a GPIO_FN_* code");
