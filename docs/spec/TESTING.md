@@ -460,16 +460,17 @@ CI runs in the `robco-ci` container, built from `ci/Dockerfile` in RobCo-Core. I
 
 The image tag is a content tag. It is the first 12 hex characters of the SHA-256 of `ci/Dockerfile`. `ci/IMAGE_TAG` stores it. CI fails if `ci/image-tag.sh` gives a different value. The image is `ghcr.io/robco-industries/robco-ci:<tag>`. A new Dockerfile gives a new tag, so a repo never runs on a container it did not pin.
 
-RobCo-Core's own `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It has four jobs:
+RobCo-Core's own `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It has five jobs:
 
 | Job | What it runs |
 |---|---|
+| `workflows` | `make check-workflows`, the workflow guard below |
 | `image` | Checks that `ci/IMAGE_TAG` equals `ci/image-tag.sh`, then builds and pushes the container if that tag does not exist yet |
 | `host` | `make test-host HOST_SANITIZE=require` |
 | `canary` | `make venv && make test-canary` |
 | `test` | `make venv && make test-tools test-docs test-spikes test-examples test-target` |
 
-`host`, `canary` and `test` run inside the container and need `image`. Together they run every target `make test` runs. The container runs as root, and socket paths stay under the system temporary directory.
+`host`, `canary` and `test` run inside the container and need `image`. With `workflows`, they run every target `make test` runs. The container runs as root, and socket paths stay under the system temporary directory.
 
 Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` from RobCo-Core with the tag from `ci/IMAGE_TAG` in its RobCo-Core submodule. It checks out with `submodules: recursive` and runs two jobs in the container:
 
@@ -477,6 +478,17 @@ Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` f
 |---|---|
 | `build` | `make CI=1 <make-targets>`, default `all`. Uploads `artifact-path` as the `build` artifact when it is set. |
 | `test` | `make CI=1 <test-targets> BOARD=<board>` once per board in `boards`, default `raspi0` and `raspi2b`. Skipped when `test-targets` is empty. |
+
+### Workflow guard
+
+`tools/check_workflow_exprs.py` reads workflow files line by line and fails closed. It needs Python 3 and no YAML library. It has two rules.
+
+- A `${{ }}` expression passes only on a plain `KEY: value` line, closed on that line, under a bare `KEY:` line. The key must not be `run`, `script`, `shell`, `args` or `entrypoint`. The value holds no quote outside the expression and is not a flow value. An expression in block text fails, and so does an anchor or an alias. A script reads the value from `env:`, so a branch or tag name cannot run as shell code.
+- Each `uses:` names a full 40 hex digit commit. An action adds its tag in a comment, as in `uses: actions/checkout@<commit> # v4.4.0`. A reusable workflow called by path needs the commit and no comment. A `docker://` image needs a `sha256` digest. A local `./` action passes.
+
+It prints one line per finding and exits 1, or exits 0 when clean. `--no-pins` skips the second rule.
+
+A project that includes `mk/robco.mk` gets `make check-workflows`, which checks every file in `.github/workflows`. Add it to the `make-targets` of the reusable workflow, or to `make test`, so CI runs it.
 
 ### Catch CI failures before a push
 
