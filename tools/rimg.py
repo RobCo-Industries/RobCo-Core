@@ -192,10 +192,15 @@ def _pbm_header(data):
         if start == i:
             raise RimgError(E_IO, "bad PBM header")
         tokens.append(data[start:i])
-    try:
-        return tokens[0], int(tokens[1]), int(tokens[2]), i
-    except ValueError:
+    return tokens[0], _pbm_number(tokens[1]), _pbm_number(tokens[2]), i
+
+
+def _pbm_number(token):
+    """A width or height: 1 to 9 ASCII digits, leading zeros counted."""
+    text = token.decode("latin-1")
+    if not ascii_digits(text) or len(text) > 9:
         raise RimgError(E_IO, "bad PBM header")
+    return int(text)
 
 
 def _p1_bits(body):
