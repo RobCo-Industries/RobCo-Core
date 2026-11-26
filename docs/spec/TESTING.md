@@ -494,6 +494,40 @@ It prints one line per finding and exits 1, or exits 0 when clean. `--no-pins` s
 
 A project that includes `mk/robco.mk` gets `make check-workflows`, which checks every file in `.github/workflows`. Add it to the `make-targets` of the reusable workflow, or to `make test`, so CI runs it.
 
+### Nightly
+
+`.github/workflows/nightly.yml` builds the five siblings at their default heads every night at 03:17 UTC and runs the whole-chain tests on the real images. Each sibling builds on its own RobCo-Core pin, and Deitrix builds on the Pip-OS head. This is the `pins` pairing, the one release tags would build. A second pairing with RobCo-Core `main` under every stage is not built yet.
+
+| Job | What it runs |
+|---|---|
+| `plan` | Checks out the six repositories, runs `tools/nightly/plan.py`. It resolves every ref to a commit once, runs each sibling's `check_pins.sh`, reads each image tag from `ci/IMAGE_TAG` in the library the sibling builds on, and writes the version table to the run summary. |
+| `stages` | `make CI=1 all` in RETROS-BIOS and in MFBootAgent. Uploads their images for the later jobs. |
+| `card-terminal` | `make CI=1 all sdimage CHAIN=1` in UOS with the two stage images. Uploads `card-terminal-pins`. |
+| `card-pipboy` | `make CI=1 all sdimage kernel` in Deitrix. Uploads `card-pipboy-pins`. |
+| `agent-chain` | `pytest tests -k whole_chain` in MFBootAgent with `--retros-img`, once per board |
+| `uos-chain` | The same in UOS with `--retros-img` and `--mfboot-sys`, and the card in `ROBCO_CHAIN_CARD`, once per board |
+| `pipboy` | `pytest tests -k "whole_chain or first_screen or navigation or setting_survives_a_reboot"` in Deitrix on the uploaded card and kernel, once per board |
+
+Every job runs in the `robco-ci` image of the tree it builds or tests. A nightly test is a function whose name starts with `test_whole_chain` in the repository of the last stage it reaches. A new one needs no change here.
+
+`tools/nightly/junit_gate.py` judges each test job from its JUnit file. The job is red when the file is missing, holds no test, has a failure or an error, or has a skip. One skip per job whose reason starts with `host timing:` passes. A job where no test passed is red, so a night where every whole-chain test skips is red. The gate writes one line per test to the run summary.
+
+`tools/nightly/pack_card.py` refuses a card that holds `bootcode.bin`, `start.elf` or `fixup.dat`, then writes the card, `SHA256SUMS` and `VERSIONS.txt`, the version table. The cards are kept 14 days, the stage images 3 days, the failure folders 7 days. A failure folder holds the JUnit file and the temp folders of the failed tests.
+
+A red night is a failed run. GitHub emails the person who last changed the `cron` line, and the badge in the README turns red. The red job names the repository to look at:
+
+| Red job | First look |
+|---|---|
+| `plan` | The sibling the message names: its pin and its workflow tag disagree |
+| `stages`, `card-*` | The repository that failed to build |
+| `agent-chain` | The last `stage=` marker in the log: `bios` is RETROS-BIOS, `bootagent` or `diag` is MFBootAgent |
+| `uos-chain` | The same rule: `bios`, `bootagent`, `maint`, then `uos` |
+| `pipboy` | `stage=pipos` lines are Pip-OS, `deitrix:` lines are Deitrix |
+
+To start a run by hand, open Actions, pick `nightly` and use "Run workflow". The inputs `core_ref`, `retros_ref`, `mfboot_ref`, `uos_ref`, `pipos_ref` and `deitrix_ref` take a branch, a tag or a commit. Empty means the default branch. Set one to prove a branch before its merge. `pairing` takes `both`, `pins` or `core-head`. `both` runs `pins` alone for now, and `core-head` fails the plan.
+
+GitHub switches a schedule off after 60 days with no activity in RobCo-Core. Before a release, check that the last scheduled run is under two days old.
+
 ### Catch CI failures before a push
 
 CI builds the host tests on Linux with GCC and `-Werror`. A Mac builds them with clang, which lacks some GCC warnings. Two checks close the gap.

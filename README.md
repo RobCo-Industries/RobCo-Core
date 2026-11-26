@@ -1,11 +1,15 @@
 # RobCo-Core
 
+[![nightly](https://github.com/RobCo-Industries/RobCo-Core/actions/workflows/nightly.yml/badge.svg)](https://github.com/RobCo-Industries/RobCo-Core/actions/workflows/nightly.yml)
+
 Shared bare-metal code for the RobCo Industries suite. The suite rebuilds the RobCo software from the Fallout games on Raspberry Pi, with no Linux underneath. One AArch32 image runs on every Pi from the Zero to the 3 and detects its board at runtime.
 
 Two boot chains will use it:
 
 - Terminal: [RETROS-BIOS](https://github.com/RobCo-Industries/RETROS-BIOS) → [MFBootAgent](https://github.com/RobCo-Industries/MFBootAgent) → [UOS](https://github.com/RobCo-Industries/UOS)
 - Pip-Boy: [Pip-OS](https://github.com/RobCo-Industries/Pip-OS) → [Deitrix](https://github.com/RobCo-Industries/Deitrix)
+
+The nightly run builds both chains from their default heads and boots them whole in QEMU. See [Nightly](./docs/spec/TESTING.md#nightly).
 
 ## Start here
 
