@@ -193,6 +193,9 @@ $(HOST_BUILD)/test_audio_stop $(HOST_BUILD)/test_audio_rest $(HOST_BUILD)/test_a
     $(HOST_BUILD)/test_audio_voice: src/drv/audio.c src/drv/audio_trace.c
 $(HOST_BUILD)/test_audio_rest $(HOST_BUILD)/test_audio_mix $(HOST_BUILD)/test_audio_state \
     $(HOST_BUILD)/test_audio_wrap $(HOST_BUILD)/test_audio_voice: tests/host/audio_fake.h
+# The demo's spans and overlay are shared with the example: a change of
+# the header must rebuild the test.
+$(HOST_BUILD)/test_audio_voice_demo: examples/audio/voice_demo.h
 
 # These include the ILI9341 driver through tests/host/tft_fake.h.
 $(HOST_BUILD)/test_tft_bus $(HOST_BUILD)/test_tft_panel: src/drv/tft_ili9341.c
