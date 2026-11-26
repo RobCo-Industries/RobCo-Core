@@ -85,7 +85,7 @@ typedef struct {
     uint32_t n;         /* samples in this span, 1 to AUDIO_VOICE_N_MAX */
     uint32_t phase;     /* phase at its first sample, 2^32 is one cycle */
     uint32_t inc;       /* phase step per sample at its first sample, up to AUDIO_VOICE_INC_MAX */
-    int32_t  dinc;      /* change of inc per sample */
+    int32_t  dinc;      /* change of inc per sample; inc stays in range over the span */
     int32_t  amp;       /* peak at its first sample, 1/65536 of a step, 0 to AUDIO_VOICE_AMP_MAX */
     int32_t  damp;      /* change of amp per sample; amp stays in range over the span */
     uint32_t p2;        /* gain of a partial at twice the pitch, 32768 is equal, 0 is none */

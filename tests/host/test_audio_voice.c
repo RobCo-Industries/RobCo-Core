@@ -140,7 +140,7 @@ static const audio_voice_span_t walk[] = {
     { 1, 0x12345678u, 300000000u, -5, 40 << 16, 0, 0 },
     { 9999, 0x80000000u, 2000000000u, -1000, 60 << 16, -300, 32768 },
     { 2, 5, 1, 0, 127 << 16, -(127 << 16), 1 },
-    { 7998, 0xfffffff0u, 0x7fffffffu, 3, 0, 1000, 20000 },
+    { 7998, 0xfffffff0u, 0x7fffffffu, -3, 0, 1000, 20000 },    /* the top step, falling: a rise would leave the range */
 };
 #define WALK_SPANS  (sizeof(walk) / sizeof(walk[0]))
 #define WALK_LEN    23000u
@@ -221,6 +221,15 @@ TEST(check_errors)
     b = s; b.inc = 0x80000000u;
     CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);
     b = s; b.inc = AUDIO_VOICE_INC_MAX;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), 0);
+    /* The phase step leaves its range at the span's last sample, below and above. */
+    b = s; b.n = 2; b.inc = 0; b.dinc = -1;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);
+    b = s; b.n = 2; b.inc = AUDIO_VOICE_INC_MAX; b.dinc = 1;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);
+    b = s; b.n = 1; b.inc = AUDIO_VOICE_INC_MAX; b.dinc = 1;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), 0);
+    b = s; b.n = 2; b.inc = 1; b.dinc = -1;
     CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), 0);
     b = s; b.amp = -1;
     CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);

@@ -134,6 +134,11 @@ int audio_voice_check(const audio_voice_span_t *spans, size_t count, uint32_t ra
         if (end < 0 || end > AUDIO_VOICE_AMP_MAX) {
             return AUDIO_ERR_ARG;
         }
+        /* So is the phase step: a pitch may not leave 0 to half the rate. */
+        end = (int64_t)s->inc + (int64_t)(s->n - 1) * s->dinc;
+        if (end < 0 || end > (int64_t)AUDIO_VOICE_INC_MAX) {
+            return AUDIO_ERR_ARG;
+        }
         sum += s->n;
         if (sum > AUDIO_PCM_LEN_MAX) {
             return AUDIO_ERR_ARG;

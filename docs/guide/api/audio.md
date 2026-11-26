@@ -234,7 +234,7 @@ Flags: `AUDIO_PRIORITY` only. Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`
 | `n` | `uint32_t` | Samples in the span | `1` to `AUDIO_VOICE_N_MAX`, 65535 |
 | `phase` | `uint32_t` | Phase at the span's first sample. 2^32 is one cycle. | Any |
 | `inc` | `uint32_t` | Phase step per sample at the first sample | Up to `AUDIO_VOICE_INC_MAX`, 2^31 - 1 |
-| `dinc` | `int32_t` | Change of `inc` per sample | Any |
+| `dinc` | `int32_t` | Change of `inc` per sample | `inc + (n - 1) * dinc` stays in `inc`'s range |
 | `amp` | `int32_t` | Peak at the first sample, on 1/65536 of a step | `0` to `AUDIO_VOICE_AMP_MAX`, `127 << 16` |
 | `damp` | `int32_t` | Change of `amp` per sample | `amp + (n - 1) * damp` stays in `amp`'s range |
 | `p2` | `uint32_t` | Gain of a second partial at twice the pitch. 32768 is equal, `0` is none. | `0` to `AUDIO_VOICE_P2_MAX`, 32768 |
