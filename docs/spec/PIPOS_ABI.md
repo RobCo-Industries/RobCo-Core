@@ -333,7 +333,7 @@ Pip-OS sets it when it moved the rest level to the midpoint at boot and that mov
 |---|---|---|
 | Rest level | The midpoint, the level of the sample value 128 | The low level |
 | `sample` and `sample_queue` | A sample that starts and ends at 128 starts and ends at the rest level, with no step | Every sample play begins and ends with a step. A speaker turns it into a thump, as it always did. |
-| `tone` and `play_seq` | A tone is a square centred on the rest level. Its height follows the volume. | A tone is a pulse. Its width follows the volume. |
+| `tone` and `play_seq` | A tone is a square centred on the rest level. Its height follows the volume. A pitch above 18750 Hz plays at 18750 Hz, half the rate of the output's sample grid. | A tone is a pulse. Its width follows the volume. Every pitch of the `tone` row plays at its own pitch. |
 
 An image may read the bit to decide whether it plays short sample effects. The bit never changes while an image runs. It means something only with `PIP_HW_AUDIO` set, and it reads 0 with `PIP_HW_AUDIO` clear. A Pip-OS before 1.5 writes 0 there and says nothing by it. An image treats that as clear.
 
