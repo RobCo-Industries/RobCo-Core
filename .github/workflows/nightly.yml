@@ -69,7 +69,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: RobCo-Industries/RobCo-Core
-          ref: ${{ inputs.core_ref }}
+          # An empty ref would mean the branch the run was started from,
+          # since this is the workflow's own repository. The plan compares
+          # against the default branch, so name it.
+          ref: ${{ inputs.core_ref || github.event.repository.default_branch }}
           path: w/RobCo-Core
           fetch-depth: 0
           persist-credentials: false
