@@ -55,7 +55,10 @@ TONE_CASES = ["beep", "seq", "tune", "loop", "interrupt"]
 RULE_RUNS = 5
 RULE_CASES = ["stop_pcm"] * RULE_RUNS + ["stop_rest"] * RULE_RUNS
 PCM_CASES = ["pcm", "pcm_fast", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick", "pcm_args",
-             "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under"]
+             "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under", "pcm_mix"]
+# Last in the run: the rest level then stays at the midpoint.
+REST_CASES = ["rest"]
+ALL_CASES = TONE_CASES + PCM_CASES + RULE_CASES + REST_CASES
 
 # AUDIO_ERR_* codes.
 ERR_NO_INIT, ERR_RANGE, ERR_ARG, ERR_BUSY, ERR_STATE = -1, -6, -7, -8, -11
@@ -71,6 +74,17 @@ PCM_END_SLACK_MS = 1000
 PCM_LAST_SLACK_MS = 20
 # A busy call with a 16 MB buffer: a CRC over it took 89 to 119 ms in QEMU.
 BUSY_BIG_MAX_US = 30000
+
+
+# The audio_rest_mid() ramp: 882 samples at 22050 Hz, 0 to 128 on 3t^2 - 2t^3.
+RAMP_LEN, RAMP_RATE = 882, 22050
+
+
+def ramp_data():
+    """The ramp src/drv/audio.c builds, in the same integer maths."""
+    n = RAMP_LEN - 1
+    n3 = n ** 3
+    return bytes((128 * (3 * i * i * n - 2 * i ** 3) + n3 // 2) // n3 for i in range(RAMP_LEN))
 
 
 def pcm_data(n):
@@ -206,6 +220,9 @@ def check_pcm(vm, c):
     assert [m["op"] for m in marks] == ["pcm", "pcm_end", "pcm", "pcm_end"], marks
     check_pcm_under(vm)
 
+    check_pcm_mix_trace(c["pcm_mix"])
+    check_pcm_mix(vm)
+
 
 def check_busy_big(swap):
     """A busy audio_play_pcm() returns before it scans its 16 MB buffer."""
@@ -280,6 +297,49 @@ def check_pcm_under(vm):
     assert (int(m["under"]), int(m["can"]), int(m["again"])) == (ERR_STATE, 0, 0), m
 
 
+def check_pcm_mix_trace(marks):
+    """A mix on a play that waits, then one longer than what is left of a play."""
+    assert [m["op"] for m in marks] == ["pcm", "pcm_mix", "pcm_end",
+                                        "pcm", "pcm_mix", "pcm_end"], marks
+    data = pcm_data(PCM_BUF)
+    for start, mix, end, (off, n) in ((marks[0], marks[1], marks[2], (2000, 200)),
+                                      (marks[3], marks[4], marks[5], (4000, 2000))):
+        check_pcm_start(start, 8000, 800, 100)
+        assert int(mix["len"]) == n, mix
+        assert mix["crc"] == "%08x" % zlib.crc32(data[off:off + n]), mix
+        # The overlay never makes the play longer.
+        took = int(end["t_ms"]) - int(start["t_ms"])
+        assert 100 <= took < 100 + PCM_END_SLACK_MS, (took, marks)
+    # A play that waits for its tick starts with its overlay.
+    assert marks[1]["t_ms"] == marks[0]["t_ms"], marks
+    # The second overlay joins 50 ms in, before the play ends.
+    gap = int(marks[4]["t_ms"]) - int(marks[3]["t_ms"])
+    assert call_floor(50) <= gap <= int(marks[5]["t_ms"]) - int(marks[3]["t_ms"]), marks
+
+
+def check_pcm_mix(vm):
+    m = events(vm, "pcm_mix")[-1]
+    got = {k: int(v) for k, v in m.items() if k not in ("stage", "ev")}
+    assert got == {"idle": ERR_STATE, "mix0": 0, "busy0": 1, "again": ERR_BUSY,
+                   "null": ERR_ARG, "ret2": 0, "mix1": 0, "live": 1, "done": 0}, m
+
+
+def check_rest(vm, marks):
+    """The ramp as a plain play at vol=100, then a tone that still sounds."""
+    ops = [m["op"] for m in marks]
+    assert ops == ["pcm", "pcm_end", "tone", "stop"], marks
+    ramp, end, tone, stop = marks
+    assert (int(ramp["rate"]), int(ramp["len"]), int(ramp["vol"])) == \
+        (RAMP_RATE, RAMP_LEN, 100), ramp
+    assert ramp["crc"] == "%08x" % zlib.crc32(ramp_data()), ramp
+    took = int(end["t_ms"]) - int(ramp["t_ms"])
+    assert 40 <= took < 40 + PCM_END_SLACK_MS, (took, marks)
+    assert (tone["hz"], tone["vol"]) == ("440", "50"), tone
+    assert int(stop["t_ms"]) - int(tone["t_ms"]) >= 50, marks
+    m = events(vm, "rest")[-1]
+    assert (int(m["again"]), int(m["tone"])) == (0, 0), m
+
+
 def check_pcm_args(vm):
     args = events(vm, "pcm_args")[-1]
     assert {k: int(args[k]) for k in ("low", "high", "null", "zero", "flags")} == {
@@ -313,7 +373,7 @@ def check_exact(marks, expected):
 
 def check_trace(vm):
     c = cases(vm)
-    assert set(c) == set(TONE_CASES + PCM_CASES + RULE_CASES), vm.serial
+    assert set(c) == set(ALL_CASES), vm.serial
     for m in events(vm, "case_end"):
         assert m["ret"] == "0", vm.serial
 
@@ -354,6 +414,7 @@ def check_trace(vm):
 
     check_pcm(vm, c)
     check_rule(vm)
+    check_rest(vm, c["rest"])
     assert not events(vm, "audio_drop"), vm.serial
 
 
@@ -447,7 +508,7 @@ def test_audio_forced_pwm(board, example_image):
             assert (backend["name"], backend["err"]) == ("pwm", "0"), vm.serial
             assert not events(vm, "audio"), vm.serial
             ends = events(vm, "case_end")
-            assert [m["name"] for m in ends] == TONE_CASES + PCM_CASES + RULE_CASES, vm.serial
+            assert [m["name"] for m in ends] == ALL_CASES, vm.serial
             assert all(m["ret"] == "0" for m in ends), vm.serial
             # The PCM engine runs on PWM too: stop, swap, loop and arguments behave the same.
             assert events(vm, "pcm_stop")[-1]["busy"] == "0", vm.serial
@@ -465,3 +526,6 @@ def test_audio_forced_pwm(board, example_image):
             check_pcm_qerr(vm)
             check_pcm_qcut(vm)
             check_pcm_under(vm)
+            check_pcm_mix(vm)
+            m = events(vm, "rest")[-1]
+            assert (int(m["again"]), int(m["tone"])) == (0, 0), m

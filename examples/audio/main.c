@@ -424,6 +424,35 @@ static void play_pcm_under(void)
     case_end("pcm_under", ret);
 }
 
+/*
+ * An overlay over a play: one on a play that waits for its tick, one on a
+ * running play that is longer than what is left of it. Prints the codes.
+ */
+static void play_pcm_mix(void)
+{
+    int idle, ret, mix0, busy0, again, null, ret2, mix1, live, done;
+
+    case_begin("pcm_mix");
+    pcm_fill(PCM_BUF);
+    idle = audio_pcm_mix(pcm_buf + 2000, 200);
+    ret = audio_play_pcm(pcm_buf, 800, 8000, 0);
+    mix0 = audio_pcm_mix(pcm_buf + 2000, 200);
+    busy0 = audio_pcm_mix_busy();
+    again = audio_pcm_mix(pcm_buf + 2000, 200);
+    null = audio_pcm_mix(0, 200);
+    audio_wait();
+    ret2 = audio_play_pcm(pcm_buf, 800, 8000, 0);
+    sleep_ms(50);
+    mix1 = audio_pcm_mix(pcm_buf + 4000, 2000);
+    live = audio_pcm_mix_busy();
+    audio_wait();
+    done = audio_pcm_mix_busy();
+    k_printf("@RC stage=audio ev=pcm_mix idle=%d mix0=%d busy0=%d again=%d null=%d ret2=%d "
+             "mix1=%d live=%d done=%d\n",
+             idle, mix0, busy0, again, null, ret2, mix1, live, done);
+    case_end("pcm_mix", ret);
+}
+
 /* Bad arguments return their codes and play nothing. */
 static void play_pcm_args(void)
 {
@@ -451,6 +480,7 @@ static void play_pcm_all(void)
     play_pcm_qerr();
     play_pcm_qcut();
     play_pcm_under();
+    play_pcm_mix();
 }
 
 /* A stop, then PCM before the tick runs: IRQs stay masked across both calls. */
@@ -494,6 +524,26 @@ static void play_rule(void)
     }
 }
 
+/*
+ * The rest level moves to the midpoint with a ramp; a second call does
+ * nothing. A tone then still sounds. Last, as the level stays there.
+ */
+static void play_rest(void)
+{
+    int ret, again, tone;
+
+    case_begin("rest");
+    audio_set_volume(50);
+    ret = audio_rest_mid();
+    audio_wait();
+    again = audio_rest_mid();
+    tone = audio_tone(440, 50);
+    audio_wait();
+    audio_set_volume(100);
+    k_printf("@RC stage=audio ev=rest again=%d tone=%d\n", again, tone);
+    case_end("rest", ret);
+}
+
 static void play_all(void)
 {
     play_beep();
@@ -503,6 +553,7 @@ static void play_all(void)
     play_interrupt();
     play_pcm_all();
     play_rule();
+    play_rest();
 }
 
 void robco_main(void)
