@@ -1,6 +1,7 @@
 """Boot examples/audio through boot() on every board: backend choice and trace markers."""
 
 import re
+import struct
 import zlib
 
 from harness.boot import boot
@@ -55,7 +56,7 @@ TONE_CASES = ["beep", "seq", "tune", "loop", "interrupt"]
 RULE_RUNS = 5
 RULE_CASES = ["stop_pcm"] * RULE_RUNS + ["stop_rest"] * RULE_RUNS
 PCM_CASES = ["pcm", "pcm_fast", "pcm_top", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick",
-             "pcm_args", "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under", "pcm_mix"]
+             "pcm_args", "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under", "pcm_mix", "pcm_voice"]
 # Last in the run: the rest level then stays at the midpoint.
 REST_CASES = ["rest"]
 ALL_CASES = TONE_CASES + PCM_CASES + RULE_CASES + REST_CASES
@@ -225,6 +226,9 @@ def check_pcm(vm, c):
     check_pcm_mix_trace(c["pcm_mix"])
     check_pcm_mix(vm)
 
+    check_pcm_voice_trace(c["pcm_voice"])
+    check_pcm_voice(vm)
+
 
 def check_busy_big(swap):
     """A busy audio_play_pcm() returns before it scans its 16 MB buffer."""
@@ -324,6 +328,47 @@ def check_pcm_mix(vm):
     got = {k: int(v) for k, v in m.items() if k not in ("stage", "ev")}
     assert got == {"idle": ERR_STATE, "mix0": 0, "busy0": 1, "again": ERR_BUSY,
                    "null": ERR_ARG, "ret2": 0, "mix1": 0, "live": 1, "done": 0}, m
+
+
+# The voice of examples/audio/main.c: three spans of 1250 samples at 37500 Hz.
+VOICE_INC, VOICE_N, VOICE_DINC = 114532461, 1250, 40
+VOICE_SPANS = [
+    (VOICE_N, 0, VOICE_INC, 0, 20 << 16, 0, 0),
+    (VOICE_N, (VOICE_N * VOICE_INC) & 0xFFFFFFFF, VOICE_INC, VOICE_DINC, 20 << 16, 0, 8192),
+    (VOICE_N, (2 * VOICE_N * VOICE_INC + VOICE_DINC * (VOICE_N * (VOICE_N - 1) // 2)) & 0xFFFFFFFF,
+     VOICE_INC + VOICE_N * VOICE_DINC, 0, 20 << 16, -1049, 0),
+]
+
+
+def voice_bytes():
+    """The span array as the library sees it: 28 bytes each, little-endian."""
+    return b"".join(struct.pack("<IIIiiiI", *s) for s in VOICE_SPANS)
+
+
+def check_pcm_voice_trace(marks):
+    """op=voice, its overlay on the same t_ms, then the end after 100 ms."""
+    assert [m["op"] for m in marks] == ["voice", "pcm_mix", "pcm_end"], marks
+    start, mix, end = marks
+    length = sum(s[0] for s in VOICE_SPANS)
+    assert (int(start["rate"]), int(start["spans"]), int(start["len"]), int(start["vol"])) == \
+        (37500, len(VOICE_SPANS), length, 100), start
+    assert start["crc"] == "%08x" % zlib.crc32(voice_bytes()), start
+    assert int(mix["len"]) == 1000, mix
+    assert mix["crc"] == "%08x" % zlib.crc32(pcm_data(1000)), mix
+    assert mix["t_ms"] == start["t_ms"], marks
+    nominal = length * 1000 // 37500
+    took = int(end["t_ms"]) - int(start["t_ms"])
+    assert nominal <= took < nominal + PCM_END_SLACK_MS, (took, nominal)
+    assert nominal // 2 <= int(end["n"]) <= length, end
+    last = int(end["last"])
+    assert max(0, length - 1 - 37500 * PCM_LAST_SLACK_MS // 1000) <= last <= length - 1, end
+
+
+def check_pcm_voice(vm):
+    m = events(vm, "pcm_voice")[-1]
+    got = {k: int(v) for k, v in m.items() if k not in ("stage", "ev")}
+    assert got == {"loop": ERR_ARG, "none": ERR_ARG, "mix": 0, "queue": ERR_STATE, "can": 0,
+                   "busy": ERR_BUSY}, m
 
 
 def check_rest(vm, marks):
@@ -529,5 +574,6 @@ def test_audio_forced_pwm(board, example_image):
             check_pcm_qcut(vm)
             check_pcm_under(vm)
             check_pcm_mix(vm)
+            check_pcm_voice(vm)
             m = events(vm, "rest")[-1]
             assert (int(m["again"]), int(m["tone"])) == (0, 0), m
