@@ -187,11 +187,12 @@ $(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
 
 # test_video builds the framebuffer and console drivers in with #include.
 $(HOST_BUILD)/test_video: src/drv/fb.c src/gfx/console.c src/gfx/schemes.c src/gfx/font8x16_fixedsys.c
-# test_audio_stop, _rest, _mix, _state and _wrap build the audio driver and its trace backend in the same way.
+# test_audio_stop, _rest, _mix, _state, _wrap and _voice build the audio driver and its trace backend in the same way.
 $(HOST_BUILD)/test_audio_stop $(HOST_BUILD)/test_audio_rest $(HOST_BUILD)/test_audio_mix \
-    $(HOST_BUILD)/test_audio_state $(HOST_BUILD)/test_audio_wrap: src/drv/audio.c src/drv/audio_trace.c
+    $(HOST_BUILD)/test_audio_state $(HOST_BUILD)/test_audio_wrap \
+    $(HOST_BUILD)/test_audio_voice: src/drv/audio.c src/drv/audio_trace.c
 $(HOST_BUILD)/test_audio_rest $(HOST_BUILD)/test_audio_mix $(HOST_BUILD)/test_audio_state \
-    $(HOST_BUILD)/test_audio_wrap: tests/host/audio_fake.h
+    $(HOST_BUILD)/test_audio_wrap $(HOST_BUILD)/test_audio_voice: tests/host/audio_fake.h
 
 # These include the ILI9341 driver through tests/host/tft_fake.h.
 $(HOST_BUILD)/test_tft_bus $(HOST_BUILD)/test_tft_panel: src/drv/tft_ili9341.c

@@ -16,6 +16,8 @@
 static uint8_t play[800];       /* 100 ms at 8000 Hz */
 static uint8_t over[100];
 static const audio_note_t notes[] = { { 440, 1000 } };
+/* 100 ms at 8000 Hz, as `play`. */
+static const audio_voice_span_t spans[] = { { 800, 0, 0x10000000u, 0, 20 << 16, 0, 0 } };
 
 enum {
     S_IDLE,         /* nothing plays, duty 0 rest */
@@ -28,12 +30,14 @@ enum {
     S_RAMP_WAIT,    /* audio_rest_mid() accepted, before its tick */
     S_RAMP_ON,      /* the ramp plays */
     S_REST,         /* nothing plays, midpoint rest */
+    S_VOICE_WAIT,   /* a voice accepted, before its tick */
+    S_VOICE_ON,     /* a voice plays */
     S_COUNT
 };
 
 static const char *const state_name[S_COUNT] = {
     "idle", "tone_wait", "tone_on", "pcm_wait", "pcm_on",
-    "stop_tone", "stop_pcm", "ramp_wait", "ramp_on", "rest",
+    "stop_tone", "stop_pcm", "ramp_wait", "ramp_on", "rest", "voice_wait", "voice_on",
 };
 
 enum {
@@ -45,28 +49,31 @@ enum {
     C_REST,         /* audio_rest_mid() */
     C_MIX,          /* audio_pcm_mix() */
     C_QUEUE,        /* audio_pcm_queue() */
+    C_VOICE,        /* audio_play_voice() without AUDIO_PRIORITY */
     C_COUNT
 };
 
 static const char *const call_name[C_COUNT] = {
-    "busy", "play", "play_pcm", "rtttl", "priority", "rest_mid", "mix", "queue",
+    "busy", "play", "play_pcm", "rtttl", "priority", "rest_mid", "mix", "queue", "voice",
 };
 
 #define B AUDIO_ERR_BUSY
 #define S AUDIO_ERR_STATE
 
 static const int want[S_COUNT][C_COUNT] = {
-    /*                busy play pcm rtttl prio rest mix queue */
-    [S_IDLE]      = { 0,   0,   0,  0,    0,   0,   S,  S },
-    [S_TONE_WAIT] = { 1,   B,   B,  B,    0,   B,   S,  S },
-    [S_TONE_ON]   = { 1,   B,   B,  B,    0,   B,   S,  S },
-    [S_PCM_WAIT]  = { 1,   B,   B,  B,    0,   B,   0,  0 },
-    [S_PCM_ON]    = { 1,   B,   B,  B,    0,   B,   0,  0 },
-    [S_STOP_TONE] = { 1,   0,   0,  0,    0,   B,   S,  S },
-    [S_STOP_PCM]  = { 1,   0,   0,  0,    0,   B,   S,  S },
-    [S_RAMP_WAIT] = { 1,   B,   B,  B,    0,   0,   S,  S },
-    [S_RAMP_ON]   = { 1,   B,   B,  B,    0,   0,   S,  S },
-    [S_REST]      = { 0,   0,   0,  0,    0,   0,   S,  S },
+    /*                 busy play pcm rtttl prio rest mix queue voice */
+    [S_IDLE]       = { 0,   0,   0,  0,    0,   0,   S,  S,    0 },
+    [S_TONE_WAIT]  = { 1,   B,   B,  B,    0,   B,   S,  S,    B },
+    [S_TONE_ON]    = { 1,   B,   B,  B,    0,   B,   S,  S,    B },
+    [S_PCM_WAIT]   = { 1,   B,   B,  B,    0,   B,   0,  0,    B },
+    [S_PCM_ON]     = { 1,   B,   B,  B,    0,   B,   0,  0,    B },
+    [S_STOP_TONE]  = { 1,   0,   0,  0,    0,   B,   S,  S,    0 },
+    [S_STOP_PCM]   = { 1,   0,   0,  0,    0,   B,   S,  S,    0 },
+    [S_RAMP_WAIT]  = { 1,   B,   B,  B,    0,   0,   S,  S,    B },
+    [S_RAMP_ON]    = { 1,   B,   B,  B,    0,   0,   S,  S,    B },
+    [S_REST]       = { 0,   0,   0,  0,    0,   0,   S,  S,    0 },
+    [S_VOICE_WAIT] = { 1,   B,   B,  B,    0,   B,   0,  S,    B },
+    [S_VOICE_ON]   = { 1,   B,   B,  B,    0,   B,   0,  S,    B },
 };
 
 static void enter(int st)
@@ -103,6 +110,14 @@ static void enter(int st)
             tick(10);
         }
         break;
+    case S_VOICE_WAIT:
+    case S_VOICE_ON:
+        CHECK_EQ(audio_play_voice(spans, 1, 8000, 0), 0);
+        if (st != S_VOICE_WAIT) {
+            tick(10);
+            run_us(1000);
+        }
+        break;
     default:
         break;
     }
@@ -121,6 +136,7 @@ static int call(int c)
     case C_PRIO:  return audio_play_pcm(play, sizeof(play), 8000, AUDIO_PRIORITY);
     case C_REST:  return audio_rest_mid();
     case C_MIX:   return audio_pcm_mix(over, sizeof(over));
+    case C_VOICE: return audio_play_voice(spans, 1, 8000, 0);
     default:      return audio_pcm_queue(over, sizeof(over));
     }
 }

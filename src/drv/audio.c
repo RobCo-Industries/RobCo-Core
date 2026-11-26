@@ -112,6 +112,8 @@ void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, ui
 void audio_trace_pcm_end(uint32_t n, uint32_t last, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_mix(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
+void audio_trace_voice(uint32_t rate, uint32_t spans, uint32_t len, unsigned vol, uint32_t crc,
+                       uint32_t t_ms);
 void audio_trace_flush(void);
 
 /* The rest ramp: duty 0 to 128 on 3t^2 - 2t^3 over this many samples at this rate. */
@@ -149,8 +151,19 @@ static uint32_t pcm_req_crc;
 /* CRC of the buffer queued with audio_pcm_queue(), for its trace line. IRQs masked. */
 static uint32_t pcm_next_crc;
 
-/* The play in pcm_req ignores the volume: the rest ramp. */
-static int pcm_req_full;
+/*
+ * Play kinds on the PCM engine. A sample play reads its buffer. The ramp
+ * reads its own table at full scale. A voice computes each sample from
+ * its spans and reads no buffer.
+ */
+#define KIND_SAMPLE             0
+#define KIND_RAMP               1
+#define KIND_VOICE              2
+
+/* The kind of the play in pcm_req. IRQs masked. */
+static int pcm_req_kind;
+/* The voice in pcm_req, when pcm_req_kind is KIND_VOICE. IRQs masked. */
+static audio_voice_t voice_req;
 
 /* An overlay: byte k sounds with the play's grid sample at + k. */
 typedef struct {
@@ -200,7 +213,8 @@ static uint32_t pcm_t0_ms;
 static uint64_t pcm_t0_us;
 static int pcm_cut;                 /* cut by a call: the tick still halts it */
 static uint32_t pcm_total;          /* samples output since audio_init() */
-static int pcm_full;                /* the play ignores the volume */
+static int pcm_kind;                /* KIND_* of the play */
+static audio_voice_t voice;         /* the play's spans, when it is a voice */
 static mix_t mix;                   /* the overlay, on the play's grid */
 
 static audio_note_t tune[ROBCO_AUDIO_TUNE_MAX];
@@ -308,15 +322,28 @@ static uint8_t mix_add(uint8_t a, uint8_t b)
     return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
 }
 
-/* IRQ context. One sample, with the overlay, at the current volume. */
+/*
+ * IRQ context. One sample, with the overlay, at the current volume. A
+ * sample play adds two bytes, clamps and scales. A voice adds the overlay
+ * to its value on 1/256 of a step and rounds once, after the volume. The
+ * voice runs on both backends, so the trace backend in QEMU pays the same
+ * cost per sample as PWM.
+ */
 static void pcm_out(uint32_t pos)
 {
-    uint8_t s = mix_add(pcm.data[pos], mix_at());
+    uint8_t s;
 
+    if (pcm_kind == KIND_VOICE) {
+        int32_t q = audio_voice_at(&voice, pos);
+
+        s = audio_voice_out(q, mix_at(), volume);
+    } else {
+        s = audio_pcm_scale(mix_add(pcm.data[pos], mix_at()),
+                            pcm_kind == KIND_RAMP ? 100 : volume);
+    }
     pcm_total++;
     if (backend == AUDIO_BACKEND_PWM) {
-        audio_pwm_sample(audio_pcm_duty(audio_pcm_scale(s, pcm_full ? 100 : volume),
-                                        AUDIO_PCM_PWM_RANGE));
+        audio_pwm_sample(audio_pcm_duty(s, AUDIO_PCM_PWM_RANGE));
     }
 }
 
@@ -331,7 +358,7 @@ static void pcm_finish(void)
 {
     irq_disable(IRQ_TIMER3);
     mix_drop();
-    if (pcm_full && rest_ramp) {
+    if (pcm_kind == KIND_RAMP && rest_ramp) {
         /* The ramp has reached the midpoint: that is the rest level now. */
         rest_ramp = 0;
         rest_mid = 1;
@@ -411,7 +438,7 @@ static void pcm_run(uint32_t now)
     uint32_t next;
     int r;
 
-    if (pcm_full) {
+    if (pcm_kind == KIND_RAMP) {
         ramp_run(now);
         return;
     }
@@ -463,17 +490,21 @@ static void pcm_begin(void)
     unsigned vol = volume;
 
     pcm = pcm_req;
-    pcm_full = pcm_req_full;
+    pcm_kind = pcm_req_kind;
+    voice = voice_req;
     ramp_i = 0;
     if (backend == AUDIO_BACKEND_PWM) {
-        if (pcm_full) {
+        if (pcm_kind == KIND_RAMP) {
             /* The ramp starts from its first sample, not from the midpoint. */
             audio_pwm_pcm_mode_at(audio_pcm_duty(pcm.data[0], AUDIO_PCM_PWM_RANGE));
         } else {
             audio_pwm_pcm_mode();
         }
+    } else if (pcm_kind == KIND_VOICE) {
+        audio_trace_voice(pcm.rate, (uint32_t)voice.count, pcm.len, vol, pcm_req_crc, clock_ms);
     } else {
-        audio_trace_pcm(pcm.rate, pcm.len, pcm_full ? 100 : vol, pcm_req_crc, clock_ms);
+        audio_trace_pcm(pcm.rate, pcm.len, pcm_kind == KIND_RAMP ? 100 : vol, pcm_req_crc,
+                        clock_ms);
     }
     pcm_t0_ms = clock_ms;
     pcm_t0_us = timer_now_us();
@@ -936,7 +967,7 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
     pcm_cut_locked();
     pcm_req = p;
     pcm_req_crc = crc;
-    pcm_req_full = 0;
+    pcm_req_kind = KIND_SAMPLE;
     req.stop = 0;
     req.pcm = 1;
     req.notes = 0;
@@ -945,13 +976,74 @@ int audio_play_pcm(const uint8_t *data, size_t len, uint32_t rate_hz, unsigned f
     return 0;
 }
 
-/* The play a queued buffer would join: the pending start, or the one that plays. IRQs masked. */
+/*
+ * A voice is a play of len samples, the sum of every span's n, on the
+ * PCM engine with no buffer. The engine gives the position, and pcm_out()
+ * computes the sample there. The span check and the CRC run here, in the
+ * main context, never in an IRQ.
+ */
+int audio_play_voice(const audio_voice_span_t *spans, size_t count, uint32_t rate_hz,
+                     unsigned flags)
+{
+    audio_pcm_t p;
+    audio_voice_t v;
+    uint32_t len = 0;
+    uint32_t crc = 0;
+    uint32_t s;
+    int ret;
+
+    if (backend < 0) {
+        return AUDIO_ERR_NO_INIT;
+    }
+    ret = audio_voice_check(spans, count, rate_hz, flags, &len);
+    if (ret) {
+        return ret;
+    }
+    if (!pcm_irq) {
+        return AUDIO_ERR_NO_IRQ;
+    }
+    if (!(flags & AUDIO_PRIORITY)) {
+        s = irq_save();
+        ret = start_refused_locked();
+        irq_restore(s);
+        if (ret) {
+            return AUDIO_ERR_BUSY;
+        }
+    }
+    audio_pcm_start(&p, 0, len, rate_hz, 0, 0);
+    audio_voice_start(&v, spans, count);
+    if (backend == AUDIO_BACKEND_TRACE) {
+        crc = crc32(spans, count * sizeof(*spans));
+    }
+    s = irq_save();
+    if (!(flags & AUDIO_PRIORITY) && start_refused_locked()) {
+        irq_restore(s);
+        return AUDIO_ERR_BUSY;
+    }
+    pcm_cut_locked();
+    pcm_req = p;
+    pcm_req_crc = crc;
+    pcm_req_kind = KIND_VOICE;
+    voice_req = v;
+    req.stop = 0;
+    req.pcm = 1;
+    req.notes = 0;
+    req.valid = 1;
+    irq_restore(s);
+    return 0;
+}
+
+/*
+ * The play a queued buffer would join: the pending start, or the one that
+ * plays. Only a sample play takes one: the ramp and a voice read no
+ * buffer to chain behind. IRQs masked.
+ */
 static audio_pcm_t *queue_target_locked(void)
 {
     if (req.valid) {
-        return req.pcm && !req.stop && !pcm_req_full ? &pcm_req : 0;
+        return req.pcm && !req.stop && pcm_req_kind == KIND_SAMPLE ? &pcm_req : 0;
     }
-    return pcm.active && !pcm_full ? &pcm : 0;
+    return pcm.active && pcm_kind == KIND_SAMPLE ? &pcm : 0;
 }
 
 /* 0 when a buffer can be queued now, else AUDIO_ERR_STATE or AUDIO_ERR_BUSY. IRQs masked. */
@@ -1018,17 +1110,17 @@ int audio_pcm_can_queue(void)
 }
 
 /*
- * The play an overlay would join, as for queue_target_locked(). Sets
- * *pending when that play still waits for its tick. IRQs masked.
+ * The play an overlay would join: a sample play or a voice, not the ramp.
+ * Sets *pending when that play still waits for its tick. IRQs masked.
  */
 static audio_pcm_t *mix_target_locked(int *pending)
 {
     if (req.valid) {
         *pending = 1;
-        return req.pcm && !req.stop && !pcm_req_full ? &pcm_req : 0;
+        return req.pcm && !req.stop && pcm_req_kind != KIND_RAMP ? &pcm_req : 0;
     }
     *pending = 0;
-    return pcm.active && !pcm_full ? &pcm : 0;
+    return pcm.active && pcm_kind != KIND_RAMP ? &pcm : 0;
 }
 
 /*
@@ -1172,7 +1264,7 @@ int audio_rest_mid(void)
     }
     pcm_req = p;
     pcm_req_crc = crc;
-    pcm_req_full = 1;
+    pcm_req_kind = KIND_RAMP;
     req.stop = 0;
     req.pcm = 1;
     req.notes = 0;

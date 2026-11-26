@@ -199,8 +199,10 @@ static void fresh(int which)
     k_memset(&mix, 0, sizeof(mix));
     mix_req_set = 0;
     k_memset(&pcm_req, 0, sizeof(pcm_req));
-    pcm_req_full = 0;
-    pcm_full = 0;
+    pcm_req_kind = KIND_SAMPLE;
+    pcm_kind = KIND_SAMPLE;
+    k_memset(&voice, 0, sizeof(voice));
+    k_memset(&voice_req, 0, sizeof(voice_req));
     rest_mid = 0;
     rest_ramp = 0;
     pcm_cut = 0;

@@ -25,6 +25,8 @@ void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, ui
 void audio_trace_pcm_end(uint32_t n, uint32_t last, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_mix(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
+void audio_trace_voice(uint32_t rate, uint32_t spans, uint32_t len, unsigned vol, uint32_t crc,
+                       uint32_t t_ms);
 void audio_trace_flush(void);
 
 #define OP_TONE     0       /* a tone, or a stop when hz is 0 */
@@ -32,14 +34,16 @@ void audio_trace_flush(void);
 #define OP_PCM_END  2
 #define OP_PCM_NEXT 3
 #define OP_PCM_MIX  4
+#define OP_VOICE    5
 
 typedef struct {
     uint32_t op;
-    uint32_t a;             /* tone: hz.  pcm: rate.  pcm_end: n.     pcm_next, pcm_mix: len */
-    uint32_t b;             /* tone: vol. pcm: len.   pcm_end: last.  pcm_next, pcm_mix: crc */
-    uint32_t c;             /* tone, pcm: t_ms. pcm_end, pcm_next, pcm_mix: start t_ms */
-    uint32_t d;             /* pcm: vol.  others: time since start in us, low word */
-    uint32_t e;             /* pcm: crc.  others: time since start in us, high word */
+    uint32_t a;             /* tone: hz.  pcm, voice: rate. pcm_end: n. pcm_next, pcm_mix: len */
+    uint32_t b;             /* tone: vol. pcm, voice: len. pcm_end: last. pcm_next, pcm_mix: crc */
+    uint32_t c;             /* tone, pcm, voice: t_ms. pcm_end, pcm_next, pcm_mix: start t_ms */
+    uint32_t d;             /* pcm, voice: vol. others: time since start in us, low word */
+    uint32_t e;             /* pcm, voice: crc. others: time since start in us, high word */
+    uint32_t f;             /* voice: span count */
 } record_t;
 
 static record_t queue[ROBCO_AUDIO_TRACE_QUEUE];
@@ -52,7 +56,8 @@ static uint32_t dropped_seen;
  * IRQ context, or the main context with IRQs masked. Handlers do not nest
  * and there is one core, so no two producers ever race here.
  */
-static void put(uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
+static void put6(uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e,
+                 uint32_t f)
 {
     uint32_t h = head;
     record_t *r;
@@ -68,7 +73,13 @@ static void put(uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uin
     r->c = c;
     r->d = d;
     r->e = e;
+    r->f = f;
     head = h + 1;
+}
+
+static void put(uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
+{
+    put6(op, a, b, c, d, e, 0);
 }
 
 /* IRQ context. */
@@ -81,6 +92,13 @@ void audio_trace_out(uint32_t hz, unsigned vol, uint32_t t_ms)
 void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms)
 {
     put(OP_PCM, rate, len, t_ms, vol, crc);
+}
+
+/* IRQ context. A voice starts. */
+void audio_trace_voice(uint32_t rate, uint32_t spans, uint32_t len, unsigned vol, uint32_t crc,
+                       uint32_t t_ms)
+{
+    put6(OP_VOICE, rate, len, t_ms, vol, crc, spans);
 }
 
 /* IRQ context. The division by 1000 waits for the main context. */
@@ -116,6 +134,12 @@ void audio_trace_flush(void)
             k_printf("@RC stage=%s ev=audio op=pcm rate=%u len=%u vol=%u crc=%08x t_ms=%u\n",
                      ROBCO_STAGE_NAME, (unsigned)r.a, (unsigned)r.b, (unsigned)r.d,
                      (unsigned)r.e, (unsigned)r.c);
+            break;
+        case OP_VOICE:
+            k_printf("@RC stage=%s ev=audio op=voice rate=%u spans=%u len=%u vol=%u crc=%08x "
+                     "t_ms=%u\n",
+                     ROBCO_STAGE_NAME, (unsigned)r.a, (unsigned)r.f, (unsigned)r.b,
+                     (unsigned)r.d, (unsigned)r.e, (unsigned)r.c);
             break;
         case OP_PCM_END:
             dur = ((uint64_t)r.e << 32) | r.d;
