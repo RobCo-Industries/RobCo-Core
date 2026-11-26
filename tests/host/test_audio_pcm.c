@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <unistd.h>
 
 #include <robco/audio.h>
 
@@ -510,6 +511,82 @@ TEST(chain_matches_one_buffer_random_polls)
                 CHECK(p.data == (in_b ? buf_b : buf));
                 last = (uint64_t)want + (in_b ? a : 0);
             }
+        }
+    }
+}
+
+/* Behind a long play near its start: the queued buffer waits for its end. */
+TEST(chain_at_behind_a_long_play_waits_for_its_end)
+{
+    static const uint8_t two[4];
+    audio_pcm_t p;
+    uint32_t t0 = 0xfff00000u;
+    uint32_t pos = 0;
+    uint64_t end_us = 20000000ull * 1000000u / 8000;
+
+    audio_pcm_start(&p, buf, 20000000u, 8000, 0, t0);
+    CHECK_EQ(audio_pcm_poll(&p, t0, &pos), AUDIO_PCM_SAMPLE);
+    CHECK_EQ(audio_pcm_chain_at(&p, two, sizeof(two), t0 + 1000), 0);
+    CHECK_EQ(audio_pcm_poll(&p, t0 + 1000, &pos), AUDIO_PCM_SAMPLE);
+    CHECK_EQ(pos, 8);
+    CHECK(p.data == buf);
+    CHECK_EQ(p.switches, 0);
+    /* The IRQ polls every sample; a poll every 2^30 us is enough to rebase. */
+    for (pos = 1; pos < 3; pos++) {
+        CHECK_EQ(audio_pcm_poll(&p, t0 + (pos << 30), 0), AUDIO_PCM_SAMPLE);
+        CHECK(p.data == buf);
+    }
+    /* Just before the end, the first buffer still plays. */
+    CHECK_EQ(audio_pcm_poll(&p, t0 + (uint32_t)(end_us - 125), &pos), AUDIO_PCM_SAMPLE);
+    CHECK(p.data == buf);
+    CHECK_EQ(pos, 20000000u - 1);
+    CHECK_EQ(audio_pcm_poll(&p, t0 + (uint32_t)end_us, &pos), AUDIO_PCM_SAMPLE);
+    CHECK(p.data == two);
+    CHECK_EQ(pos, 0);
+}
+
+/*
+ * A play whose end is more than 2^32 us away: the queue call returns, and
+ * the join time stays exact. A wrong end time would loop for 2^32 turns.
+ */
+TEST(chain_at_with_an_end_past_2_32_us_returns)
+{
+    static const uint8_t two[4];
+    audio_pcm_t p;
+    uint32_t t0 = 12345;
+    uint32_t pos = 0;
+
+    /* A loop that does not end kills the test with SIGALRM. */
+    alarm(10);
+    audio_pcm_start(&p, buf, AUDIO_PCM_LEN_MAX, AUDIO_PCM_RATE_MIN, 0, t0);
+    CHECK_EQ(audio_pcm_poll(&p, t0 + 300, &pos), AUDIO_PCM_SAMPLE);
+    CHECK_EQ(pos, 1);
+    CHECK_EQ(audio_pcm_chain_at(&p, two, sizeof(two), t0 + 300), 0);
+    CHECK_EQ(audio_pcm_join_us(&p, t0 + 300), t0 + 500);
+    CHECK_EQ(audio_pcm_next_us(&p), t0 + 500);
+    CHECK(p.data == buf);
+    CHECK_EQ(p.origin_us, t0);
+    CHECK_EQ(p.origin_pos, 0);
+    alarm(0);
+}
+
+/* The join time is exact on every rate, far into a long play. */
+TEST(join_matches_reference_on_many_rates)
+{
+    static const uint32_t rates[] = { 4000, 7919, 8000, 11025, 16000, 22050 };
+    size_t i;
+    uint32_t e;
+
+    for (i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+        audio_pcm_t p;
+
+        audio_pcm_start(&p, buf, AUDIO_PCM_LEN_MAX, rates[i], 0, 0);
+        for (e = 1; e < 0x7f000000u; e = e * 3 + 7) {
+            /* The first sample m whose start ceil(m * 10^6 / rate) is at or after e. */
+            uint64_t q = (uint64_t)(e - 1) * rates[i] / 1000000u + 1;
+            uint64_t want = (q * 1000000u + rates[i] - 1) / rates[i];
+
+            CHECK_EQ((uint64_t)audio_pcm_join_us(&p, e), want);
         }
     }
 }

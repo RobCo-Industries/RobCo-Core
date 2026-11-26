@@ -278,7 +278,8 @@ typedef struct {
     uint32_t rate;
     unsigned flags;
     uint32_t mul;           /* floor(rate * 2^32 / 1000000) */
-    uint32_t inv;           /* ceil(1000000 * 2^24 / rate) */
+    uint32_t inv_hi;        /* ceil(1000000 * 2^32 / rate), high word */
+    uint32_t inv_lo;        /* the same, low word */
     uint32_t unit_us;       /* 1000000 / gcd(rate, 1000000) */
     uint32_t unit_n;        /* samples in unit_us */
     uint32_t origin_us;     /* time of sample origin_pos */

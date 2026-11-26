@@ -6,7 +6,9 @@
  * Cost: one IRQ calls audio_pcm_poll() and audio_pcm_next_us(). Both use
  * 32x32 to 64-bit multiplies. A looped buffer adds a 32-bit modulo per
  * sample after its first pass, and a rebase adds a 32-bit divide every
- * 2^26 us at most. A switch to a chained buffer is a few subtractions. The 64-bit divides run in audio_pcm_start() only.
+ * 2^26 us at most. A switch to a chained buffer is a few subtractions. The
+ * 64-bit divides run in audio_pcm_start() only. No loop runs a number of
+ * turns that grows with the buffer length or the elapsed time.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -45,13 +47,16 @@ void audio_pcm_start(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t r
                      unsigned flags, uint32_t now_us)
 {
     uint32_t g = gcd(rate_hz, US_PER_S);
+    uint64_t inv;
 
     p->data = data;
     p->len = (uint32_t)len;
     p->rate = rate_hz;
     p->flags = flags & AUDIO_LOOP;
     p->mul = (uint32_t)(((uint64_t)rate_hz << 32) / US_PER_S);
-    p->inv = (uint32_t)((((uint64_t)US_PER_S << 24) + rate_hz - 1) / rate_hz);
+    inv = (((uint64_t)US_PER_S << 32) + rate_hz - 1) / rate_hz;
+    p->inv_hi = (uint32_t)(inv >> 32);
+    p->inv_lo = (uint32_t)inv;
     p->unit_us = US_PER_S / g;
     p->unit_n = rate_hz / g;
     p->origin_us = now_us;
@@ -76,16 +81,21 @@ static uint32_t samples_at(const audio_pcm_t *p, uint32_t elapsed)
     return q;
 }
 
-/* Smallest t with t * rate >= m * 10^6: when sample m after the origin starts. */
-static uint32_t time_of(const audio_pcm_t *p, uint32_t m)
+/*
+ * Smallest t with t * rate >= m * 10^6: when sample m after the origin
+ * starts, in 64 bits so it never wraps. The estimate m * inv / 2^32 is
+ * within 1 of the exact quotient, since inv is ceil(10^6 * 2^32 / rate)
+ * and m is under 2^32. So each loop below runs at most twice.
+ */
+static uint64_t time_of(const audio_pcm_t *p, uint32_t m)
 {
     uint64_t want = (uint64_t)m * US_PER_S;
-    uint32_t t = (uint32_t)(((uint64_t)m * p->inv) >> 24);
+    uint64_t t = (uint64_t)m * p->inv_hi + (((uint64_t)m * p->inv_lo) >> 32);
 
-    while ((uint64_t)t * p->rate < want) {
+    while (t * p->rate < want) {
         t++;
     }
-    while (t && (uint64_t)(t - 1) * p->rate >= want) {
+    while (t && (t - 1) * p->rate >= want) {
         t--;
     }
     return t;
@@ -202,15 +212,15 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
 
 uint32_t audio_pcm_next_us(const audio_pcm_t *p)
 {
-    return p->origin_us + time_of(p, p->next_q);
+    return p->origin_us + (uint32_t)time_of(p, p->next_q);
 }
 
 /*
- * The first grid point at or after now_us that is not before the next
- * sample due. The products stay in 64 bits: elapsed is under 2^32 and q
- * under 2^32 * 22050 / 10^6.
+ * Samples after the origin of the first grid point at or after now_us
+ * that is not before the next sample due. elapsed is under 2^31 us, so q
+ * and its time stay far below 2^32.
  */
-uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us)
+static uint32_t join_q(const audio_pcm_t *p, uint32_t now_us)
 {
     uint32_t elapsed = now_us - p->origin_us;
     uint32_t q;
@@ -225,27 +235,32 @@ uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us)
     if (q < p->next_q) {
         q = p->next_q;
     }
-    return p->origin_us + time_of(p, q);
+    return q;
+}
+
+uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us)
+{
+    return p->origin_us + (uint32_t)time_of(p, join_q(p, now_us));
 }
 
 int audio_pcm_chain_at(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t now_us)
 {
-    uint32_t join;
-    uint32_t end;
+    uint32_t q;
     int r = audio_pcm_chain(p, data, len);
 
     if (r) {
         return r;
     }
     /*
-     * The current buffer ends at sample len. When that time has passed and
-     * no poll has switched yet, the new buffer starts at the next grid
-     * point instead, so its first sample is not skipped.
+     * The current buffer ends at sample len. When the join point lies past
+     * it and no poll has switched yet, the new buffer starts at the join
+     * point instead, so its first sample is not skipped. The test counts
+     * samples on 64 bits and never turns the time left into a timestamp:
+     * a long buffer can end more than 2^31 us away.
      */
-    join = audio_pcm_join_us(p, now_us);
-    end = p->origin_us + time_of(p, p->len - p->origin_pos);
-    if ((int32_t)(end - join) < 0) {
-        p->origin_us = join;
+    q = join_q(p, now_us);
+    if ((int64_t)(int32_t)p->origin_pos + q > (int64_t)p->len) {
+        p->origin_us += (uint32_t)time_of(p, q);
         p->origin_pos = p->len;
         p->next_q = 0;
     }
