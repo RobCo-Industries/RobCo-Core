@@ -190,7 +190,9 @@ int audio_pcm_mix_busy(void);
 /*
  * Moves the rest level to the midpoint. The call plays a ramp from duty 0
  * to duty 128 at range AUDIO_PCM_PWM_RANGE: 882 samples at 22050 Hz on the
- * curve 3t^2 - 2t^3, at full scale whatever the volume. The rest level
+ * curve 3t^2 - 2t^3, at full scale whatever the volume. Between two
+ * writes the duty moves by one ramp step at most, however late the sample
+ * IRQ comes: a late IRQ makes the ramp longer, never steeper. The rest level
  * becomes the midpoint only when the ramp reaches its last sample. From
  * then on every silence the driver writes is that range at duty 128: the
  * end of a play, a cut, a stop, the end of a tone. A ramp that ends early,

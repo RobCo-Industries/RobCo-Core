@@ -31,7 +31,9 @@
  * drops the overlay.
  *
  * Rest level: silence is duty 0, as tones rest, until a ramp from
- * audio_rest_mid() reaches its last sample. From then on every silence the
+ * audio_rest_mid() reaches its last sample. The ramp never moves the duty
+ * by more than its largest step, so a late IRQ cannot make the pin jump.
+ * From then on every silence the
  * driver writes is the PCM range at duty 128. A ramp that ends early, by a
  * stop, a cut or a new sound, pending or playing, leaves the rest level at
  * duty 0 and writes that silence, and a later call can try again.
@@ -115,6 +117,8 @@ void audio_trace_flush(void);
 /* The rest ramp: duty 0 to 128 on 3t^2 - 2t^3 over this many samples at this rate. */
 #define RAMP_LEN                882u
 #define RAMP_RATE               22050u
+/* One ramp sample period, rounded up: the wait after a late ramp step. */
+#define RAMP_STEP_US            ((1000000u + RAMP_RATE - 1) / RAMP_RATE)
 
 static int backend = -1;            /* AUDIO_BACKEND_PWM or _TRACE once initialised */
 static int forced = ROBCO_AUDIO_BACKEND;
@@ -166,6 +170,10 @@ static volatile int rest_mid;
 /* A ramp from audio_rest_mid() waits for its tick or plays. IRQs masked. */
 static volatile int rest_ramp;
 static uint8_t ramp[RAMP_LEN];
+/* IRQ context: the next ramp index to write. */
+static uint32_t ramp_i;
+/* The ramp's largest step between two indexes, set by ramp_fill(). */
+static uint32_t ramp_step;
 
 /*
  * Tick context only. Widths: clock_ms and every t_ms wrap at 2^32 ms, 49
@@ -337,6 +345,60 @@ static void pcm_finish(void)
 }
 
 /*
+ * IRQ context. The ramp follows the clock as far as the step rule allows:
+ * each write is at most the ramp's largest step, ramp_step, above the last
+ * one. It plays at full scale on range 256, so a byte step is a duty step. The ramp rises, so the furthest index the rule allows is a binary
+ * search, a few turns. Every write is at least the next index, which the
+ * rule always allows. So a late IRQ skips steps only while the jump stays
+ * that small, and otherwise the ramp takes longer. The next step is due at
+ * its grid time, or one sample period after now when that time has
+ * passed. The last index is duty 128. The IRQ after it ends the play,
+ * and pcm_finish() sets the midpoint rest level with no jump.
+ */
+static void ramp_run(uint32_t now)
+{
+    uint32_t want = (uint32_t)(((uint64_t)(now - pcm.origin_us) * pcm.mul) >> 32);
+    uint32_t i = ramp_i;
+    uint32_t next;
+
+    if (ramp_i >= pcm.len) {
+        /* One sample period after the last index, as a plain play ends. */
+        pcm.active = 0;
+        pcm_finish();
+        return;
+    }
+    if (want > pcm.len - 1) {
+        want = pcm.len - 1;
+    }
+    if (i > 0 && want > i) {
+        uint32_t lim = ramp[i - 1] + ramp_step;
+        uint32_t hi = want;
+
+        /* Largest index in [i, hi] whose step from the last write is allowed. */
+        while (i < hi) {
+            uint32_t mid = i + (hi - i + 1) / 2;
+
+            if (ramp[mid] <= lim) {
+                i = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+    }
+    pcm.last = i;
+    pcm.last_n = i;
+    pcm.n++;
+    pcm_out(i);
+    ramp_i = i + 1;
+    pcm.next_q = ramp_i;
+    next = audio_pcm_next_us(&pcm);
+    if ((int32_t)(next - now) <= 0) {
+        next = now + RAMP_STEP_US;
+    }
+    timer_oneshot_arm(PCM_CHANNEL, next);
+}
+
+/*
  * IRQ context. Outputs what the clock says is due, then arms the compare
  * for the next sample. A compare already in the past would not match for
  * 71 minutes, so a miss polls again at the new time. After a few misses,
@@ -349,6 +411,10 @@ static void pcm_run(uint32_t now)
     uint32_t next;
     int r;
 
+    if (pcm_full) {
+        ramp_run(now);
+        return;
+    }
     for (;;) {
         r = audio_pcm_poll(&pcm, now, &pos);
         if (pcm.switches) {
@@ -398,6 +464,7 @@ static void pcm_begin(void)
 
     pcm = pcm_req;
     pcm_full = pcm_req_full;
+    ramp_i = 0;
     if (backend == AUDIO_BACKEND_PWM) {
         if (pcm_full) {
             /* The ramp starts from its first sample, not from the midpoint. */
@@ -1054,6 +1121,9 @@ static void ramp_fill(void)
         uint64_t f = 3 * i * i * n - 2 * i * i * i;
 
         ramp[i] = (uint8_t)((128 * f + n3 / 2) / n3);
+        if (i && (uint32_t)(ramp[i] - ramp[i - 1]) > ramp_step) {
+            ramp_step = (uint32_t)(ramp[i] - ramp[i - 1]);
+        }
     }
 }
 

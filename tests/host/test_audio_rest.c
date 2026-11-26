@@ -104,6 +104,83 @@ TEST(ramp_on_trace_is_a_plain_play_at_vol_100)
     CHECK_STR(out, want);
 }
 
+/* Runs the channel 3 IRQ `late_us` after its due time. */
+static void irq_late(uint32_t late_us)
+{
+    fake_step(fake_due - fake_us + late_us);
+    pcm_isr(IRQ_TIMER3, 0);
+}
+
+/*
+ * The ramp with one IRQ late by `late` samples after `at` steps were
+ * written. No write moves the duty by more than the ramp's largest step, the pin ends at duty 128, and the rest level
+ * and busy answer change only then.
+ */
+static void ramp_late(uint32_t at, uint32_t late)
+{
+    uint32_t big = 0;
+    uint32_t prev;
+    unsigned guard = 0;
+    size_t i;
+
+    for (i = 1; i < RAMP_LEN; i++) {
+        uint32_t d = audio_pcm_duty(ramp[i], AUDIO_PCM_PWM_RANGE) -
+                     audio_pcm_duty(ramp[i - 1], AUDIO_PCM_PWM_RANGE);
+
+        big = d > big ? d : big;
+    }
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    while (pcm.active && pwm_count < at && guard++ < 10000) {
+        irq_late(0);
+    }
+    if (pcm.active) {
+        irq_late((uint32_t)(((uint64_t)late * 1000000u + RAMP_RATE - 1) / RAMP_RATE));
+    }
+    while (pcm.active && guard++ < 10000) {
+        if (!audio_busy() || rest_mid || !rest_ramp) {
+            RC_FAIL("at %u late %u: busy %d rest_mid %d during the ramp",
+                    (unsigned)at, (unsigned)late, audio_busy(), rest_mid);
+            return;
+        }
+        irq_late(0);
+    }
+    prev = audio_pcm_duty(ramp[0], AUDIO_PCM_PWM_RANGE);
+    for (i = 0; i < pwm_count && i < sizeof(pwm_samples) / sizeof(pwm_samples[0]); i++) {
+        uint32_t d = pwm_samples[i] > prev ? pwm_samples[i] - prev : prev - pwm_samples[i];
+
+        if (d > big) {
+            RC_FAIL("at %u late %u: write %u jumps by %u, ramp step max %u",
+                    (unsigned)at, (unsigned)late, (unsigned)i, (unsigned)d, (unsigned)big);
+            return;
+        }
+        prev = pwm_samples[i];
+    }
+    /* A late IRQ may drop steps, never the last one. */
+    CHECK(pwm_count <= RAMP_LEN);
+    CHECK_EQ(pcm.last, RAMP_LEN - 1);
+    CHECK_EQ(prev, audio_pcm_duty(128, AUDIO_PCM_PWM_RANGE));
+    CHECK_STR(pwm_log, "at 0;mid;");
+    CHECK_EQ(rest_mid, 1);
+    CHECK_EQ(rest_ramp, 0);
+    tick(10);
+    CHECK(!audio_busy());
+}
+
+TEST(a_late_irq_never_makes_the_ramp_jump)
+{
+    static const uint32_t lates[] = { 1, 10, 500, 881, 882, 5000 };
+    static const uint32_t ats[] = { 1, 2, 300, 440, 800, 880, 881 };
+    size_t i, j;
+
+    for (i = 0; i < sizeof(lates) / sizeof(lates[0]); i++) {
+        for (j = 0; j < sizeof(ats) / sizeof(ats[0]); j++) {
+            ramp_late(ats[j], lates[i]);
+        }
+    }
+}
+
 TEST(later_calls_do_nothing)
 {
     enter_rest(AUDIO_BACKEND_TRACE);
