@@ -56,6 +56,8 @@ Set these in `robco_config.h`. All are optional.
 | `ROBCO_AUDIO_CLOCK_SRC` | `AUDIO_CLK_SRC_OSC` | PWM clock source. Any other value than the two `AUDIO_CLK_SRC_*` stops the build. |
 | `ROBCO_AUDIO_VOLUME` | `100` | Start volume in percent. The build stops above `100`. |
 | `ROBCO_AUDIO_BEEP_HZ`, `ROBCO_AUDIO_BEEP_MS` | `1000`, `80` | The standard beep. The build stops when the frequency is outside `AUDIO_HZ_MIN` to `AUDIO_HZ_MAX` or the length is `0`. |
+| `ROBCO_AUDIO_TONE_PEAK` | `127` | Height in steps of a tone at volume `100` once the rest level is the midpoint. The build stops outside `0` to `127`. See [Rest level](#rest-level). |
+| `ROBCO_AUDIO_TONE_RATE` | `37500` | Sample grid of such a tone, in hertz. The build stops outside `AUDIO_PCM_RATE_MIN` to `AUDIO_PCM_RATE_MAX`. `18750` halves the IRQ load. |
 | `ROBCO_AUDIO_TUNE_MAX` | `64` | Notes in the `audio_play_rtttl()` buffer. The call also puts that many notes (8 bytes each) on the stack. |
 | `ROBCO_AUDIO_TRACE_QUEUE` | `64` | Trace records held between two `audio_poll()` calls |
 | `ROBCO_STAGE_NAME` | `"robco"` | `stage=` field of the trace markers |
@@ -288,6 +290,8 @@ Every busy rule starts from one question: does something play? The answer is yes
 | The ramp waits for its tick, or plays | `1` | `AUDIO_ERR_BUSY` | `0`, does nothing | `AUDIO_ERR_STATE` | `AUDIO_ERR_STATE` |
 | A one-shot play's last sample has sounded, its end IRQ still due | `1` | `AUDIO_ERR_BUSY` | `AUDIO_ERR_BUSY` | `AUDIO_ERR_STATE` | A sample play: `0`, and its byte 0 sounds at the next grid sample. A voice: `AUDIO_ERR_STATE`. |
 
+Once the rest level is the midpoint, `audio_rest_mid()` returns `0` and does nothing in every state of the table. A tone then plays on the sample path, but its row does not change: `audio_pcm_mix()` and `audio_pcm_queue()` still answer `AUDIO_ERR_STATE`.
+
 The rest level becomes the midpoint only when the ramp reaches its last sample. A ramp that ends early leaves it at duty `0`: a stop or a priority start before the ramp starts, and a stop, a cut or a priority start while it plays. The table then reads "Nothing plays" or the row of the new sound, and `audio_rest_mid()` can start the ramp again.
 
 ```c
@@ -374,6 +378,16 @@ uint8_t audio_voice_out(int32_t q, uint8_t mix, unsigned vol);
 The voice engine the IRQ uses, in `src/lib/audio_voice.c`. Treat the `audio_voice_t` fields as private. `audio_voice_check()` returns `0`, `AUDIO_ERR_ARG` or `AUDIO_ERR_RANGE` with the rules of `audio_play_voice()`, and stores the sum of `n` in `*len` when `len` is not `NULL`. `audio_voice_span_at()` gives sample `i` of one span on 1/256 of a step. `audio_voice_at()` gives sample `pos` of the whole voice, `0` past the end, and keeps the span it found for the next call. A call with a lower `pos` walks again from the first span. `audio_voice_out()` gives the output byte with one rounding, with the volume capped at `100`.
 
 ```c
+unsigned audio_square_amp(unsigned peak, unsigned vol);
+void audio_square_start(audio_square_t *q, uint32_t hz, uint32_t rate, unsigned amp);
+int32_t audio_square_acc(audio_square_t *q, uint32_t pos);
+uint8_t audio_square_out(int32_t acc, int32_t amp);
+uint8_t audio_square_at(audio_square_t *q, uint32_t pos);
+```
+
+The centred square engine the IRQ uses after the ramp, in `src/lib/audio_square.c`, with the rule of [Rest level](#rest-level). Treat the `audio_square_t` fields as private. `audio_square_amp()` gives the height, with the volume capped at `100`. `audio_square_start()` takes `half` once and makes the next sample asked for, whatever its grid number, start the note. `audio_square_acc()` gives the signed area of grid sample `pos`, `-256` to `256`, and applies the skip rule. `audio_square_out()` rounds it to the output byte, and `audio_square_at()` does both.
+
+```c
 int audio_pwm_calc(uint32_t src_hz, uint32_t hz, unsigned vol, audio_pwm_cfg_t *out);
 ```
 
@@ -390,7 +404,27 @@ Until `audio_rest_mid()` runs, the pin rests at duty `0` between sounds, as it a
 
 The call plays a ramp as an ordinary PCM play: 882 samples at 22050 Hz, 40 ms, from duty `0` to duty `128` on the curve `3t^2 - 2t^3`, at full scale whatever the volume. On the PWM backend the play switches to PCM mode at the ramp's first sample, duty `0`, not at the midpoint. Between two writes the duty never moves by more than the ramp's own largest step, one duty step, however late an IRQ comes. Each IRQ writes the ramp sample the clock asks for when that rule allows it, else the furthest one the rule allows, and always at least the next one. So a short delay skips a few flat samples and keeps the 40 ms, and a long one makes the ramp longer, never steeper. After a late IRQ the next sample waits one sample period. The ramp always writes its last sample, duty `128`, and ends one sample period after it, as a plain play does. It stays busy until then. On the trace backend it prints a plain `op=pcm rate=22050 len=882 vol=100` and its `op=pcm_end`, with `last=881` always. The bytes and their CRC do not change. When IRQs are on time, `n=882` and the end comes 40 ms after the start, as before. A late IRQ lowers `n` and can move the end later. `audio_busy()` is non-zero while it plays, so `audio_wait()` waits for it.
 
-Once the ramp reaches its last sample, every silence the driver writes is range `AUDIO_PCM_PWM_RANGE` at duty `128`: the end of a play, a cut, a stop, a rest step, the end of a tone, and a tone at volume `0`. A sample that starts near `128` then makes no jump. Tones still set their own range and sound as before. The trace lines do not change.
+Once the ramp reaches its last sample, every silence the driver writes is range `AUDIO_PCM_PWM_RANGE` at duty `128`: the end of a play, a cut, a stop, a rest step, the end of a tone, and a tone at volume `0`. A sample that starts near `128` then makes no jump.
+
+How a tone plays. Before the ramp ends, a tone is the PWM's own pulse: the range sets the pitch and the duty, up to half the range, sets the volume. Its mean level is half the volume, so at the midpoint rest a quiet tone would jump the mean at its start and its end. Once the ramp has ended, a tone is a square centred on `128`, made in the sample IRQ on the PCM engine. This covers `audio_tone()`, `audio_beep()`, `audio_play()` and `audio_play_rtttl()`. The tick starts the play when a sequence first sounds and halts it in the tick where the sequence ends. Each note starts the square again on the same grid, and a rest inside a sequence writes `128`. Pitch and height change at the tick, as before. The trace lines are those of a tone, on the same ticks: no `op=pcm` and no `op=pcm_end`. The sample count of `audio_pcm_samples()` grows while the tone sounds, on both backends, and its `play` value counts the tone's samples. A ramp that was cancelled leaves the rest level at duty `0`, so tones stay pulses.
+
+Height. `amp = (ROBCO_AUDIO_TONE_PEAK * vol + 50) / 100` steps, read when a note starts. At volume `100` and the default peak that is a swing of `127` steps each side, the swing a tone has at the pulse. Under `100` the level follows the volume as samples do, and the tone keeps its colour. A volume change applies from the next note.
+
+The per-sample rule, in integers, so another tool can render the same bytes:
+
+```c
+half = (rate * 128 + hz / 2) / hz;   /* once per note; hz 0, a rest, writes 128 */
+/* note start: sign = +1, left = half */
+acc = 0; units = 256;                /* one sample */
+while (units >= left) { acc += sign * left; units -= left; sign = -sign; left = half; }
+acc += sign * units; left -= units;
+x = amp * acc;
+out = 128 + (x >= 0 ? (x + 128) / 256 : -((128 - x) / 256));   /* C's truncating divide */
+```
+
+`rate` is `ROBCO_AUDIO_TONE_RATE`. `half` is the half period in 1/256 of a sample, so a sample that holds an edge takes the mean of the two levels by the edge's place in it. That is what the pin's own pulse does over one carrier period. At 20000 Hz and 37500 Hz `half` is `240`, and a sample can hold two edges: the walk handles it. An edge exactly at the end of a sample flips there. Each note starts at an edge going up, so its first sample is high. A late IRQ skips samples. A skip of up to `AUDIO_SQUARE_SKIP_MAX`, `64` samples, walks the skipped units and keeps the phase. A longer skip, or a grid sample that goes backwards, restarts the note at an edge going up: the walk then stays at most 69 turns in the IRQ, and a skip that long already held one level for over 1.7 ms. Both ends of a tone step by at most `amp` from `128`.
+
+Aliasing, by arithmetic only, not measured: at 37500 Hz a 3000 Hz square at full height puts its largest component under 8 kHz, at 4500 Hz, about 37 dB below the tone. A bare square that switches only at sample edges puts it about 20 dB below.
 
 Sharp edges of the rest mode:
 
@@ -399,6 +433,7 @@ Sharp edges of the rest mode:
 | A call that ends the ramp early cancels it. | `audio_stop()`, a cut or a priority start, before the ramp starts or while it plays. The rest level stays duty `0`. A ramp that had started drops to duty `0` at once, from wherever it was. One that had not started leaves the pin untouched. Call `audio_rest_mid()` again to retry. |
 | The carrier stays on. | An idle pin carries the 37.5 kHz carrier at half duty all the time. A filter with a corner near 18 kHz lets much of it through to the amplifier. Not checked on a board. |
 | There is no way back. | The rest level stays at the midpoint until reset. |
+| A tone costs a sample IRQ. | After the ramp, a tone or a tune takes `ROBCO_AUDIO_TONE_RATE` IRQs a second while it plays, as PCM does. Not measured on a board. |
 
 ### Context rules
 
@@ -457,7 +492,7 @@ Sharp edges:
 | One voice, plus one overlay. | A new sound replaces the old one. `audio_pcm_mix()` adds one sample buffer over a PCM play or a voice, nothing more. Tones do not mix. |
 | `audio_play()` keeps the pointer. | Do not pass a stack array that goes out of scope while it plays. |
 | Late ticks skip notes. | A tick delayed past several steps reports each change in order, at its due time. After 16 in one tick, the rest are skipped and only the final state is output. |
-| Square wave tones. | Volume changes the duty cycle, which also changes the tone colour. PCM volume scales the samples instead. |
+| Square wave tones. | Before the ramp, volume changes the duty cycle, which also changes the tone colour. After it, volume sets the square's height, see [Rest level](#rest-level). PCM volume scales the samples. |
 | One IRQ per PCM sample. | At 37500 Hz that is 37500 IRQs a second, one every 26.7 us, and other IRQs wait behind each one. A handler that takes most of a period makes the next compare already past: the handler polls again at most 4 times, then arms with `timer_oneshot_arm()`, and the late samples are skipped. It never spins. Use the lowest rate that sounds right. |
 | `audio_play_pcm()` keeps the pointer. | The buffer must stay valid until the play ends, or until `audio_stop()` or a call that replaces the sound returns. |
 | `audio_pcm_queue()` keeps the pointer. | Two buffers can be in use: the one that plays and the one that waits. Reuse a buffer only once `audio_pcm_can_queue()` turns `1` after the queue call that followed it. |

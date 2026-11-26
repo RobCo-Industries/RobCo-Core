@@ -139,7 +139,13 @@ int audio_probe_result(void);
 /* "ok", "abort", "ignored" or "skipped". */
 const char *audio_probe_name(int result);
 
-/* Plays one tone, non-blocking. Replaces what plays now. hz 0 is a rest. */
+/*
+ * Plays one tone, non-blocking. Replaces what plays now. hz 0 is a rest.
+ * Before the audio_rest_mid() ramp ends, a tone is the PWM's own pulse.
+ * After it, every tone, beep and sequence is a square centred on 128 made
+ * on the sample path, ROBCO_AUDIO_TONE_PEAK steps high at volume 100, on a
+ * grid of ROBCO_AUDIO_TONE_RATE. The trace lines stay the same.
+ */
 int audio_tone(uint32_t hz, uint32_t ms);
 
 /*
@@ -154,7 +160,10 @@ void audio_stop(void);
  */
 int audio_busy(void);
 
-/* Duty-cycle volume, 0 to 100. Applies from the next note. */
+/*
+ * Volume, 0 to 100. Applies from the next note, or the next PCM sample.
+ * A pulse tone sets its duty with it; a centred tone its height.
+ */
 void audio_set_volume(unsigned percent);
 
 /*
@@ -249,7 +258,8 @@ int audio_play_voice(const audio_voice_span_t *spans, size_t count, uint32_t rat
  * by audio_stop(), a cut or a new sound, whether it waits for its tick or
  * plays, leaves the rest level at duty 0: the driver writes duty 0 if the
  * ramp had started, and a later call can try again. Calls while the ramp
- * waits or plays, or once it has ended, do nothing and return 0.
+ * waits or plays, or once it has ended, do nothing and return 0, in every
+ * state. From then on tones play as centred squares, see audio_tone().
  * Returns 0, or AUDIO_ERR_NO_INIT, AUDIO_ERR_NO_IRQ (another handler holds
  * the timer channel 3 IRQ), AUDIO_ERR_BUSY when something else plays or
  * waits: the rest level is then unchanged and a later call can try again.
