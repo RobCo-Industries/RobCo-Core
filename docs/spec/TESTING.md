@@ -512,7 +512,7 @@ Every job runs in the `robco-ci` image of the tree it builds or tests. A nightly
 
 `tools/nightly/junit_gate.py` judges each test job from its JUnit file. The job is red when the file is missing, holds no test, has a failure or an error, or has a skip. One skip per job whose reason starts with `host timing:` passes. A job where no test passed is red, so a night where every whole-chain test skips is red. The gate writes one line per test to the run summary.
 
-`tools/nightly/pack_card.py` refuses a card that holds `bootcode.bin`, `start.elf` or `fixup.dat`, then writes the card, `SHA256SUMS` and `VERSIONS.txt`, the version table. The cards are kept 14 days, the stage images 3 days, the failure folders 7 days. A failure folder holds the JUnit file and the temp folders of the failed tests.
+`tools/nightly/pack_card.py` refuses a card that holds `bootcode.bin`, `start.elf` or `fixup.dat`, the names in the `FILES` line of `tools/fetch_firmware.sh`. It reads the FAT directory entries of every partition itself, so a hidden or system file, a long or short name in any case and a file at any folder depth all count. A card it cannot read fails. Then it writes the card, `SHA256SUMS` and `VERSIONS.txt`, the version table. The cards are kept 14 days, the stage images 3 days, the failure folders 7 days. A failure folder holds the JUnit file and the temp folders of the failed tests.
 
 A red night is a failed run. GitHub emails the person who last changed the `cron` line, and the badge in the README turns red. The red job names the repository to look at:
 
