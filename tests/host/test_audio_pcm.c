@@ -591,6 +591,149 @@ TEST(join_matches_reference_on_many_rates)
     }
 }
 
+/* Rates for the grid tests: four common ones, one above AUDIO_PCM_RATE_MAX, one odd. */
+static const uint32_t grid_rates[] = { 8000, 11025, 16000, 22050, 44100, 7993 };
+
+/* Time of grid sample g after the origin: ceil(g * 10^6 / rate), on 64 bits. */
+static uint64_t ref_time(uint64_t g, uint32_t rate)
+{
+    return (g * 1000000u + rate - 1) / rate;
+}
+
+/* The first grid sample at or after time t, on 64 bits. */
+static uint64_t ref_grid_at(uint64_t t, uint32_t rate)
+{
+    return t ? (t - 1) * rate / 1000000u + 1 : 0;
+}
+
+/*
+ * Something that joins a running play at any microsecond inside one
+ * sample period, past a rebase and the 32-bit wrap: byte k of it goes
+ * with grid sample join + k. Polled every microsecond, each byte comes
+ * exactly once, in order, on the first poll at its grid time.
+ */
+TEST(join_index_stays_on_the_play_grid)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof(grid_rates) / sizeof(grid_rates[0]); i++) {
+        uint32_t r = grid_rates[i];
+        uint32_t t0 = 0xfc000000u;
+        uint64_t g0 = (uint64_t)r * 70;
+        uint64_t g;
+        uint32_t d, gap;
+        audio_pcm_t p;
+
+        audio_pcm_start(&p, buf, AUDIO_PCM_LEN_MAX, r, 0, t0);
+        /* 70 s in, past a rebase and the wrap, then sample g0 at its time. */
+        for (g = 0; g <= g0; g += r) {
+            CHECK_EQ(audio_pcm_poll(&p, t0 + (uint32_t)ref_time(g, r), 0), AUDIO_PCM_SAMPLE);
+            CHECK_EQ(p.last_n, (uint32_t)g);
+        }
+        gap = (uint32_t)(ref_time(g0 + 1, r) - ref_time(g0, r));
+        for (d = 0; d < gap; d++) {
+            audio_pcm_t q = p;
+            uint32_t now = t0 + (uint32_t)ref_time(g0, r) + d;
+            uint32_t j = audio_pcm_join(&q, now);
+            uint32_t k = 0;
+            uint32_t t = now;
+
+            CHECK_EQ(j, (uint32_t)(g0 + 1));
+            CHECK_EQ(audio_pcm_join_us(&q, now), t0 + (uint32_t)ref_time(g0 + 1, r));
+            while (k < 64) {
+                uint32_t pos;
+
+                if (audio_pcm_poll(&q, t, &pos) == AUDIO_PCM_SAMPLE) {
+                    if (q.last_n - j != k || t != t0 + (uint32_t)ref_time(j + (uint64_t)k, r)) {
+                        RC_FAIL("rate %u, d %u: byte %u at grid %u, t %u", (unsigned)r,
+                                (unsigned)d, (unsigned)k, (unsigned)(q.last_n - j),
+                                (unsigned)(t - t0));
+                    }
+                    k++;
+                }
+                t++;
+            }
+        }
+    }
+}
+
+/*
+ * A one-byte buffer queued late, at every microsecond inside one period
+ * past the end, a thousand times in a row, with a 70 s gap every hundred
+ * queues: each byte sounds on the grid of the first origin, checked
+ * against a 64-bit reference. The old byte never sounds again.
+ */
+TEST(late_queues_keep_the_first_grid)
+{
+    static const uint8_t one[1];
+    size_t i;
+
+    for (i = 0; i < sizeof(grid_rates) / sizeof(grid_rates[0]); i++) {
+        uint32_t r = grid_rates[i];
+        uint32_t period = (1000000u + r - 1) / r;
+        uint32_t d;
+
+        for (d = 0; d < period; d++) {
+            uint32_t t0 = 0xfff00000u;
+            uint64_t g = 0;
+            unsigned n;
+            audio_pcm_t p;
+
+            audio_pcm_start(&p, one, 1, r, 0, t0);
+            for (n = 0; n < 1000; n++) {
+                uint32_t pos = 9;
+                uint64_t late = ref_time(g + 1, r) + 1 + d + (n % 100 == 99 ? 70000000u : 0);
+
+                if (audio_pcm_next_us(&p) != t0 + (uint32_t)ref_time(g, r)) {
+                    RC_FAIL("rate %u, d %u, queue %u: next %u, want %u", (unsigned)r,
+                            (unsigned)d, n, (unsigned)(audio_pcm_next_us(&p) - t0),
+                            (unsigned)ref_time(g, r));
+                }
+                if (g) {
+                    CHECK_EQ(audio_pcm_poll(&p, t0 + (uint32_t)ref_time(g, r) - 1, &pos),
+                             AUDIO_PCM_NONE);
+                }
+                CHECK_EQ(audio_pcm_poll(&p, t0 + (uint32_t)ref_time(g, r), &pos), AUDIO_PCM_SAMPLE);
+                CHECK_EQ(pos, 0);
+                CHECK_EQ(p.last_n, (uint32_t)g);
+                CHECK_EQ(audio_pcm_chain_at(&p, one, 1, t0 + (uint32_t)late), 0);
+                g = ref_grid_at(late, r);
+            }
+        }
+    }
+}
+
+/*
+ * Polls 2^31 us and 2^32 - 1 us apart act as they did before the join
+ * calls: an overdue poll is never taken for one before the origin.
+ */
+TEST(a_long_gap_between_polls)
+{
+    static const uint32_t gaps[] = { 0x80000000u, 0xffffffffu };
+    size_t i;
+
+    for (i = 0; i < 2; i++) {
+        uint32_t gap = gaps[i];
+        audio_pcm_t p;
+        uint32_t pos = 0;
+
+        audio_pcm_start(&p, buf, 1, 8000, 0, 0);
+        CHECK_EQ(audio_pcm_poll(&p, 0, &pos), AUDIO_PCM_SAMPLE);
+        CHECK_EQ(audio_pcm_poll(&p, gap, &pos), AUDIO_PCM_END);
+        CHECK(!p.active);
+
+        audio_pcm_start(&p, buf, AUDIO_PCM_LEN_MAX, 8000, 0, 5);
+        CHECK_EQ(audio_pcm_poll(&p, 5, &pos), AUDIO_PCM_SAMPLE);
+        CHECK_EQ(audio_pcm_poll(&p, 5 + gap, &pos), AUDIO_PCM_SAMPLE);
+        CHECK_EQ(pos, ref_pos(gap, 8000));
+
+        audio_pcm_start(&p, buf, 1000, 11025, AUDIO_LOOP, 7);
+        CHECK_EQ(audio_pcm_poll(&p, 7, &pos), AUDIO_PCM_SAMPLE);
+        CHECK_EQ(audio_pcm_poll(&p, 7 + gap, &pos), AUDIO_PCM_SAMPLE);
+        CHECK_EQ(pos, ref_pos(gap, 11025) % 1000);
+    }
+}
+
 TEST(volume_scale)
 {
     CHECK_EQ(audio_pcm_scale(0, 100), 0);

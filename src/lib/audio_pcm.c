@@ -61,7 +61,9 @@ void audio_pcm_start(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t r
     p->unit_n = rate_hz / g;
     p->origin_us = now_us;
     p->origin_pos = 0;
+    p->origin_n = 0;
     p->next_q = 0;
+    p->last_n = 0;
     p->last = 0;
     p->n = 0;
     p->next = 0;
@@ -129,6 +131,7 @@ static void rebase(audio_pcm_t *p, uint32_t elapsed)
     uint32_t dn = k * p->unit_n;
 
     p->origin_us += k * p->unit_us;
+    p->origin_n += dn;
     p->next_q = p->next_q > dn ? p->next_q - dn : 0;
     if (p->flags & AUDIO_LOOP) {
         p->origin_pos = (p->origin_pos + dn) % p->len;
@@ -167,14 +170,6 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
         return AUDIO_PCM_NONE;
     }
     elapsed = now_us - p->origin_us;
-    /*
-     * Before the origin: audio_pcm_chain_at() can put it a little ahead of
-     * now. A real elapsed time stays far below 2^31 us, since the IRQ polls
-     * every sample and the rebase below keeps it under 2^26 us.
-     */
-    if ((int32_t)elapsed < 0) {
-        return AUDIO_PCM_NONE;
-    }
     if (elapsed >= REBASE_US) {
         rebase(p, elapsed);
         elapsed = now_us - p->origin_us;
@@ -202,6 +197,7 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
         abs %= p->len;
     }
     p->next_q = q + 1;
+    p->last_n = p->origin_n + q;
     p->last = abs;
     p->n++;
     if (pos) {
@@ -217,17 +213,15 @@ uint32_t audio_pcm_next_us(const audio_pcm_t *p)
 
 /*
  * Samples after the origin of the first grid point at or after now_us
- * that is not before the next sample due. elapsed is under 2^31 us, so q
- * and its time stay far below 2^32.
+ * that is not before the next sample due. The origin never lies ahead of
+ * a real time: nothing moves it forward but a rebase, and only past time.
+ * elapsed is under 2^32 us, so q stays under 2^31 at any rate.
  */
 static uint32_t join_q(const audio_pcm_t *p, uint32_t now_us)
 {
     uint32_t elapsed = now_us - p->origin_us;
     uint32_t q;
 
-    if ((int32_t)elapsed < 0) {
-        elapsed = 0;
-    }
     q = samples_at(p, elapsed);
     if (time_of(p, q) < elapsed) {
         q++;
@@ -236,6 +230,11 @@ static uint32_t join_q(const audio_pcm_t *p, uint32_t now_us)
         q = p->next_q;
     }
     return q;
+}
+
+uint32_t audio_pcm_join(const audio_pcm_t *p, uint32_t now_us)
+{
+    return p->origin_n + join_q(p, now_us);
 }
 
 uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us)
@@ -253,16 +252,20 @@ int audio_pcm_chain_at(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t
     }
     /*
      * The current buffer ends at sample len. When the join point lies past
-     * it and no poll has switched yet, the new buffer starts at the join
-     * point instead, so its first sample is not skipped. The test counts
-     * samples on 64 bits and never turns the time left into a timestamp:
-     * a long buffer can end more than 2^31 us away.
+     * it and no poll has switched yet, the new buffer's byte 0 becomes grid
+     * sample q instead, so its first sample is not skipped. Only the
+     * position moves: origin_pos + q is len, the first index of the new
+     * buffer. The origin time stays, so byte k sounds at grid sample q + k
+     * on the play's one grid, and no late queue can shift it. next_q keeps
+     * the old buffer's last positions, now before q, from sounding again.
+     * The test counts samples on 64 bits: a long buffer can end more than
+     * 2^31 us away. q is under 2^31, so origin_pos stays a signed 32-bit
+     * value, as after a switch.
      */
     q = join_q(p, now_us);
     if ((int64_t)(int32_t)p->origin_pos + q > (int64_t)p->len) {
-        p->origin_us += (uint32_t)time_of(p, q);
-        p->origin_pos = p->len;
-        p->next_q = 0;
+        p->origin_pos = p->len - q;
+        p->next_q = q;
     }
     return 0;
 }

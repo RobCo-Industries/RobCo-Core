@@ -171,7 +171,8 @@ int audio_pcm_can_queue(void);
 
 /*
  * Adds one overlay buffer to the PCM that plays, from its next sample, at
- * its rate: each output sample is play + data - 128, clamped to 0 to 255,
+ * its rate. Byte k sounds with the play sample k places later, on the
+ * play's own grid: each output sample is play + data - 128, clamped to 0 to 255,
  * then scaled by the volume. Like audio_pcm_queue(), it also takes a play
  * that still waits for its tick; both then start on the same sample. The
  * end or a cut of the play drops the overlay, so an overlay longer than
@@ -275,7 +276,7 @@ typedef struct {
  */
 int audio_pwm_calc(uint32_t src_hz, uint32_t hz, unsigned vol, audio_pwm_cfg_t *out);
 
-/* PCM playback state. Treat the fields as private. */
+/* PCM playback state. Treat the fields as private, except n, last and last_n. */
 typedef struct {
     const uint8_t *data;
     uint32_t len;
@@ -288,7 +289,9 @@ typedef struct {
     uint32_t unit_n;        /* samples in unit_us */
     uint32_t origin_us;     /* time of sample origin_pos */
     uint32_t origin_pos;    /* sample index at origin_us, signed after a switch */
+    uint32_t origin_n;      /* grid samples from the start to origin_us, wrapping */
     uint32_t next_q;        /* samples after the origin of the next sample due */
+    uint32_t last_n;        /* grid sample of the last output, from the start, wrapping */
     uint32_t last;          /* last index output, in the current buffer */
     uint32_t n;             /* samples output, over every chained buffer */
     const uint8_t *next;    /* buffer that waits, or NULL */
@@ -330,15 +333,21 @@ int audio_pcm_chain(audio_pcm_t *p, const uint8_t *data, size_t len);
 uint32_t audio_pcm_next_us(const audio_pcm_t *p);
 
 /*
- * The time of the play's next sample that is not before `now_us`: a point
- * on its grid, at or after audio_pcm_next_us(). Where something new joins
- * a running play.
+ * The play's grid sample, counted from its start and wrapping at 2^32,
+ * that is the first one at or after `now_us` and not before the next
+ * sample due. Where something new joins a running play: byte k of it
+ * then sounds with grid sample join + k. last_n holds the grid sample
+ * of each output, so the difference gives k without any timestamp.
  */
+uint32_t audio_pcm_join(const audio_pcm_t *p, uint32_t now_us);
+
+/* The time, wrapping, of the grid sample audio_pcm_join() returns. */
 uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us);
 
 /*
  * audio_pcm_chain(), and when the current buffer's end lies before
- * audio_pcm_join_us(p, now_us), `data` starts at that point instead.
+ * audio_pcm_join(p, now_us), `data` byte 0 becomes that grid sample
+ * instead. The origin time does not move: the play keeps one grid.
  */
 int audio_pcm_chain_at(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t now_us);
 
