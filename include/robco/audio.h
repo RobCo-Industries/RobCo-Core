@@ -325,6 +325,19 @@ int audio_pcm_chain(audio_pcm_t *p, const uint8_t *data, size_t len);
 uint32_t audio_pcm_next_us(const audio_pcm_t *p);
 
 /*
+ * The time of the play's next sample that is not before `now_us`: a point
+ * on its grid, at or after audio_pcm_next_us(). Where something new joins
+ * a running play.
+ */
+uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us);
+
+/*
+ * audio_pcm_chain(), and when the current buffer's end lies before
+ * audio_pcm_join_us(p, now_us), `data` starts at that point instead.
+ */
+int audio_pcm_chain_at(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t now_us);
+
+/*
  * Volume around the midpoint: 128 + (s - 128) * vol / 100, rounded to the
  * nearest step, a half step away from 128. vol is capped at 100.
  */

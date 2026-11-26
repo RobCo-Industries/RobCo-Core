@@ -157,6 +157,14 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
         return AUDIO_PCM_NONE;
     }
     elapsed = now_us - p->origin_us;
+    /*
+     * Before the origin: audio_pcm_chain_at() can put it a little ahead of
+     * now. A real elapsed time stays far below 2^31 us, since the IRQ polls
+     * every sample and the rebase below keeps it under 2^26 us.
+     */
+    if ((int32_t)elapsed < 0) {
+        return AUDIO_PCM_NONE;
+    }
     if (elapsed >= REBASE_US) {
         rebase(p, elapsed);
         elapsed = now_us - p->origin_us;
@@ -195,6 +203,53 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
 uint32_t audio_pcm_next_us(const audio_pcm_t *p)
 {
     return p->origin_us + time_of(p, p->next_q);
+}
+
+/*
+ * The first grid point at or after now_us that is not before the next
+ * sample due. The products stay in 64 bits: elapsed is under 2^32 and q
+ * under 2^32 * 22050 / 10^6.
+ */
+uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us)
+{
+    uint32_t elapsed = now_us - p->origin_us;
+    uint32_t q;
+
+    if ((int32_t)elapsed < 0) {
+        elapsed = 0;
+    }
+    q = samples_at(p, elapsed);
+    if (time_of(p, q) < elapsed) {
+        q++;
+    }
+    if (q < p->next_q) {
+        q = p->next_q;
+    }
+    return p->origin_us + time_of(p, q);
+}
+
+int audio_pcm_chain_at(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t now_us)
+{
+    uint32_t join;
+    uint32_t end;
+    int r = audio_pcm_chain(p, data, len);
+
+    if (r) {
+        return r;
+    }
+    /*
+     * The current buffer ends at sample len. When that time has passed and
+     * no poll has switched yet, the new buffer starts at the next grid
+     * point instead, so its first sample is not skipped.
+     */
+    join = audio_pcm_join_us(p, now_us);
+    end = p->origin_us + time_of(p, p->len - p->origin_pos);
+    if ((int32_t)(end - join) < 0) {
+        p->origin_us = join;
+        p->origin_pos = p->len;
+        p->next_q = 0;
+    }
+    return 0;
 }
 
 uint8_t audio_pcm_scale(uint8_t s, unsigned vol)

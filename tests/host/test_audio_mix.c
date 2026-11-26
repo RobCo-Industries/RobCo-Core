@@ -345,3 +345,79 @@ TEST(calls_from_a_tick_callback)
     CHECK_STR(out, want);
     CHECK(!audio_busy());
 }
+
+/*
+ * The compare is overdue when the overlay joins: the IRQ for sample 80
+ * has not run, and the clock is `k` samples and 60 us past it. The
+ * overlay still starts at the play's next grid point after the call, and
+ * every one of its bytes sounds, for k under, at and over its length.
+ */
+TEST(a_mix_joins_after_an_overdue_compare)
+{
+    static const uint32_t ks[] = { 0, 1, 30, 300 };
+    char want[512];
+    size_t i;
+    size_t j;
+
+    fill();
+    for (i = 0; i < sizeof(ks) / sizeof(ks[0]); i++) {
+        uint32_t k = ks[i];
+        uint32_t p = 80 + k;            /* the play sample the late IRQ outputs */
+        uint32_t join_us = 10000 + (k + 1) * 125;
+
+        fresh(AUDIO_BACKEND_PWM);
+        CHECK_EQ(audio_play_pcm(play, sizeof(play), 8000, 0), 0);
+        tick(10);
+        run_us(10000);
+        CHECK_EQ(pwm_count, 80);
+        fake_step(k * 125 + 60);
+        CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
+        run_us(200000);
+        CHECK(!pcm.active);
+        CHECK_EQ(pwm_samples[80], play[p]);
+        CHECK_EQ(pwm_count, 81 + (sizeof(play) - p - 1));
+        for (j = 0; j + 81 < pwm_count; j++) {
+            uint32_t want_s = clamp(play[p + 1 + j] + (j < sizeof(over) ? over[j] - 128 : 0));
+
+            if (pwm_samples[81 + j] != want_s) {
+                RC_FAIL("k %u, overlay sample %u: %u, want %u", (unsigned)k, (unsigned)j,
+                        (unsigned)pwm_samples[81 + j], (unsigned)want_s);
+            }
+        }
+
+        fresh(AUDIO_BACKEND_TRACE);
+        CHECK_EQ(audio_play_pcm(play, sizeof(play), 8000, 0), 0);
+        tick(10);
+        run_us(10000);
+        fake_step(k * 125 + 60);
+        CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
+        audio_trace_flush();
+        snprintf(want, sizeof(want),
+                 "@RC stage=host ev=audio op=pcm rate=8000 len=800 vol=100 crc=%08x t_ms=1010\n"
+                 "@RC stage=host ev=audio op=pcm_mix len=200 crc=%08x t_ms=%u\n",
+                 (unsigned)crc_of(play, sizeof(play)), (unsigned)crc_of(over, sizeof(over)),
+                 (unsigned)(1010 + join_us / 1000));
+        CHECK_STR(out, want);
+    }
+}
+
+/* The play's end has passed with its IRQ still due: a queued buffer loses no byte. */
+TEST(a_queue_joins_after_an_overdue_end)
+{
+    size_t j;
+
+    fill();
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(play, sizeof(play), 8000, 0), 0);
+    tick(10);
+    run_us(99900);
+    CHECK_EQ(pwm_count, sizeof(play));
+    fake_step(300);
+    CHECK_EQ(audio_pcm_queue(over, sizeof(over)), 0);
+    run_us(100000);
+    CHECK(!pcm.active);
+    CHECK_EQ(pwm_count, sizeof(play) + sizeof(over));
+    for (j = 0; j < sizeof(over); j++) {
+        CHECK_EQ(pwm_samples[sizeof(play) + j], over[j]);
+    }
+}

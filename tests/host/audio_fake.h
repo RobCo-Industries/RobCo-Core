@@ -17,6 +17,7 @@
 #include "rc_test.h"
 
 static uint32_t fake_us;
+static uint32_t fake_hi;        /* high word of the 64-bit counter */
 static uint32_t fake_ticks;
 static int fake_irq3;
 static uint32_t fake_due;
@@ -51,7 +52,7 @@ int tick_register(void (*fn)(void))
     return 0;
 }
 uint32_t timer_now_lo(void) { return fake_us; }
-uint64_t timer_now_us(void) { return fake_us; }
+uint64_t timer_now_us(void) { return ((uint64_t)fake_hi << 32) | fake_us; }
 void timer_compare_clear(unsigned ch) { (void)ch; }
 int timer_compare_arm(unsigned ch, uint32_t clo)
 {
@@ -129,13 +130,24 @@ static void capture(char c)
     }
 }
 
+/* Moves the clock without any IRQ, carrying into the high word. */
+static void fake_step(uint32_t us)
+{
+    uint32_t was = fake_us;
+
+    fake_us += us;
+    if (fake_us < was) {
+        fake_hi++;
+    }
+}
+
 /* Runs before audio_tick() in tick(), as another tick callback would. */
 static void (*tick_hook)(void);
 
 /* One tick run, `ms` after the last one. */
 static void tick(uint32_t ms)
 {
-    fake_us += ms * 1000u;
+    fake_step(ms * 1000u);
     if (tick_hook) {
         tick_hook();
     }
@@ -153,9 +165,9 @@ static void run_us(uint32_t us)
             continue;
         }
         if (fake_irq3 && (int32_t)(fake_due - end) < 0) {
-            fake_us = fake_due;
+            fake_step(fake_due - fake_us);
         } else {
-            fake_us = end;
+            fake_step(end - fake_us);
         }
     }
 }
@@ -187,6 +199,7 @@ static void fresh(int which)
     k_memset(&mix, 0, sizeof(mix));
     mix_val = 128;
     mix_req_set = 0;
+    k_memset(&pcm_req, 0, sizeof(pcm_req));
     pcm_req_full = 0;
     pcm_full = 0;
     rest_mid = 0;
