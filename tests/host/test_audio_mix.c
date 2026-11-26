@@ -431,8 +431,8 @@ TEST(a_queue_joins_after_an_overdue_end)
  */
 TEST(a_mix_stays_on_the_play_grid_at_every_join_offset)
 {
-    static const uint32_t rates[] = { 8000, 11025, 16000, 22050, 7993 };
-    static uint8_t mid[2400];  /* 100 ms at the highest rate */
+    static const uint32_t rates[] = { 8000, 11025, 16000, 22050, 37500, 7993 };
+    static uint8_t mid[3750];  /* 100 ms at the highest rate */
     static uint8_t ramp_up[64];
     size_t i, j;
 
@@ -473,6 +473,46 @@ TEST(a_mix_stays_on_the_play_grid_at_every_join_offset)
             }
         }
     }
+}
+
+/*
+ * A play and an overlay at the top rate, 37500 Hz, one sample per PWM
+ * carrier period. Every play byte sounds once, in order, with the overlay
+ * added from the play's next sample on.
+ */
+TEST(a_play_and_a_mix_at_the_top_rate)
+{
+    static uint8_t top[3750];   /* 100 ms at 37500 Hz */
+    static uint8_t add[1500];   /* 40 ms */
+    size_t i;
+    size_t at;
+
+    for (i = 0; i < sizeof(top); i++) {
+        top[i] = (uint8_t)(60 + i % 137);
+    }
+    for (i = 0; i < sizeof(add); i++) {
+        add[i] = (uint8_t)(100 + i % 57);
+    }
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(top, sizeof(top), AUDIO_PCM_RATE_MAX, 0), 0);
+    tick(10);
+    run_us(10000);
+    at = pwm_count;
+    CHECK_EQ(audio_pcm_mix(add, sizeof(add)), 0);
+    run_us(100000);
+    CHECK(!pcm.active);
+    CHECK_EQ(pwm_count, sizeof(top));
+    for (i = 0; i < pwm_count; i++) {
+        int m = i >= at && i < at + sizeof(add) ? add[i - at] - 128 : 0;
+
+        if (pwm_samples[i] != clamp(top[i] + m)) {
+            RC_FAIL("sample %u: %u, want %u", (unsigned)i, (unsigned)pwm_samples[i],
+                    (unsigned)clamp(top[i] + m));
+            break;
+        }
+    }
+    CHECK_EQ(audio_play_pcm(top, sizeof(top), AUDIO_PCM_RATE_MAX + 1, AUDIO_PRIORITY),
+             AUDIO_ERR_RANGE);
 }
 
 /*
