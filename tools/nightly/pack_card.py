@@ -9,8 +9,10 @@ itself, with no tool that could hide a file: hidden, system and read-only
 entries, long and short names, every folder at any depth. A file whose
 long or short name equals a Pi firmware name in any case fails the job: a
 kept card holds no Pi firmware. The firmware names come from the FILES
-line of tools/fetch_firmware.sh, so the two cannot disagree. A partition
-or a directory it cannot read fails the job too. Then it copies the card
+line of tools/fetch_firmware.sh, so the two cannot disagree. It fails
+closed: a partition, a directory entry or a cluster chain it cannot read
+fails the job too. It skips only what a healthy card holds: deleted
+entries, the volume label in the root and the . and .. entries. Then it copies the card
 to DIR/NAME, each --extra file under its own name, and VERSIONS.txt, and
 writes DIR/SHA256SUMS over the images. Standard library only.
 """
@@ -59,7 +61,7 @@ class Volume:
         fatsz = fat16 or fat32
         total = tot16 or tot32
         self.bps, self.csize = bps, bps * self.spc
-        self.fat_off = rsvd * bps
+        self.fat_off, self.fat_len, self.nfats = rsvd * bps, fatsz * bps, nfats
         self.root_off = (rsvd + nfats * fatsz) * bps
         root_secs = (root_ents * 32 + bps - 1) // bps
         self.root_len = root_ents * 32
@@ -70,6 +72,17 @@ class Volume:
         self.bits = 12 if self.clusters < 4085 else 16 if self.clusters < 65525 else 32
         if self.bits != 32 and root_ents == 0 or self.bits == 32 and fat16:
             raise CardError(f"FAT{self.bits} volume at {offset} has a bad root directory")
+        if self.bits == 32 and not 2 <= self.root_clus < self.clusters + 2:
+            raise CardError(f"FAT32 volume at {offset} has root cluster {self.root_clus}")
+        if self.fat_len * 8 // self.bits < self.clusters + 2:
+            raise CardError(f"FAT at {offset} is too small for {self.clusters} clusters")
+        # A healthy writer keeps every FAT copy the same. A card whose copies
+        # disagree may read differently on the Pi than here.
+        first = self.read(self.fat_off, self.fat_len)
+        for n in range(1, nfats):
+            if self.read(self.fat_off + n * self.fat_len, self.fat_len) != first:
+                raise CardError(f"FAT copy {n + 1} at {offset} differs from the first")
+        self.used = set()
 
     def read(self, off, n):
         self.f.seek(self.offset + off)
@@ -87,20 +100,24 @@ class Volume:
         v &= 0x0FFFFFFF
         return None if v >= 0x0FFFFFF8 else v
 
-    def chain(self, first):
-        seen = set()
+    def chain(self, first, what):
+        """The cluster numbers of a chain. A cluster out of range, a free or
+        bad cluster, a loop and a cluster another chain holds all fail."""
         c = first
         while c is not None:
-            if c < 2 or c >= self.clusters + 2 or c in seen:
-                raise CardError(f"broken cluster chain at cluster {c}")
-            seen.add(c)
-            yield self.read(self.data_off + (c - 2) * self.csize, self.csize)
+            if c < 2 or c >= self.clusters + 2:
+                raise CardError(f"{what}: broken cluster chain at cluster {c}")
+            if c in self.used:
+                raise CardError(f"{what}: broken cluster chain at cluster {c}, used twice")
+            self.used.add(c)
+            yield c
             c = self.next_cluster(c)
 
-    def directory(self, first):
+    def directory(self, first, what):
         if first == 0 and self.bits != 32:
             return self.read(self.root_off, self.root_len)
-        return b"".join(self.chain(first or self.root_clus))
+        return b"".join(self.read(self.data_off + (c - 2) * self.csize, self.csize)
+                        for c in self.chain(first or self.root_clus, what))
 
 
 def lfn_part(e):
@@ -108,50 +125,106 @@ def lfn_part(e):
     return raw.decode("utf-16-le", "replace").split("\0", 1)[0].replace("\uffff", "")
 
 
+def lfn_checksum(short):
+    s = 0
+    for b in short:
+        s = (((s & 1) << 7) + (s >> 1) + b) & 0xFF
+    return s
+
+
+# Bytes a short name never holds. The dot is implied between name and extension.
+BAD_NAME_BYTES = frozenset(b'"*+,./:;<=>?[\\]|')
+DOT_ENTRIES = (b".          ", b"..         ")
+
+
 def walk(vol, label):
     """Every file and folder of the volume as (path, [names]), names holding
-    the short name and, when there is one, the long name."""
+    the short name and, when there is one, the long name.
+
+    It skips only what a healthy card holds: the end of a directory, deleted
+    entries, the volume label in the root, and the . and .. entries of a
+    folder. Anything else it cannot read raises CardError naming the entry.
+    """
     out = []
     todo = [(0, label, 0)]
     while todo:
         cluster, path, depth = todo.pop()
         if depth > MAX_DEPTH:
             raise CardError(f"{path}: folders nest deeper than {MAX_DEPTH}")
-        data = vol.directory(cluster)
-        lfn = []
+        data = vol.directory(cluster, path + "/")
+        lfn = None  # [parts, last sequence number, checksum, where]
         for i in range(0, len(data) - 31, 32):
             e = data[i:i + 32]
+            where = f"{path}/ entry {i // 32}"
             if e[0] == 0:
+                # The end of the directory: the FAT spec makes every later entry free.
                 break
             if e[0] == 0xE5:
-                lfn = []
+                # A deleted entry. A writer marks the long-name parts deleted too.
+                if lfn:
+                    raise CardError(f"{lfn[3]}: long name with no short entry")
                 continue
             attr = e[11]
             if attr & 0x3F == 0x0F:
-                lfn = [lfn_part(e)] + lfn if not e[0] & 0x40 else [lfn_part(e)]
+                seq, chk = e[0], e[13]
+                if seq & 0x40:
+                    if lfn:
+                        raise CardError(f"{lfn[3]}: long name with no short entry")
+                    if not 1 <= seq & 0x1F <= 20:
+                        raise CardError(f"{where}: long-name part number {seq & 0x1F}")
+                    lfn = [[lfn_part(e)], seq & 0x1F, chk, where]
+                elif lfn and seq == lfn[1] - 1 and chk == lfn[2]:
+                    lfn[0].insert(0, lfn_part(e))
+                    lfn[1] = seq
+                else:
+                    raise CardError(f"{where}: long-name part out of sequence")
                 continue
-            long_name, lfn = "".join(lfn), []
+            raw = e[0:11]
+            if lfn and (lfn[1] != 1 or lfn_checksum(raw) != lfn[2]):
+                raise CardError(f"{lfn[3]}: long name with no short entry")
+            long_name = "".join(lfn[0]) if lfn else ""
+            lfn = None
             if attr & 0x08:
+                # The volume label: one entry in the root, with no folder bit.
+                if depth == 0 and attr & 0x18 == 0x08 and not long_name:
+                    continue
+                raise CardError(f"{where}: volume label bit on {raw!r}")
+            if raw in DOT_ENTRIES:
+                # Every folder starts with . and .., which point at itself and its parent.
+                if depth == 0 or not attr & 0x10:
+                    raise CardError(f"{where}: {raw.rstrip()!r} entry where none belongs")
                 continue
+            if raw[0] == 0x20 or any(b in BAD_NAME_BYTES or b < 0x20 and not (k == 0 and b == 5)
+                                     for k, b in enumerate(raw)):
+                raise CardError(f"{where}: invalid short name {raw!r}")
             base = (bytes([0xE5]) + e[1:8] if e[0] == 0x05 else e[0:8]).decode("latin-1").rstrip()
             ext = e[8:11].decode("latin-1").rstrip()
             # The case bits Windows NT and mtools set on a lower-case short name.
             base = base.lower() if e[12] & 0x08 else base
             ext = ext.lower() if e[12] & 0x10 else ext
             short = f"{base}.{ext}" if ext else base
-            if short in (".", ".."):
-                continue
             names = [short] + ([long_name] if long_name and long_name != short else [])
             full = f"{path}/{long_name or short}"
             out.append((full, names))
             if len(out) > MAX_ENTRIES:
                 raise CardError(f"more than {MAX_ENTRIES} entries")
+            first = struct.unpack_from("<H", e, 26)[0]
+            if vol.bits == 32:
+                first |= struct.unpack_from("<H", e, 20)[0] << 16
+            size, = struct.unpack_from("<I", e, 28)
             if attr & 0x10:
-                first = struct.unpack_from("<H", e, 26)[0]
-                if vol.bits == 32:
-                    first |= struct.unpack_from("<H", e, 20)[0] << 16
-                if first:
-                    todo.append((first, full, depth + 1))
+                if not first:
+                    raise CardError(f"{full}: folder with starting cluster 0")
+                todo.append((first, full, depth + 1))
+                continue
+            if size > vol.clusters * vol.csize:
+                raise CardError(f"{full}: size {size} passes the partition")
+            need = -(-size // vol.csize)
+            got = sum(1 for _ in vol.chain(first, full)) if first else 0
+            if got != need:
+                raise CardError(f"{full}: {got} clusters for {size} bytes, not {need}")
+        if lfn:
+            raise CardError(f"{lfn[3]}: long name with no short entry")
     return out
 
 

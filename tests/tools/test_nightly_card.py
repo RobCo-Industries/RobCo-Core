@@ -185,20 +185,142 @@ def test_a_partition_that_is_not_fat_fails(tmp_path):
     assert "not FAT" in proc.stdout
 
 
+def open_volume(f, card):
+    return pack_card.Volume(f, 1 << 20, os.path.getsize(card) - (1 << 20))
+
+
+def entry_at(card, short):
+    """The byte offset of the one directory entry whose 8.3 name is `short`."""
+    data = card.read_bytes()
+    at = [m.start() for m in re.finditer(re.escape(short), data) if m.start() % 32 == 0]
+    assert len(at) == 1, (short, at)
+    return at[0]
+
+
+def put(f, off, data):
+    f.seek(off)
+    f.write(data)
+
+
+def set_fat(f, vol, cluster, value):
+    """Set one FAT16 or FAT32 entry in every FAT copy."""
+    width = vol.bits // 8
+    for n in range(vol.nfats):
+        put(f, vol.offset + vol.fat_off + n * vol.fat_len + cluster * width,
+            value.to_bytes(width, "little"))
+
+
+def first_cluster(card, off):
+    e = card.read_bytes()[off:off + 32]
+    return int.from_bytes(e[26:28], "little") | int.from_bytes(e[20:22], "little") << 16
+
+
+def patch_entry(at, field, data):
+    def patch(f, vol, card):
+        put(f, entry_at(card, at) + field, data)
+    return patch
+
+
+def end_chain_early(f, vol, card):
+    first = first_cluster(card, entry_at(card, UOS))
+    set_fat(f, vol, first, (1 << vol.bits) - 1 if vol.bits == 16 else 0x0FFFFFFF)
+
+
+def cluster_out_of_range(f, vol, card):
+    first = first_cluster(card, entry_at(card, UOS))
+    set_fat(f, vol, first, vol.clusters + 5)
+
+
+def loop_a_folder(f, vol, card):
+    first = first_cluster(card, entry_at(card, b"ROBCO      \x10"))
+    set_fat(f, vol, first, first)
+
+
+def lfn_without_short(f, vol, card):
+    # The short entry right after the long name is marked deleted.
+    put(f, entry_at(card, b"ALONGN~1TXT"), b"\xe5")
+
+
+def lfn_with_wrong_checksum(f, vol, card):
+    put(f, entry_at(card, b"ALONGN~1TXT"), b"B")
+
+
+def fat32_root_zero(f, vol, card):
+    put(f, vol.offset + 44, (0).to_bytes(4, "little"))
+
+
+def fats_disagree(f, vol, card):
+    off = vol.offset + vol.fat_off + vol.fat_len + 2 * vol.bits // 8 * 3
+    f.seek(off)
+    b = f.read(1)
+    put(f, off, bytes([b[0] ^ 0xFF]))
+
+
+UOS = b"UOS     SYS"
+# One row per thing a healthy card never holds: (patch, FAT32 only, what the error says).
+BAD_CARDS = {
+    "folder-cluster-zero": (patch_entry(b"ROBCO      \x10", 26, b"\0\0"), False,
+                            "folder with starting cluster 0"),
+    "cluster-out-of-range": (cluster_out_of_range, False, "broken cluster chain"),
+    "file-starts-out-of-range": (patch_entry(UOS, 26, b"\xf0\xff"), False,
+                                 "broken cluster chain"),
+    "folder-chain-loops": (loop_a_folder, False, "broken cluster chain"),
+    "chain-ends-early": (end_chain_early, False, "clusters for 3000 bytes"),
+    "chain-longer-than-size": (patch_entry(UOS, 28, (1).to_bytes(4, "little")), False,
+                               "clusters for 1 bytes"),
+    "size-passes-partition": (patch_entry(UOS, 28, b"\xf0\xff\xff\xff"), False,
+                              "passes the partition"),
+    "long-name-without-short-entry": (lfn_without_short, False, "long name with no short"),
+    "long-name-of-another-entry": (lfn_with_wrong_checksum, False, "long name with no short"),
+    "volume-label-bit-on-a-file": (patch_entry(UOS, 11, b"\x28"), False, "volume label bit"),
+    "invalid-first-byte": (patch_entry(UOS, 0, b"\x01"), False, "invalid short name"),
+    "invalid-name-byte": (patch_entry(UOS, 3, b"*"), False, "invalid short name"),
+    "fat32-root-cluster-zero": (fat32_root_zero, True, "root cluster 0"),
+    "fat-copies-disagree": (fats_disagree, False, "differs from the first"),
+}
+
+
+def healthy_card(tmp_path, size):
+    """A card from tools/mksdimage.sh, labelled ROBCO, with a deleted file in
+    the root and in a folder, a long name and a 3000-byte file."""
+    stage = tmp_path / "stage"
+    (stage / "ROBCO").mkdir(parents=True)
+    (stage / "ROBCO" / "UOS.SYS").write_bytes(b"u" * 3000)
+    (stage / "ROBCO" / "GONE.TXT").write_bytes(b"g" * 700)
+    (stage / "ROBCO" / "a long name.txt").write_bytes(b"x")
+    (stage / "GONE2.TXT").write_bytes(b"g")
+    card = tmp_path / "sd.img"
+    subprocess.run([os.path.join(ROOT, "tools", "mksdimage.sh"), str(card), size, str(stage)],
+                   check=True, capture_output=True)
+    for path in ("ROBCO/GONE.TXT", "GONE2.TXT"):
+        subprocess.run(["mdel", "-i", f"{card}@@1M", f"::/{path}"], check=True,
+                       capture_output=True, env=MTOOLS_ENV)
+    return card
+
+
 @needs_mtools
-def test_a_directory_cluster_loop_fails(tmp_path):
-    card = make_card(tmp_path, ["ROBCO/UOS.SYS"], size="16")
-    with open(card, "r+b") as f:
-        vol = pack_card.Volume(f, 1 << 20, os.path.getsize(card) - (1 << 20))
-        entry = [p for p, _ in pack_card.walk(vol, "p1:")]
-        assert entry == ["p1:/ROBCO", "p1:/ROBCO/UOS.SYS"]
-        # Point the ROBCO folder's cluster at itself in the FAT.
-        root = vol.read(vol.root_off, vol.root_len)
-        robco = next(root[i:i + 32] for i in range(0, len(root), 32)
-                     if root[i:i + 11] == b"ROBCO      " and root[i + 11] & 0x10)
-        first = int.from_bytes(robco[26:28], "little")
-        f.seek(vol.offset + vol.fat_off + first * 2)
-        f.write(first.to_bytes(2, "little"))
+@pytest.mark.parametrize("size", ["16", "64"], ids=["fat16", "fat32"])
+def test_a_healthy_card_with_deleted_files_and_a_label_passes(tmp_path, size):
+    card = healthy_card(tmp_path, size)
+    data = card.read_bytes()
+    assert re.search(rb"ROBCO      \x08", data) and data.count(b"\xe5ONE") >= 2
     proc = pack(tmp_path, card)
-    assert proc.returncode == 1
-    assert "broken cluster chain" in proc.stdout
+    assert proc.returncode == 0, proc.stdout
+    listed = [line for line in proc.stdout.splitlines() if line.startswith("p1:")]
+    assert sorted(listed) == ["p1:/ROBCO", "p1:/ROBCO/UOS.SYS", "p1:/ROBCO/a long name.txt"]
+
+
+@needs_mtools
+@pytest.mark.parametrize("size", ["16", "64"], ids=["fat16", "fat32"])
+@pytest.mark.parametrize("case", sorted(BAD_CARDS))
+def test_what_it_cannot_read_is_refused(tmp_path, case, size):
+    patch, fat32_only, says = BAD_CARDS[case]
+    if fat32_only and size != "64":
+        pytest.skip("a FAT32 field")
+    card = healthy_card(tmp_path, size)
+    with open(card, "r+b") as f:
+        patch(f, open_volume(f, card), card)
+    proc = pack(tmp_path, card)
+    assert proc.returncode == 1, proc.stdout
+    assert "cannot check" in proc.stdout and says in proc.stdout, proc.stdout
+    assert not (tmp_path / "out").exists()
