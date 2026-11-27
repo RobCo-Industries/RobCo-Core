@@ -13,7 +13,7 @@ This page maps the repository and shows where new code and tests go. To use the 
 | `mk/host.mk` | Host unit test build. The top-level `Makefile` includes it for the library's tests, and a project includes it for its own with `HOST_TEST_DIR`. See [host tests in a project](../../tests/README.md#host-tests-in-a-project). |
 | `examples/` | Small images that use the library. Each one is also a target test. |
 | `tests/` | Host tests, QEMU harness, target tests, tool tests, canary suite. `tests/harness` is also the pytest plugin and the interactive runner projects use. `tests/fixtures/sample-project` is a minimal project the tool tests build. See [tests/README.md](../../tests/README.md). |
-| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory, `mksdimage.sh` builds an SD card image from a directory, `check_pins.sh` checks a project's workflow pins against its submodule, `check_doc_links.sh` checks a project's doc links to a pinned RobCo repository against its submodule |
+| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `sfx_table.py` renders sound effect models into 8-bit tables, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory, `mksdimage.sh` builds an SD card image from a directory, `check_pins.sh` checks a project's workflow pins against its submodule, `check_doc_links.sh` checks a project's doc links to a pinned RobCo repository against its submodule |
 | `docs/` | This guide, the [specifications](../spec/README.md), [FONTS.md](../FONTS.md) and [HARDWARE_VALIDATION.md](../HARDWARE_VALIDATION.md) |
 | `spikes/` | Three early proofs: UART hello, SD sector read, framebuffer and MMU. They have their own code in `spikes/common/` and do not use the library. |
 | `ci/` | The CI container. See [ci/README.md](../../ci/README.md). |
@@ -120,6 +120,7 @@ Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and bui
 | File | Tests |
 |---|---|
 | `test_rimg_tool.py` | `tools/rimg.py` on images built in memory, one case per error code, `pack`, the META options and the layout against `rimg.h`. `tests/host/test_rimg_pack.c` reads the images `mk/host.mk` packs, so C and Python agree on META images. |
+| `test_sfx_table.py` | `tools/sfx_table.py` on small made-up models: its arithmetic, the synthesis, every refusal, `--check`, and the generated C built with the host compiler |
 | `test_check_docs.py` | `tools/check_docs.py` on small trees in a temp directory |
 | `test_font_tools.py` | `tools/font2c.py` and `tools/font_specimen.py` |
 | `test_scheme_ids.py` | The console scheme ids in `console.h` match `con_scheme` in BOOT_PROTOCOL.md |
