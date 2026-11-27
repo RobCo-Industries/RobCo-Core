@@ -203,3 +203,107 @@ def test_quiet_loop_needs_the_rounding_floor(tmp_path, monkeypatch):
     monkeypatch.setattr(sfx_check, "ROUND_POWER", 0.0)
     without, _ = sfx_check.check_sound(model, "quiet", str(d))
     assert _worst_band(without) > _worst_band(with_floor), (with_floor, without)
+
+
+def test_noise_above_15_khz_passes_with_a_note(tmp_path):
+    rate = 48000
+    m = {"format": 1, "rate_hz": rate, "ceiling_steps": 90, "sounds": {"hiss": {
+        "len": 9600, "peak_steps": 60, "layers": [
+            {"kind": "noise", "seed": 4, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -60000], [2000, 0], [198000, 0], [200000, -60000]],
+             "bands": [[16000, 0], [23000, 0]]}]}}}
+    p, d = dump(tmp_path, m)
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "bands not judged, no power under 15 kHz: ok" in r.stdout, r.stdout
+
+
+def tone_model(peak):
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"beep": {
+        "len": 4000, "peak_steps": peak, "layers": [
+            {"kind": "tone", "hits": [[0, 0]], "len": 4000,
+             "pitch_mhz": [440000, 440000], "level_mdb": 0,
+             "partials": [[10000, 0]]}]}}}
+
+
+@pytest.mark.parametrize("peak", [1, 2, 4])
+def test_quiet_tone_passes(tmp_path, peak):
+    p, d = dump(tmp_path, tone_model(peak))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def short_model(peak=50):
+    """A 15 ms burst of noise: three frames."""
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"tick": {
+        "len": 300, "peak_steps": peak, "layers": [
+            {"kind": "noise", "seed": 7, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -60000], [1000, 0], [14000, 0], [15000, -60000]],
+             "bands": [[500, 0], [6000, 0]]}]}}}
+
+
+def test_short_noise_passes_with_a_note(tmp_path):
+    p, d = dump(tmp_path, short_model())
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "bands not judged, under 20 ms: ok" in r.stdout, r.stdout
+
+
+def test_short_noise_frame_8db_off_fails(tmp_path):
+    p, d = dump(tmp_path, short_model())
+    scale = 10 ** (-8 / 20)
+
+    def quiet(data):
+        loud = max(range(len(data)), key=lambda k: abs(data[k] - 128))
+        start = 0 if loud >= 100 else 100  # one 5 ms frame without the peak
+        for i in range(start, start + 100):
+            data[i] = 128 + int(round((data[i] - 128) * scale))
+    _rewrite(os.path.join(d, "tick.u8"), quiet)
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "frame" in r.stdout
+
+
+def test_short_noise_wrong_peak_fails(tmp_path):
+    _, d = dump(tmp_path, short_model())
+    p2 = tmp_path / "other.json"
+    p2.write_text(json.dumps(short_model(peak=51)))
+    r = run(CHECK, p2, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "peak is" in r.stdout
+
+
+def _bad(fn):
+    m = noise_model()
+    fn(m["sounds"]["burst"])
+    return m
+
+
+BAD_MODELS = {
+    "same band frequency": lambda s: s["layers"][0].update(
+        bands=[[300, 0], [300, -3000], [9000, -30000]]),
+    "falling band frequency": lambda s: s["layers"][0].update(
+        bands=[[3000, 0], [300, -3000]]),
+    "fold past half": lambda s: s["layers"][0].update(fold=3000),
+    "env of no sample": lambda s: s["layers"][0].update(env=[[0, 0], [0, 0]]),
+    "hit past the end": lambda s: s["layers"][0].update(hits=[[8000, 0]]),
+    "env going back": lambda s: s["layers"][0].update(env=[[0, 0], [5000, 0], [4000, 0]]),
+    "no layer": lambda s: s.update(layers=[]),
+    "no hit": lambda s: s["layers"][0].update(hits=[]),
+    "zero len": lambda s: s.update(len=0),
+    "zero pitch": lambda s: s["layers"].append(
+        {"kind": "tone", "hits": [[0, 0]], "len": 100, "pitch_mhz": [0, 440000],
+         "level_mdb": 0, "partials": [[10000, 0]]}),
+    "zero tone len": lambda s: s["layers"].append(
+        {"kind": "tone", "hits": [[0, 0]], "len": 0, "pitch_mhz": [440000, 440000],
+         "level_mdb": 0, "partials": [[10000, 0]]}),
+}
+
+
+@pytest.mark.parametrize("case", sorted(BAD_MODELS))
+def test_invalid_model_gives_2(tmp_path, case):
+    p = tmp_path / "model.json"
+    p.write_text(json.dumps(_bad(BAD_MODELS[case])))
+    r = run(CHECK, p, tmp_path)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "burst" in r.stderr, r.stderr

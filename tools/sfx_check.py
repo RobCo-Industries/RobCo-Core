@@ -38,6 +38,11 @@ FILTER_FFT = 8192
 # Rounding each sample to a whole step adds white noise of this power, in
 # steps squared, per sample: a uniform error over one step.
 ROUND_POWER = 1.0 / 12.0
+# A sound with noise shorter than this holds too few values per band to
+# judge its bands.
+SHORT_MS = 20
+# Bands are not judged when they hold less than this share of the energy.
+LOW_SHARE = 0.01
 
 # Tolerances in dB, by kind of sound. Each rule names a statistic of the
 # absolute errors and its limit.
@@ -163,10 +168,19 @@ def load_model(path):
                 _need_int(layer, "fold", lw, 0, 262144, optional=True)
                 if "repeat" in layer and not isinstance(layer["repeat"], bool):
                     raise ModelError("%s: repeat must be true or false" % lw)
+                pts = layer["bands"]
+                if any(pts[k][0] >= pts[k + 1][0] for k in range(len(pts) - 1)):
+                    raise ModelError("%s: bands frequencies must rise" % lw)
             env = layer.get("env", [])
             if any(env[k][0] > env[k + 1][0] for k in range(len(env) - 1)) or \
                     any(t < 0 for t, _ in env):
                 raise ModelError("%s: env times must start at 0 or later and not go down" % lw)
+            if layer["kind"] == "noise":
+                n = ceil_div(env[-1][0] * model["rate_hz"], 1000000)
+                if n < 1:
+                    raise ModelError("%s: env must span at least one sample" % lw)
+                if layer.get("fold", 0) > n // 2:
+                    raise ModelError("%s: fold must be %d or less, half the env" % (lw, n // 2))
     return model
 
 
@@ -348,20 +362,42 @@ def noise_power(layer, sound, rate):
     return power
 
 
-def predict(sound, rate, nbands):
-    """Band and frame energy of a sound, from its model, before scaling."""
+def render_tones(sound, rate):
+    """The sum of every tone hit of a sound, before scaling."""
     loop = sound.get("loop", False)
     tone = [0.0] * sound["len"]
-    has_tone = False
-    noise_bands = [0.0] * nbands
-    noise_pow = [0.0] * sound["len"]
     for layer in sound["layers"]:
         if layer["kind"] == "tone":
-            has_tone = True
             one = tone_hit(layer, sound, rate)
             for start, level in layer["hits"]:
                 _add(tone, start, one, db_gain(level / 1000.0), loop)
-        else:
+    return tone
+
+
+def round_half_away(v):
+    return math.floor(abs(v) + 0.5) * (1 if v >= 0 else -1)
+
+
+def rounded_tones(sound, rate):
+    """The table of a tones-only sound as whole steps: the render scaled so
+    its loudest sample sits at peak_steps, each sample rounded. Rounding
+    follows the waveform here, so it is not white noise."""
+    tone = render_tones(sound, rate)
+    top = max(abs(v) for v in tone)
+    if top <= 0.0:
+        raise ModelError("a tones-only sound renders to silence")
+    k = sound["peak_steps"] / top
+    return [float(round_half_away(v * k)) for v in tone]
+
+
+def predict(sound, rate, nbands):
+    """Band and frame energy of a sound, from its model, before scaling."""
+    tone = render_tones(sound, rate)
+    has_tone = any(layer["kind"] == "tone" for layer in sound["layers"])
+    noise_bands = [0.0] * nbands
+    noise_pow = [0.0] * sound["len"]
+    for layer in sound["layers"]:
+        if layer["kind"] == "noise":
             power = noise_power(layer, sound, rate)
             frac = filter_bands(layer["bands"], rate, nbands)
             total = sum(power)
@@ -443,6 +479,14 @@ def stats(errs):
     return {"mean": sum(s) / k, "median": med, "worst": s[-1]}
 
 
+def _gain(meas, floor, pred):
+    """The gain that matches the model part of a measured energy, or None
+    when the measure does not rise above the rounding floor."""
+    if pred > 0.0 and meas > floor:
+        return (meas - floor) / pred
+    return None
+
+
 def check_sound(model, name, folder):
     """Return the result line of one sound and whether it passes."""
     sound = model["sounds"][name]
@@ -460,27 +504,47 @@ def check_sound(model, name, folder):
     # rate reaches past 15 kHz.
     extra = rate / 2.0 > TOP_HZ
     x = [b - 128.0 for b in data]
-    mb = band_energy(x, rate, nbands + (1 if extra else 0))
+    nb = nbands + (1 if extra else 0)
+    mb = band_energy(x, rate, nb)
     mf = frame_energy([v * v for v in x], rate)
-    pb, pf = predict(sound, rate, nbands + (1 if extra else 0))
-    fb, ff = rounding_floor(len(data), rate, nbands + (1 if extra else 0))
+    has_noise = any(layer["kind"] == "noise" for layer in sound["layers"])
+    if has_noise:
+        pb, pf = predict(sound, rate, nb)
+        fb, ff = rounding_floor(len(data), rate, nb)
+    else:
+        # Tones only: predict the rounded table itself, so no gain and no
+        # white floor.
+        r = rounded_tones(sound, rate)
+        pb = band_energy(r, rate, nb)
+        pf = frame_energy([v * v for v in r], rate)
+        fb, ff = [0.0] * nb, [0.0] * len(pf)
     if extra:
         mb, pb, fb = mb[:-1], pb[:-1], fb[:-1]
-    if sum(pb) > 0.0 and sum(mb) > sum(fb):
-        gain = (sum(mb) - sum(fb)) / sum(pb)
-    else:
-        gain = sum(mb) / sum(pb) if sum(pb) > 0.0 else 0.0
-        fb, ff = [0.0] * len(fb), [0.0] * len(ff)
-    be = stats(errors_db(mb, [p * gain + f for p, f in zip(pb, fb)], 1.0))
-    fe = stats(errors_db(mf, [p * gain + f for p, f in zip(pf, ff)], 1.0))
-    for what, st in (("band", be), ("frame", fe)):
+    band_gain = _gain(sum(mb), sum(fb), sum(pb)) if has_noise else 1.0
+    frame_gain = _gain(sum(mf), sum(ff), sum(pf)) if has_noise else 1.0
+    if band_gain is None:
+        band_gain = sum(mb) / sum(pb) if sum(pb) > 0.0 else 0.0
+        fb = [0.0] * len(fb)
+    if frame_gain is None:
+        frame_gain = sum(mf) / sum(pf) if sum(pf) > 0.0 else 0.0
+        ff = [0.0] * len(ff)
+    be = stats(errors_db(mb, [p * band_gain + f for p, f in zip(pb, fb)], 1.0))
+    fe = stats(errors_db(mf, [p * frame_gain + f for p, f in zip(pf, ff)], 1.0))
+    note = None
+    if sum(mb) < LOW_SHARE * sum(mf):
+        note = "bands not judged, no power under 15 kHz"
+    elif has_noise and len(data) * 1000 < SHORT_MS * rate:
+        note = "bands not judged, under %d ms" % SHORT_MS
+    judged = (("frame", fe),) if note else (("band", be), ("frame", fe))
+    for what, st in judged:
         for stat, limit in RULES[kind][what]:
             if not st[stat] <= limit:
                 faults.append("%s %s error %.2f dB over %.2f" % (what, stat, st[stat], limit))
     line = ("%s %s band mean %.2f median %.2f worst %.2f dB, "
-            "frame mean %.2f median %.2f worst %.2f dB: %s"
+            "frame mean %.2f median %.2f worst %.2f dB%s: %s"
             % (name, kind, be["mean"], be["median"], be["worst"],
                fe["mean"], fe["median"], fe["worst"],
+               ", " + note if note else "",
                "ok" if not faults else "FAIL " + "; ".join(faults)))
     return line, not faults
 
