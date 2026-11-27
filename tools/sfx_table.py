@@ -725,6 +725,14 @@ def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+# The validator's rule: one line per fault, and every field that can be
+# judged on its own is judged. A check stops early only when what follows
+# cannot be judged without a missing or bad value, and then it skips only
+# that dependent part, in silence: the missing or bad value has its line.
+# A missing field reads as None from _Checker.field(). The dependent parts:
+# a layer's fields need its kind; the whole model needs the format; bounds
+# from rate_hz, a sound's len, a tone's len and pitch_mhz, or a noise env
+# wait for those; the render budget waits for a model with no fault.
 class _Checker:
     def __init__(self):
         self.faults = []
@@ -733,18 +741,18 @@ class _Checker:
         self.faults.append(f"{where or 'model'}: {text}")
 
     def keys(self, obj, where, section):
+        """Report unknown and missing fields. False only if obj is not an
+        object: then no field of it can be read."""
         if not isinstance(obj, dict):
             self.fault(where, "must be an object")
             return False
         for k in obj:
             if k not in FIELDS[section]:
                 self.fault(f"{where}.{k}" if where else k, "unknown field")
-        ok = True
         for k in sorted(REQUIRED[section]):
             if k not in obj:
                 self.fault(where, f"missing field {k!r}")
-                ok = False
-        return ok
+        return True
 
     def int(self, v, where, lo, hi):
         if not _is_int(v):
@@ -764,6 +772,8 @@ class _Checker:
         A fault names the field. A bound that depends on other fields is
         checked by the caller after this.
         """
+        if key not in obj:
+            return None             # keys() gave the missing line, if required
         kind = FIELDS[section][key]
         v = obj[key]
         w = f"{where}.{key}" if where else key
@@ -799,18 +809,15 @@ class _Checker:
         if not isinstance(v, list):
             self.fault(w, "must be a list")
             return None
-        if not lo <= len(v) <= hi:
+        # The length and each item are judged on their own.
+        ok = lo <= len(v) <= hi
+        if not ok:
             self.fault(w, f"must hold {lo} to {hi} points, not {len(v)}")
-            return None
-        shape = True
         for i, p in enumerate(v):
             if not isinstance(p, list) or len(p) != 2:
                 self.fault(f"{w}[{i}]", "must be a pair of whole numbers")
-                shape = False
-        if not shape:
-            return None
-        ok = True
-        for i, p in enumerate(v):
+                ok = False
+                continue
             for j in (0, 1):
                 if not self.int(p[j], f"{w}[{i}][{j}]", *items[j]):
                     ok = False
@@ -854,11 +861,12 @@ def _check_layer(c, layer, li, slen, rate, where):
         return
     kind = layer.get("kind")
     if kind not in ("tone", "noise"):
+        # Which fields a layer has, and their bounds, depend on its kind.
         c.fault(f"{w}.kind", 'must be "tone" or "noise"')
         return
-    if not c.keys(layer, w, kind):
-        return
-    c.field(layer, kind, "kind", w)
+    c.keys(layer, w, kind)
+    # rate is None when rate_hz is bad: bounds from it are skipped.
+    top = 48000 if rate is None else rate
     mdb = (MDB_MIN, MDB_MAX)
     c.field(layer, kind, "hits", w, 1, MAX_HITS, ((0, slen - 1), mdb))
     c.field(layer, kind, "level_mdb", w, *mdb)
@@ -873,9 +881,9 @@ def _check_layer(c, layer, li, slen, rate, where):
                 break
     if kind == "tone":
         n = c.field(layer, kind, "len", w, 1, MAX_LEN)
-        pitch = c.field(layer, kind, "pitch_mhz", w, 1, rate * 500)
+        pitch = c.field(layer, kind, "pitch_mhz", w, 1, top * 500)
         partials = c.field(layer, kind, "partials", w, 1, MAX_PARTIALS, ((1, 1000000), mdb))
-        if n is not None and pitch is not None and partials is not None:
+        if None not in (n, pitch, partials, rate):
             for i, (mult, _) in enumerate(partials):
                 bound = sine_bound(n, pitch[0], pitch[1], mult, rate)
                 if bound > SINE_LIMIT:
@@ -885,18 +893,18 @@ def _check_layer(c, layer, li, slen, rate, where):
         for key in ("attack_us", "release_us"):
             if key in layer:
                 v = c.field(layer, kind, key, w, 0, MAX_US)
-                if v is not None and n is not None and v * rate > n * 1000000:
+                if None not in (v, n, rate) and v * rate > n * 1000000:
                     c.fault(f"{w}.{key}", "must fit inside the tone's len")
     else:
         c.field(layer, kind, "seed", w, 0, MASK)
-        bands = c.field(layer, kind, "bands", w, 2, MAX_BANDS, ((0, rate // 2), mdb))
+        bands = c.field(layer, kind, "bands", w, 2, MAX_BANDS, ((0, top // 2), mdb))
         for i in range(1, len(bands) if bands else 0):
             if bands[i][0] <= bands[i - 1][0]:
                 c.fault(f"{w}.bands[{i}][0]", "must be above the point above it")
         if "repeat" in layer:
             c.field(layer, kind, "repeat", w)
         fold_hi = MAX_LEN // 2
-        if env is not None:
+        if env is not None and rate is not None:
             n = noise_len(layer, rate)
             if n < 1 or n > MAX_LEN:
                 c.fault(f"{w}.env", f"must span 1 to {MAX_LEN} samples, not {n}")
@@ -911,15 +919,14 @@ def check_model(model):
     c = _Checker()
     if not c.keys(model, "", "top"):
         return c.faults
+    # Another format, or none, gives the other fields another meaning.
     if c.field(model, "top", "format", "", FORMAT, FORMAT) is None:
         return c.faults
     rate = c.field(model, "top", "rate_hz", "", 8000, 48000)
     ceiling = c.field(model, "top", "ceiling_steps", "", 1, 127)
     sounds = c.field(model, "top", "sounds", "")
-    if sounds is None:
-        return c.faults
     names = set()
-    for name, sound in sounds.items():
+    for name, sound in (sounds or {}).items():
         where = f"sound {name!r}"
         if not NAME.match(name):
             c.fault(where, "the name must be a to z, 0 to 9 and _, start with a letter,"
@@ -940,9 +947,10 @@ def check_model(model):
                 c.fault(where, f"the table name {t!r} is taken twice")
             names.add(t)
         layers = c.field(sound, "sound", "layers", where, 1, MAX_LAYERS)
-        if layers is None or rate is None:
-            continue
-        for li, layer in enumerate(layers):
+        # Each layer is judged even when the list has a bad length.
+        if layers is None and isinstance(sound.get("layers"), list):
+            layers = sound["layers"]
+        for li, layer in enumerate(layers or []):
             _check_layer(c, layer, li, MAX_LEN if n is None else n, rate, where)
     if not c.faults:
         cost = render_cost(model)
