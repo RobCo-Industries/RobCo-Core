@@ -63,3 +63,23 @@ uint32_t audio_gain_slew(uint32_t cur, uint32_t target, uint32_t step)
     }
     return cur - target > step ? cur - step : target;
 }
+
+uint32_t audio_gain_slew_n(uint32_t cur, uint32_t target, uint32_t step, uint32_t n)
+{
+    uint32_t d = cur < target ? target - cur : cur - target;
+    uint64_t move;
+
+    if (n == 0 || step == 0 || d == 0) {
+        return cur;
+    }
+    /* n steps of at least 1 cover d: done, before any product. */
+    if (n >= d) {
+        return target;
+    }
+    /* n < d, so the product of two 32-bit values fits in 64 bits. */
+    move = (uint64_t)step * n;
+    if (move >= d) {
+        return target;
+    }
+    return cur < target ? cur + (uint32_t)move : cur - (uint32_t)move;
+}

@@ -387,3 +387,106 @@ TEST(trace_gain_in_a_tone_takes_the_audio_clock)
     /* The second tick ran 15 ms after the first, and the call 5 ms after it. */
     CHECK_EQ(t_ms_of(out, "op=gain gain=1234"), 1025);
 }
+
+/* The slew over n grid samples: n steps, never past the target, no overflow. */
+TEST(slew_n_moves_n_steps)
+{
+    /* n 0 leaves the gain. */
+    CHECK_EQ(audio_gain_slew_n(5000, 0, 63, 0), 5000);
+    CHECK_EQ(audio_gain_slew_n(5000, 10000, 63, 0), 5000);
+    /* n 1 is the slew of one step, up and down. */
+    CHECK_EQ(audio_gain_slew_n(5000, 10000, 63, 1), audio_gain_slew(5000, 10000, 63));
+    CHECK_EQ(audio_gain_slew_n(5000, 0, 63, 1), audio_gain_slew(5000, 0, 63));
+    CHECK_EQ(audio_gain_slew_n(9990, 10000, 63, 1), 10000);
+    /* n 2. */
+    CHECK_EQ(audio_gain_slew_n(5000, 10000, 63, 2), 5126);
+    CHECK_EQ(audio_gain_slew_n(5000, 0, 63, 2), 4874);
+    /* A count that lands on the target exactly, and one past it. */
+    CHECK_EQ(audio_gain_slew_n(0, 6300, 63, 99), 6237);
+    CHECK_EQ(audio_gain_slew_n(0, 6300, 63, 100), 6300);
+    CHECK_EQ(audio_gain_slew_n(0, 6300, 63, 101), 6300);
+    CHECK_EQ(audio_gain_slew_n(6300, 0, 63, 100), 0);
+    CHECK_EQ(audio_gain_slew_n(6300, 0, 63, 101), 0);
+    /* The largest count, up and down. */
+    CHECK_EQ(audio_gain_slew_n(0, 10000, 63, UINT32_MAX), 10000);
+    CHECK_EQ(audio_gain_slew_n(10000, 0, 63, UINT32_MAX), 0);
+    CHECK_EQ(audio_gain_slew_n(1, 0, AUDIO_GAIN_FULL, UINT32_MAX), 0);
+    /* A step of full gain swings at once. */
+    CHECK_EQ(audio_gain_slew_n(0, 10000, AUDIO_GAIN_FULL, 1), 10000);
+    CHECK_EQ(audio_gain_slew_n(10000, 0, AUDIO_GAIN_FULL, 1), 0);
+    CHECK_EQ(audio_gain_slew_n(10000, 0, AUDIO_GAIN_FULL, UINT32_MAX), 0);
+    CHECK_EQ(audio_gain_slew_n(5000, 5000, AUDIO_GAIN_FULL, UINT32_MAX), 5000);
+    /* Every count from 0 to 200 matches n single steps. */
+    {
+        uint32_t n;
+        uint32_t g = 10000;
+
+        for (n = 0; n <= 200; n++) {
+            CHECK_EQ(audio_gain_slew_n(10000, 0, 63, n), g);
+            g = audio_gain_slew(g, 0, 63);
+        }
+    }
+}
+
+/*
+ * A full swing from 10000 to 0 on grid samples that jump by `jump`
+ * reaches 0 by the first output at or after 20 ms of grid time. With no
+ * skipped sample it equals the slew of one step per sample.
+ */
+static void check_swing_on_the_grid(uint32_t rate, uint32_t jump)
+{
+    uint32_t step = audio_gain_step(rate);
+    uint32_t due = rate / 50;
+    uint32_t pos = 0;
+    uint32_t g = 10000;
+    uint32_t one = 10000;
+
+    while (pos < due) {
+        pos += jump;
+        g = audio_gain_slew_n(g, 0, step, jump);
+    }
+    if (g != 0) {
+        RC_FAIL("rate %u jump %u: gain %u at grid sample %u", (unsigned)rate, (unsigned)jump,
+                (unsigned)g, (unsigned)pos);
+    }
+    g = 10000;
+    for (pos = 0; pos <= due; pos++) {
+        g = audio_gain_slew_n(g, 0, step, 1);
+        one = audio_gain_slew(one, 0, step);
+        if (g != one) {
+            RC_FAIL("rate %u sample %u: %u, want %u", (unsigned)rate, (unsigned)pos,
+                    (unsigned)g, (unsigned)one);
+            return;
+        }
+    }
+}
+
+TEST(a_swing_with_skipped_samples_ends_in_20_ms)
+{
+    check_swing_on_the_grid(8000, 80);
+    check_swing_on_the_grid(37500, 375);
+}
+
+/* The driver: one late IRQ of 10 ms in a change, and the level is there after 20 ms. */
+TEST(a_late_irq_catches_up_the_gain)
+{
+    size_t a;
+
+    k_memset(buf, 255, sizeof(buf));
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), 8000, 0), 0);
+    tick(10);
+    /* A long steady stretch first: it must not count toward the change. */
+    run_us(30000);
+    a = pwm_count;
+    audio_set_volume(20);
+    run_us(1000);
+    /* No jump at the change: the steady stretch did not count. */
+    CHECK(pwm_samples[pwm_count - 1] >= audio_pcm_scale_g(255, 10000 - 63 * 9));
+    /* About 80 grid samples pass with no IRQ. */
+    fake_step(10000);
+    run_us(9000 + 125);
+    CHECK(pwm_count > a);
+    CHECK(pwm_count - a < 160);
+    CHECK_EQ(pwm_samples[pwm_count - 1], audio_pcm_scale(255, 20));
+}

@@ -173,8 +173,8 @@ int audio_busy(void);
 /*
  * Gain in units of 1/10000, 0 to AUDIO_GAIN_FULL. Values above count as
  * AUDIO_GAIN_FULL. A play starts at the gain set last. While a play runs,
- * the sample IRQ moves its level toward the new gain by a step per sample,
- * so a change reaches every kind of play within 20 ms with no jump. A
+ * the sample IRQ moves its level toward the new gain by a step per grid
+ * sample. The gain follows the sample grid, so a late sample catches up. A change reaches every kind of play within 20 ms with no jump. A
  * pulse tone, before the rest ramp ends, takes the gain at its next note.
  * The rest ramp ignores it. On the trace backend a change while something
  * plays prints one op=gain line.
@@ -531,6 +531,12 @@ uint32_t audio_gain_step(uint32_t rate);
 
 /* `cur` moved toward `target` by at most `step`, never past it. */
 uint32_t audio_gain_slew(uint32_t cur, uint32_t target, uint32_t step);
+
+/*
+ * `cur` moved toward `target` by `n` steps of `step`, never past it. n 0
+ * leaves cur, n 1 equals audio_gain_slew(). No overflow for any n and step.
+ */
+uint32_t audio_gain_slew_n(uint32_t cur, uint32_t target, uint32_t step, uint32_t n);
 
 /*
  * Starts a note of `hz` at grid `rate`, `amp` steps high. hz 0 is a rest.

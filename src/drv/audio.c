@@ -166,12 +166,15 @@ static unsigned fn0, fn1;
 /*
  * Gain, in units of 1/10000. The main context writes the target. The
  * play's level is gain_cur: a play starts at the target, and the sample
- * IRQ moves it toward the target by gain_step per sample. IRQ context
- * only for gain_cur and gain_step.
+ * IRQ moves it toward the target by gain_step per grid sample. The gain
+ * follows the sample grid, so a late sample catches up. gain_n is the
+ * grid sample of the last output, kept even while the gain rests. IRQ
+ * context only for gain_cur, gain_step and gain_n.
  */
 static volatile uint32_t gain_target = ROBCO_AUDIO_VOLUME * 100u;
 static uint32_t gain_cur = ROBCO_AUDIO_VOLUME * 100u;
 static uint32_t gain_step;
+static uint32_t gain_n;
 /* Slew step of a centred tone, on its fixed grid. */
 #define TONE_GAIN_STEP          ((AUDIO_GAIN_SLEW + ROBCO_AUDIO_TONE_RATE - 1u) / ROBCO_AUDIO_TONE_RATE)
 
@@ -378,7 +381,8 @@ static uint8_t mix_add(uint8_t a, uint8_t b)
 
 /*
  * IRQ context. One sample, with the overlay, at the play's gain. The gain
- * first moves one step toward its target. A sample play adds two bytes,
+ * first moves toward its target by one step per grid sample since the
+ * last output, so a late sample catches up. A sample play adds two bytes,
  * clamps and scales. A voice adds the overlay to its value on 1/256 of a
  * step and rounds once, after the gain. A tone takes its height from the
  * gain at each sample. The ramp plays at full scale. The voice runs on
@@ -391,8 +395,10 @@ static void pcm_out(uint32_t pos)
     uint8_t s;
 
     if (pcm_kind != KIND_RAMP && gain_cur != g) {
-        gain_cur = audio_gain_slew(gain_cur, g, gain_step);
+        gain_cur = audio_gain_slew_n(gain_cur, g, gain_step, pcm.last_n - gain_n);
     }
+    /* Kept at rest too: a change counts only the samples after it. */
+    gain_n = pcm.last_n;
     if (pcm_kind == KIND_TONE) {
         /* No overlay. */
         s = audio_square_out(audio_square_acc(&square, pcm.last_n),
@@ -561,6 +567,7 @@ static void pcm_begin(void)
     /* The play starts at the target: nothing fades in. */
     gain_cur = g;
     gain_step = audio_gain_step(pcm.rate);
+    gain_n = pcm.last_n;
     if (backend == AUDIO_BACKEND_PWM) {
         if (pcm_kind == KIND_RAMP) {
             /* The ramp starts from its first sample, not from the midpoint. */
@@ -643,6 +650,7 @@ static void tone_begin(void)
     pcm_kind = KIND_TONE;
     gain_cur = gain_target;
     gain_step = TONE_GAIN_STEP;
+    gain_n = pcm.last_n;
     pcm_t0_ms = clock_ms;
     pcm_t0_us = timer_now_us();
     pcm.origin_us = (uint32_t)pcm_t0_us;
