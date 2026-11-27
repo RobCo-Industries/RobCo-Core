@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Build 8-bit sound tables from a sound effect model. See docs/spec/SFX_MODEL.md.
 
-    sfx_table.py MODEL --c OUT.c --h OUT.h --prefix NAME_
-    sfx_table.py MODEL --c OUT.c --h OUT.h --prefix NAME_ --check [--full]
+    sfx_table.py MODEL --c OUT.c --h OUT.h --prefix NAME_sfx_
+    sfx_table.py MODEL --c OUT.c --h OUT.h --prefix NAME_sfx_ --check [--full]
     sfx_table.py MODEL --dump DIR
     sfx_table.py MODEL --wav DIR
 
---dump and --wav may go with the first form. --check writes nothing: it
+--dump and --wav may go with the first form. The file names of OUT.c and
+OUT.h hold sfx, and the prefix ends in sfx_, so every name written is clear
+of C's own names. --check writes nothing: it
 compares the model's SHA-256 and the tool revision recorded in OUT.h and in
 the comment of OUT.c. With --full it renders every sound again and compares
 both files byte for byte. A run checks its whole plan first: no two paths
@@ -684,9 +686,13 @@ MAX_US = 10000000
 MAX_DIGITS = 15                 # no field takes more than 10 digits
 MDB_MIN, MDB_MAX = -120000, 20000
 NAME = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
-# A prefix starts with a letter: a leading _ would make the upper-case macro
-# names and the table names reserved identifiers in C.
-PREFIX = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+# Every C name the tool writes carries the marker sfx_ or SFX_, and every
+# file name it writes carries sfx. No C or POSIX keyword, type, function,
+# macro or reserved pattern contains that marker, so no list of taken names
+# is needed. Three rounds of such lists each missed a name: size_t, with a
+# sound t and the prefix size_, was the last. The prefix ends in sfx_, each
+# part before it starts with a letter, at most 32 characters.
+PREFIX = re.compile(r"(?=.{4,32}\Z)(?:[a-z][a-z0-9]*_)*sfx_\Z")
 GUARD = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 # Every field of the format and its JSON type, by section of the spec's
@@ -1020,24 +1026,6 @@ def header_guard(h_name):
     return guard if GUARD.match(guard) else None
 
 
-# Keywords of C89 to C23 (ISO/IEC 9899:2024, 6.4.1), with the C23 spellings of
-# the older _Alignas and the like, and the GNU and common extensions asm,
-# fortran and typeof that -std=gnu11 accepts.
-C_KEYWORDS = frozenset("""
-    auto break case char const continue default do double else enum extern
-    float for goto if inline int long register restrict return short signed
-    sizeof static struct switch typedef union unsigned void volatile while
-    _Alignas _Alignof _Atomic _BitInt _Bool _Complex _Decimal128 _Decimal32
-    _Decimal64 _Generic _Imaginary _Noreturn _Static_assert _Thread_local
-    alignas alignof bool constexpr false nullptr static_assert thread_local
-    true typeof typeof_unqual asm fortran
-""".split())
-
-# Names that <stdint.h> defines, and the patterns C reserves for it (7.31.10).
-STDINT = re.compile(r"(?:u?int\w*_t|U?INT\w*_(?:MAX|MIN|C|WIDTH)"
-                    r"|(?:PTRDIFF|SIG_ATOMIC|SIZE|WCHAR|WINT)_(?:MAX|MIN|WIDTH))\Z")
-
-
 def c_names(model, built, prefix, h_name):
     """[(identifier, where it comes from)] for every name the C files define."""
     up = prefix.upper()
@@ -1056,17 +1044,13 @@ def c_names(model, built, prefix, h_name):
 
 
 def c_name_faults(names):
-    """One line for each identifier that is a keyword, reserved, a <stdint.h>
-    name, or written twice."""
+    """One line for each identifier written twice. The marker rule of
+    PREFIX keeps every name clear of C's own names, so only the tool's own
+    names can clash: two sounds that give one table name, a split's _1 and
+    _2 against another sound, or the guard against a macro."""
     faults, seen = [], {}
     for ident, where in names:
-        if ident in C_KEYWORDS:
-            faults.append(f"{where} give {ident}, a C keyword")
-        elif ident.startswith("_"):
-            faults.append(f"{where} give {ident}, a reserved C name")
-        elif STDINT.match(ident):
-            faults.append(f"{where} give {ident}, a name of <stdint.h>")
-        elif ident in seen:
+        if ident in seen:
             faults.append(f"{where} give {ident}, already given by {seen[ident]}")
         seen.setdefault(ident, where)
     return faults
@@ -1233,56 +1217,22 @@ def recorded(h_text, prefix):
 # The file names of --c and --h, as written. Each goes into the generated C:
 # the header's name into #include "..." and the include guard. Letters,
 # digits, _, . and - only, starting with a letter, so the name needs no
-# escape in a C string, is ASCII, and gives a guard that is a C name.
+# escape in a C string, is ASCII, and gives a guard that is a C name. Each
+# name holds sfx, which no standard or system header's name does, so a
+# generated header never takes the place of one on the include path.
 C_FILE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\.c")
 H_FILE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\.h")
-
-# Headers a generated header must not be named after: in a folder on the
-# include path it would take the place of the system one, and the
-# generated #include <stdint.h> would find itself. One sorted table, from
-# these sources:
-#   C23, ISO/IEC 9899:2024, 7.1.2: its 31 standard headers.
-#   POSIX.1-2024, IEEE Std 1003.1-2024, Base Definitions, chapter 14, the
-#   headers index: every header that is a plain file name. Headers in a
-#   folder, such as <sys/types.h>, cannot clash with a plain file name.
-#   Older issues of POSIX and the Single UNIX Specification: re_comp.h,
-#   regexp.h, stropts.h, trace.h, ucontext.h, ulimit.h, utime.h,
-#   varargs.h.
-#   System V: ar.h, the archive format header that Unix systems ship.
-# A test holds its own copy of this list and compares the two.
-STANDARD_HEADERS = (
-    "aio.h", "ar.h", "assert.h", "complex.h", "cpio.h", "ctype.h",
-    "devctl.h", "dirent.h", "dlfcn.h", "endian.h", "errno.h", "fcntl.h",
-    "fenv.h", "float.h", "fmtmsg.h", "fnmatch.h", "ftw.h", "glob.h",
-    "grp.h", "iconv.h", "inttypes.h", "iso646.h", "langinfo.h",
-    "libgen.h", "libintl.h", "limits.h", "locale.h", "math.h",
-    "monetary.h", "mqueue.h", "ndbm.h", "netdb.h", "nl_types.h",
-    "poll.h", "pthread.h", "pwd.h", "re_comp.h", "regex.h", "regexp.h",
-    "sched.h", "search.h", "semaphore.h", "setjmp.h", "signal.h",
-    "spawn.h", "stdalign.h", "stdarg.h", "stdatomic.h", "stdbit.h",
-    "stdbool.h", "stdckdint.h", "stddef.h", "stdint.h", "stdio.h",
-    "stdlib.h", "stdnoreturn.h", "string.h", "strings.h", "stropts.h",
-    "syslog.h", "tar.h", "termios.h", "tgmath.h", "threads.h", "time.h",
-    "trace.h", "uchar.h", "ucontext.h", "ulimit.h", "unistd.h",
-    "utime.h", "utmpx.h", "varargs.h", "wchar.h", "wctype.h",
-    "wordexp.h",
-)
-STANDARD_HEADER_SET = frozenset(STANDARD_HEADERS)
 
 
 def file_name_faults(c_path, h_path):
     """One line for each bad file name of --c and --h. Empty when both are
     good."""
     faults = []
-    c_name, h_name = os.path.basename(c_path), os.path.basename(h_path)
-    if not C_FILE.fullmatch(c_name):
-        faults.append(f"--c {c_name!r}: the file name must be a letter, then letters,"
-                      " digits, _, . or -, and end in .c")
-    if not H_FILE.fullmatch(h_name):
-        faults.append(f"--h {h_name!r}: the file name must be a letter, then letters,"
-                      " digits, _, . or -, and end in .h")
-    elif h_name.lower() in STANDARD_HEADER_SET:
-        faults.append(f"--h {h_name!r}: the name of a standard C or POSIX header")
+    for opt, path, rule, ext in (("--c", c_path, C_FILE, ".c"), ("--h", h_path, H_FILE, ".h")):
+        name = os.path.basename(path)
+        if not rule.fullmatch(name) or "sfx" not in name:
+            faults.append(f"{opt} {name!r}: the file name must be a letter, then letters,"
+                          f" digits, _, . or -, hold sfx, and end in {ext}")
     return faults
 
 
@@ -1424,7 +1374,7 @@ def main(argv=None):
     p.add_argument("model", metavar="MODEL")
     p.add_argument("--c", metavar="OUT.c")
     p.add_argument("--h", metavar="OUT.h")
-    p.add_argument("--prefix", metavar="NAME_")
+    p.add_argument("--prefix", metavar="NAME_sfx_")
     p.add_argument("--check", action="store_true",
                    help="compare the recorded SHA-256 and revision, write nothing")
     p.add_argument("--full", action="store_true", help="with --check: render and compare bytes")
@@ -1446,8 +1396,8 @@ def _main(p, args):
     if any(v is not None for v in table) and None in table:
         p.error("--c, --h and --prefix go together")
     if args.prefix is not None and not PREFIX.match(args.prefix):
-        p.error("--prefix must be a to z, 0 to 9 and _, start with a letter,"
-                " at most 32 characters")
+        p.error(f"--prefix {args.prefix!r} must match ([a-z][a-z0-9]*_)*sfx_,"
+                " at most 32 characters, such as sfx_ or uos_sfx_")
     if args.c is not None and args.h is not None:
         for f in file_name_faults(args.c, args.h):
             p.error(f)
@@ -1520,10 +1470,6 @@ def _main(p, args):
         for f in faults:
             print(f"sfx_table.py: error: {f}", file=sys.stderr)
         return EX_USAGE
-    if args.c is not None and not os.path.basename(args.h).startswith(args.prefix):
-        print(f"sfx_table.py: warning: --h {os.path.basename(args.h)!r} does not start"
-              f" with --prefix {args.prefix!r}. A name of the project's own is safe from"
-              " every library's headers.", file=sys.stderr)
     # Made by the resolved path, which "out/../out" needs, parents first:
     # a --dump folder may lie in a new --wav folder.
     made = sorted((os.path.realpath(d) for _, d in new_dirs), key=len)
