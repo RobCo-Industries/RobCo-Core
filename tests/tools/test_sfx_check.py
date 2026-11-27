@@ -747,3 +747,76 @@ def test_floor_rule_keeps_a_passband_fault(tmp_path):
     r = run(CHECK, p, d)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "band" in r.stdout, r.stdout
+
+
+def four_hit_model(bands=None):
+    """Four 200 ms hits of noise, one after the other."""
+    hit = 200000 * RATE // 1000000
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"four": {
+        "len": 4 * hit, "peak_steps": 60, "layers": [
+            {"kind": "noise", "seed": 4, "level_mdb": 0,
+             "hits": [[k * hit, 0] for k in range(4)],
+             "env": [[0, -40000], [5000, 0], [190000, 0], [200000, -40000]],
+             "bands": bands or [[300, -30000], [500, 0], [2000, 0], [2200, -40000],
+                                [3800, -40000], [4000, 0], [6000, 0], [6200, -30000]]}]}}}
+
+
+def test_four_hits_pass_as_dumped(tmp_path):
+    r = run(CHECK, *dump(tmp_path, four_hit_model()))
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_missing_hit_fails_as_silent(tmp_path):
+    p, d = dump(tmp_path, four_hit_model())
+    hit = 200000 * RATE // 1000000
+
+    def rest(data):
+        data[:hit] = bytes([128]) * hit
+    _rewrite(os.path.join(d, "four.u8"), rest)
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert re.search(r"frame at \d+\.\d ms is silent, the model predicts power", r.stdout), r.stdout
+    assert "inf" not in r.stdout, r.stdout
+
+
+def test_missing_band_fails_as_silent(tmp_path):
+    p, _ = dump(tmp_path, four_hit_model(), "a.json", "a")
+    low = [[300, -30000], [500, 0], [2000, 0], [2200, -40000], [6200, -40000]]
+    _, d = dump(tmp_path, four_hit_model(low), "b.json", "b")
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert re.search(r"band at \d+ Hz is silent, the model predicts power", r.stdout), r.stdout
+
+
+def faint_model(peak, seed):
+    """Broad-band noise so faint that rounding holds most of its power."""
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"faint": {
+        "len": 4000, "peak_steps": peak, "layers": [
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, 0], [20000, -20000], [200000, -60000]],
+             "bands": [[0, 0], [RATE // 2, 0]]}]}}}
+
+
+@pytest.mark.parametrize("seed", range(1, 7))
+def test_mostly_rounding_table_passes_with_a_note(tmp_path, seed):
+    r = run(CHECK, *dump(tmp_path, faint_model(1, seed)))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "not judged, the table is mostly rounding: ok" in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize("peak", [2, 3])
+def test_faint_noise_never_fails_as_dumped(tmp_path, peak):
+    for seed in range(1, 7):
+        r = run(CHECK, *dump(tmp_path, faint_model(peak, seed), "m%d.json" % seed, "d%d" % seed))
+        assert r.returncode == 0, "seed %d: %s" % (seed, r.stdout + r.stderr)
+
+
+def test_mostly_rounding_table_with_a_wrong_peak_fails(tmp_path):
+    p, d = dump(tmp_path, faint_model(1, 1))
+
+    def louder(data):
+        data[0] = 130
+    _rewrite(os.path.join(d, "faint.u8"), louder)
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "peak is 2 steps, the model says 1" in r.stdout, r.stdout

@@ -793,16 +793,25 @@ def read_table(name, sound, folder):
 
 
 def judge(meas, pred, neff, need, floor):
-    """Split the entries within FLOOR_DB of the strongest measured, and not
-    mostly rounding floor, into tight and thin ones. Return the dB errors of the tight ones, the count
-    of thin ones, and the index and signed dB error of the worst thin one
-    beyond chance, or None."""
-    top = max(meas) if meas else 0.0
-    errs, thin, worst = [], 0, None
-    if top <= 0.0:
-        return errs, thin, worst
+    """Judge the entries in range: within FLOOR_DB of the strongest measured,
+    or predicted within FLOOR_DB of the strongest predicted. An entry in
+    range by its prediction and measured more than FLOOR_DB under it is
+    silent. Split the other entries in range, when not mostly rounding
+    floor, into tight and thin ones. Return the dB errors of the tight ones,
+    the count of thin ones, the index and signed dB error of the worst thin
+    one beyond chance or None, and the index of the first silent one or
+    None."""
+    top_m = max(meas) if meas else 0.0
+    top_p = max(pred) if pred else 0.0
+    errs, thin, worst, silent = [], 0, None, None
     for i, (m, p, n, f) in enumerate(zip(meas, pred, neff, floor)):
-        if m <= 0.0 or 10.0 * math.log10(top / m) > FLOOR_DB:
+        by_meas = m > 0.0 and 10.0 * math.log10(top_m / m) <= FLOOR_DB
+        by_pred = p > 0.0 and 10.0 * math.log10(top_p / p) <= FLOOR_DB
+        if not by_meas and not by_pred:
+            continue
+        if by_pred and (m <= 0.0 or 10.0 * math.log10(p / m) > FLOOR_DB):
+            if silent is None:
+                silent = i
             continue
         if p > 0.0 and f > FLOOR_SHARE_MAX * p:
             continue
@@ -816,7 +825,7 @@ def judge(meas, pred, neff, need, floor):
         lo, hi = chance(m, p, n)
         if min(lo, hi) < CHANCE and (worst is None or abs(e) > abs(worst[1])):
             worst = (i, e)
-    return errs, thin, worst
+    return errs, thin, worst, silent
 
 
 def stats(errs):
@@ -889,19 +898,15 @@ def check_sound(model, name, folder):
         f_low = total * min(TOP_HZ, nyq) / nyq
         ff = to_frames([ROUND_POWER] * len(x), step)
         m_all = sum(mspec)
-        band_gain = _gain(m_low, f_low, p_low_model)
-        frame_gain = _gain(sum(mf), sum(ff), sum(pf))
-        if band_gain is None:
-            band_gain = m_low / p_low_model if p_low_model > 0.0 else 0.0
-            fb = [0.0] * len(fb)
-        if frame_gain is None:
-            frame_gain = sum(mf) / sum(pf) if sum(pf) > 0.0 else 0.0
-            ff = [0.0] * len(ff)
-        # The model part takes the frame gain, the floor counts only where
-        # it applies.
-        floor_on = sum(ff) > 0.0
-        p_low = p_low_model * frame_gain + (f_low if floor_on else 0.0)
-        p_all = sum(pspec) * frame_gain + (total if floor_on else 0.0)
+        # A table whose rounding floor is more than FLOOR_SHARE_MAX of its
+        # energy is mostly rounding: it says nothing about the model.
+        rounding = total > FLOOR_SHARE_MAX * m_all
+        # With no power under 15 kHz above the floor, the model part of the
+        # bands is nothing: the floor alone is the band prediction.
+        band_gain = _gain(m_low, f_low, p_low_model) or 0.0
+        frame_gain = _gain(sum(mf), sum(ff), sum(pf)) or 0.0
+        p_low = p_low_model * frame_gain + f_low
+        p_all = sum(pspec) * frame_gain + total
     else:
         width, step = BAND_HZ, max(1, int(round(FRAME_S * rate)))
         nbands = int(min(TOP_HZ, rate / 2.0) // BAND_HZ)
@@ -927,16 +932,19 @@ def check_sound(model, name, folder):
         p_low = sum(pb)
         neff_b, neff_f = [float("inf")] * len(mb), [float("inf")] * len(mf)
         need_b = need_f = 0.0
-    b_errs, b_thin, b_bad = judge(mb, [p * band_gain + f for p, f in zip(pb, fb)],
+        rounding = False
+    b_errs, b_thin, b_bad, b_silent = judge(mb, [p * band_gain + f for p, f in zip(pb, fb)],
                                   neff_b, need_b, fb)
-    f_errs, f_thin, f_bad = judge(mf, [p * frame_gain + f for p, f in zip(pf, ff)],
+    f_errs, f_thin, f_bad, f_silent = judge(mf, [p * frame_gain + f for p, f in zip(pf, ff)],
                                   neff_f, need_f, ff)
-    be, fe = stats(b_errs), stats(f_errs)
     # Share of the energy under 15 kHz, measured and predicted.
     m_share = m_low / m_all if m_all > 0.0 else 0.0
     p_share = p_low / p_all if p_all > 0.0 else 0.0
     level = None
-    if has_noise:
+    if rounding:
+        b_errs, b_thin, b_bad, b_silent = [], 0, None, None
+        f_errs, f_thin, f_bad, f_silent = [], 0, None, None
+    elif has_noise:
         pmax = max(ps)
         if frame_gain > 0.0 and pmax > 0.0:
             level = 10.0 * math.log10(sound["peak_steps"] ** 2 / (frame_gain * pmax))
@@ -946,7 +954,9 @@ def check_sound(model, name, folder):
             faults.append("level %.2f dB outside %.2f to %.2f"
                           % (level, LEVEL_MIN_DB, LEVEL_MAX_DB))
     bands_judged = False
-    if (m_share < LOW_SHARE) != (p_share < LOW_SHARE):
+    if rounding:
+        notes.append("not judged, the table is mostly rounding")
+    elif (m_share < LOW_SHARE) != (p_share < LOW_SHARE):
         faults.append("power under 15 kHz is %.1f %% of the table, the model predicts %.1f %%"
                       % (100.0 * m_share, 100.0 * p_share))
         notes.append("bands not judged")
@@ -956,14 +966,21 @@ def check_sound(model, name, folder):
         notes.append("bands not judged, no power under 15 kHz")
     else:
         bands_judged = True
+    be, fe = stats(b_errs), stats(f_errs)
     judged = (("band", be),) if bands_judged else ()
-    judged += (("frame", fe),)
+    judged += (("frame", fe),) if not rounding else ()
     for what, st in judged:
         if st is None:
             continue
         for stat, limit in RULES[kind][what]:
             if not st[stat] <= limit:
                 faults.append("%s %s error %.2f dB over %.2f" % (what, stat, st[stat], limit))
+    if bands_judged and b_silent is not None:
+        faults.append("band at %.0f Hz is silent, the model predicts power"
+                      % (b_silent * width))
+    if f_silent is not None:
+        faults.append("frame at %.1f ms is silent, the model predicts power"
+                      % (1000.0 * f_silent * step / rate))
     if bands_judged and b_bad is not None:
         faults.append("band at %.0f Hz is %+.2f dB off, beyond chance"
                       % (b_bad[0] * width, b_bad[1]))
