@@ -428,7 +428,11 @@ def test_usage_errors(tmp_path):
                  (p, "--c", c, "--h", tmp_path / "_x.h", "--prefix", "x_"),
                  (p, "--c", c, "--h", tmp_path / "x_rate_hz", "--prefix", "x_"),
                  (tmp_path / "s\u00f6nd.json", "--c", c, "--h", h, "--prefix", "x_"),
-                 (tmp_path / "a\nb.json", "--c", c, "--h", h, "--prefix", "x_")):
+                 (tmp_path / "a\nb.json", "--c", c, "--h", h, "--prefix", "x_"),
+                 (tmp_path / "x??=.json", "--c", c, "--h", h, "--prefix", "x_"),
+                 (tmp_path / "a b.json", "--c", c, "--h", h, "--prefix", "x_"),
+                 (tmp_path / "a*b.json", "--c", c, "--h", h, "--prefix", "x_"),
+                 (tmp_path / "-m.json", "--c", c, "--h", h, "--prefix", "x_")):
         r = run(*args)
         assert r.returncode == 64, args
     assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]

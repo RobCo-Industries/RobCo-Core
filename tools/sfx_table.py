@@ -1275,9 +1275,13 @@ def _main(p, args):
     if args.c is not None and args.h is not None:
         for f in file_name_faults(args.c, args.h):
             p.error(f)
-    if args.c is not None and not re.fullmatch(r"[ -~]+", os.path.basename(args.model)):
-        p.error("MODEL must have a file name of printable ASCII: it goes into the"
-                " comment of each generated file")
+    # The name goes into a C comment as written. Letters, digits, '_', '.'
+    # and '-' cannot end the comment, start a trigraph or break a line.
+    if args.c is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*",
+                                               os.path.basename(args.model)):
+        p.error("MODEL must have a file name of letters, digits, '_', '.' and '-',"
+                " starting with a letter or a digit: it goes into the comment of"
+                " each generated file")
     if args.full and not args.check:
         p.error("--full needs --check")
     if args.check and (args.c is None or args.dump or args.wav):

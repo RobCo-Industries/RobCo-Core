@@ -184,7 +184,7 @@ The tool checks file names as written, before it reads the model:
 - The file name of `OUT.c` is a letter, then letters, digits, `_`, `.` or `-`, and ends in `.c`.
 - The file name of `OUT.h` follows the same rule and ends in `.h`. It goes into `#include "..."` in `OUT.c`, so it needs no escape and is ASCII.
 - The file name of `OUT.h` is not the name of a standard C or POSIX header, in any case. In a folder on the include path such a file would take the place of the system header, and the generated `#include <stdint.h>` would find itself. The C list is the 31 headers of C23, ISO/IEC 9899:2024, 7.1.2. The POSIX list is the top-level headers of POSIX.1-2024, IEEE Std 1003.1-2024, Base Definitions, with `stropts.h` and `trace.h` of older issues.
-- The file name of `MODEL` is printable ASCII, because it goes into the opening comment.
+- The file name of `MODEL` holds letters, digits, `_`, `.` and `-` only, and starts with a letter or a digit, because it goes into the opening comment as written.
 
 A bad file name gets one line, exit 64. The include guard is the file name of `OUT.h` in capitals with every other character as `_`.
 
