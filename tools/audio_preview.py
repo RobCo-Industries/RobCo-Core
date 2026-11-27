@@ -31,6 +31,16 @@ Lines it reads, each an "@RC ... ev=audio op=..." marker of any stage:
     line, by a stop or a new sound, drops to duty 0 at once and leaves
     the rest level at duty 0, even when its last sample had sounded.
   ev=audio_drop n=                       records lost: a warning
+  Each marker carries stage=. When the stage changes from one audio
+  marker to the next, a new image starts and counts time from 0 again.
+  What plays is cut there, as a reset cuts it, and the rest level goes
+  back to duty 0, as for a freshly started driver. The new stage's times
+  move so its first marker sits at the last marker of the stage before.
+  The log does not hold the time of the handoff, so the tool adds no gap
+  and warns once per change: "stage NEW follows stage OLD: the time
+  between them is not in the log". Inside one stage, a time that goes
+  back is a bad log. A reboot of the same image repeats its stage name
+  with a lower time, so cut such a log in two before you render it.
   The driver prints ev=audio_drop after the records it drained, so it
   stands where the loss happened. After it, a marker whose start was lost
   is skipped: an end, a queued buffer or an overlay. A stop with nothing
@@ -75,13 +85,10 @@ Rules it applies, from the library's driver:
   128. --scale does not change a voice. A voice ends at op=pcm_end or
   op=stop. op=pcm_next on a voice is a bad log: the library refuses a
   queue while a voice plays.
-- Volume: 128 + (s - 128) * vol / 100. --scale cut
-  rounds toward 128, as older versions of the library do. --scale nearest
+- Volume: 128 + (s - 128) * vol / 100. --scale nearest, the default,
   rounds to the nearest step, a half step away from 128, as
-  audio_pcm_scale() in src/lib/audio_pcm.c does.
-  --scale auto, the default, picks nearest when the log has an op=pcm_mix
-  or op=voice line, a loop=1 field or the rest ramp, whole or cut, and cut
-  otherwise.
+  audio_pcm_scale() in src/lib/audio_pcm.c does. --scale cut rounds
+  toward 128, for a log of a library older than that rounding.
   A play keeps the volume its line prints. The driver applies a volume
   change to the samples that follow, but prints no line for it, so the
   file is wrong for a play whose volume changes on the way.
@@ -257,7 +264,7 @@ def parse_marker(text, where):
         n = kv.get("n")
         if n is None or not NUM.match(n) or int(n) > MAX_DROP:
             raise LogError("%s: ev=audio_drop needs n= from 0 to %d" % (where, MAX_DROP))
-        return ("drop", int(n))
+        return ("drop", {"n": int(n), "stage": kv.get("stage")})
     if ev != "audio":
         return None
     op = kv.get("op")
@@ -303,6 +310,7 @@ def parse_marker(text, where):
         out["loop"] = 1
     if out["t_ms"] > MAX_SECONDS * 1000:
         raise LogError("%s: t_ms=%d is past the %d s limit" % (where, out["t_ms"], MAX_SECONDS))
+    out["stage"] = kv.get("stage")
     return (op, out)
 
 
@@ -329,11 +337,11 @@ def read_log(path):
             if m is None:
                 continue
             if m[0] == "drop":
-                dropped += m[1]
+                dropped += m[1]["n"]
                 # The loss keeps its place: the renderer skips the markers
                 # whose start it took.
-                if m[1]:
-                    events.append((where, "drop", {"n": m[1]}))
+                if m[1]["n"]:
+                    events.append((where, "drop", m[1]))
                 continue
             events.append((where, m[0], m[1]))
     return events, dropped
@@ -641,7 +649,23 @@ class Renderer:
     def run(self, events):
         last = 0
         self.lost = None        # (where, markers skipped) after a loss
+        stage = None
+        seen = False
+        shift = 0               # added to t_ms in this stage
+        rebase = False          # the next t_ms of this stage sets shift
         for where, op, f in events:
+            if seen and f.get("stage") != stage:
+                # A new image starts its tick count again. What plays is
+                # cut, as a reset cuts it, and the driver starts fresh.
+                self.warn("stage %s follows stage %s: the time between them is not in the log"
+                          % (f.get("stage"), stage))
+                self.lost_end()
+                self.lost = None
+                self.close(last)
+                self.rest = 0.0
+                rebase = True
+            stage = f.get("stage")
+            seen = True
             if op == "drop":
                 self.lost_end()
                 self.lost = (where, 0)
@@ -657,10 +681,13 @@ class Renderer:
                         continue
                     # A stop with nothing playing changes no sound, but its
                     # time still counts toward the end of the file.
-            t = f["t_ms"]
+            if rebase:
+                shift = last - f["t_ms"]
+                rebase = False
+            t = f["t_ms"] + shift
             if t + BACK_SLACK_MS < last:
                 raise LogError("%s: t_ms=%d comes before t_ms=%d of an earlier line"
-                               % (where, t, last))
+                               % (where, f["t_ms"], last - shift))
             t = max(t, last)
             last = t
             bad = self.misplaced(op, cur, where)
@@ -760,8 +787,9 @@ def main(argv=None):
                     help="ROBCO_AUDIO_TONE_PEAK of the kernel that made the log, 0 to %d "
                          "(default %d); the trace does not print it"
                     % (square.PEAK_MAX, square.TONE_PEAK))
-    ap.add_argument("--scale", choices=("auto", "cut", "nearest"), default="auto",
-                    help="how the volume rounds, see above")
+    ap.add_argument("--scale", choices=("nearest", "cut"), default="nearest",
+                    help="how the volume rounds: nearest, as the driver does, or cut, "
+                         "for a log of an older library")
     a = ap.parse_args(argv)
     if not 0 <= a.tone_peak <= square.PEAK_MAX:
         ap.error("--tone-peak must be 0 to %d" % square.PEAK_MAX)
@@ -774,10 +802,6 @@ def main(argv=None):
         markers = sum(1 for _, op, _ in events if op != "drop")
         pcm = load_pcm(a.pcm)
         scale = a.scale
-        if scale == "auto":
-            new = any(op in ("pcm_mix", "voice") or is_ramp(op, f) or "loop" in f
-                      for _, op, f in events)
-            scale = "nearest" if new else "cut"
         if dropped:
             warn("the trace lost %d records: the file misses sounds" % dropped)
         if not markers:

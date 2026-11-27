@@ -159,17 +159,41 @@ class Volume(Case):
         duty, _ = self.render([pcm(0, d, vol=100)])
         self.assertEqual(duty[0], 255 / 256)
 
-    def test_auto_picks_nearest_on_new_lines(self):
+    def test_default_scale_is_nearest(self):
         d = self.sound("a", bytes([129]) * 2205)
         o = self.sound("o", bytes([128]) * 10)
-        for lines, want in (([pcm(0, d, vol=50)], "cut"),
-                            ([pcm(0, d, vol=50), mix(0, o)], "nearest"),
-                            ([pcm(0, d, vol=50, loop=True), stop(100)], "nearest")):
+        for lines in ([pcm(0, d, vol=50)],
+                      [pcm(0, d, vol=50), mix(0, o)],
+                      [pcm(0, d, vol=50, loop=True), stop(100)]):
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                 bs.main([self.log(lines), os.path.join(self.dir, "o.wav"),
                          "--pcm", self.pcm_dir])
-            self.assertIn("scale " + want, out.getvalue())
+            self.assertIn("scale nearest", out.getvalue())
+
+    def test_plain_play_rounds_as_the_driver(self):
+        d = self.sound("a", bytes([129]) * 2205)
+        self.assertEqual(bs.scale_nearest(129, 50), 129)
+        self.assertEqual(bs.scale_cut(129, 50), 128)
+        wavs = {}
+        for extra in ((), ("--scale", "nearest"), ("--scale", "cut")):
+            rc, err, out = self.main([pcm(0, d, vol=50)], *extra)
+            self.assertEqual(rc, 0, err)
+            with open(out, "rb") as f:
+                wavs[extra] = f.read()
+        self.assertEqual(wavs[()], wavs[("--scale", "nearest")])
+        self.assertNotEqual(wavs[()], wavs[("--scale", "cut")])
+        duty, _ = self.render([pcm(0, d, vol=50)], scale="nearest")
+        self.assertEqual(duty[0], 129 / 256)
+        duty, _ = self.render([pcm(0, d, vol=50)], scale="cut")
+        self.assertEqual(duty[0], 128 / 256)
+
+    def test_scale_auto_is_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as e:
+            bs.main([self.log([stop(0)]), os.path.join(self.dir, "o.wav"),
+                     "--pcm", self.pcm_dir, "--scale", "auto"])
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("invalid choice", err.getvalue())
 
 
 class Mix(Case):
@@ -330,11 +354,11 @@ class Rest(Case):
         self.assertFails([pcm(0, bs.RAMP), mix(5, o)], "serial.log:2: op=pcm_mix on the rest ramp")
         self.assertFails([pcm(0, bs.RAMP), nxt(5, o)], "serial.log:2: op=pcm_next on the rest ramp")
 
-    def test_auto_scale_and_the_ramp(self):
+    def test_default_scale_and_the_ramp(self):
         for lines, want in (([pcm(0, bs.RAMP), end(40)], "nearest"),
                             ([pcm(0, bs.RAMP), stop(20)], "nearest"),
-                            ([pcm(0, bs.RAMP, vol=10), end(40)], "cut"),
-                            ([pcm(0, bs.RAMP, rate=11025), end(80)], "cut")):
+                            ([pcm(0, bs.RAMP, vol=10), end(40)], "nearest"),
+                            ([pcm(0, bs.RAMP, rate=11025), end(80)], "nearest")):
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                 bs.main([self.log(lines), os.path.join(self.dir, "o.wav"), "--pcm", self.pcm_dir])
@@ -1033,7 +1057,7 @@ class Voice(Case):
         rc, err, _ = self.main([stop(0)])
         self.assertEqual(rc, 0, err)
 
-    def test_auto_picks_nearest_on_a_voice(self):
+    def test_default_scale_on_a_voice(self):
         sp = self.spans("v", [(3750, SINE_TOP, 0, 0, 30 << 16, 0, 0)])
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
@@ -1064,3 +1088,49 @@ class Voice(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def staged(line, name):
+    return line.replace("stage=test", "stage=" + name)
+
+
+class Stages(Case):
+    def test_second_stage_starts_lower(self):
+        a = self.sound("a", bytes([200]) * 441)       # 20 ms at 22050
+        b = self.sound("b", bytes([60]) * 441)
+        lines = [pcm(1000, a), end(1020),
+                 staged(pcm(0, b), "next"), staged(end(20), "next")]
+        rc, err, _ = self.main(lines)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(err.count("warning"), 1, err)
+        self.assertIn("stage next follows stage test: the time between them is not in the log",
+                      err)
+        duty, _ = self.render(lines, scale="cut")
+        self.assertEqual(duty[frame(1010)], 200 / 256)
+        self.assertEqual(duty[frame(1030)], 60 / 256)
+
+    def test_play_running_at_the_change_is_cut(self):
+        a = self.sound("a", bytes([200]) * 22050)     # 1 s
+        b = self.sound("b", bytes([60]) * 441)
+        lines = [pcm(0, a), staged(pcm(300, b), "next"), staged(end(320), "next")]
+        duty, w = self.render(lines, scale="cut")
+        self.assertEqual(len(w), 1, w)
+        # The first play is cut at its stage's last marker, t_ms=0.
+        self.assertEqual(duty[frame(5)], 60 / 256)
+        self.assertEqual(duty[frame(25)], 0.0)
+
+    def test_rest_level_does_not_cross_stages(self):
+        b = self.sound("b", bytes([60]) * 441)
+        lines = [pcm(0, bs.RAMP), end(40), stop(50),
+                 staged(pcm(10, b), "next"), staged(end(30), "next")]
+        duty, _ = self.render(lines, scale="nearest")
+        self.assertEqual(duty[frame(45)], 0.5)
+        self.assertEqual(duty[frame(75)], 0.0)
+
+    def test_time_back_inside_a_stage_is_an_error(self):
+        rc, err, _ = self.main([stop(1000), staged(stop(0), "next"), staged(stop(500), "next"),
+                                staged(stop(100), "next")])
+        self.assertEqual(rc, 2, err)
+        self.assertIn("serial.log:4: t_ms=100 comes before t_ms=500", err)
+        # A reboot of the same image repeats its name with a lower time.
+        self.assertFails([stop(1000), stop(10)], "serial.log:2: t_ms=10 comes before t_ms=1000")
