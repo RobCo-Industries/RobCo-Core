@@ -258,7 +258,7 @@ class Mix(Case):
         play = self.sound("p", bytes([128]) * RATE)
         a = self.sound("a", bytes([200]) * 441)
         b = self.sound("b", bytes([100]) * 441)
-        duty, _ = self.render([pcm(0, play), mix(100, a), mix(119, b), stop(200)])
+        duty, _ = self.render([pcm(0, play), mix(100, a), mix(119, b)])
         self.assertEqual(duty[frame(119) + 10], 200 / 256)
         self.assertEqual(duty[frame(121)], 100 / 256)
         self.assertEqual(duty[frame(139)], 100 / 256)
@@ -779,11 +779,9 @@ class Limits(Case):
     def test_time_past_limit(self):
         self.assertFails([stop(bs.MAX_SECONDS * 1000 + 1)], "past the 300 s limit")
 
-    def test_play_past_limit_stops_at_the_last_marker(self):
-        # 500 s of samples: the log ends at t_ms=0, so the file holds the tail.
+    def test_play_past_limit(self):
         d = self.sound("a", bytes([128]) * 2000000)
-        duty, _ = self.render([pcm(0, d, rate=4000)])
-        self.assertEqual(len(duty), frame(bs.TAIL_MS))
+        self.assertFails([pcm(0, d, rate=4000)], "the output would pass 300 s")
 
     def test_too_many_lines(self):
         old = bs.MAX_LINES
@@ -1165,25 +1163,19 @@ class EndOfLog(Case):
         self.assertEqual(duty[frame(200) - 1], 150 / 256)
         self.assertRestsFrom(duty, 200, 200 + bs.TAIL_MS)
 
-    def test_a_voice_past_the_tail_stops_at_the_last_marker(self):
+    def test_a_voice_plays_to_its_end(self):
         sp = self.spans("v", [self.LONG])
         o = self.sound("o", bytes([140]) * 8)
         duty, _ = self.render([voice_line(0, sp), mix(100, o)])
-        self.assertRestsFrom(duty, 100, 100 + bs.TAIL_MS)
+        self.assertNotEqual(set(duty[frame(900):frame(1000)]), {0.0})
+        self.assertRestsFrom(duty, 1000, 1000 + bs.TAIL_MS)
 
-    def test_a_play_past_the_tail_stops_at_the_last_marker(self):
+    def test_a_play_plays_to_its_end(self):
         a = self.sound("a", bytes([200]) * 22050)     # 1 s
         o = self.sound("o", bytes([128]) * 8)
         duty, _ = self.render([pcm(0, a), mix(100, o)])
-        self.assertEqual(duty[frame(100) - 1], 200 / 256)
-        self.assertRestsFrom(duty, 100, 100 + bs.TAIL_MS)
-
-    def test_a_play_that_ends_within_the_tail_finishes(self):
-        a = self.sound("a", bytes([200]) * 4410)      # 200 ms
-        o = self.sound("o", bytes([128]) * 8)
-        duty, _ = self.render([pcm(0, a), mix(100, o)])
-        self.assertEqual(duty[frame(199)], 200 / 256)
-        self.assertRestsFrom(duty, 201, 200 + bs.TAIL_MS)
+        self.assertEqual(duty[frame(999)], 200 / 256)
+        self.assertRestsFrom(duty, 1001, 1000 + bs.TAIL_MS)
 
     def test_a_skipped_marker_moves_the_time(self):
         duty, w = self.render([self.DROP, end(200)])

@@ -73,10 +73,9 @@ Rules it applies, from the library's driver:
   loop sounds on the play's grid across the wraps. The library refuses
   a queue on a loop and a loop never ends by itself, so op=pcm_next or
   op=pcm_end on a loop is a bad log.
-- End of log: a tone, a loop, or a play or voice that would sound past
-  the 0.3 s tail stops at the t_ms of the log's last marker, and the
-  tail is silence at the rest level. A play or voice that ends within
-  the tail plays to its end.
+- End of log: a tone or a loop the log leaves playing stops at the t_ms
+  of the log's last marker, and the tail is silence at the rest level.
+  A plain play or a voice plays to its own end, then the tail.
 - Voice spans come from the .voice files of the --pcm folders, each
   the packed spans of one voice, found by the CRC-32 of their bytes and
   their length, 28 bytes a span. A file must pass the library's span
@@ -738,14 +737,12 @@ class Renderer:
         self.lost_end()
         cur = self.cur
         stop = last
-        if (isinstance(cur, Play) and not cur.loop and not cur.ended
-                and cur.end_ms() <= last + TAIL_MS):
-            # The driver ends a plain play or a voice by itself, so one
-            # that ends within the tail may finish.
+        if isinstance(cur, Play) and not cur.loop:
+            # The driver ends a plain play or a voice by itself, at a time
+            # its start and length fix.
             stop = max(stop, cur.end_ms())
         else:
-            # A tone, a loop, or a play that would outlast the tail stops
-            # at the last marker.
+            # A tone or a loop needs a stop: it stops at the last marker.
             self.close(last)
         self.close(stop + TAIL_MS)
 
