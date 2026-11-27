@@ -22,6 +22,7 @@ cut writes a temporary file and then replaces FILE, so a failed write
 leaves FILE as it was. A FILE that is not UTF-8 is an error. Errors are `::error::` lines and exit code 1. Standard library only.
 """
 import argparse
+import datetime
 import os
 import re
 import stat
@@ -29,7 +30,8 @@ import sys
 import tempfile
 
 UNRELEASED = re.compile(r"^## (Unreleased|\[Unreleased\])\s*$")
-VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+# X.Y.Z as semantic versioning writes it: no leading zero in a number.
+VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 LIST_ITEM = re.compile(r"^ *[-*] ")
 
@@ -208,11 +210,15 @@ def run(argv):
     args = p.parse_args(argv)
     try:
         if not VERSION.match(args.version):
-            raise ChangelogError(f"version must be X.Y.Z, got {args.version!r}")
+            raise ChangelogError(f"version must be X.Y.Z with no leading zero, got {args.version!r}")
         lines = read_lines(args.file)
         if args.command == "cut":
             if not DATE.match(args.date):
                 raise ChangelogError(f"date must be YYYY-MM-DD, got {args.date!r}")
+            try:
+                datetime.date.fromisoformat(args.date)
+            except ValueError:
+                raise ChangelogError(f"date is not a day of the calendar: {args.date!r}") from None
             text = "\n".join(cut(lines, args.version, args.date))
             try:
                 write_atomic(args.file, text)

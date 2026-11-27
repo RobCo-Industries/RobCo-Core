@@ -177,6 +177,11 @@ def test_bad_arguments_refused(tmp_path):
     assert tool("cut", str(path), "--version", "1.0", "--date", "2026-01-02").returncode == 1
     assert tool("cut", str(path), "--version", "1.0.0.1", "--date", "2026-01-02").returncode == 1
     assert tool("cut", str(path), "--version", "1.0.0", "--date", "02/01/2026").returncode == 1
+    # A leading zero is not a version, and the 30th of February is not a day.
+    assert tool("cut", str(path), "--version", "01.0.0", "--date", "2026-01-02").returncode == 1
+    assert tool("cut", str(path), "--version", "1.0.00", "--date", "2026-01-02").returncode == 1
+    assert tool("cut", str(path), "--version", "1.0.0", "--date", "2026-02-30").returncode == 1
+    assert tool("cut", str(path), "--version", "1.0.0", "--date", "2026-13-01").returncode == 1
     assert path.read_text() == PLAIN
     assert tool("check", str(tmp_path / "missing.md"), "--version", "1.0.0").returncode == 1
     nohead = write(tmp_path, "# Changelog\n\n## [1.0.0]\n")
