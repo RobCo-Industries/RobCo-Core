@@ -71,7 +71,7 @@ def test_sine_exact_points():
     # The double nearest pi is below pi by 1.2246467991473532e-16.
     assert abs(T.sin(T.PI) - 1.2246467991473532e-16) < 1e-30
     assert abs(T.sin(T.PI / 6) - 0.5) <= 1.2e-16
-    with pytest.raises(ValueError):
+    with pytest.raises(T.RangeFault):
         T.sin(2e6)
 
 
@@ -99,8 +99,19 @@ def test_log_identities():
     assert abs(T.LN10 - 2.302585092994046) <= 4.5e-16
     for x in (3.0, 0.1, 12345.678, 1e-200):
         assert abs(T.ln(x) - math.log(x)) <= 4 * math.ulp(math.log(x)) + 2e-16
-    with pytest.raises(ValueError):
+    with pytest.raises(T.RangeFault):
         T.ln(0.0)
+
+
+@pytest.mark.parametrize("f,x", [
+    (T.sin, 1.7e6), (T.sin, -1.7e6), (T.sin, math.nan), (T.cos, math.inf),
+    (T.ln, 0.0), (T.ln, -1.0), (T.ln, math.inf), (T.ln, math.nan),
+    (T.exp, 710.0), (T.exp, math.inf), (T.exp, math.nan),
+    (T.sqrt, -1.0), (T.sqrt, math.inf), (T.sqrt, math.nan)])
+def test_functions_refuse_out_of_range(f, x):
+    # The backstop: each function names itself and its argument.
+    with pytest.raises(T.RangeFault, match=f.__name__):
+        f(x)
 
 
 def test_exp_identities():
@@ -949,3 +960,158 @@ def test_every_field_checks_its_type():
                     (section, key, wrong, faults)
                 count += 1
     assert count > 80
+
+
+# ---------------------------------------------------------------------------
+# The sine bound per partial, and the backstop behind it
+# ---------------------------------------------------------------------------
+
+def _review_glide():
+    # A falling glide where the highest multiple stays above half the rate,
+    # while a lower one sounds near the end and passes the sine's limit.
+    return {"format": 1, "rate_hz": 48000, "ceiling_steps": 127, "sounds": {"dive": {
+        "len": 100000, "peak_steps": 100, "layers": [
+            {"kind": "tone", "hits": [[0, 0]], "len": 100000,
+             "pitch_mhz": [24000000, 1000000], "level_mdb": 0,
+             "partials": [[200000, 0], [1000000, 0]]}]}}}
+
+
+def test_every_partial_is_bounded(tmp_path):
+    m = _review_glide()
+    assert T.sine_bound(100000, 24000000, 1000000, 1000000, 48000) == 0.0
+    assert T.sine_bound(100000, 24000000, 1000000, 200000, 48000) > T.SINE_LIMIT
+    # Validation refuses it, not the backstop.
+    faults = T.check_model(m)
+    assert len(faults) == 1
+    assert "sound 'dive'.layers[0].partials[0]: the sine of multiple 200000" in faults[0]
+    r = run(write_model(tmp_path, m), "--dump", tmp_path / "d")
+    assert r.returncode == 2 and r.stderr.count("\n") == 1
+    assert "partials[0]: the sine of multiple 200000" in r.stderr
+    assert T.BACKSTOP not in r.stderr and "Traceback" not in r.stderr
+
+
+def test_sine_bound_holds_for_each_partial():
+    # The largest argument the renderer passes to sin(), partial by partial,
+    # against the bound. Glides both ways, and partials that start or stop
+    # sounding part way.
+    rng = random.Random(11)
+    cases = [(3000, 24000000, 1000000, 200000, 48000), (3000, 1000000, 24000000, 90000, 48000),
+             (2000, 4000000, 1000, 40000, 8000), (500, 1, 4000000, 1000000, 8000)]
+    for _ in range(40):
+        rate = rng.choice((8000, 22050, 48000))
+        cases.append((rng.randint(1, 3000), rng.randint(1, rate * 500), rng.randint(1, rate * 500),
+                      rng.randint(1, 1000000), rate))
+    for n, a, b, mult, rate in cases:
+        f0, f1 = a / 1000.0, b / 1000.0
+        ratio = T.exp(T.ln(f1 / f0) / n)
+        m = mult / 10000.0
+        f, phase, worst = f0, 0.0, 0.0
+        for _ in range(n):
+            if f * m < rate / 2:
+                worst = max(worst, phase * m)
+            phase += T.TWO_PI * f / rate
+            f *= ratio
+        assert worst <= T.sine_bound(n, a, b, mult, rate), (n, a, b, mult, rate)
+
+
+def test_backstop_names_the_sound_and_layer(tmp_path, monkeypatch, capsys):
+    # Skip validation on purpose: the backstop then refuses the model.
+    m = _review_glide()
+    with pytest.raises(T.ModelError) as e:
+        T.build(m)
+    assert e.value.faults[0].startswith(f"sound 'dive': layers[0]: {T.BACKSTOP}: sin(")
+    monkeypatch.setattr(T, "check_model", lambda model: [])
+    assert T.main([str(write_model(tmp_path, m)), "--dump", str(tmp_path / "d")]) == 2
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and T.BACKSTOP in err
+
+
+def test_internal_error_is_one_line(tmp_path, monkeypatch, capsys):
+    def boom(model):
+        raise RuntimeError("broken\nhere")
+    monkeypatch.setattr(T, "build", boom)
+    p = write_model(tmp_path, tone_model())
+    assert T.main([str(p), "--dump", str(tmp_path / "d")]) == 70
+    err = capsys.readouterr().err
+    assert err == f"sfx_table.py: {p}: internal error: RuntimeError: broken here\n"
+
+
+def _fuzz_model(rng):
+    """A random model that is valid by the schema: right types, ranges and
+    shapes. The checks after rendering and the sine bound may refuse it."""
+    rate = rng.choice((8000, 11025, 22050, 37500, 48000))
+
+    def mdb():
+        return rng.choice((MDB_LO, MDB_HI, 0, rng.randint(MDB_LO, MDB_HI), -rng.randint(0, 30000)))
+
+    def pitch():
+        return max(1, min(rate * 500, int(10 ** rng.uniform(0, math.log10(rate * 500)))))
+
+    sounds = {}
+    for k in range(rng.randint(1, 2)):
+        slen = rng.randint(1, 400)
+        layers = []
+        for _ in range(rng.randint(1, 3)):
+            hits = [[rng.randint(0, slen - 1), mdb()] for _ in range(rng.randint(1, 3))]
+            if rng.random() < 0.08:
+                # A long falling glide near the sine's limit, the review's
+                # shape: a high silent partial and a lower one that sounds.
+                n = rng.randint(20000, 120000)
+                layer = {"kind": "tone", "hits": hits, "len": n,
+                         "pitch_mhz": [rate * 500, int(10 ** rng.uniform(4, 6.5))],
+                         "level_mdb": 0, "partials": [[int(10 ** rng.uniform(4.5, 6)), 0],
+                                                      [1000000, 0]]}
+            elif rng.random() < 0.75:
+                n = rng.randint(1, 400)
+                layer = {"kind": "tone", "hits": hits, "len": n, "pitch_mhz": [pitch(), pitch()],
+                         "level_mdb": mdb(),
+                         "partials": [[int(10 ** rng.uniform(0, 6)), mdb()]
+                                      for _ in range(rng.randint(1, 4))]}
+                us = n * 1000000 // rate
+                if rng.random() < 0.5:
+                    layer["attack_us"] = rng.randint(0, us)
+                    layer["release_us"] = rng.randint(0, us)
+                if rng.random() < 0.3:
+                    t = sorted(rng.randint(0, us + 1000) for _ in range(rng.randint(1, 4)))
+                    layer["env"] = [[x, mdb()] for x in t]
+            else:
+                t = sorted(rng.randint(0, 300 * 1000000 // rate) for _ in range(rng.randint(2, 4)))
+                t[-1] = max(t[-1], 1)
+                hz = sorted(rng.sample(range(0, rate // 2 + 1), rng.randint(2, 4)))
+                layer = {"kind": "noise", "hits": hits, "seed": rng.randint(0, 0xFFFFFFFF),
+                         "level_mdb": mdb(), "env": [[x, mdb()] for x in t],
+                         "bands": [[f, mdb()] for f in hz]}
+                n = T.ceil_div(t[-1] * rate, 1000000)
+                if rng.random() < 0.5:
+                    layer["fold"] = rng.randint(0, n // 2)
+                if rng.random() < 0.3:
+                    layer["repeat"] = rng.random() < 0.5
+            layers.append(layer)
+        sound = {"len": slen, "peak_steps": rng.randint(1, 127), "layers": layers}
+        if rng.random() < 0.2:
+            sound["loop"] = rng.random() < 0.5
+        if slen > 1 and rng.random() < 0.2:
+            sound["split"] = rng.randint(1, slen - 1)
+        sounds[f"s{k}"] = sound
+    return {"format": 1, "rate_hz": rate, "ceiling_steps": 127, "sounds": sounds}
+
+
+MDB_LO, MDB_HI = -120000, 20000
+
+
+def test_fuzz_never_reaches_the_backstop(tmp_path, capsys):
+    # Every model renders, or validation or a check refuses it with exit 2.
+    # None reaches the backstop, none is an internal error.
+    rng = random.Random(2026)
+    seen = {0: 0, 2: 0, "sine": 0}
+    for i in range(300):
+        m = _fuzz_model(rng)
+        p = write_model(tmp_path, m, f"m{i}.json")
+        code = T.main([str(p), "--dump", str(tmp_path / f"d{i}")])
+        err = capsys.readouterr().err
+        assert code in (0, 2), (m, err)
+        assert T.BACKSTOP not in err and "internal error" not in err and "Traceback" not in err
+        seen[code] += 1
+        seen["sine"] += "the sine of multiple" in err
+    # The fuzz reaches both outcomes and the sine bound.
+    assert seen[0] > 20 and seen[2] > 20 and seen["sine"] > 5, seen

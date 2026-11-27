@@ -13,7 +13,8 @@ both files byte for byte. Files are written to a temporary name and renamed,
 OUT.h last.
 
 Exit codes: 0 success, 1 a file is out of date or cannot be read or written,
-2 the model is refused, 64 usage error.
+2 the model is refused, 64 usage error, 70 internal error. An internal error
+prints one line and no traceback.
 
 Stdlib only. Runs with python3 -I.
 """
@@ -35,6 +36,7 @@ FORMAT = 1
 EX_STALE = 1
 EX_MODEL = 2
 EX_USAGE = 64
+EX_SOFTWARE = 70
 
 # ---------------------------------------------------------------------------
 # Arithmetic
@@ -65,6 +67,21 @@ LN2_LO = 1.90821492927058770002e-10
 INV_LN2 = 1.4426950408889634
 SQRT2 = 1.4142135623730951
 SQRT1_2 = 0.7071067811865476
+
+
+class RangeFault(Exception):
+    """An argument outside the range of sin, cos, ln, exp or sqrt below.
+
+    A backstop: validation keeps every accepted model inside these ranges.
+    The renderer turns it into a model fault that names the sound and layer.
+    """
+
+    def __init__(self, name, x):
+        super().__init__(f"{name}({x!r}) is outside the range of the tool's {name}")
+
+
+def _finite(x):
+    return x - x == 0.0
 
 
 def _inverse_factorials(count):
@@ -147,7 +164,7 @@ def sin(x):
     Error bound: absolute error under 5e-16 for every allowed x.
     """
     if not -SINE_LIMIT <= x <= SINE_LIMIT:
-        raise ValueError("sine argument out of range")
+        raise RangeFault("sin", x)
     r, k = _reduce(x)
     k &= 3
     if k == 0:
@@ -162,7 +179,7 @@ def sin(x):
 def cos(x):
     """Cosine of x for |x| <= 1.6e6. Same method and bound as sin()."""
     if not -SINE_LIMIT <= x <= SINE_LIMIT:
-        raise ValueError("cosine argument out of range")
+        raise RangeFault("cos", x)
     r, k = _reduce(x)
     k &= 3
     if k == 0:
@@ -175,15 +192,15 @@ def cos(x):
 
 
 def ln(x):
-    """Natural log of x > 0.
+    """Natural log of a finite x > 0.
 
     Method: scale x by exact powers of 2 to m in [sqrt(1/2), sqrt(2)), then
     ln m = 2 atanh(s) with s = (m - 1) / (m + 1), |s| < 0.172, summed to
     s^25 / 25. Add e * ln 2 with ln 2 in two parts.
     Error bound: under 4 ulp of the result plus 2e-16 absolute.
     """
-    if not x > 0.0:
-        raise ValueError("log of a value that is not positive")
+    if not (x > 0.0 and _finite(x)):
+        raise RangeFault("ln", x)
     e = 0
     while x >= SQRT2:
         x *= 0.5
@@ -204,14 +221,14 @@ LN10 = ln(10.0)
 
 
 def exp(x):
-    """e to the power x, for x <= 709. Returns 0.0 under -745.
+    """e to the power x, for x <= 709. Returns 0.0 under -745, -inf included.
 
     Method: x = k ln 2 + r with |r| <= 0.35 and ln 2 in two parts, a fixed
     Taylor sum of e^r to r^20 / 20!, then exact doubling or halving k times.
     Error bound: under 3 ulp of the result for x in [-700, 700].
     """
-    if x > 709.0:
-        raise ValueError("exp overflow")
+    if not x <= 709.0:
+        raise RangeFault("exp", x)
     if x < -745.0:
         return 0.0
     k = round_half_away(x * INV_LN2)
@@ -223,15 +240,15 @@ def exp(x):
 
 
 def sqrt(x):
-    """Square root of x >= 0.
+    """Square root of a finite x >= 0.
 
     Method: scale x by exact powers of 4 to m in [1, 4), start from
     (1 + m) / 2 and take 6 Newton steps y = (y + m / y) / 2, then scale back.
     Five steps reach 1e-28 in exact arithmetic, the sixth settles rounding.
     Error bound: under 1 ulp. Exact for a square of a short integer.
     """
-    if x < 0.0:
-        raise ValueError("square root of a negative value")
+    if not (x >= 0.0 and _finite(x)):
+        raise RangeFault("sqrt", x)
     if x == 0.0:
         return 0.0
     e = 0
@@ -500,11 +517,19 @@ def render_float(model, name, direct=False):
     out = [0.0] * sound["len"]
     for li, layer in enumerate(sound["layers"]):
         where = f"sound {name!r}: layers[{li}]"
-        if layer["kind"] == "tone":
-            render_tone(layer, sound, out, rate, where)
-        else:
-            render_noise(layer, sound, out, rate, where, direct)
+        try:
+            if layer["kind"] == "tone":
+                render_tone(layer, sound, out, rate, where)
+            else:
+                render_noise(layer, sound, out, rate, where, direct)
+        except RangeFault as e:
+            raise ModelError([f"{where}: {BACKSTOP}: {e}"]) from None
     return out
+
+
+# The start of the fault the backstop gives. Validation should refuse such a
+# model first, so this text in a fault means a gap in validation.
+BACKSTOP = "the arithmetic left its range"
 
 
 def peak_of(x):
@@ -1182,7 +1207,17 @@ def main(argv=None):
     p.add_argument("--dump", metavar="DIR", help="write each table as a raw .u8 file")
     p.add_argument("--wav", metavar="DIR", help="write each sound as an 8-bit mono WAV")
     args = p.parse_args(argv)
+    try:
+        return _main(p, args)
+    except Exception as e:
+        # The last backstop: one line, never a traceback.
+        text = " ".join(str(e).split())
+        print(f"sfx_table.py: {args.model}: internal error: {type(e).__name__}: {text}",
+              file=sys.stderr)
+        return EX_SOFTWARE
 
+
+def _main(p, args):
     table = (args.c, args.h, args.prefix)
     if any(v is not None for v in table) and None in table:
         p.error("--c, --h and --prefix go together")
