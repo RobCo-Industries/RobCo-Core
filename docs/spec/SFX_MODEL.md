@@ -171,6 +171,8 @@ tools/sfx_table.py MODEL --wav DIR
 | `--dump DIR` | Writes each table as a raw `<table>.u8` file |
 | `--wav DIR` | Writes each sound as an 8-bit mono WAV at `rate_hz`, whole, not split. A loop plays three times so its join is heard. |
 
+`NAME_` is `a` to `z`, `0` to `9` and `_`, starts with a letter, at most 32 characters. A leading `_` would make reserved C names. The include guard is the file name of `OUT.h` in capitals with every other character as `_`. The tool refuses a file name whose guard does not start with a letter, or a guard that is also the name of a table macro.
+
 `--dump` and `--wav` can join the first form. Exit codes: 0 success, 1 a table is out of date or a file cannot be read or written, 2 the model is refused, 64 a usage error.
 
 The tool revision is 1. It goes up whenever a byte of any table can change.

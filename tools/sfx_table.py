@@ -610,7 +610,10 @@ MAX_BANDS = 24
 MAX_US = 10000000
 MDB_MIN, MDB_MAX = -120000, 20000
 NAME = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
-PREFIX = re.compile(r"[a-z_][a-z0-9_]{0,31}\Z")
+# A prefix starts with a letter: a leading _ would make the upper-case macro
+# names and the table names reserved identifiers in C.
+PREFIX = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+GUARD = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 TOP_KEYS = {"format", "rate_hz", "ceiling_steps", "sounds"}
 SOUND_KEYS = {"len", "peak_steps", "layers", "loop", "split"}
@@ -870,9 +873,16 @@ def _comment(source, sha):
             " */\n")
 
 
+def header_guard(h_name):
+    """The include guard of a header name, or None if it is not a valid,
+    unreserved C identifier."""
+    guard = re.sub(r"[^A-Z0-9]", "_", h_name.upper())
+    return guard if GUARD.match(guard) else None
+
+
 def c_header(model, built, prefix, source, sha, h_name):
     up = prefix.upper()
-    guard = re.sub(r"[^A-Z0-9]", "_", h_name.upper())
+    guard = header_guard(h_name)
     lines = [_comment(source, sha), f"#ifndef {guard}", f"#define {guard}", "",
              "#include <stdint.h>", "",
              f'#define {up}MODEL_SHA256 "{sha}"',
@@ -996,7 +1006,11 @@ def main(argv=None):
     if any(v is not None for v in table) and None in table:
         p.error("--c, --h and --prefix go together")
     if args.prefix is not None and not PREFIX.match(args.prefix):
-        p.error("--prefix must be a to z, 0 to 9 and _, at most 32 characters")
+        p.error("--prefix must be a to z, 0 to 9 and _, start with a letter,"
+                " at most 32 characters")
+    if args.h is not None and header_guard(os.path.basename(args.h)) is None:
+        p.error("--h must have a file name that starts with a letter, so its"
+                " include guard is a valid C name")
     if args.full and not args.check:
         p.error("--full needs --check")
     if args.check and (args.c is None or args.dump or args.wav):
@@ -1017,12 +1031,18 @@ def main(argv=None):
         print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
         return EX_STALE
 
+    if args.c is not None:
+        h_name = os.path.basename(args.h)
+        h_text = c_header(model, built, args.prefix, source=os.path.basename(args.model),
+                          sha=sha, h_name=h_name)
+        guard = header_guard(h_name)
+        if len(re.findall(rf"^#define {guard}\b", h_text, re.M)) != 1:
+            p.error(f"--h: the include guard {guard} is also the name of a table macro")
     try:
         if args.c is not None:
             source = os.path.basename(args.model)
-            h_name = os.path.basename(args.h)
             with open(args.h, "w", encoding="utf-8", newline="\n") as f:
-                f.write(c_header(model, built, args.prefix, source, sha, h_name))
+                f.write(h_text)
             with open(args.c, "w", encoding="utf-8", newline="\n") as f:
                 f.write(c_source(model, built, args.prefix, source, sha, h_name))
         if args.dump:

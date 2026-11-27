@@ -407,7 +407,13 @@ def test_cli_refuses_a_failed_check(tmp_path):
 def test_usage_errors(tmp_path):
     p = write_model(tmp_path, tone_model())
     for args in ((p,), (p, "--c", "a.c"), (p, "--full"), (p, "--check", "--dump", "x"),
-                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "Bad")):
+                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "Bad"),
+                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "_x"),
+                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "__x"),
+                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "1x"),
+                 (p, "--c", "a.c", "--h", "1.h", "--prefix", "x_"),
+                 (p, "--c", "a.c", "--h", "_x.h", "--prefix", "x_"),
+                 (p, "--c", "a.c", "--h", tmp_path / "x_rate_hz", "--prefix", "x_")):
         r = run(*args)
         assert r.returncode == 64, args
 
@@ -641,3 +647,22 @@ def test_extreme_models_render_or_are_refused(tmp_path, sound):
     if r.returncode == 2:
         lines = r.stderr.strip().splitlines()
         assert lines and all(line.startswith("sfx_table.py: ") for line in lines)
+
+
+@pytest.mark.skipif(shutil.which("cc") is None, reason="no host C compiler")
+@pytest.mark.parametrize("prefix,h_name", [
+    ("demo_sfx_", "sfx_table.h"), ("a", "t.h"), ("snd__", "sfx-table.h"),
+    ("z9_", "my.sounds.h"), ("q_", "h1.h"), ("x_", "x_rate_hz.h")])
+def test_generated_c_compiles_for_names(tmp_path, prefix, h_name):
+    m = _two_sounds()
+    p = write_model(tmp_path, m)
+    c, h = tmp_path / "out.c", tmp_path / h_name
+    r = run(p, "--c", c, "--h", h, "--prefix", prefix)
+    assert r.returncode == 0, r.stderr
+    main = tmp_path / "main.c"
+    main.write_text(f'#include "{h_name}"\n#include "{h_name}"\n'
+                    f"int main(void)\n{{\n    return {prefix}beep[0] == 128 ? 0 : 1;\n}}\n")
+    r = subprocess.run(["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-I", str(tmp_path),
+                        str(c), str(main), "-o", str(tmp_path / "a.out")],
+                       capture_output=True, text=True, env=minimal_env())
+    assert r.returncode == 0, r.stderr
