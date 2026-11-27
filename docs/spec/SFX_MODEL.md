@@ -283,9 +283,25 @@ For each sound it:
 
 1. Joins the `_1` and `_2` tables of a split sound.
 2. Checks the length equals `len` and the loudest sample sits exactly `peak_steps` from 128.
-3. Measures the table: the power in 250 Hz bands over the whole table, and the rms level in 5 ms frames. It keeps only the bands and frames within 30 dB of the strongest one and ignores everything above 15 kHz.
-4. Predicts the same two measurements from the model. It renders tone layers by the steps above. It takes a noise layer as its expected power: the filter's power in each band times the envelope and hit levels. It draws no random numbers. A loop wraps what runs past `len`, so a `fold` cross-fades a hit with itself in the prediction too. In a `repeat` layer, hits that start at the same sample play the same noise, so their gains add as amplitudes before the tool squares them. Hits of a `repeat` layer at different starts count as unrelated in the prediction.
+3. Measures the table: the power in bands over the whole table, and the rms level in frames. A sound of tones only uses 250 Hz bands and 5 ms frames. A sound with noise gets its own widths, as below. It keeps only the bands and frames within 30 dB of the strongest one and ignores everything above 15 kHz.
+4. Predicts the same two measurements from the model. It renders tone layers by the steps above. It takes a noise layer as its expected power and spectrum, as below. It draws no random numbers. A loop wraps what runs past `len`, so a `fold` cross-fades a hit with itself in the prediction too.
 5. Scales the prediction and compares it with the measure in dB. The bands and the frames each get their own gain. The band gain matches the power under 15 kHz. The frame gain matches the power of the whole spectrum, so noise above 15 kHz still counts in the frames.
+
+For one noise layer, `h` is its 511 filter taps at unit power, `g[i]` the gain of one hit at its sample `i` without the hit's level, `a_k` the linear level of hit `k`, `s_k` its start, `n` the table length and `M` the FFT size of the measurement. The gain `g` is the envelope times the fold fade. The generator filters a longer run of noise than the hit, so every sample of a hit holds the full filter and `g` needs no edge term.
+
+A short envelope smears the spectrum. The tool computes `rh[d] = sum h[m] h[m+d]` and `rg[d] = sum g[i] g[i+d]` for the lags -510 to 510. The expected spectrum of one hit of level 1 is the FFT of `rh[d] * rg[d]` placed circularly on `M` points, real part, clamped at 0. The tool scales it as it scales the measured spectrum, so its bins sum to `rh[0] * rg[0]`. A hit cut by the end of the table, or wrapped by a loop, takes `rg` of the parts that land in the table.
+
+Hits of a layer without `repeat` are unrelated: their spectra add, each times `a_k^2`. In a `repeat` layer every hit replays one waveform, so the sum has a comb spectrum. The tool multiplies the spectrum of one hit at bin `j` by `|sum_k a_k * exp(-2 pi i j s_k / M)|^2`. Hits at one start add as amplitudes this way too. Layers add as powers, and so do noise and tones.
+
+The expected power of sample `i` is `sum_k a_k^2 g[i - s_k]^2`. In a `repeat` layer, two hits whose starts differ by `d`, with `|d|` at most 510, add `2 a_k a_l g[i - s_k] g[i - s_l] rh[d]`. A loop wraps the sample and takes the start difference modulo `n` both ways. The frames and `pmax` use this power.
+
+A fixed tolerance needs enough independent values in each band and each frame. Let `p[i]` be the expected noise power of sample `i` and `S[j]` the expected noise spectrum up to half the rate, both summed over the noise layers. Then:
+
+- The effective duration is `T = (sum p)^2 / (sum p^2) / rate` seconds.
+- The effective bandwidth is `B = (sum S)^2 / (sum S^2) * rate / M` Hz.
+- The band width is `W = max(250, 6 / T)` Hz and the frame length `F = max(0.005, 6 / B)` seconds. Each judged value then holds at least 12 independent numbers.
+
+Bands run from 0 in steps of `W` up to 15 kHz, and the tool drops a last partial band. Frames run from sample 0 in steps of `F`, rounded to whole samples. A last frame shorter than half of `F` joins the frame before it. The line prints the widths after the kind, as `bands 250 Hz, frames 5.0 ms`.
 
 The prediction of a sound with a noise layer includes the rounding of each sample to a whole step. It adds this rounding as white noise of power 1/12 step squared per sample, spread evenly from 0 to half the rate, and each gain matches the model part only. A quiet table needs it: its weak bands sit close to the rounding noise, so a prediction without it reads them too low.
 
@@ -295,12 +311,13 @@ The tool compares the share of the power under 15 kHz in the table with the shar
 
 A sound with a noise layer also gets a level check, since the frame gain hides the level of a one-frame sound. The model fixes the peak at `peak_steps`, so the tool computes `level_db = 10 * log10(peak_steps^2 / (frame_gain * pmax))`. Here `pmax` is the largest predicted power of one sample, model part only, before the gain. It says how far the peak sits above the strongest expected rms. The line prints it as `level L.LL dB` after the frame numbers. The sound fails when `level_db` is under -6 dB or over 14 dB. A sound of tones only prints no level.
 
-Two kinds of sound are judged on their length, their peak, their frames and their level only:
+Some sounds are judged without their bands or their frames:
 
 - A sound where the table and the model both hold less than 1 % of the power under 15 kHz. Its line says `bands not judged, no power under 15 kHz`.
-- A sound with a noise layer that lasts under 20 ms. A 250 Hz band of it holds too few values to judge. Its line says `bands not judged, under 20 ms`.
+- A sound with a noise layer where fewer than 3 bands fit. Its line says `bands not judged, too short`.
+- A sound with a noise layer where fewer than 3 frames fit. Its line says `frames not judged, too narrow`.
 
-The line still prints the band numbers it measured.
+A sound can carry both notes. The line still prints the band numbers it measured.
 
 It checks the fields it needs and their types, and bounds every number it reads with the ranges of `tools/sfx_table.py`. It also checks the rules its prediction relies on: band frequencies that rise, a `fold` of at most half the samples of the noise envelope, a noise envelope of 1 to 262144 samples, an attack and a release inside the tone, envelope times that do not go down, hits inside the sound, a pitch above zero, lengths above zero, and at least one layer and one hit. An invalid model exits with code 2 and names the sound and the field. It does not repeat every check of `tools/sfx_table.py`.
 
@@ -312,7 +329,7 @@ A loop is a sound with `loop` set. A one-shot with noise has a noise layer and n
 | One-shot with noise | Mean 3 dB, worst 10 dB | Mean 2 dB, worst 6 dB |
 | Loop | 1.5 dB each | Median 1.5 dB, worst 7 dB |
 
-It prints one line per sound: its name and kind, the mean, median and worst band error and frame error in dB, the level for a sound with noise, then any note, then `ok` or `FAIL` with the reason.
+It prints one line per sound: its name and kind, the band width and frame length, the mean, median and worst band error and frame error in dB, the level for a sound with noise, then any note, then `ok` or `FAIL` with the reason.
 
 Exit codes: 0 every sound passes, 1 a sound fails, 2 the model is not valid or a table file is missing or has the wrong length, 64 a usage error, 70 an internal error.
 
