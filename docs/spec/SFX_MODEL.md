@@ -283,7 +283,7 @@ For each sound it:
 
 1. Joins the `_1` and `_2` tables of a split sound.
 2. Checks the length equals `len` and the loudest sample sits exactly `peak_steps` from 128.
-3. Measures the table: the power in bands over the whole table, and the rms level in frames. A sound of tones only uses 250 Hz bands and 5 ms frames. A sound with noise gets its own widths, as below. It keeps only the bands and frames within 30 dB of the strongest one and ignores everything above 15 kHz.
+3. Measures the table: the power in bands over the whole table, and the rms level in frames. A sound of tones only uses 250 Hz bands and 5 ms frames. A sound with noise gets its own widths, as below. It ignores everything above 15 kHz.
 4. Predicts the same two measurements from the model. It renders tone layers by the steps above. It takes a noise layer as its expected power and spectrum, as below. It draws no random numbers. A loop wraps what runs past `len`, so a `fold` cross-fades a hit with itself in the prediction too.
 5. Scales the prediction and compares it with the measure in dB. The bands and the frames each get their own gain. The band gain matches the power under 15 kHz. The frame gain matches the power of the whole spectrum, so noise above 15 kHz still counts in the frames.
 
@@ -318,7 +318,11 @@ A band or frame whose noise fills only part of it holds fewer values than its wi
 - Frame `f` holds `N_f = (B / rate) * (sum p[i])^2 / (sum p[i]^2)` over the samples `i` of the frame.
 - Tones are fixed, not random. With `q` the noise part of the predicted value, before the rounding floor, the value counts `N_eff = N / (q * (2 - q))`. A value with no noise counts as infinite.
 
-The tool judges every band and frame within 30 dB of the strongest, in one of two tiers:
+A band or frame is in range when its measured value is within 30 dB of the strongest measured one, or its predicted value is within 30 dB of the strongest predicted one. The predicted value here is the whole prediction, after the gain. The tool skips every value out of range.
+
+A value in range by its prediction can be silent: measured at zero, or more than 30 dB under its prediction. A silent value fails the sound with `frame at T.T ms is silent, the model predicts power` or `band at F Hz is silent, the model predicts power`. Each kind gives at most one such reason, the first one found. A silent value does not enter the statistics. So a table that leaves out a hit of the model fails, even though the gains absorb the lost power.
+
+The tool judges every other value in range, in one of two tiers:
 
 - A tight value has `N_eff` at or above `K_band` or `K_frame`. The tolerance table judges it. Only tight values enter the mean, median and worst.
 - A thin value has `N_eff` under the count. Chance bounds judge it.
@@ -327,7 +331,9 @@ The tool models a thin value as a gamma variable. Its mean is the whole predicti
 
 Bands run from 0 in steps of `W` up to 15 kHz, and the tool drops a last partial band. Frames run from sample 0 in steps of `F`, rounded to whole samples. A last frame shorter than half of `F` joins the frame before it. The line prints the widths after the kind, as `bands 250 Hz, frames 5.0 ms`.
 
-The prediction of a sound with a noise layer includes the rounding of each sample to a whole step. It adds this rounding as white noise of power 1/12 step squared per sample, spread evenly from 0 to half the rate, and each gain matches the model part only. A quiet table needs it: its weak bands sit close to the rounding noise, so a prediction without it reads them too low. The white floor is only an average, since at a low level the rounding error follows the waveform. So the tool does not judge a band or frame whose floor is more than half of its whole prediction, as it skips a value more than 30 dB down.
+The prediction of a sound with a noise layer includes the rounding of each sample to a whole step. It adds this rounding as white noise of power 1/12 step squared per sample, spread evenly from 0 to half the rate, and each gain matches the model part only. A quiet table needs it: its weak bands sit close to the rounding noise, so a prediction without it reads them too low. The white floor is only an average, since at a low level the rounding error follows the waveform. So the tool does not judge a band or frame whose floor is more than half of its whole prediction.
+
+When the floor of the whole table is more than half of its measured energy over the full spectrum, the table is mostly rounding. It says nothing about the spectrum or the envelope of the model. The tool then judges neither the bands, nor the frames, nor the level. Its line says `not judged, the table is mostly rounding` and prints no level. It still checks the length and the peak. A sound of tones only has no floor, so this never applies to it.
 
 A sound of tones only rounds along its waveform, so its rounding is not white noise. For such a sound the tool predicts the rounded table itself. It scales the render so its loudest sample sits at `peak_steps`, rounds each sample to a whole step with a half away from zero, and measures that. It adds no white floor and applies no gain.
 
