@@ -6,7 +6,8 @@
 --work holds one checkout per repository, named as the repository:
 w/RobCo-Core and the five siblings. The file gets the LICENSE of each of
 the six repositories, in a fixed order, then every licence file under
-w/RobCo-Core/third_party/, folder by folder in sorted order. A licence
+w/RobCo-Core/third_party/: first the licence files directly in it, then
+folder by folder, each in sorted order. Other loose files are ignored. A licence
 file is one whose name starts with LICENSE, LICENCE or COPYING, in any
 case. A folder with no licence file gives its PROVENANCE file instead.
 Each text comes under a line that names its repository and path.
@@ -58,8 +59,10 @@ def collect(work):
     third = os.path.join(work, CORE, "third_party")
     if not os.path.isdir(third):
         raise NoticesError(f"no folder {third}")
-    paths = []
-    for name in sorted(os.listdir(third)):
+    names = sorted(os.listdir(third))
+    paths = [n for n in names
+             if os.path.isfile(os.path.join(third, n)) and n.lower().startswith(PREFIXES)]
+    for name in names:
         folder = os.path.join(third, name)
         if not os.path.isdir(folder):
             continue

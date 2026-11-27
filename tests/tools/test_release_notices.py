@@ -78,3 +78,17 @@ def test_missing_third_party_fails(work, tmp_path):
     assert tool("--work", str(work), "--out", str(out)).returncode == 1
     assert tool("--work", str(tmp_path / "none"), "--out", str(out)).returncode == 1
     assert not out.exists()
+
+
+def test_root_licence_file_comes_first(work, tmp_path):
+    third = work / "RobCo-Core" / "third_party"
+    (third / "COPYING.extra").write_text("Root terms.\n")
+    (third / "README.md").write_text("loose readme\n")
+    out = tmp_path / "NOTICES.txt"
+    r = tool("--work", str(work), "--out", str(out))
+    assert r.returncode == 0, r.stdout
+    text = out.read_text()
+    heads = [l for l in text.splitlines() if l.startswith("==== RobCo-Core: third_party/")]
+    assert heads[0] == "==== RobCo-Core: third_party/COPYING.extra ===="
+    assert len(heads) == 4
+    assert "Root terms." in text and "loose readme" not in text
