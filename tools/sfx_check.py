@@ -22,6 +22,7 @@ import json
 import math
 import operator
 import os
+import re
 import sys
 
 EX_OK = 0
@@ -58,12 +59,18 @@ LOW_SHARE = 0.01
 # prediction is not judged: at a low level the rounding follows the
 # waveform, so it is not the white noise the floor assumes.
 FLOOR_SHARE_MAX = 0.5
+# A frame whose whole prediction is under this power per sample, an rms
+# under one step, is not judged: its energy is a small whole number of
+# steps squared, which neither the floor nor the gamma bound describes.
+STEP_POWER_MIN = 1.0
 # Bounds of the level of a sound with noise: how far its peak sits above
 # the strongest expected rms of one sample, in dB.
 LEVEL_MIN_DB = -6.0
 LEVEL_MAX_DB = 14.0
 # The generator's ranges for the fields this tool reads.
 MAX_LEN = 262144
+# The generator's rule for a sound name.
+NAME = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
 MAX_US = MAX_LEN * 1000000 // 8000
 MDB = (-120000, 20000)
 # The most steps of the noise prediction one sound may take.
@@ -163,6 +170,10 @@ def load_model(path):
     sounds = model.get("sounds")
     if not isinstance(sounds, dict) or not sounds:
         raise ModelError("model: sounds must be a non-empty object")
+    for name in sounds:
+        if not NAME.match(name):
+            raise ModelError("sound %r: the name must be a to z, 0 to 9 and _, start with"
+                             " a letter, at most 32 characters" % name)
     for name, s in sounds.items():
         where = "sound %s" % name
         if not isinstance(s, dict):
@@ -776,6 +787,10 @@ def kind_of(sound):
 
 def read_table(name, sound, folder):
     names = [name] if "split" not in sound else [name + "_1", name + "_2"]
+    # The parts add _1 and _2 to a name load_model() checked, so they keep
+    # to a to z, 0 to 9 and _ and stay in the folder.
+    if not NAME.match(name):
+        raise TableError("sound %r: not a valid name" % name)
     data = b""
     for t in names:
         path = os.path.join(folder, t + ".u8")
@@ -792,28 +807,33 @@ def read_table(name, sound, folder):
     return data
 
 
-def judge(meas, pred, neff, need, floor):
+def judge(meas, pred, neff, need, floor, small=None):
     """Judge the entries in range: within FLOOR_DB of the strongest measured,
-    or predicted within FLOOR_DB of the strongest predicted. An entry in
-    range by its prediction and measured more than FLOOR_DB under it is
-    silent. Split the other entries in range, when not mostly rounding
-    floor, into tight and thin ones. Return the dB errors of the tight ones,
+    or predicted within FLOOR_DB of the strongest predicted. Skip an entry
+    that is mostly rounding floor, or whose prediction is under its entry
+    in `small`. Of the rest, an entry in range by its prediction and
+    measured more than FLOOR_DB under it is silent. Split the others into
+    tight and thin ones. Return the dB errors of the tight ones,
     the count of thin ones, the index and signed dB error of the worst thin
     one beyond chance or None, and the index of the first silent one or
     None."""
     top_m = max(meas) if meas else 0.0
     top_p = max(pred) if pred else 0.0
     errs, thin, worst, silent = [], 0, None, None
-    for i, (m, p, n, f) in enumerate(zip(meas, pred, neff, floor)):
+    if small is None:
+        small = [0.0] * len(pred)
+    for i, (m, p, n, f, lo) in enumerate(zip(meas, pred, neff, floor, small)):
         by_meas = m > 0.0 and 10.0 * math.log10(top_m / m) <= FLOOR_DB
         by_pred = p > 0.0 and 10.0 * math.log10(top_p / p) <= FLOOR_DB
         if not by_meas and not by_pred:
             continue
+        if p > 0.0 and f > FLOOR_SHARE_MAX * p:
+            continue
+        if p < lo:
+            continue
         if by_pred and (m <= 0.0 or 10.0 * math.log10(p / m) > FLOOR_DB):
             if silent is None:
                 silent = i
-            continue
-        if p > 0.0 and f > FLOOR_SHARE_MAX * p:
             continue
         e = float("inf") if p <= 0.0 else 10.0 * math.log10(m / p)
         # A flat band of a loop holds the count exactly; rounding in the
@@ -897,6 +917,8 @@ def check_sound(model, name, folder):
         fb = [total * width / nyq] * len(mb)
         f_low = total * min(TOP_HZ, nyq) / nyq
         ff = to_frames([ROUND_POWER] * len(x), step)
+        # A frame predicted under one step rms is not judged.
+        small_f = to_frames([STEP_POWER_MIN] * len(x), step)
         m_all = sum(mspec)
         # A table whose rounding floor is more than FLOOR_SHARE_MAX of its
         # energy is mostly rounding: it says nothing about the model.
@@ -924,6 +946,7 @@ def check_sound(model, name, folder):
         pb = band_energy(r, rate, nb)
         pf = frame_energy([v * v for v in r], rate)
         fb, ff = [0.0] * nb, [0.0] * len(pf)
+        small_f = None
         p_all = sum(pb)
         if extra:
             mb, pb, fb = mb[:-1], pb[:-1], fb[:-1]
@@ -936,7 +959,7 @@ def check_sound(model, name, folder):
     b_errs, b_thin, b_bad, b_silent = judge(mb, [p * band_gain + f for p, f in zip(pb, fb)],
                                   neff_b, need_b, fb)
     f_errs, f_thin, f_bad, f_silent = judge(mf, [p * frame_gain + f for p, f in zip(pf, ff)],
-                                  neff_f, need_f, ff)
+                                  neff_f, need_f, ff, small_f)
     # Share of the energy under 15 kHz, measured and predicted.
     m_share = m_low / m_all if m_all > 0.0 else 0.0
     p_share = p_low / p_all if p_all > 0.0 else 0.0

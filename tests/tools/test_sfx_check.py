@@ -820,3 +820,51 @@ def test_mostly_rounding_table_with_a_wrong_peak_fails(tmp_path):
     r = run(CHECK, p, d)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "peak is 2 steps, the model says 1" in r.stdout, r.stdout
+
+
+def rising_model(seed):
+    """One second of noise that rises from -60 dB, so its first frames round
+    to rest values. A short fall brings the last sample near rest."""
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"rise": {
+        "len": RATE, "peak_steps": 10, "layers": [
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -60000], [950000, 0], [1000000, -40000]],
+             "bands": [[0, 0], [RATE // 2, 0]]}]}}}
+
+
+def test_quiet_start_is_not_silent(tmp_path):
+    for seed in range(1, 7):
+        r = run(CHECK, *dump(tmp_path, rising_model(seed), "m%d.json" % seed, "d%d" % seed))
+        assert r.returncode == 0, "seed %d: %s" % (seed, r.stdout + r.stderr)
+
+
+def few_steps_model(seed):
+    """A low wide band at peak 3: most samples round to 0 or one step."""
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"few": {
+        "len": RATE, "peak_steps": 3, "layers": [
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -20000], [1000000, 0]],
+             "bands": [[15, -20000], [3972, -20000]]}]}}}
+
+
+def test_frames_of_a_few_steps_are_not_judged(tmp_path):
+    for seed in range(50, 61):
+        r = run(CHECK, *dump(tmp_path, few_steps_model(seed), "m%d.json" % seed, "d%d" % seed))
+        assert r.returncode == 0, "seed %d: %s" % (seed, r.stdout + r.stderr)
+
+
+@pytest.mark.parametrize("bad", ["../escape", "a/b", "Loud", ""])
+def test_bad_sound_name_gives_2(tmp_path, bad):
+    m = noise_model()
+    m["sounds"] = {bad: m["sounds"]["burst"]}
+    p, d = dump(tmp_path, noise_model())
+    p.write_text(json.dumps(m))
+    # A matching table outside the folder must not be read.
+    data = (d / "burst.u8").read_bytes()
+    inner = d / "in"
+    inner.mkdir()
+    (tmp_path / "escape.u8").write_bytes(data)
+    (d / "escape.u8").write_bytes(data)
+    r = run(CHECK, p, inner if bad == "../escape" else d)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "sound %r" % bad in r.stderr, r.stderr
