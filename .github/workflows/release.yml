@@ -27,8 +27,10 @@ permissions:
   contents: read
   packages: read
 
+# One group per ref. GitHub keeps one pending run per group and drops an
+# older pending one, so a shared group could lose a suite tag's run.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

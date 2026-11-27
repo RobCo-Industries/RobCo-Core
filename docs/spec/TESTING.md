@@ -546,7 +546,7 @@ A red night is a failed run. GitHub emails the person who last changed the `cron
 
 To start a run by hand, open Actions, pick `nightly` and use "Run workflow". The inputs `core_ref`, `retros_ref`, `mfboot_ref`, `uos_ref`, `pipos_ref` and `deitrix_ref` take a branch, a tag or a commit. Empty means the default branch. Set one to prove a branch before its merge. `pairing` takes `both`, `pins` or `core-head`. `both`, the default and the schedule's value, plans `pins` then `core-head`. The summary heading names the pairings planned.
 
-Another workflow of RobCo-Core can call the nightly with `uses: ./.github/workflows/nightly.yml` and the same seven inputs. There `pairing` is a string with the default `both`, and `plan.py` refuses any other value. A called run has its own concurrency group, so it neither waits behind nor replaces a scheduled night. Both card builds get `CARD_NOTE`, the absolute path of the downloaded `VERSIONS.txt`. The siblings ignore it today.
+Another workflow of RobCo-Core can call the nightly with `uses: ./.github/workflows/nightly.yml` and the same seven inputs. There `pairing` is a string with the default `both`, and `plan.py` refuses any other value. A called run has its own concurrency group, named after its caller and the caller's ref, so it neither waits behind nor replaces a scheduled night or a call from another ref. Both card builds get `CARD_NOTE`, the absolute path of the downloaded `VERSIONS.txt`. UOS puts it on the terminal card as `/ROBCO/VERSIONS.TXT` and Deitrix on the Pip-Boy card as `/PIPBOY/VERSIONS.TXT`.
 
 GitHub switches a schedule off after 60 days with no activity in RobCo-Core. Before a release, check that the last scheduled run is under two days old.
 

@@ -136,7 +136,7 @@ def notes(suite, repos, cards):
         "",
         "1. Check the downloads with `sha256sum -c SHA256SUMS`.",
         "2. Write the `.gz` file to an SD card, for example with Raspberry Pi Imager.",
-        "3. Mount the card and run `fetch_firmware.sh <card folder>`. It downloads",
+        "3. Mount the card and run `bash fetch_firmware.sh <card folder>`. It downloads",
         "   `bootcode.bin`, `start.elf` and `fixup.dat` at pinned hashes.",
         "",
         "`VERSIONS.txt` is the night's version table. "
