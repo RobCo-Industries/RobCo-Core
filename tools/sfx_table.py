@@ -7,8 +7,10 @@
     sfx_table.py MODEL --wav DIR
 
 --dump and --wav may go with the first form. --check writes nothing: it
-compares the model's SHA-256 and the tool revision recorded in OUT.h. With
---full it renders every sound again and compares both files byte for byte.
+compares the model's SHA-256 and the tool revision recorded in OUT.h and in
+the comment of OUT.c. With --full it renders every sound again and compares
+both files byte for byte. Files are written to a temporary name and renamed,
+OUT.h last.
 
 Exit codes: 0 success, 1 a file is out of date or cannot be read or written,
 2 the model is refused, 64 usage error.
