@@ -132,6 +132,8 @@ The output sample `i` of a hit is `h[0] * w[i] + h[1] * w[i + 1] + ... + h[510] 
 4. For hit `k`: with `repeat` and `k > 0`, reuse hit 0's samples. Else `one[i] = filtered[i] * gain[i]`, or 0 where `gain[i]` is 0.
 5. Each hit adds `one[i] * db_gain((level_mdb + level) / 1000)` as a tone does.
 
+In a one-shot, the samples of a hit past the sound's end never sound, so the tool does not make them. It filters only the `m = min(n, len - at)` samples that sound, from the first `m + 510` generator values. The generator runs in order, so those values are the same as in a whole run, and each kept sample adds the same products in the same order. With `repeat`, hit 0 is made as long as the longest kept hit. A loop wraps what runs past its end, so every sample of its hits sounds and is made. A test compares the bits with the whole render.
+
 ### Scaling and rounding
 
 `peak` is the largest absolute value in `out`. A silent sound is refused. Each sample becomes `128 + round(out[i] * (peak_steps / peak))`. A tool that wants the values before rounding takes `out[i] * (peak_steps / peak)`.
@@ -153,6 +155,15 @@ The tool also refuses a tone whose sine can pass its limit of 1600000. It bounds
 - With a falling pitch, a partial can start silent and sound from some sample on, so the bound takes the whole phase sum. A partial with `f1 * mult * 0.99` at or above `rate_hz / 2` never sounds. Else the bound is `1.01 * mult * 2 pi * (f0 + n * (f0 - f1) / ln(f0 / f1)) / rate_hz`. The sum of a falling geometric series is at most its first term plus its integral. The 1 % covers the loop move and rounding.
 
 Each partial past the limit gets its own line, which names it, such as `partials[0]`.
+
+The tool also refuses a model whose render costs more than 1000000000 units, with one line. The cost is:
+
+- 511 for each kept noise sample, one per filter tap, counted once for a `repeat` layer;
+- 32 for each tone sample of each partial, since a sine takes about 18 filter products of time;
+- 32 for each sample of each sound;
+- 131072 for each noise layer, for its filter design.
+
+On the reference machine, a 2.3 s noise loop at 37500 Hz costs 44073750 units and renders in 1.9 s, about 42 ns a unit. A model near the budget renders in 41 s with noise and in 22 s with tones, well under two minutes. The largest made-up test sound costs 982920 units. A 3 s loop at 48000 Hz of two noise layers and a 16-partial tone costs 225766144 units, under a quarter of the budget.
 
 Every other function call stays in range for any model the file rules allow: `exp` sees -28 to 5, `ln` a positive pitch ratio, `sqrt` a positive sum.
 
