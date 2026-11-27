@@ -881,3 +881,54 @@ def test_bad_sound_name_gives_2(tmp_path, bad):
     r = run(CHECK, p, inner if bad == "../escape" else d)
     assert r.returncode == 2, r.stdout + r.stderr
     assert "sound %r" % bad in r.stderr, r.stderr
+
+
+def late_noise_model(pitch_hz=500, tone=True):
+    """A tone with a noise layer whose envelope starts after the table ends."""
+    layers = [{"kind": "noise", "seed": 3, "level_mdb": 0, "hits": [[0, 0]],
+               "env": [[300000, 0], [400000, 0]],
+               "bands": [[300, 0], [5000, 0]]}]
+    if tone:
+        layers.append({"kind": "tone", "hits": [[0, 0]], "len": 4000,
+                       "pitch_mhz": [pitch_hz * 1000, pitch_hz * 1000], "level_mdb": 0,
+                       "partials": [[10000, 0]], "attack_us": 5000, "release_us": 5000})
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"late": {
+        "len": 4000, "peak_steps": 60, "layers": layers}}}
+
+
+def test_noise_outside_the_table_is_judged_as_tones(tmp_path):
+    p, d = dump(tmp_path, late_noise_model())
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.startswith("late tones bands 250 Hz, frames 5.0 ms,"), r.stdout
+    for hz in (1000, 2000):
+        _, d2 = dump(tmp_path, late_noise_model(hz), name="m%d.json" % hz, folder="o%d" % hz)
+        r = run(CHECK, p, d2)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "FAIL" in r.stdout and "band" in r.stdout, r.stdout
+
+
+def test_noise_only_outside_the_table_rests(tmp_path):
+    # The generator refuses a silent sound, so the table is written here.
+    p = tmp_path / "model.json"
+    p.write_text(json.dumps(late_noise_model(tone=False)))
+    d = tmp_path / "out"
+    d.mkdir()
+    (d / "late.u8").write_bytes(bytes([128] * 4000))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert " tones " in r.stdout, r.stdout
+    _rewrite(os.path.join(d, "late.u8"), lambda data: data.__setitem__(1000, 129))
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "peak is 1 steps" in r.stdout, r.stdout
+
+
+def test_deep_json_gives_2(tmp_path):
+    p = tmp_path / "model.json"
+    p.write_text("[" * 200000 + "]" * 200000)
+    r = run(CHECK, p, tmp_path)
+    assert r.returncode == 2, r.stdout + r.stderr
+    lines = r.stderr.splitlines()
+    assert len(lines) == 1 and "Traceback" not in r.stderr, r.stderr
+    assert "is not valid JSON" in lines[0] or "not a JSON object" in lines[0], r.stderr

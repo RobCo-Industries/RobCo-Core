@@ -159,7 +159,7 @@ def load_model(path):
         model = json.loads(raw.decode("utf-8"), parse_float=_refuse_float,
                            parse_constant=_refuse_constant,
                            object_pairs_hook=_no_duplicates)
-    except (UnicodeDecodeError, ValueError) as e:
+    except (UnicodeDecodeError, ValueError, RecursionError) as e:
         raise ModelError("%s is not valid JSON: %s" % (path, e))
     if not isinstance(model, dict):
         raise ModelError("the model is not a JSON object")
@@ -659,9 +659,12 @@ def widths(noise_spec, noise_pow, rate, size, kind):
     ss, ss2 = sum(noise_spec), sum(v * v for v in noise_spec)
     dur = sp * sp / sp2 / rate if sp2 > 0.0 else 0.0
     bw = ss * ss / ss2 * rate / size if ss2 > 0.0 else 0.0
-    band = max(BAND_HZ, span["band"] / dur) if dur > 0.0 else float("inf")
-    frame = max(FRAME_S, span["frame"] / bw) if bw > 0.0 else float("inf")
-    step = max(1, int(round(min(frame * rate, 1e12))))
+    band = max(BAND_HZ, span["band"] / dur) if dur > 0.0 else BAND_HZ
+    frame = max(FRAME_S, span["frame"] / bw) if bw > 0.0 else FRAME_S
+    if not math.isfinite(band):
+        band = BAND_HZ
+    # A frame never runs past the table.
+    step = max(1, min(len(noise_pow), int(round(min(frame * rate, 1e12)))))
     return band, step, dur, bw
 
 
@@ -777,9 +780,14 @@ def to_frames(power, step):
 
 # ---- the comparison ---------------------------------------------------------
 
-def kind_of(sound):
+def kind_of(sound, noise_power=None):
+    """The kind a sound is judged as. With `noise_power`, the summed
+    expected noise power over the table, a one-shot whose noise puts
+    nothing in the table is judged as tones only."""
     if sound.get("loop"):
         return "loop"
+    if noise_power is not None and noise_power <= 0.0:
+        return "tones"
     if any(layer["kind"] == "noise" for layer in sound["layers"]):
         return "noise"
     return "tones"
@@ -887,17 +895,24 @@ def check_sound(model, name, folder):
         if steps > WORK_LIMIT:
             raise CostError("sounds.%s: too costly to check, %d steps, the limit is %d"
                             % (name, steps, WORK_LIMIT))
-    peak = max(abs(b - 128) for b in data)
-    if peak != sound["peak_steps"]:
-        faults.append("peak is %d steps, the model says %d" % (peak, sound["peak_steps"]))
-    x = [b - 128.0 for b in data]
     has_noise = any(layer["kind"] == "noise" for layer in sound["layers"])
-    cut = any(layer["kind"] == "noise" and repeat_cut(layer, sound, rate)
-              for layer in sound["layers"])
+    if has_noise:
+        pspec, ps, nspec, npow = predict(sound, rate, size)
+        # Noise that puts nothing in the table leaves a tones-only sound.
+        kind = kind_of(sound, sum(npow))
+        has_noise = kind != "tones"
+    has_tone = any(layer["kind"] == "tone" for layer in sound["layers"])
+    # A sound with no tone and no noise in the table should rest at 128.
+    want_peak = sound["peak_steps"] if has_noise or has_tone else 0
+    peak = max(abs(b - 128) for b in data)
+    if peak != want_peak:
+        faults.append("peak is %d steps, the model says %d" % (peak, want_peak))
+    x = [b - 128.0 for b in data]
+    cut = has_noise and any(layer["kind"] == "noise" and repeat_cut(layer, sound, rate)
+                            for layer in sound["layers"])
     if has_noise:
         # A loop is periodic: its own n bins, no zero padding.
         mspec = onesided(dft([complex(v) for v in x] + [0j] * (size - len(x))), size)
-        pspec, ps, nspec, npow = predict(sound, rate, size)
         width, step, dur, bw = widths(nspec, npow, rate, size, kind)
         mb, m_low = to_bands(mspec, rate, size, width)
         pb, p_low_model = to_bands(pspec, rate, size, width)
@@ -942,7 +957,7 @@ def check_sound(model, name, folder):
         mf = frame_energy([v * v for v in x], rate)
         # Tones only: predict the rounded table itself, so no gain and no
         # white floor.
-        r = rounded_tones(sound, rate)
+        r = rounded_tones(sound, rate) if has_tone else [0.0] * len(x)
         pb = band_energy(r, rate, nb)
         pf = frame_energy([v * v for v in r], rate)
         fb, ff = [0.0] * nb, [0.0] * len(pf)

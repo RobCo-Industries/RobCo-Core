@@ -283,7 +283,7 @@ For each sound it:
 
 1. Joins the `_1` and `_2` tables of a split sound.
 2. Checks the length equals `len` and the loudest sample sits exactly `peak_steps` from 128.
-3. Measures the table: the power in bands over the whole table, and the rms level in frames. A sound of tones only uses 250 Hz bands and 5 ms frames. A sound with noise gets its own widths, as below. It ignores everything above 15 kHz.
+3. Measures the table: the power in bands over the whole table, and the rms level in frames. A sound of tones only uses 250 Hz bands and 5 ms frames. A sound with noise gets its own widths, as below. A one-shot whose noise layers put no power in the table is judged as tones only. With no tone layer either, its table must rest at 128. It ignores everything above 15 kHz.
 4. Predicts the same two measurements from the model. It renders tone layers by the steps above. It takes a noise layer as its expected power and spectrum, as below. It draws no random numbers. A loop wraps what runs past `len`, so a `fold` cross-fades a hit with itself in the prediction too.
 5. Scales the prediction and compares it with the measure in dB. The bands and the frames each get their own gain. The band gain matches the power under 15 kHz. The frame gain matches the power of the whole spectrum, so noise above 15 kHz still counts in the frames.
 
