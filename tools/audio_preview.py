@@ -24,6 +24,10 @@ Lines it reads, each an "@RC ... ev=audio op=..." marker of any stage:
     op=voice rate= spans= len= vol= crc= t_ms=
                                          a voice starts: a note the
                                          library computes from spans
+    ... gain=                            on op=pcm, op=voice or op=tone:
+                                         the play's gain, 0 to 10000
+    op=gain gain= t_ms=                  the gain of the play that runs
+                                         moves toward a new target
     the rest ramp, a plain op=pcm rate=22050 len=882 vol=100 whose CRC is
     the library's ramp. The same bytes at another rate or volume are an
     ordinary play. Once the ramp has ended by itself, which prints its
@@ -91,14 +95,25 @@ Rules it applies, from the library's driver:
   rounds to the nearest step, a half step away from 128, as
   audio_pcm_scale() in src/lib/audio_pcm.c does. --scale cut rounds
   toward 128, for a log of a library older than that rounding.
-  A play keeps the volume its line prints. The driver applies a volume
-  change to the samples that follow, but prints no line for it, so the
-  file is wrong for a play whose volume changes on the way.
+  A play keeps the volume its line prints. An older driver applies a
+  volume change to the samples that follow, but prints no line for it,
+  so the file is wrong for such a play.
+- Gain: a start line's gain= sets the play's gain in 1/10000. Without it
+  the gain is vol * 100, and every rule below gives the same byte as
+  the volume rule. A sample is 128 + (s - 128) * gain / 10000, rounded
+  as --scale says. op=gain sets a new target. From the first sample of
+  the play at or after its t_ms, each sample moves the gain toward the
+  target by (500000 + rate - 1) / rate units, rate being the play's, or
+  37500 for a tone, and never past it. The rest ramp keeps full scale
+  and ignores op=gain. op=gain with nothing playing is a bad log. A
+  voice is 128 + (q + (mix - 128) * 256) * gain / 2560000, rounded once.
 - A sample play holds duty s / 256 of the 37.5 kHz carrier. Silence is
   duty 0, or duty 128 once the rest ramp has ended with its op=pcm_end.
 - A tone before the rest ramp, or after a ramp cut early, is the pin's
   pulse: period round(9600000 / hz) counts, high for
-  (period / 2 * vol + 50) / 100 of them.
+  (period / 2 * vol + 50) / 100 of them. With a gain, vol is
+  (gain + 50) / 100, taken when the note starts: op=gain does not change
+  a pulse that plays.
 - A tone that starts after the rest ramp reached its end is the
   library's centred square, from tools/tone_square.py, one sample per
   carrier period from the first frame at or after its t_ms:
@@ -107,8 +122,10 @@ Rules it applies, from the library's driver:
     amp = (peak * vol + 50) / 100 steps each side of 128
     a note starts at an edge going up; a sample that holds an edge takes
       the mean of the two levels by the edge's place in it
-  Each op=tone is a new note, so a volume change takes effect at the next
-  note. The gap between op=stop and the next op=tone holds 128. The
+  With a gain, amp is (peak * gain + 5000) / 10000, taken every sample,
+  so op=gain moves the height of a note that plays.
+  Each op=tone is a new note, so a volume change without op=gain takes
+  effect at the next note. The gap between op=stop and the next op=tone holds 128. The
   library restarts a note after a late IRQ skips over 64 samples. The
   tool has no late IRQ, so that rule never applies here. The trace does
   not print the peak or the grid: the tool assumes the kernel's peak,
@@ -124,7 +141,8 @@ Limits: a line of at most 4096 bytes, at most 1000000 lines, at most
 at most 4 MiB each and 64 MiB together.
 Each number is checked when its line is read, before anything is built
 from it. From the library: rate= 4000 to 37500, hz= 20 to 20000, vol= 0
-to 100, as the driver caps it before the trace prints it. len= is 1 to
+to 100, as the driver caps it before the trace prints it. gain= is 0 to
+10000. len= is 1 to
 11250000, 300 s at 37500 Hz, and so is a play with its queued buffers.
 spans= is 1 to 149796, the spans of a 4 MiB file.
 n= of op=pcm_end is at most 11250000 and last= below it. t_ms= is at most
@@ -197,7 +215,11 @@ FIELDS = {
     "voice": ("rate", "spans", "len", "vol", "crc", "t_ms"),
     "tone": ("hz", "vol", "t_ms"),
     "stop": ("hz", "vol", "t_ms"),
+    "gain": ("gain", "t_ms"),
 }
+GAIN_MAX = 10000
+# Starts that may carry gain=. On any other line the field is ignored.
+GAIN_STARTS = ("pcm", "voice", "tone")
 HEX_FIELDS = ("crc",)
 # Times may go back this far: the tick's clock and the PCM end time are
 # read apart and each drops its fraction of a millisecond.
@@ -230,15 +252,68 @@ def is_ramp(op, f):
             and f["len"] == RAMP_LEN and f["crc"] == RAMP_CRC)
 
 
-def scale_cut(s, vol):
+def scale_cut(s, vol, full=100):
+    """128 + (s - 128) * vol / full, toward 128. full is 100 for a volume,
+    GAIN_MAX for a gain."""
     d = (s - 128) * vol
-    q = abs(d) // 100
+    q = abs(d) // full
     return 128 + (q if d >= 0 else -q)
 
 
-def scale_nearest(s, vol):
+def scale_nearest(s, vol, full=100):
+    """128 + (s - 128) * vol / full, a half step away from 128."""
     d = (s - 128) * vol
-    return 128 + ((d + 50) // 100 if d >= 0 else -((50 - d) // 100))
+    h = full // 2
+    return 128 + ((d + h) // full if d >= 0 else -((h - d) // full))
+
+
+def voice_byte(q, mix, gain):
+    """The voice plus an overlay byte, times a gain, one rounding. A gain
+    of vol * 100 gives voice.out_byte(q, mix, vol)."""
+    x = (q + (mix - 128) * 256) * min(gain, GAIN_MAX)
+    r = (x + 1280000) // 2560000 if x >= 0 else -((1280000 - x) // 2560000)
+    r += 128
+    return 0 if r < 0 else 255 if r > 255 else r
+
+
+def start_gain(f):
+    """The gain a start line sets: its gain=, else vol * 100."""
+    g = f.get("gain")
+    return f["vol"] * 100 if g is None else g
+
+
+class Slew:
+    """The gain of one play, per sample. It starts at the target. Each
+    change is (first sample, target). From that sample on, each sample
+    moves the gain toward the target by `step`, and never past it."""
+
+    def __init__(self, gain, rate):
+        self.cur = self.target = gain
+        self.step = (500000 + rate - 1) // rate
+        self.changes = []
+        self.n = 0              # changes taken
+        self.i = -1             # the last sample computed
+
+    def at(self, i):
+        """The gain of sample i. Samples are asked in order, never back."""
+        ch = self.changes
+        while self.i < i:
+            if self.cur == self.target:
+                # Nothing moves until the next change: skip to it.
+                nk = ch[self.n][0] if self.n < len(ch) else i + 1
+                if nk > i:
+                    self.i = i
+                    break
+                self.i = max(self.i, nk - 1)
+            self.i += 1
+            while self.n < len(ch) and ch[self.n][0] <= self.i:
+                self.target = ch[self.n][1]
+                self.n += 1
+            if self.cur < self.target:
+                self.cur = min(self.target, self.cur + self.step)
+            elif self.cur > self.target:
+                self.cur = max(self.target, self.cur - self.step)
+        return self.cur
 
 
 # ---- reading ----------------------------------------------------------
@@ -299,6 +374,13 @@ def parse_marker(text, where):
     if op in ("pcm", "voice") and not RATE_MIN <= out["rate"] <= RATE_MAX:
         raise LogError("%s: rate=%d is outside %d to %d"
                        % (where, out["rate"], RATE_MIN, RATE_MAX))
+    if op in GAIN_STARTS and "gain" in kv:
+        v = kv["gain"]
+        if not NUM.match(v):
+            raise LogError("%s: gain=%s is not a whole number" % (where, v))
+        out["gain"] = int(v)
+    if "gain" in out and out["gain"] > GAIN_MAX:
+        raise LogError("%s: gain=%d is past %d" % (where, out["gain"], GAIN_MAX))
     if "vol" in out and out["vol"] > VOL_MAX:
         raise LogError("%s: vol=%d is past %d" % (where, out["vol"], VOL_MAX))
     if op == "tone" and not HZ_MIN <= out["hz"] <= HZ_MAX:
@@ -407,11 +489,14 @@ def frame_of(ms):
 class Play:
     """A sample play: the chained buffers as one stream, and its overlay."""
 
-    def __init__(self, t0, rate, vol, data, ramp, loop=False):
+    def __init__(self, t0, rate, vol, data, ramp, loop=False, gain=None):
         self.t0 = t0
         self.loop = loop
         self.rate = rate
         self.vol = 100 if ramp else vol
+        if ramp or gain is None:
+            gain = self.vol * 100
+        self.slew = Slew(gain, rate)
         self.data = bytearray(data)
         self.ramp = ramp
         self.mixes = []         # [(first sample index, bytes)], in order, apart
@@ -421,6 +506,14 @@ class Play:
         """The sample due at the start of `frame`."""
         return ((frame * 1000 - self.t0 * OUT_RATE) * self.rate) // (OUT_RATE * 1000)
 
+    def sample_at(self, t):
+        """The first sample at or after time t."""
+        return -((self.t0 - t) * self.rate // 1000)
+
+    def set_gain(self, t, gain):
+        if not self.ramp:       # the rest ramp keeps full scale
+            self.slew.changes.append((self.sample_at(t), gain))
+
     def end_ms(self):
         return self.t0 + (len(self.data) * 1000 + self.rate - 1) // self.rate
 
@@ -428,8 +521,8 @@ class Play:
 class VoicePlay(Play):
     """A voice: samples from spans, and its overlays."""
 
-    def __init__(self, t0, rate, vol, spans, length):
-        Play.__init__(self, t0, rate, vol, b"", False)
+    def __init__(self, t0, rate, vol, spans, length, gain=None):
+        Play.__init__(self, t0, rate, vol, b"", False, gain=gain)
         self.spans = spans
         self.length = length
 
@@ -440,13 +533,26 @@ class VoicePlay(Play):
 class Tone:
     """A tone. Centred once the rest ramp has reached its end, else the pulse."""
 
-    def __init__(self, t0, hz, vol, centred=False, peak=square.TONE_PEAK):
+    def __init__(self, t0, hz, vol, centred=False, peak=square.TONE_PEAK, gain=None):
         self.t0 = t0
         self.centred = centred
         self.hz = hz
-        self.amp = square.amp(peak, vol)
+        self.peak = peak
+        if gain is None:
+            gain = vol * 100
+        # The pulse takes its width once per note. With gain vol * 100 the
+        # width is today's.
+        pvol = (gain + 50) // 100
+        self.amp = square.amp_gain(peak, gain)
+        self.slew = Slew(gain, square.TONE_RATE)
         self.rng = max(2, (PWM_CLOCK + hz // 2) // hz)
-        self.duty = ((self.rng // 2) * vol + 50) // 100 / self.rng
+        self.duty = ((self.rng // 2) * pvol + 50) // 100 / self.rng
+
+    def set_gain(self, t, gain):
+        # Sample 0 of the grid is the first frame at or after t0. A pulse
+        # keeps the width of its note.
+        if self.centred:
+            self.slew.changes.append((frame_of(t) - frame_of(self.t0), gain))
 
 
 class Renderer:
@@ -545,10 +651,17 @@ class Renderer:
         out = self.duty
         first = frame_of(tone.t0)
         q = square.Square(tone.hz, tone.amp, OUT_RATE)
+        sl = tone.slew
+        g = sl.cur
         for f in range(start, end):
             if f < first:
                 out.append(self.rest)
             else:
+                if sl.changes:
+                    k = sl.at(f - first)
+                    if k != g:
+                        g = k
+                        q.amp = square.amp_gain(tone.peak, g)
                 out.append(q.next() / 256.0)
 
     def render_play(self, p, start, end):
@@ -559,6 +672,8 @@ class Renderer:
         mix0, mix = mixes[0] if mixes else (n, b"")
         scale = self.scale
         cache = {}
+        sl = p.slew
+        g = sl.cur
         after = 0.5 if p.ramp else self.rest
         for f in range(start, end):
             i = p.index(f)
@@ -579,9 +694,15 @@ class Renderer:
                 j = i - mix0
             if 0 <= j < len(mix):
                 s = min(255, max(0, s + mix[j] - 128))
+            if sl.changes:
+                k = sl.at(i)
+                if k != g:
+                    g = k
+                    cache = {}
             v = cache.get(s)
             if v is None:
-                v = cache[s] = scale(s, p.vol) / 256.0
+                # With gain vol * 100 this is the byte of scale(s, vol).
+                v = cache[s] = scale(s, g, GAIN_MAX) / 256.0
             out.append(v)
         if p.ramp and p.ended:
             # The library sets the midpoint rest when the ramp ends by itself,
@@ -613,7 +734,7 @@ class Renderer:
                 mix0, mix = mixes[m]
                 j = i - mix0
             o = mix[j] if 0 <= j < len(mix) else 128
-            out.append(voice.out_byte(q, o, p.vol) / 256.0)
+            out.append(voice_byte(q, o, p.slew.at(i)) / 256.0)
 
     def lost_end(self):
         if self.lost is not None and self.lost[1]:
@@ -646,6 +767,10 @@ class Renderer:
                 return "%s: op=pcm_end with no sample play or voice" % where
             if cur.loop:
                 return "%s: op=pcm_end on a loop: a loop never ends by itself" % where
+        elif op == "gain":
+            if cur is None or (isinstance(cur, Play) and cur.ended):
+                return ("%s: op=gain with nothing playing: the driver prints "
+                        "no line then" % where)
         return None
 
     def run(self, events):
@@ -705,11 +830,14 @@ class Renderer:
                     # earlier ramp that reached its end.
                     self.rest = 0.0
                 data = self.lookup(f["crc"], f["len"])
-                self.cur = Play(t, f["rate"], f["vol"], data, ramp, bool(f.get("loop")))
+                self.cur = Play(t, f["rate"], f["vol"], data, ramp, bool(f.get("loop")),
+                                start_gain(f))
             elif op == "voice":
                 self.close(t)
                 spans = self.lookup_voice(f["crc"], f["spans"], f["len"], where)
-                self.cur = VoicePlay(t, f["rate"], f["vol"], spans, f["len"])
+                self.cur = VoicePlay(t, f["rate"], f["vol"], spans, f["len"], start_gain(f))
+            elif op == "gain":
+                cur.set_gain(t, f["gain"])
             elif op == "pcm_next":
                 if len(cur.data) + f["len"] > MAX_PCM_LEN:
                     raise LogError("%s: the play's buffers pass %d bytes" % (where, MAX_PCM_LEN))
@@ -731,7 +859,8 @@ class Renderer:
             elif op == "tone":
                 self.close(t)
                 # A tone is centred when the rest ramp reached its end before it.
-                self.cur = Tone(t, f["hz"], f["vol"], self.rest == 0.5, self.peak)
+                self.cur = Tone(t, f["hz"], f["vol"], self.rest == 0.5, self.peak,
+                                start_gain(f))
             else:  # stop
                 self.close(t)
         self.lost_end()

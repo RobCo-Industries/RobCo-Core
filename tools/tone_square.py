@@ -6,7 +6,8 @@ The integer steps below are those of audio_square_amp(),
 audio_square_start() and audio_square_out() in src/lib/audio_square.c:
 
     half = (rate * 128 + hz / 2) / hz, once per note, at least 256
-    amp  = (peak * min(vol, 100) + 50) / 100, read when the note starts
+    amp  = (peak * min(vol, 100) + 50) / 100, read when the note starts,
+           or (peak * gain + 5000) / 10000 for a gain, read every sample
     a note starts at an edge going up, its next edge half units ahead
     each sample walks 256 units, 1/256 of a sample each, and adds its
     sign times the units before each edge, so an edge inside a sample
@@ -25,6 +26,12 @@ PEAK_MAX = 127
 def amp(peak, vol):
     """The height of a note in steps."""
     return (peak * min(vol, 100) + 50) // 100
+
+
+def amp_gain(peak, gain):
+    """The height of a sample in steps for a gain of 0 to 10000. A gain of
+    vol * 100 gives amp(peak, vol)."""
+    return (peak * min(gain, 10000) + 5000) // 10000
 
 
 def half_period(hz, rate=TONE_RATE):
