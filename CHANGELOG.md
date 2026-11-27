@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `tools/sfx_table.py` renders a sound effect model into 8-bit tables: C with each length, CRC-32 and the model's SHA-256, raw `.u8` files or WAV files. `--check` tells when a table is out of date. A run checks its whole plan before it writes: it refuses two paths that are the same file, by any spelling, link or case. It publishes all files as one and restores the old ones on a failure. The format and the synthesis are in `docs/spec/SFX_MODEL.md`.
+- `tools/sfx_table.py` renders a sound effect model into 8-bit tables: C with each length, CRC-32 and the model's SHA-256, raw `.u8` files or WAV files. `--check` tells when a table is out of date. Every C name and file name it writes holds `sfx`, so none can be a name of C or the system. A run checks its whole plan before it writes: it refuses two files at one path, or one path as a file and a folder, by any spelling, link or case. It publishes all files as one and restores the old ones on a failure. The format and the synthesis are in `docs/spec/SFX_MODEL.md`.
 - `robco-ci.yml` marks the checkout and every submodule folder, at any depth, as safe for git in both jobs, then checks that git works in each. Before, git refused the checkout in the container with "dubious ownership".
 - The harness plugin removes a passing test's `tmp_path` when the test ends. A test that fails or errors in setup, call or teardown keeps its folder. Set `ROBCO_KEEP_TMP=1` to keep every folder. A project that sets `tmp_path_retention_policy` itself keeps its own value.
 - `rimg_seal()` and `rimg_pack()` in `src/lib/rimg_seal.c`: the sealer and the packer in C. A host test runs every vector of `tests/vectors/rimg/vectors.ini` through them.

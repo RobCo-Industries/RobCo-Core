@@ -174,47 +174,46 @@ Each fault in the file gets its own line too: an unknown field, a missing field,
 ## The commands
 
 ```
-tools/sfx_table.py MODEL --c OUT.c --h OUT.h --prefix NAME_
-tools/sfx_table.py MODEL --c OUT.c --h OUT.h --prefix NAME_ --check [--full]
+tools/sfx_table.py MODEL --c OUT.c --h OUT.h --prefix NAME_sfx_
+tools/sfx_table.py MODEL --c OUT.c --h OUT.h --prefix NAME_sfx_ --check [--full]
 tools/sfx_table.py MODEL --dump DIR
 tools/sfx_table.py MODEL --wav DIR
 ```
 
 | Option | Does |
 |---|---|
-| `--c`, `--h`, `--prefix` | Writes the tables in C. The header defines `NAME_MODEL_SHA256`, `NAME_TOOL_REVISION`, `NAME_RATE_HZ`, and for each sound `_PEAK` and `_LOOP`. For each table it defines `_LEN` and `_CRC32` and declares `const uint8_t name_<table>[]`. Both files start with a comment that says they are generated and names the model file. |
+| `--c`, `--h`, `--prefix` | Writes the tables in C. The header defines `NAME_SFX_MODEL_SHA256`, `NAME_SFX_TOOL_REVISION`, `NAME_SFX_RATE_HZ`, and for each sound `_PEAK` and `_LOOP`. For each table it defines `_LEN` and `_CRC32` and declares `const uint8_t name_sfx_<table>[]`. Both files start with a comment that says they are generated and names the model file. |
 | `--check` | Compares the SHA-256 of `MODEL` and the tool revision with the lines in `OUT.h`, and with the opening comment of both files. Fast: it renders nothing. |
 | `--check --full` | Also renders every sound again and compares both files byte for byte |
 | `--dump DIR` | Writes each table as a raw `<table>.u8` file |
 | `--wav DIR` | Writes each sound as an 8-bit mono WAV at `rate_hz`, whole, not split. A loop plays three times so its join is heard. |
 
-`NAME_` is `a` to `z`, `0` to `9` and `_`, starts with a letter, at most 32 characters. A leading `_` would make reserved C names.
+Every name the tool writes carries the marker `sfx`. No C or POSIX keyword, type, function, macro or reserved pattern holds it, so the tool needs no list of taken names. Earlier lists of keywords, `<stdint.h>` names and standard headers each missed a name, such as `size_t` from the sound `t` and the prefix `size_`.
+
+`--prefix` matches `([a-z][a-z0-9]*_)*sfx_`, at most 32 characters, such as `sfx_`, `uos_sfx_` or `dx_sfx_`. So every table name holds `sfx_` and every macro `SFX_`.
 
 The tool checks file names as written, before it reads the model:
 
-- The file name of `OUT.c` is a letter, then letters, digits, `_`, `.` or `-`, and ends in `.c`.
-- The file name of `OUT.h` follows the same rule and ends in `.h`. It goes into `#include "..."` in `OUT.c`, so it needs no escape and is ASCII.
-- The file name of `OUT.h` is not the name of a standard header, in any case. In a folder on the include path such a file would take the place of the system header, and the generated `#include <stdint.h>` would find itself. The tool holds one sorted list of 76 names: the 31 headers of C23, ISO/IEC 9899:2024, 7.1.2; every header of POSIX.1-2024, IEEE Std 1003.1-2024, that is a plain file name; `re_comp.h`, `regexp.h`, `stropts.h`, `trace.h`, `ucontext.h`, `ulimit.h`, `utime.h` and `varargs.h` of older POSIX and SUS issues; and `ar.h` of System V.
+- The file name of `OUT.c` is a letter, then letters, digits, `_`, `.` or `-`, holds `sfx` in lower case, and ends in `.c`, such as `sfx_table.c`.
+- The file name of `OUT.h` follows the same rule and ends in `.h`, such as `uos_sfx_table.h`. It goes into `#include "..."` in `OUT.c`, so it needs no escape and is ASCII.
 - The file name of `MODEL` holds letters, digits, `_`, `.` and `-` only, and starts with a letter or a digit, because it goes into the opening comment as written.
 
-The tool cannot know every header of every toolchain or library. Give the generated header a name of the project's own: one that starts with the `--prefix` text, such as `demo_sfx_table.h` for `demo_sfx_`. When the file name of `OUT.h` does not start with that text, the tool prints a warning on standard error and goes on. A warning, not a refusal: the name is often fine, but a clash with a library header only shows later as a strange compile error, so one line now is worth it.
+No standard or system header has a name that holds `sfx`. So a generated header never takes the place of one on the include path, and the tool keeps no list of header names.
 
-A bad file name gets one line, exit 64. The include guard is the file name of `OUT.h` in capitals with every other character as `_`.
+A bad prefix or file name gets one line, exit 64. The include guard is the file name of `OUT.h` in capitals with every other character as `_`.
 
-The tool then checks every name it would write, after it joins the parts: each table name, each macro and the include guard. It refuses a name that is:
-
-- a C keyword of any standard through C23, with the C23 spellings such as `bool`, `static_assert`, `thread_local`, `constexpr`, `nullptr` and `typeof`, and the extensions `asm` and `fortran`;
-- a reserved name, one that starts with `_`;
-- a name of `<stdint.h>` or a pattern C reserves for it, such as `uint8_t`, `int32_t` or `UINT8_MAX`;
-- a name the same run writes twice, such as a guard equal to a table macro.
-
-Each refused name gets one line that names it and the options and sound it comes from. The exit code is 64: a change of `--prefix` or `--h` fixes it. Two sounds whose table names clash are a model fault, exit 2.
+The tool then checks that the names it writes do not clash with each other: two sounds that give one table name, the `_1` and `_2` tables of a split against another sound, or the guard against a macro. Each clash gets one line that names it and the options and sound it comes from, exit 64. Two sounds whose table names clash are a model fault, exit 2.
 
 `--dump` and `--wav` can join the first form. They name each file after a table or a sound, such as `beep_1.u8` or `beep.wav`. A sound name is already `a` to `z`, `0` to `9` and `_`, so these names need no other check.
 
 ### The plan
 
-Before it writes anything, the tool lists every file of the run: `MODEL`, which it reads, and `OUT.c`, each `.u8` file, each `.wav` file and `OUT.h`, which it writes. It refuses the run, exit 64, with one line that names both paths, if two entries of the list are the same file. Two paths are the same file when:
+Before it writes anything, the tool checks its plan as one set of nodes. Each node is a path and a kind, file or folder:
+
+- files: `MODEL`, which it reads, and `OUT.c`, each `.u8` file, each `.wav` file and `OUT.h`, which it writes;
+- folders: the `--dump` and `--wav` folders, and the folder each file lies in.
+
+It compares two paths by one rule. Two paths are the same when:
 
 - both exist and are the same file to the system, such as through a hard link or a symbolic link;
 - they resolve to the same path, through relative and absolute spellings, `.`, `..` or a symbolic link;
@@ -222,9 +221,17 @@ Before it writes anything, the tool lists every file of the run: `MODEL`, which 
 
 The case rule is strict on every system, also where the file system tells case apart. A run that passes on one system then passes on all.
 
-The tool also refuses an output that is a directory, an output in a folder that does not exist, and a `--dump` or `--wav` folder that is a file or lies in a folder that does not exist. It makes a missing `--dump` or `--wav` folder itself. `--dump` and `--wav` may name the same folder: their files end in `.u8` and `.wav`, so the tool checks the files, not the folders.
+It refuses the run, exit 64, with one line that names the paths and the rule, when:
 
-The tool compares two new folders by the same rule as files. Two spellings of one folder, such as `out`, `./out`, `out/` or one through a symbolic link, make one folder. Two new folders that differ only by case are refused, exit 64: where the file system tells case apart they are two folders. A new `--dump` folder may lie in a new `--wav` folder, and the other way round: the tool makes the outer one first. A folder that another process makes between the plan and the run is used as it is, and a roll back never removes it. The only file a run reads is `MODEL`, and it reads it before it writes, so the check that no output is `MODEL` covers every read.
+- two files are the same, which covers an output that is `MODEL`;
+- one path is both a file and a folder, such as `--c out_sfx.c` with `--dump out_sfx.c`, or the folder of `MODEL` as `--c`;
+- a node lies under a file, such as `--dump d/sfx.c/x` with `--c d/sfx.c`;
+- an output is a directory, or a folder is a file;
+- the folder of an output does not exist and is not a `--dump` or `--wav` folder the run makes;
+- a `--dump` or `--wav` folder lies in a folder that does not exist and that the run does not make;
+- two new folders differ only by case: where the file system tells case apart they are two folders.
+
+It makes a missing `--dump` or `--wav` folder itself. `--dump` and `--wav` may name the same folder: their files end in `.u8` and `.wav`, so they never clash. Two spellings of one folder, such as `out`, `./out`, `out/` or one through a symbolic link, make one folder. A new `--dump` folder may lie in a new `--wav` folder, and the other way round: the tool makes the outer one first. A folder that another process makes between the plan and the run is used as it is, and a roll back never removes it. The only file a run reads is `MODEL`, and it reads it before it writes, so the check that no output is `MODEL` covers every read.
 
 ### How the files are written
 
