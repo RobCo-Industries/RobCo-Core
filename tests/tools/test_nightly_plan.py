@@ -121,18 +121,69 @@ def test_table_counts_commits_behind_main(tmp_path, work):
     assert f"Deitrix pins Pip-OS `{shas['pipos-old'][:12]}`, 1 commit behind" in summary
 
 
-def test_both_plans_pins_only(tmp_path, work):
-    proc, outputs, summary, _ = run_plan(tmp_path, work[0], pairing="both")
-    assert proc.returncode == 0
-    assert {e["pairing"] for e in outputs["stages"]["include"]} == {"pins"}
-    assert "core-head` is not built yet" in summary
+def head_tag(w, tag):
+    """Commit a new ci/IMAGE_TAG on the library head. Returns the head."""
+    return commit(w / "RobCo-Core", {"ci/IMAGE_TAG": tag + "\n"}, message="tag")
 
 
-def test_core_head_fails(tmp_path, work):
-    proc, outputs, _, _ = run_plan(tmp_path, work[0], pairing="core-head")
-    assert proc.returncode == 1
-    assert outputs == {}
-    assert "not built yet" in proc.stdout
+def test_core_head_builds_on_the_library_head(tmp_path, work):
+    w, shas = work
+    head = head_tag(w, "headtag00000")
+    proc, outputs, summary, _ = run_plan(tmp_path, w, pairing="core-head")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert sorted(outputs) == sorted(["stages", "card_terminal", "card_pipboy",
+                                      "agent", "uos", "pipboy"])
+    entries = [e for m in outputs.values() for e in m["include"]]
+    assert {(e["pairing"], e["core_sha"], e["tag"]) for e in entries} == {
+        ("core-head", head, "headtag00000")}
+    assert outputs["stages"]["include"][0] == {
+        "pairing": "core-head", "repo": "RETROS-BIOS", "sha": shas["RETROS-BIOS"],
+        "core_sha": head, "pipos_sha": "", "tag": "headtag00000"}
+    pip = outputs["card_pipboy"]["include"][0]
+    assert (pip["sha"], pip["pipos_sha"]) == (shas["Deitrix"], shas["Pip-OS"])
+    for key in ("agent", "uos", "pipboy"):
+        assert [e["board"] for e in outputs[key]["include"]] == ["raspi0", "raspi2b"]
+    assert "Pairings planned: `core-head`." in summary
+    assert "not built yet" not in summary + proc.stdout
+
+
+def test_core_head_keeps_only_the_boards_a_sibling_lists(tmp_path, work):
+    w, _ = work
+    (w / "UOS" / "pytest.ini").write_text("[pytest]\nrobco_boards = raspi1ap raspi2b\n")
+    (w / "Deitrix" / "pytest.ini").write_text("[pytest]\nrobco_boards = raspi0 raspi3b\n")
+    proc, outputs, _, _ = run_plan(tmp_path, w, pairing="core-head")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [e["board"] for e in outputs["uos"]["include"]] == ["raspi2b"]
+    assert [e["board"] for e in outputs["pipboy"]["include"]] == ["raspi0"]
+    assert [e["board"] for e in outputs["agent"]["include"]] == ["raspi0", "raspi2b"]
+
+
+def test_both_holds_pins_then_core_head(tmp_path, work):
+    w, shas = work
+    head = head_tag(w, "headtag00000")
+    (tmp_path / "p").mkdir()
+    (tmp_path / "c").mkdir()
+    _, pins, _, _ = run_plan(tmp_path / "p", w, pairing="pins")
+    _, core_head, _, _ = run_plan(tmp_path / "c", w, pairing="core-head")
+    proc, outputs, summary, _ = run_plan(tmp_path, w, pairing="both")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for key, matrix in outputs.items():
+        assert matrix["include"] == pins[key]["include"] + core_head[key]["include"]
+    assert outputs["stages"]["include"][0]["core_sha"] == shas["core-first"]
+    assert outputs["stages"]["include"][2]["core_sha"] == head
+    assert "Pairings planned: `pins`, `core-head`." in summary
+
+
+def test_pins_is_unchanged_by_the_library_head(tmp_path, work):
+    w, shas = work
+    head_tag(w, "headtag00000")
+    proc, outputs, summary, _ = run_plan(tmp_path, w, pairing="pins")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    entries = [e for m in outputs.values() for e in m["include"]]
+    assert {(e["pairing"], e["core_sha"], e["tag"]) for e in entries} == {
+        ("pins", shas["core-first"], "abc123def456")}
+    assert [e["board"] for e in outputs["uos"]["include"]] == BOARDS.split()
+    assert "Pairings planned: `pins`." in summary
 
 
 def test_pin_mismatch_fails_and_names_the_sibling(tmp_path, work):

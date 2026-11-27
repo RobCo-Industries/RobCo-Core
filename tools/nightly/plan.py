@@ -19,7 +19,11 @@ all read these records: stages, card_terminal, card_pipboy, agent, uos
 and pipboy. Each entry holds pairing, repo, sha, core_sha, pipos_sha and
 tag, and board in the three test matrices.
 
-Only the pins pairing exists. "both" plans pins alone. "core-head" fails.
+Two pairings exist. "pins" builds each sibling on its own library pin.
+"core-head" builds every sibling on the w/RobCo-Core commit, in the image
+of that commit's ci/IMAGE_TAG, and runs the tests on raspi0 and raspi2b
+only. "both" puts the pins entries first, then the core-head entries.
+check_pins.sh checks the pins side only.
 
 The ref each checkout was asked for comes from the environment, for the
 table only: NIGHTLY_REF_CORE, NIGHTLY_REF_RETROS, NIGHTLY_REF_MFBOOT,
@@ -44,6 +48,8 @@ SIBLINGS = (
 REF_ENV = {CORE: "CORE", **{name: env for name, env, _ in SIBLINGS}}
 CORE_PATH = {name: path for name, _, path in SIBLINGS}
 PAIRINGS = ("both", "pins", "core-head")
+# The boards the core-head pairing tests on, when the sibling lists them.
+CORE_HEAD_BOARDS = ("raspi0", "raspi2b")
 
 
 class PlanError(Exception):
@@ -192,10 +198,20 @@ def resolve(work, environ=None):
 
 
 def matrices(rows, work, pairing="pins"):
+    """The six matrices of one pairing: pins or core-head."""
     def entry(repo):
         row = rows[repo]
-        return {"pairing": pairing, "repo": repo, "sha": row["sha"], "core_sha": row["core"],
-                "pipos_sha": row["pipos"], "tag": row["tag"]}
+        out = {"pairing": pairing, "repo": repo, "sha": row["sha"], "core_sha": row["core"],
+               "pipos_sha": row["pipos"], "tag": row["tag"]}
+        if pairing == "core-head":
+            out["core_sha"], out["tag"] = rows[CORE]["sha"], rows[CORE]["tag"]
+        return out
+
+    def tested(repo):
+        listed = boards(os.path.join(work, repo))
+        if pairing == "core-head":
+            return [b for b in listed if b in CORE_HEAD_BOARDS]
+        return listed
 
     out = {
         "stages": [entry(r) for r in ("RETROS-BIOS", "MFBootAgent")],
@@ -203,8 +219,18 @@ def matrices(rows, work, pairing="pins"):
         "card_pipboy": [entry("Deitrix")],
     }
     for key, repo in (("agent", "MFBootAgent"), ("uos", "UOS"), ("pipboy", "Deitrix")):
-        out[key] = [dict(entry(repo), board=b) for b in boards(os.path.join(work, repo))]
+        out[key] = [dict(entry(repo), board=b) for b in tested(repo)]
     return {k: {"include": v} for k, v in out.items()}
+
+
+def plan_pairings(rows, work, pairing):
+    """The six matrices for pins, core-head or both, pins entries first."""
+    names = ("pins", "core-head") if pairing == "both" else (pairing,)
+    plan = {}
+    for name in names:
+        for key, value in matrices(rows, work, name).items():
+            plan.setdefault(key, {"include": []})["include"] += value["include"]
+    return plan, names
 
 
 def table(rows, note):
@@ -236,20 +262,16 @@ def run(argv, environ=os.environ):
     p.add_argument("--summary", required=True)
     p.add_argument("--versions")
     args = p.parse_args(argv)
-    if args.pairing == "core-head":
-        print("::error::plan: the core-head pairing is not built yet. Use pins or both.")
-        return 1
     try:
         rows, note = resolve(args.work, environ)
-        plan = matrices(rows, args.work)
+        plan, names = plan_pairings(rows, args.work, args.pairing)
     except PlanError as e:
         for line in str(e).splitlines():
             print(f"::error::plan: {line}")
         return 1
     text = table(rows, note)
-    heading = "## Nightly versions\n\n"
-    if args.pairing == "both":
-        heading += "Pairing `both` runs `pins` only: `core-head` is not built yet.\n\n"
+    heading = ("## Nightly versions\n\nPairings planned: "
+               + ", ".join(f"`{n}`" for n in names) + ".\n\n")
     append(args.summary, heading + text)
     if args.versions:
         with open(args.versions, "w", encoding="utf-8") as f:
