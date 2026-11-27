@@ -259,6 +259,53 @@ Closing paragraph.
         l for l in changed if l != "- Fixed one."]
 
 
+FENCED = """# Changelog
+
+## [Unreleased]
+
+### Added
+
+- A doc example:
+
+```markdown
+## Example
+
+### Added
+
+- not an entry
+```
+
+- After the example.
+
+### Added
+
+- Second part.
+
+## [0.1.0] - 2026-01-01
+
+- Old.
+"""
+
+
+def test_headings_in_a_code_fence_are_text(tmp_path):
+    """A fenced `## Example` does not end the section, and a fenced
+    `### Added` starts no group."""
+    path = write(tmp_path, FENCED)
+    r = tool("cut", str(path), "--version", "0.2.0", "--date", "2026-02-03")
+    assert r.returncode == 0, r.stdout
+    text = path.read_text()
+    new = text.split("## [0.2.0] - 2026-02-03")[1].split("## [0.1.0]")[0]
+    assert new.count("```") == 2
+    assert "## Example\n\n### Added\n\n- not an entry\n```" in new
+    assert new.index("- After the example.") < new.index("- Second part.")
+    assert [l for l in new.splitlines() if l == "### Added"] == ["### Added"] * 2
+    kept = [l for l in FENCED.splitlines() if l.strip() and l != "### Added"]
+    assert all(l in text.splitlines() for l in kept)
+    assert tool("check", str(path), "--version", "0.2.0").returncode == 0
+    section = tool("section", str(path), "--version", "0.2.0").stdout
+    assert "- Second part." in section and "- not an entry" in section
+
+
 def load_tool():
     spec = importlib.util.spec_from_file_location("cut_changelog", TOOL)
     mod = importlib.util.module_from_spec(spec)

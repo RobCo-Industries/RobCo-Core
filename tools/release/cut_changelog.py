@@ -83,8 +83,29 @@ def read_lines(path):
     return text.split("\n")
 
 
+FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def fenced(lines):
+    """For each line, True when it is a code fence or inside one. A line
+    such as `## Example` in a fenced block is text, not a heading."""
+    out, mark = [], None
+    for line in lines:
+        m = FENCE.match(line)
+        if m and mark is None:
+            mark = m.group(1)
+            out.append(True)
+        elif m and m.group(1) == mark:
+            mark = None
+            out.append(True)
+        else:
+            out.append(mark is not None)
+    return out
+
+
 def section_starts(lines):
-    return [i for i, line in enumerate(lines) if line.startswith("## ")]
+    code = fenced(lines)
+    return [i for i, line in enumerate(lines) if line.startswith("## ") and not code[i]]
 
 
 def unreleased_span(lines):
@@ -142,8 +163,9 @@ def join_groups(body):
     """Lines before the first group, then each group once, in first order."""
     lead, order, groups = [], [], {}
     part = lead
-    for line in body:
-        if line.startswith("### "):
+    code = fenced(body)
+    for i, line in enumerate(body):
+        if line.startswith("### ") and not code[i]:
             name = line.rstrip()
             if name not in groups:
                 order.append(name)
