@@ -470,7 +470,7 @@ Stop rule. When a play that was started ends early, the trace prints `op=stop` e
 PCM prints three markers. The trace backend runs the same engine with the same timer IRQ, so QEMU tests exercise the real IRQ path:
 
 ```
-@RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm rate=<hz> len=<bytes> vol=<n> crc=<8 hex> t_ms=<ms>
+@RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm rate=<hz> len=<bytes> vol=<n> crc=<8 hex> t_ms=<ms> [loop=1]
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_next len=<bytes> crc=<8 hex> t_ms=<ms>
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_end n=<count> last=<index> t_ms=<ms>
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_mix len=<bytes> crc=<8 hex> t_ms=<ms>
@@ -481,7 +481,7 @@ PCM prints three markers. The trace backend runs the same engine with the same t
 
 `op=pcm_mix` marks the start of an overlay, with its length and CRC. Its `t_ms` is the start time of the play plus the time to the overlay's first sample. An overlay given to a play that waits for its tick prints right after that play's `op=pcm`, with the same `t_ms`. The end or the drop of an overlay prints nothing.
 
-`op=pcm` is the start. `crc` is the CRC-32 of the data, as `crc32()` computes it. `op=pcm_next` means a queued buffer took over, with its length and CRC. Its `t_ms` is the start time plus the system timer time until the IRQ that switched. `op=pcm_end` is the natural end, printed once, when the last buffer ends: `n` counts the IRQs that output a sample over the whole play, queued buffers included, and `last` is the last index output, in the last buffer. Its `t_ms` is the start time plus the system timer time the play took. A stop or a replacement prints the `op=stop` line instead, at the next tick. The PCM output itself stops when the call returns.
+`op=pcm` is the start. `crc` is the CRC-32 of the data, as `crc32()` computes it. A play started with `AUDIO_LOOP` adds `loop=1` as the last field. A play that does not loop prints no `loop` field. A looped play never prints `op=pcm_next` or `op=pcm_end`: only a stop or a new sound ends it, with `op=stop`. `op=pcm_next` means a queued buffer took over, with its length and CRC. Its `t_ms` is the start time plus the system timer time until the IRQ that switched. `op=pcm_end` is the natural end, printed once, when the last buffer ends: `n` counts the IRQs that output a sample over the whole play, queued buffers included, and `last` is the last index output, in the last buffer. Its `t_ms` is the start time plus the system timer time the play took. A stop or a replacement prints the `op=stop` line instead, at the next tick. The PCM output itself stops when the call returns.
 
 Sharp edges:
 

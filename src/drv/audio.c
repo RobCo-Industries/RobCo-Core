@@ -139,7 +139,8 @@ void audio_pwm_pcm_mode(void);
 void audio_pwm_pcm_mode_at(uint32_t dat);
 void audio_pwm_sample(uint32_t dat);
 void audio_trace_out(uint32_t hz, unsigned vol, uint32_t t_ms);
-void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms);
+void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms,
+                     unsigned loop);
 void audio_trace_pcm_end(uint32_t n, uint32_t last, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_mix(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
@@ -548,7 +549,7 @@ static void pcm_begin(void)
         audio_trace_voice(pcm.rate, (uint32_t)voice.count, pcm.len, vol, pcm_req_crc, clock_ms);
     } else {
         audio_trace_pcm(pcm.rate, pcm.len, pcm_kind == KIND_RAMP ? 100 : vol, pcm_req_crc,
-                        clock_ms);
+                        clock_ms, (pcm.flags & AUDIO_LOOP) != 0);
     }
     pcm_t0_ms = clock_ms;
     pcm_t0_us = timer_now_us();

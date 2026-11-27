@@ -21,7 +21,8 @@
 #endif
 
 void audio_trace_out(uint32_t hz, unsigned vol, uint32_t t_ms);
-void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms);
+void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms,
+                     unsigned loop);
 void audio_trace_pcm_end(uint32_t n, uint32_t last, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_mix(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
@@ -43,7 +44,7 @@ typedef struct {
     uint32_t c;             /* tone, pcm, voice: t_ms. pcm_end, pcm_next, pcm_mix: start t_ms */
     uint32_t d;             /* pcm, voice: vol. others: time since start in us, low word */
     uint32_t e;             /* pcm, voice: crc. others: time since start in us, high word */
-    uint32_t f;             /* voice: span count */
+    uint32_t f;             /* voice: span count. pcm: 1 when the play loops */
 } record_t;
 
 static record_t queue[ROBCO_AUDIO_TRACE_QUEUE];
@@ -88,10 +89,11 @@ void audio_trace_out(uint32_t hz, unsigned vol, uint32_t t_ms)
     put(OP_TONE, hz, vol, t_ms, 0, 0);
 }
 
-/* IRQ context. */
-void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms)
+/* IRQ context. `loop` is 1 for a play that loops: its line ends with loop=1. */
+void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms,
+                     unsigned loop)
 {
-    put(OP_PCM, rate, len, t_ms, vol, crc);
+    put6(OP_PCM, rate, len, t_ms, vol, crc, loop);
 }
 
 /* IRQ context. A voice starts. */
@@ -131,9 +133,9 @@ void audio_trace_flush(void)
         tail = tail + 1;
         switch (r.op) {
         case OP_PCM:
-            k_printf("@RC stage=%s ev=audio op=pcm rate=%u len=%u vol=%u crc=%08x t_ms=%u\n",
+            k_printf("@RC stage=%s ev=audio op=pcm rate=%u len=%u vol=%u crc=%08x t_ms=%u%s\n",
                      ROBCO_STAGE_NAME, (unsigned)r.a, (unsigned)r.b, (unsigned)r.d,
-                     (unsigned)r.e, (unsigned)r.c);
+                     (unsigned)r.e, (unsigned)r.c, r.f ? " loop=1" : "");
             break;
         case OP_VOICE:
             k_printf("@RC stage=%s ev=audio op=voice rate=%u spans=%u len=%u vol=%u crc=%08x "

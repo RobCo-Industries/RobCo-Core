@@ -126,8 +126,10 @@ def tones(marks):
     return [(int(m["hz"]) if m["op"] == "tone" else 0, int(m["t_ms"])) for m in marks]
 
 
-def check_pcm_start(m, rate, n, vol):
+def check_pcm_start(m, rate, n, vol, loop=False):
     assert m["op"] == "pcm", m
+    # Only a looped play prints loop=1, as its last field.
+    assert m.get("loop") == ("1" if loop else None), m
     assert (int(m["rate"]), int(m["len"]), int(m["vol"])) == (rate, n, vol), m
     assert m["crc"] == "%08x" % zlib.crc32(pcm_data(n)), m
 
@@ -186,7 +188,9 @@ def check_pcm(vm, c):
     # 25 ms looped: still playing after 300 ms, ends only on the stop.
     marks = c["pcm_loop"]
     assert [m["op"] for m in marks] == ["pcm", "stop"], marks
-    check_pcm_start(marks[0], 8000, 200, 100)
+    check_pcm_start(marks[0], 8000, 200, 100, loop=True)
+    assert re.search(r"ev=audio op=pcm rate=8000 len=200 vol=100 crc=[0-9a-f]{8} t_ms=\d+ loop=1\n",
+                     vm.serial), vm.serial
     assert int(marks[1]["t_ms"]) - int(marks[0]["t_ms"]) >= call_floor(300), marks
     assert events(vm, "pcm_loop")[-1]["busy"] == "1", vm.serial
 
@@ -211,6 +215,7 @@ def check_pcm(vm, c):
     # Queue errors around a looped play: one start, one stop, nothing chained.
     marks = c["pcm_qerr"]
     assert [m["op"] for m in marks] == ["pcm", "stop"], marks
+    assert marks[0].get("loop") == "1", marks
     check_pcm_qerr(vm)
 
     # A stop, then a tone, each with a buffer waiting: no pcm_next, no pcm_end.

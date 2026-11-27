@@ -291,6 +291,8 @@ TEST(clamped_at_both_ends_before_the_volume)
 
 TEST(a_mix_over_a_looped_play)
 {
+    char want[160];
+
     fill();
     fresh(AUDIO_BACKEND_TRACE);
     CHECK_EQ(audio_play_pcm(play, 80, 8000, AUDIO_LOOP), 0);
@@ -301,6 +303,13 @@ TEST(a_mix_over_a_looped_play)
     CHECK_EQ(audio_pcm_mix_busy(), 0);
     audio_stop();
     tick(10);
+    audio_trace_flush();
+    /* The looped play's line ends with loop=1; no other line has it. */
+    snprintf(want, sizeof(want),
+             "@RC stage=host ev=audio op=pcm rate=8000 len=80 vol=100 crc=%08x t_ms=1010 loop=1\n",
+             (unsigned)crc_of(play, 80));
+    CHECK(strncmp(out, want, strlen(want)) == 0);
+    CHECK(strstr(out + strlen(want), "loop") == 0);
 }
 
 /* A tick callback that starts a play, then a mix, on the given ticks. */
