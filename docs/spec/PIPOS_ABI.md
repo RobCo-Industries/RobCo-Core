@@ -1,8 +1,8 @@
 # Pip-OS ABI
 
-This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.4, `abi_version = 0x00010004` in the image header.
+This is the contract between Pip-OS and the code it runs: the Deitrix ROM and holotapes. The ABI version is 1.5, `abi_version = 0x00010005` in the image header.
 
-Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.4 also runs on a 1.0 to 1.3 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back. Version 1.3 adds `hw_flags` to `sys_info`. A Pip-OS before 1.3 writes 0 there, so an image that reads `hw_flags` first checks that `abi_version` in `sys_info` or in `pipos_startup_t` is at least `0x00010003`. Version 1.4 adds removable holotapes: `PIP_HW_TAPE`, the `flags` field of `pip_holo_info_t`, the `PIP_EV_TAPE` event and the `holo_eject_event` mask. See [Holotapes](#holotapes).
+Version rule: a new call or a new button number raises the minor version, because an image may rely on it. A change to a stable row raises the major version. The loader checks only the major, so an image built for 1.5 also runs on a 1.0 to 1.4 Pip-OS. There, a call added in 1.1 returns `-PIP_ENOSYS` on 1.0. An image built for 1.2 never receives button 6 on a 1.0 or 1.1 Pip-OS, and bit 6 of `read_buttons` stays 0. An image reads the version it runs on in `pipos_startup_t.abi_version`. Version 1.1 adds `sample_queue`. Version 1.2 adds button 6, Back. Version 1.3 adds `hw_flags` to `sys_info`. A Pip-OS before 1.3 writes 0 there, so an image that reads `hw_flags` first checks that `abi_version` in `sys_info` or in `pipos_startup_t` is at least `0x00010003`. Version 1.4 adds removable holotapes: `PIP_HW_TAPE`, the `flags` field of `pip_holo_info_t`, the `PIP_EV_TAPE` event and the `holo_eject_event` mask. See [Holotapes](#holotapes). Version 1.5 adds `sample_rate` and the `PIP_HW_AUDIO_MID` flag. See [Sample rate](#sample-rate) and [Rest level](#rest-level).
 
 An image ignores an event type and a flag bit it does not know. A field the spec marks as reserved may carry a value in a later minor version.
 
@@ -119,12 +119,13 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 | `0x12` | `poll_event` | `pip_event_t *out` | 1 if an event was read, 0 if none | draft |
 | `0x13` | `wait_event` | `pip_event_t *out, uint32 timeout_ms` | 1, or `-PIP_ETIMEDOUT` | draft |
 | `0x20` | `tone` | `uint32 freq_hz, uint32 duration_ms` | 0 | stable |
-| `0x21` | `sample` | `const uint8 *data, uint32 length` | 0. 8-bit unsigned, 8000 Hz. | stable |
+| `0x21` | `sample` | `const uint8 *data, uint32 length` | 0. 8-bit unsigned, at the rate set by `sample_rate`, 8000 Hz unless set. | stable |
 | `0x22` | `audio_stop` | none | 0 | draft |
 | `0x23` | `volume` | `uint32 level`, 0 to 100 | Previous level | draft |
 | `0x24` | `audio_status` | none | 1 if playing, 0 if idle | draft |
 | `0x25` | `play_seq` | `const pip_note_t *notes, uint32 count` | 0 | draft |
 | `0x26` | `sample_queue` | `const uint8 *data, uint32 length` | 0, or an error | draft |
+| `0x27` | `sample_rate` | `uint32 hz`, 8000 or 37500 | Previous rate, or `-PIP_EINVAL` | draft |
 | `0x30` | `read_sensor` | `uint32 sensor, uint32 *value` | 0, or `-PIP_ENODEV` | stable |
 | `0x31` | `sensor_available` | `uint32 sensor` | 1 or 0 | stable |
 | `0x40` | `get_time` | `uint32 *unix_seconds` | 0, or `-PIP_ENODEV` when no clock is set | stable |
@@ -287,18 +288,19 @@ There is one voice. `tone`, `sample` and `play_seq` return at once and the sound
 | Call | Rules |
 |---|---|
 | `tone` | `freq_hz` 20 to 20000. `duration_ms` 1 to 60000. |
-| `sample` | 8-bit unsigned mono at 8000 Hz. 128 is silence. 1 to 65536 bytes, so length 0 returns `-PIP_EINVAL`. Pip-OS checks the length before the pointer. It copies the data before it returns. |
+| `sample` | 8-bit unsigned mono at the rate set by `sample_rate`, 8000 Hz unless set. 128 is silence. A sample that starts and ends at 128 makes no step when the output rests at its midpoint, see [Rest level](#rest-level). 1 to 65536 bytes, so length 0 returns `-PIP_EINVAL`. Pip-OS checks the length before the pointer. It copies the data before it returns. |
 | `play_seq` | `count` is 1 to 256. Pip-OS checks every note before anything plays. One bad note refuses the whole sequence. It copies the notes before it returns. |
 | `volume` | 0 to 100. Returns the previous level. The start value comes from `PIPOS.CFG`, 100 without one. A new level applies to a playing `sample` at once, and to a tone or sequence from its next note. At 0 sounds still play silently and `audio_status` reports them. |
 | `audio_status` | 1 while a sound the image started plays, or a queued sample waits. The power-on beep does not count. |
-| `sample_queue` | Same format, limits, check order and error codes as `sample` for the length and the pointer. Pip-OS copies the data before it returns. If a `sample` or a queued sample plays, the data plays right after it with no gap. One sample can wait: when one already waits, the call returns `-PIP_EBUSY` and changes nothing. If no sample plays, `sample_queue` acts exactly like `sample`: it starts the data now and replaces a tone or a sequence. Added in ABI 1.1. |
+| `sample_queue` | Same format, limits, check order and error codes as `sample` for the length and the pointer. Pip-OS copies the data before it returns. If a `sample` or a queued sample plays, the data plays right after it with no gap, at the rate of that play. One sample can wait: when one already waits, the call returns `-PIP_EBUSY` and changes nothing. If no sample plays, `sample_queue` acts exactly like `sample`: it starts the data now and replaces a tone or a sequence. Added in ABI 1.1. |
 | `audio_stop` | Stops the sound and drops a waiting sample. Returns 0 also when nothing plays. |
+| `sample_rate` | `hz` is 8000 or 37500. Sets the rate of `sample` and `sample_queue` and returns the rate set before the call. Any other value returns `-PIP_EINVAL` and changes nothing. Added in ABI 1.5. See [Sample rate](#sample-rate). |
 
 A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample`, `sample_queue` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call refused for its arguments plays nothing and leaves the current sound playing.
 
 When several errors apply, a call returns the first one in this order:
 
-1. A number out of its limits: `-PIP_EINVAL`. These are the frequency and duration of `tone`, the length of `sample` and `sample_queue`, the count of `play_seq` and the level of `volume`.
+1. A number out of its limits: `-PIP_EINVAL`. These are the frequency and duration of `tone`, the length of `sample` and `sample_queue`, the count of `play_seq`, the level of `volume` and the rate of `sample_rate`.
 2. A bad pointer: `-PIP_EFAULT`.
 3. A bad note in `play_seq`: `-PIP_EINVAL`.
 4. A sample already waiting, for `sample_queue`: `-PIP_EBUSY`.
@@ -312,7 +314,7 @@ The volume belongs to the device, not to the image. A level set by a ROM or a ho
 
 `tone`, `sample`, `play_seq` and `audio_stop` drop the waiting sample as well as the playing one.
 
-Streaming: a ROM calls `sample_queue` in its loop with the next chunk until it returns 0, then prepares the following chunk. A chunk of 65536 bytes lasts 8.192 s. If the ROM is late and the sound ends, the next call starts it again, with a gap.
+Streaming: a ROM calls `sample_queue` in its loop with the next chunk until it returns 0, then prepares the following chunk. A chunk of 65536 bytes lasts 8.192 s at 8000 Hz and about 1.748 s at 37500 Hz. If the ROM is late and the sound ends, the next call starts it again, with a gap. That call starts a new play at the rate in force, so a ROM that streams keeps its rate set until the stream ends.
 
 ```c
 typedef struct __attribute__((packed)) pip_note {
@@ -320,6 +322,68 @@ typedef struct __attribute__((packed)) pip_note {
     uint16_t duration_ms;  /* 1 to 60000 */
 } pip_note_t;              /* 4 bytes */
 ```
+
+### Rest level
+
+Between two sounds the audio output rests at one level. `PIP_HW_AUDIO_MID` in the `hw_flags` of [`sys_info`](#system-information) tells which one. ABI 1.5 adds the bit.
+
+Pip-OS sets it when it moved the rest level to the midpoint at boot and that move completed. The move is the rest ramp of the [audio guide](../guide/api/audio.md#rest-level). Otherwise the bit is clear and the output rests at its low level.
+
+| | `PIP_HW_AUDIO_MID` set | `PIP_HW_AUDIO_MID` clear |
+|---|---|---|
+| Rest level | The midpoint, the level of the sample value 128 | The low level |
+| `sample` and `sample_queue` | A sample that starts and ends at 128 starts and ends at the rest level, with no step | A sample that starts and ends at 128 begins and ends with a step between the low level and the midpoint. A speaker turns it into a thump, as it always did. The step is the distance between the low level and the sample's first and last values once the volume is applied. A sample makes no step only if those two values land on the low level: 0 at volume 100. |
+| `tone` and `play_seq` | A tone is a square centred on the rest level. Its height follows the volume. A pitch above half the rate of the kernel's tone grid plays at that half. Pip-OS builds with a grid of 37500 Hz, so the top is 18750 Hz. A kernel built with a lower grid has a lower top. | A tone is a pulse. Its width follows the volume. Every pitch of the `tone` row plays at its own pitch. |
+
+An image may read the bit to decide whether it plays short sample effects. The bit never changes while an image runs. It means something only with `PIP_HW_AUDIO` set, and it reads 0 with `PIP_HW_AUDIO` clear. A Pip-OS before 1.5 writes 0 there and says nothing by it. An image treats that as clear.
+
+### Sample rate
+
+`sample_rate` sets the rate at which `sample` and `sample_queue` play their bytes. ABI 1.5 adds it.
+
+| Rule | Detail |
+|---|---|
+| Values | 8000 and 37500, in hertz. Any other value returns `-PIP_EINVAL` and changes nothing. |
+| Return | The rate set before the call, 8000 or 37500 |
+| No busy error | A valid value always succeeds, whatever plays or waits, and also with `PIP_HW_AUDIO` clear. The call starts no sound, stops none and drops no waiting sample. |
+| When it applies | A play takes the rate when it starts and keeps it to its end. The call does not change a sound that plays. |
+| `sample` | Plays at the rate in force at the call |
+| `sample_queue` behind a play | The data keeps the rate of the play it joins, whatever the rate in force. Every buffer of one play has one rate. |
+| `sample_queue` that starts a play | When no sample plays, the call starts a new play at the rate in force at the call |
+| `tone` and `play_seq` | Not affected |
+
+The rate belongs to the image, like the [drawing state](#drawing-state). The volume belongs to the device. Pip-OS sets the rate to 8000 when an image starts, a ROM and a holotape alike. A holotape's rate ends with the holotape. When it ends, the ROM gets back the rate it had at `holo_launch`, as it gets back its drawing state. Pip-OS stops the sound at both ends of a launch, so no play crosses from one image to the other.
+
+The limits stay in bytes at both rates: 1 to 65536 bytes per call, and one waiting sample. No limit is a time. So the longest buffer lasts less at the higher rate.
+
+| Rate | One second takes | 65536 bytes last |
+|---|---|---|
+| 8000 Hz | 8000 bytes | 8.192 s |
+| 37500 Hz | 37500 bytes | About 1.748 s |
+
+Why two values and not a range: 8000 Hz is the rate every existing image uses. 37500 Hz is one sample per period of the audio output's carrier, the highest rate the output can hold, `AUDIO_PCM_RATE_MAX` in the [audio guide](../guide/api/audio.md). It lets a sound reach above 4 kHz.
+
+The `sample` row stays stable. An image that never calls `sample_rate` plays at 8000 Hz on every Pip-OS, as before 1.5.
+
+An image knows the call exists by the ABI version, as for every addition. On a Pip-OS before 1.5, number `0x27` returns `-PIP_ENOSYS` and every sample plays at 8000 Hz. An image that must run there reads `abi_version` in [`pipos_startup_t`](#entry-state) at start, and calls `sample_rate` only on 1.5 or later:
+
+```c
+static int has_rate;   /* set once in pip_main: startup->abi_version >= 0x00010005 */
+
+void play_fast(const uint8_t *data, uint32_t length)   /* data made for 37500 Hz */
+{
+    int32_t prev;
+
+    if (!has_rate) {
+        return;        /* or play a copy made for 8000 Hz */
+    }
+    prev = pip_sample_rate(37500);
+    pip_sample(data, length);
+    pip_sample_rate((uint32_t)prev);
+}
+```
+
+The play took its rate when it started, so the image can set the old rate back right after `sample`. Without the call, an image plays data made for 8000 Hz or stays silent. Data made for 37500 Hz would last 4.6875 times longer there and sound that much lower. The SDK headers hide `pip_sample_rate` and its number when `PIPOS_ABI_TARGET` is below `0x00010005`, as [Calls newer than the target ABI](#calls-newer-than-the-target-abi) says.
 
 ## Time, sensors and power
 
@@ -352,9 +416,10 @@ typedef struct __attribute__((packed)) pip_sys_info {
     uint32_t reserved;       /* 0 */
 } pip_sys_info_t;            /* 32 bytes */
 
-#define PIP_HW_RTC    (1u << 0)  /* a clock chip answered at boot */
-#define PIP_HW_AUDIO  (1u << 2)  /* the audio driver started */
-#define PIP_HW_TAPE   (1u << 3)  /* a holotape slot exists, since ABI 1.4 */
+#define PIP_HW_RTC        (1u << 0)  /* a clock chip answered at boot */
+#define PIP_HW_AUDIO      (1u << 2)  /* the audio driver started */
+#define PIP_HW_TAPE       (1u << 3)  /* a holotape slot exists, since ABI 1.4 */
+#define PIP_HW_AUDIO_MID  (1u << 4)  /* the audio output rests at its midpoint, since ABI 1.5 */
 
 typedef struct __attribute__((packed)) pip_mem_info {
     uint32_t heap_base;
@@ -382,7 +447,8 @@ typedef struct __attribute__((packed)) pip_mem_info {
 | 1 | | Reserved, 0. `gfx_info` already reports the display backend. |
 | 2 | `PIP_HW_AUDIO` | The audio driver started at boot, so the sound calls can play |
 | 3 | `PIP_HW_TAPE` | `PIPOS.CFG` sets `[holotape] slot = on` and the slot driver started at boot. It says a slot exists, not that a card is in. Since ABI 1.4. |
-| 4 to 31 | | Reserved, 0 |
+| 4 | `PIP_HW_AUDIO_MID` | The audio output rests at its midpoint: `PIPOS.CFG` sets `[audio] system_sound = yes` and the rest ramp reached its end at boot. 0 when `PIP_HW_AUDIO` is clear. Since ABI 1.5. See [Rest level](#rest-level). |
+| 5 to 31 | | Reserved, 0 |
 
 What a ROM can tell its user: a set time lasts past power-off only when `PIP_HW_RTC` is set, the time lies in 946684800 to 4102444799, and `set_time` returns 0. With the bit set and a time outside that range, the time lasts until power-off. With `-PIP_EIO` the chip write failed and the time lasts until power-off. With the bit clear the time is always lost at power-off.
 
@@ -483,9 +549,9 @@ typedef struct __attribute__((packed)) pip_holo_info {
 `holo_launch` takes a file name from `holo_enumerate`, without a folder, and an argument string of at most 99 bytes. It looks for the name on the slot card first, then on the boot card. It runs these steps:
 
 1. Load and validate the file, with every step from [IMAGE_FORMAT.md](./IMAGE_FORMAT.md). A failure returns `-PIP_ENOENT` for a missing file, `-PIP_EIO` for a card error and `-PIP_ENOEXEC` for any other failed step. A name that the card resolves to a folder, or to a file listed under another name, counts as missing. A data holotape, subtype 2, fails validation. A slot card pulled before or during the load gives `-PIP_ENOENT` when the file can no longer be found and `-PIP_EIO` when a read failed midway. The call then does not try a boot card tape of the same name. A read error on a slot card that stays in also returns `-PIP_EIO` and makes the card bad. A pull sets `REMOVED`, not `BAD`. While no slot volume is mounted, because the slot is empty, settling or holds a bad card, the name is looked up on the boot card only.
-2. Stop the sound, empty the event queue, clear the back buffer, and give the holotape a fresh drawing state.
+2. Stop the sound, empty the event queue, clear the back buffer, and give the holotape a fresh drawing state and a sample rate of 8000 Hz.
 3. Run the holotape. The ROM waits inside `holo_launch`.
-4. When the holotape ends, close its files, stop the sound, empty the event queue and restore the ROM's drawing state.
+4. When the holotape ends, close its files, stop the sound, empty the event queue and restore the ROM's drawing state and its sample rate.
 
 The image is loaded whole before it runs. Still, when the slot card is pulled while its tape runs, Pip-OS ends the tape no later than the tape's next syscall of any kind after Pip-OS saw the card leave. A tape that makes no syscall runs on. When Pip-OS ends the tape, it prints `ev=holo_kill reason=eject pc=<pc>`, where `pc` is the tape's program counter at the syscall where Pip-OS ended it, in the same format as for a fault. Then `holo_launch` returns `-PIP_ENODEV`. Step 4 runs as for any ended tape. The slot does not affect a tape launched from the boot card. A read error on the slot card does not end a running slot tape either, since its image is in memory. Only a removal ends it.
 
@@ -648,5 +714,6 @@ A project that also has a `robco.toml` sets `ABI` to the value of `target.abi`, 
 | 1.2 | Button 6, Back |
 | 1.3 | `hw_flags` in `sys_info` |
 | 1.4 | Removable holotapes: `[holotape] slot` in `PIPOS.CFG`, `PIP_HW_TAPE`, `flags` in `pip_holo_info_t`, `PIP_EV_TAPE`, the `holo_eject_event` mask, `-PIP_ENODEV` from `holo_launch` |
+| 1.5 | `sample_rate`: `sample` and `sample_queue` play at 8000 or 37500 Hz. `PIP_HW_AUDIO_MID` in `hw_flags`: the audio output rests at its midpoint. Pip-OS implements both in its own repository later. Until then it reports ABI 1.4, returns `-PIP_ENOSYS` for number `0x27` and never sets the bit. |
 
 Pip-OS implements every version up to 1.4 and reports ABI 1.4.
