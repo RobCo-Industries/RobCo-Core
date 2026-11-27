@@ -146,7 +146,7 @@ void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t d
 void audio_trace_pcm_mix(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_voice(uint32_t rate, uint32_t spans, uint32_t len, uint32_t gain, uint32_t crc,
                        uint32_t t_ms);
-void audio_trace_gain(uint32_t gain, uint32_t t_ms);
+void audio_trace_gain(uint32_t gain, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_flush(void);
 
 /* The rest ramp: duty 0 to 128 on 3t^2 - 2t^3 over this many samples at this rate. */
@@ -1008,7 +1008,10 @@ int audio_busy(void)
 /*
  * A change of target while a play sounds prints one op=gain line. With
  * nothing playing, or a start that waits for its tick, the next start
- * line carries the gain instead.
+ * line carries the gain instead. In a sample play or a voice the time is
+ * that of op=pcm_mix: the play's next grid sample that has not passed,
+ * where the sample IRQ first slews. A tone, with or without the rest ramp,
+ * takes the audio clock, as its own lines do.
  */
 void audio_set_gain(uint32_t gain)
 {
@@ -1021,7 +1024,16 @@ void audio_set_gain(uint32_t gain)
     if (gain != gain_target) {
         gain_target = gain;
         if (backend >= 0 && backend != AUDIO_BACKEND_PWM && playing && !req.valid) {
-            audio_trace_gain(gain, clock_ms);
+            if (pcm.active && (pcm_kind == KIND_SAMPLE || pcm_kind == KIND_VOICE)) {
+                uint64_t now = timer_now_us();
+
+                audio_trace_gain(gain, pcm_t0_ms,
+                                 (now - pcm_t0_us) +
+                                 (uint32_t)(audio_pcm_join_us(&pcm, (uint32_t)now) -
+                                            (uint32_t)now));
+            } else {
+                audio_trace_gain(gain, clock_ms, 0);
+            }
         }
     }
     irq_restore(s);

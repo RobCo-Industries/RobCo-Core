@@ -492,7 +492,7 @@ Trace marker, one per change:
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=gain gain=<0..10000> t_ms=<ms>
 ```
 
-`vol` is the gain in whole percent, rounded down. `gain=` ends an `op=tone` line only when the gain is not a whole percent. A stop line never carries it. `op=gain` is a change of target while a play sounds, with the audio clock of the call.
+`vol` is the gain in whole percent, rounded down. `gain=` ends an `op=tone` line only when the gain is not a whole percent. A stop line never carries it. `op=gain` is a change of target while a play sounds. In a sample play or a voice, its `t_ms` follows the rule of `op=pcm_mix`: the start time plus the system timer time to the play's next sample that has not passed when the call reads the timer, where the slew starts, rounded down to the millisecond. So it never prints a time before an `op=pcm_mix`, `op=pcm_next` or start line of the same play printed before it. In a tone, rest ramp included, it takes the audio clock of the call, as the tone's own lines do.
 
 `op=stop` means `hz=0`: the end of a sound, a rest or `audio_stop()`. A natural change from silence to silence prints nothing.
 

@@ -28,7 +28,7 @@ void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t d
 void audio_trace_pcm_mix(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_voice(uint32_t rate, uint32_t spans, uint32_t len, uint32_t gain, uint32_t crc,
                        uint32_t t_ms);
-void audio_trace_gain(uint32_t gain, uint32_t t_ms);
+void audio_trace_gain(uint32_t gain, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_flush(void);
 
 #define OP_TONE     0       /* a tone, or a stop when hz is 0 */
@@ -44,7 +44,7 @@ typedef struct {
     uint32_t a;             /* tone: hz.  pcm, voice: rate. pcm_end: n. pcm_next, pcm_mix: len.
                                gain: gain */
     uint32_t b;             /* tone: gain. pcm, voice: len. pcm_end: last. pcm_next, pcm_mix: crc */
-    uint32_t c;             /* tone, pcm, voice, gain: t_ms. pcm_end, pcm_next, pcm_mix: start t_ms */
+    uint32_t c;             /* tone, pcm, voice: t_ms. gain, pcm_end, pcm_next, pcm_mix: start t_ms */
     uint32_t d;             /* pcm, voice: gain. others: time since start in us, low word */
     uint32_t e;             /* pcm, voice: crc. others: time since start in us, high word */
     uint32_t f;             /* voice: span count. pcm: 1 when the play loops */
@@ -111,10 +111,13 @@ void audio_trace_voice(uint32_t rate, uint32_t spans, uint32_t len, uint32_t gai
     put6(OP_VOICE, rate, len, t_ms, gain, crc, spans);
 }
 
-/* IRQ context, or IRQs masked. The gain's target changed while a play sounds. */
-void audio_trace_gain(uint32_t gain, uint32_t t_ms)
+/*
+ * IRQ context, or IRQs masked. The gain's target changed while a play
+ * sounds. The division waits as for pcm_end.
+ */
+void audio_trace_gain(uint32_t gain, uint32_t t0_ms, uint64_t dur_us)
 {
-    put(OP_GAIN, gain, 0, t_ms, 0, 0);
+    put(OP_GAIN, gain, 0, t0_ms, (uint32_t)dur_us, (uint32_t)(dur_us >> 32));
 }
 
 /* Prints " gain=<g>" when g is not a whole percent. Main context. */
@@ -170,8 +173,9 @@ void audio_trace_flush(void)
             k_printf("\n");
             break;
         case OP_GAIN:
+            dur = ((uint64_t)r.e << 32) | r.d;
             k_printf("@RC stage=%s ev=audio op=gain gain=%u t_ms=%u\n", ROBCO_STAGE_NAME,
-                     (unsigned)r.a, (unsigned)r.c);
+                     (unsigned)r.a, (unsigned)(r.c + (uint32_t)(dur / 1000u)));
             break;
         case OP_PCM_END:
             dur = ((uint64_t)r.e << 32) | r.d;

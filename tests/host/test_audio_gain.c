@@ -15,6 +15,8 @@
 #include "audio_fake.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static uint8_t buf[800];
 
@@ -286,4 +288,102 @@ TEST(trace_start_lines_end_with_gain_off_a_whole_percent)
              "@RC stage=host ev=audio op=stop hz=0 vol=0 t_ms=1090\n",
              (unsigned)crc32(buf, 80));
     CHECK_STR(out, want);
+}
+
+/* Every t_ms of the trace, in line order, never below the one before. */
+static int t_ms_in_order(const char *s)
+{
+    unsigned long prev = 0;
+    const char *p = s;
+
+    while ((p = strstr(p, "t_ms=")) != 0) {
+        unsigned long t = strtoul(p + 5, 0, 10);
+
+        if (t < prev) {
+            RC_FAIL("t_ms %lu after %lu in:\n%s", t, prev, s);
+            return 0;
+        }
+        prev = t;
+        p += 5;
+    }
+    return 1;
+}
+
+/* The t_ms of the first line with `op`, or ~0. */
+static unsigned long t_ms_of(const char *s, const char *op)
+{
+    const char *p = strstr(s, op);
+
+    p = p ? strstr(p, "t_ms=") : 0;
+    return p ? strtoul(p + 5, 0, 10) : ~0ul;
+}
+
+/*
+ * An overlay and a gain change between two ticks, in both orders. The gain
+ * line takes the play's grid, as op=pcm_mix does: it never prints a time
+ * before an overlay line printed before it, and it lands on the grid
+ * sample where the slew starts.
+ */
+static void check_gain_after_and_before_mix(uint32_t rate, uint32_t lead_us)
+{
+    static uint8_t play[4096];
+    static uint8_t over[40];
+    int order;
+
+    k_memset(play, 160, sizeof(play));
+    k_memset(over, 140, sizeof(over));
+    for (order = 0; order < 2; order++) {
+        fresh(AUDIO_BACKEND_TRACE);
+        CHECK_EQ(audio_play_pcm(play, sizeof(play), rate, 0), 0);
+        tick(10);
+        run_us(lead_us);
+        if (order == 0) {
+            CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
+            audio_set_gain(4321);
+        } else {
+            audio_set_gain(4321);
+            CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
+        }
+        run_us(1000);
+        audio_set_gain(7777);
+        tick(10);
+        audio_trace_flush();
+        if (!t_ms_in_order(out)) {
+            RC_FAIL("rate %u lead %u order %d", (unsigned)rate, (unsigned)lead_us, order);
+            return;
+        }
+        CHECK(strstr(out, "op=gain gain=4321") != 0);
+        CHECK(strstr(out, "op=gain gain=7777") != 0);
+        /* Same call time, same grid sample: the same t_ms. */
+        CHECK_EQ(t_ms_of(out, "op=gain gain=4321"), t_ms_of(out, "op=pcm_mix"));
+        CHECK_EQ(t_ms_of(out, "op=gain gain=4321"), 1010 + (lead_us + 1000000u / rate) / 1000);
+    }
+}
+
+TEST(trace_gain_and_overlay_keep_their_order)
+{
+    check_gain_after_and_before_mix(8000, 5000);
+    check_gain_after_and_before_mix(8000, 5010);
+    check_gain_after_and_before_mix(8000, 4990);
+    check_gain_after_and_before_mix(37500, 5000);
+    check_gain_after_and_before_mix(37500, 5013);
+    check_gain_after_and_before_mix(37500, 4990);
+}
+
+/* A tone has no sample grid of its own in the trace: the gain takes the audio clock. */
+TEST(trace_gain_in_a_tone_takes_the_audio_clock)
+{
+    fresh(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_tone(440, 100), 0);
+    tick(10);
+    run_us(5000);
+    audio_set_gain(4321);
+    tick(10);
+    run_us(5000);
+    audio_set_gain(1234);
+    audio_trace_flush();
+    CHECK(t_ms_in_order(out));
+    CHECK_EQ(t_ms_of(out, "op=gain gain=4321"), 1010);
+    /* The second tick ran 15 ms after the first, and the call 5 ms after it. */
+    CHECK_EQ(t_ms_of(out, "op=gain gain=1234"), 1025);
 }
