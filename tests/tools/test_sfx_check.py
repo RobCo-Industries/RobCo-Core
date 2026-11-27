@@ -79,7 +79,8 @@ def test_dumped_tables_pass(tmp_path, kind):
     p, d = dump(tmp_path, MODELS[kind]())
     r = run(CHECK, p, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert re.search(r" %s band mean \d+\.\d\d .*: ok$" % kind, r.stdout.strip()), r.stdout
+    assert re.search(r" %s bands \d+ Hz, frames \d+\.\d ms, band mean \d+\.\d\d .*: ok$" % kind,
+                     r.stdout.strip()), r.stdout
 
 
 def test_partial_6db_off_fails(tmp_path):
@@ -242,11 +243,13 @@ def short_model(peak=50):
              "bands": [[500, 0], [6000, 0]]}]}}}
 
 
-def test_short_noise_passes_with_a_note(tmp_path):
+def test_short_noise_passes(tmp_path):
     p, d = dump(tmp_path, short_model())
     r = run(CHECK, p, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "bands not judged, under 20 ms: ok" in r.stdout, r.stdout
+    # Its bands are wide enough to judge: no note.
+    assert re.search(r"bands \d+ Hz, frames 5\.0 ms, .*: ok$", r.stdout.strip()), r.stdout
+    assert "not judged" not in r.stdout, r.stdout
 
 
 def test_short_noise_frame_8db_off_fails(tmp_path):
@@ -357,7 +360,8 @@ def test_one_frame_tick_checks_its_level(tmp_path):
     p, d = dump(tmp_path, tick_model())
     r = run(CHECK, p, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert re.search(r"worst \d+\.\d\d dB, level -?\d+\.\d\d dB, bands not judged", r.stdout)
+    assert re.search(r"worst \d+\.\d\d dB, level -?\d+\.\d\d dB, frames not judged, too narrow",
+                     r.stdout)
 
     def spike(data):
         data[:] = bytes([128] * len(data))
@@ -482,3 +486,82 @@ def test_boundary_values_never_crash(tmp_path, case):
     else:
         (d / "s.u8").write_bytes(table)
     assert sfx_check.main([str(p), str(d)]) in (0, 1, 2)
+
+
+def burst_model(seed=1):
+    """A 20 ms burst: 400 samples, one hit, short fades the generator needs."""
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"burst": {
+        "len": 400, "peak_steps": 60, "layers": [
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -60000], [1000, 0], [19000, 0], [20000, -60000]],
+             "bands": [[500, 0], [6000, 0]]}]}}}
+
+
+def test_one_hit_spectrum_sums_to_its_power():
+    sfx_check = _import_check()
+    m = burst_model()
+    sound = m["sounds"]["burst"]
+    layer = sound["layers"][0]
+    spec, _ = sfx_check.noise_layer(layer, sound, RATE, 512)
+    rh = sfx_check.autocorr(sfx_check.fir_taps(layer["bands"], RATE))
+    rg = sfx_check.autocorr(sfx_check.hit_gain(layer, RATE))
+    assert sum(spec) == pytest.approx(rh[0] * rg[0], rel=1e-6)
+
+
+@pytest.mark.parametrize("seed", range(1, 13))
+def test_short_burst_passes_for_every_seed(tmp_path, seed):
+    p, d = dump(tmp_path, burst_model(seed))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def comb_model(repeat):
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"comb": {
+        "len": 8000, "peak_steps": 60, "layers": [
+            {"kind": "noise", "seed": 5, "level_mdb": 0, "repeat": repeat,
+             "hits": [[0, 0], [10, 0]],
+             "env": [[0, -60000], [5000, 0], [395000, 0], [400000, -60000]],
+             "bands": [[800, -30000], [900, 0], [1100, 0], [1200, -30000]]}]}}}
+
+
+def test_repeated_hits_close_together_pass(tmp_path):
+    p, d = dump(tmp_path, comb_model(True))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    p2 = tmp_path / "plain.json"
+    p2.write_text(json.dumps(comb_model(False)))
+    r = run(CHECK, p2, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_narrow_noise_gets_long_frames(tmp_path):
+    m = {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"narrow": {
+        "len": RATE, "peak_steps": 60, "layers": [
+            {"kind": "noise", "seed": 1, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -60000], [10000, 0], [990000, 0], [1000000, -60000]],
+             "bands": [[1900, -40000], [2000, 0], [2200, 0], [2300, -40000]]}]}}}
+    p, d = dump(tmp_path, m)
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    ms = float(re.search(r"frames (\d+\.\d) ms", r.stdout).group(1))
+    assert ms > 5.0, r.stdout
+
+
+def test_2ms_tick_passes_with_a_note_and_checks_its_level(tmp_path):
+    m = {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"tick": {
+        "len": 40, "peak_steps": 40, "layers": [
+            {"kind": "noise", "seed": 2, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -60000], [300, 0], [1700, 0], [2000, -60000]],
+             "bands": [[500, 0], [6000, 0]]}]}}}
+    p, d = dump(tmp_path, m)
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "bands not judged, too short" in r.stdout, r.stdout
+
+    def spike(data):
+        data[:] = bytes([128] * len(data))
+        data[20] = 128 + 40
+    _rewrite(os.path.join(d, "tick.u8"), spike)
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert re.search(r"level \d+\.\d\d dB outside", r.stdout), r.stdout
