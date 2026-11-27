@@ -287,18 +287,26 @@ For each sound it:
 4. Predicts the same two measurements from the model. It renders tone layers by the steps above. It takes a noise layer as its expected power and spectrum, as below. It draws no random numbers. A loop wraps what runs past `len`, so a `fold` cross-fades a hit with itself in the prediction too.
 5. Scales the prediction and compares it with the measure in dB. The bands and the frames each get their own gain. The band gain matches the power under 15 kHz. The frame gain matches the power of the whole spectrum, so noise above 15 kHz still counts in the frames.
 
-For one noise layer, `h` is its 511 filter taps at unit power, `g[i]` the gain of one hit at its sample `i` without the hit's level, `a_k` the linear level of hit `k`, `s_k` its start, `n` the table length and `M` the FFT size of the measurement. The gain `g` is the envelope times the fold fade. The generator filters a longer run of noise than the hit, so every sample of a hit holds the full filter and `g` needs no edge term.
+For one noise layer, `h` is its 511 filter taps at unit power, `g[i]` the gain of one hit at its sample `i` without the hit's level, `a_k` the linear level of hit `k`, `s_k` its start, `n` the table length and `M` the FFT size of a one-shot's measurement. The gain `g` is the envelope times the fold fade. The generator filters a longer run of noise than the hit, so every sample of a hit holds the full filter and `g` needs no edge term.
 
-A short envelope smears the spectrum. The tool computes `rh[d] = sum h[m] h[m+d]` and `rg[d] = sum g[i] g[i+d]` for the lags -510 to 510. The expected spectrum of one hit of level 1 is the FFT of `rh[d] * rg[d]` placed circularly on `M` points, real part, clamped at 0. The tool scales it as it scales the measured spectrum, so its bins sum to `rh[0] * rg[0]`. A hit cut by the end of the table, or wrapped by a loop, takes `rg` of the parts that land in the table.
+A short envelope smears the spectrum. The tool computes `rh[d] = sum h[m] h[m+d]` and `rg[d] = sum g[i] g[i+d]` for the lags -510 to 510. The expected spectrum of one hit of level 1 is the DFT of `rh[d] * rg[d]` placed circularly, real part, clamped at 0. The tool scales it as it scales the measured spectrum, so its bins sum to `rh[0] * rg[0]`.
 
-Hits of a layer without `repeat` are unrelated: their spectra add, each times `a_k^2`. In a `repeat` layer every hit replays one waveform, so the sum has a comb spectrum. The tool multiplies the spectrum of one hit at bin `j` by `|sum_k a_k * exp(-2 pi i j s_k / M)|^2`. Hits at one start add as amplitudes this way too. Layers add as powers, and so do noise and tones.
+A one-shot uses `M` points: the table length rounded up to a power of 2, with zero padding. A loop is periodic, so its spectrum lives on the `n` bins of an `n`-point DFT, with no padding. The tool measures the loop's table on the same `n` bins. There a wrapped hit is only a phase. The tool takes `rg` from the whole unwrapped hit, however often it wraps, adds `rh[d] * rg[d]` into `c[d mod n]` and takes the `n`-point DFT of `c`. An `n`-point DFT of any `n` uses Bluestein's chirp method on a power-of-2 FFT.
 
-The expected power of sample `i` is `sum_k a_k^2 g[i - s_k]^2`. In a `repeat` layer, two hits whose starts differ by `d`, with `|d|` at most 510, add `2 a_k a_l g[i - s_k] g[i - s_l] rh[d]`. A loop wraps the sample and takes the start difference modulo `n` both ways. The frames and `pmax` use this power.
+In a `repeat` layer, hits with the same start play one waveform. The tool merges them into one hit whose level is the sum of their linear levels. It does this once, before it predicts the spectrum or the power.
+
+Hits of a layer without `repeat` are unrelated: their spectra add, each times `a_k^2`. In a one-shot, each such hit takes `rg` of the part that lands in the table. In a `repeat` layer every hit replays one waveform, so the sum has a comb spectrum. The tool multiplies the spectrum of one hit at bin `j` by `|sum_k a_k * exp(-2 pi i j s_k / P)|^2`, where `P` is `M` for a one-shot and `n` for a loop. Layers add as powers, and so do noise and tones.
+
+A one-shot cuts a hit that runs past the table end. In a `repeat` layer the cut hits keep different parts of one waveform, so the comb no longer holds. When the table end cuts any hit of a `repeat` layer, the tool does not judge the bands of that sound. Its line says `bands not judged, repeated hits cut by the table end`. The tool still judges the frames.
+
+The expected power of a table sample sums over every pair of stream samples that land on it and share a noise stream. Two samples share a stream when they come from the same hit, or from any two hits of a `repeat` layer. With stream indexes `j` and `j'`, at most 510 apart, the pair adds `a a' g[j] g[j'] rh[j' - j]`. A loop wraps each hit, so a hit longer than the loop pairs with itself. A one-shot drops what runs past the end. The frames and `pmax` use this power.
+
+The tool counts the steps of this sum, of the autocorrelations of `g` and of the combs before it does the work. When one sound needs more than 200000000 steps, the tool stops with exit code 2 and says `sounds.NAME: too costly to check, N steps, the limit is 200000000`.
 
 A fixed tolerance needs enough independent values in each band and each frame. Let `p[i]` be the expected noise power of sample `i` and `S[j]` the expected noise spectrum up to half the rate, both summed over the noise layers. Then:
 
 - The effective duration is `T = (sum p)^2 / (sum p^2) / rate` seconds.
-- The effective bandwidth is `B = (sum S)^2 / (sum S^2) * rate / M` Hz.
+- The effective bandwidth is `B = (sum S)^2 / (sum S^2) * rate / P` Hz.
 - The band width is `W = max(250, K_band / T)` Hz and the frame length `F = max(0.005, K_frame / B)` seconds.
 - `K_band` and `K_frame` count the independent complex values a judged value must hold. A one-shot with noise takes `K_band = 10` and `K_frame = 20`. A loop takes `K_band = 200` and `K_frame = 20`.
 
@@ -306,7 +314,7 @@ Each limit sits about five standard deviations out, so a table with dozens of ba
 
 A band or frame whose noise fills only part of it holds fewer values than its width says. So the tool counts the values of each one:
 
-- Band `b` holds `N_b = T * (rate / M) * (sum S[j])^2 / (sum S[j]^2)` over the bins `j` of the band.
+- Band `b` holds `N_b = T * (rate / P) * (sum S[j])^2 / (sum S[j]^2)` over the bins `j` of the band. `P` is `M` for a one-shot and `n` for a loop.
 - Frame `f` holds `N_f = (B / rate) * (sum p[i])^2 / (sum p[i]^2)` over the samples `i` of the frame.
 - Tones are fixed, not random. With `q` the noise part of the predicted value, before the rounding floor, the value counts `N_eff = N / (q * (2 - q))`. A value with no noise counts as infinite.
 
@@ -341,7 +349,7 @@ A loop is a sound with `loop` set. A one-shot with noise has a noise layer and n
 
 It prints one line per sound: its name and kind, the band width and frame length, the mean, median and worst band error and frame error in dB over the tight values, then `thin N bands, M frames` when either count is not 0, the level for a sound with noise, then any note, then `ok` or `FAIL` with the reason. With no tight value, the mean, median and worst print as `-` and the tolerance table judges nothing for that kind. A thin value beyond chance adds `band at F Hz is E.EE dB off, beyond chance` or `frame at T.T ms is E.EE dB off, beyond chance`, with a signed error. Each kind gives at most one such reason, the worst.
 
-Exit codes: 0 every sound passes, 1 a sound fails, 2 the model is not valid or a table file is missing or has the wrong length, 64 a usage error, 70 an internal error.
+Exit codes: 0 every sound passes, 1 a sound fails, 2 the model is not valid, a table is missing or has the wrong length, or a sound is too costly to check, 64 a usage error, 70 an internal error.
 
 ## A worked example
 
