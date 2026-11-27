@@ -493,6 +493,33 @@ static void play_pcm_voice(void)
     case_end("pcm_voice", ret);
 }
 
+/*
+ * The gain: a start off a whole percent, then changes while a play runs,
+ * one of them twice, and changes with nothing playing, which print nothing.
+ */
+static void play_pcm_gain(void)
+{
+    int ret, ret2;
+
+    case_begin("pcm_gain");
+    pcm_fill(PCM_BUF);
+    audio_set_gain(1234);
+    ret = audio_play_pcm(pcm_buf, 200, 8000, 0);
+    audio_wait();
+    audio_set_gain(AUDIO_GAIN_FULL);
+    ret2 = audio_play_pcm(pcm_buf, 800, 8000, 0);
+    sleep_ms(30);
+    audio_set_gain(5000);
+    audio_set_gain(5000);
+    sleep_ms(30);
+    audio_set_volume(100);
+    audio_wait();
+    audio_set_gain(2500);
+    audio_set_gain(AUDIO_GAIN_FULL);
+    k_printf("@RC stage=audio ev=pcm_gain ret2=%d\n", ret2);
+    case_end("pcm_gain", ret);
+}
+
 /* Bad arguments return their codes and play nothing. */
 static void play_pcm_args(void)
 {
@@ -523,6 +550,7 @@ static void play_pcm_all(void)
     play_pcm_under();
     play_pcm_mix();
     play_pcm_voice();
+    play_pcm_gain();
 }
 
 /* A stop, then PCM before the tick runs: IRQs stay masked across both calls. */

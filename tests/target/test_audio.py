@@ -57,7 +57,8 @@ TONE_CASES = ["beep", "seq", "tune", "loop", "interrupt"]
 RULE_RUNS = 5
 RULE_CASES = ["stop_pcm"] * RULE_RUNS + ["stop_rest"] * RULE_RUNS
 PCM_CASES = ["pcm", "pcm_fast", "pcm_top", "pcm_stop", "pcm_swap", "pcm_cut", "pcm_loop", "pcm_tick",
-             "pcm_args", "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under", "pcm_mix", "pcm_voice"]
+             "pcm_args", "pcm_chain", "pcm_qerr", "pcm_qcut", "pcm_under", "pcm_mix", "pcm_voice",
+             "pcm_gain"]
 # Last in the run: the rest level then stays at the midpoint.
 REST_CASES = ["rest"]
 ALL_CASES = TONE_CASES + PCM_CASES + RULE_CASES + REST_CASES
@@ -234,6 +235,7 @@ def check_pcm(vm, c):
 
     check_pcm_voice_trace(c["pcm_voice"])
     check_pcm_voice(vm)
+    check_pcm_gain(vm, c["pcm_gain"])
 
 
 def check_busy_big(swap):
@@ -428,6 +430,20 @@ def check_rest(vm, marks):
     assert (int(m["again"]), int(m["tone"])) == (0, 0), m
     # The centred tone runs on the sample path: the count grows, with no op=pcm line.
     assert int(m["grew"]) > 0, m
+
+
+def check_pcm_gain(vm, marks):
+    """A start line ends with gain= off a whole percent. One op=gain per change in a play."""
+    assert [m["op"] for m in marks] == ["pcm", "pcm_end", "pcm", "gain", "gain", "pcm_end"], marks
+    first, _, second, half, full, end = marks
+    check_pcm_start(first, 8000, 200, 12)
+    assert first["gain"] == "1234", first
+    assert list(first)[-1] == "gain", first
+    check_pcm_start(second, 8000, 800, 100)
+    assert "gain" not in second, second
+    assert (half["gain"], full["gain"]) == ("5000", "10000"), marks
+    assert int(second["t_ms"]) <= int(half["t_ms"]) <= int(full["t_ms"]) <= int(end["t_ms"]), marks
+    assert events(vm, "pcm_gain")[-1]["ret2"] == "0", vm.serial
 
 
 def check_pcm_args(vm):

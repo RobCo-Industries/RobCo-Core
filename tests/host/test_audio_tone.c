@@ -14,6 +14,8 @@
 
 #include "audio_fake.h"
 
+#include <stdlib.h>
+
 static uint8_t buf[800];
 static uint8_t over[100];
 static const audio_note_t seq_rest[] = { { 440, 30 }, { 0, 30 }, { 880, 30 } };
@@ -256,22 +258,33 @@ TEST(a_late_irq_skips_by_the_rule)
     }
 }
 
-TEST(volume_applies_from_the_next_note)
+TEST(volume_slews_within_a_note)
 {
+    uint32_t top = 0;
     size_t a;
+    size_t i;
 
     enter_rest(AUDIO_BACKEND_PWM);
     CHECK_EQ(audio_play(two, 2, 0), 0);
     tick(10);
     run_us(200);
-    audio_set_volume(20);
     a = pwm_count;
-    run_us(200);
-    /* The note keeps its height: a whole high sample at 440 Hz. */
-    CHECK_EQ(pwm_samples[a], 128 + amp_at(100));
+    audio_set_volume(20);
+    run_us(19000);
+    /* No jump: the height falls by at most one gain step per sample. */
+    CHECK(dist(pwm_samples[a], 128) >= amp_at(100) - 1);
+    for (i = a + 1; i < pwm_count; i++) {
+        CHECK(dist(pwm_samples[i], 128) <= dist(pwm_samples[a], 128));
+    }
+    /* Within 20 ms the note sits at the new height, before its next note. */
+    for (i = pwm_count - 100; i < pwm_count; i++) {
+        uint32_t d = dist(pwm_samples[i], 128);
+
+        top = d > top ? d : top;
+    }
+    CHECK_EQ(top, amp_at(20));
     tick(20);
     run_us(100);
-    /* The second note starts high at the new height. */
     CHECK_EQ(pwm_samples[pwm_count - 1], 128 + amp_at(20));
 }
 
@@ -440,4 +453,257 @@ TEST(rest_mid_does_nothing_in_every_state_after_the_ramp)
             RC_FAIL("%s: audio_rest_mid() printed \"%s\"", t_name[st], out);
         }
     }
+}
+
+/* Gain across the notes of one sequence, and the time of its trace line. */
+
+/* Runs the clock until the play outputs its next sample. */
+static void next_out(void)
+{
+    uint32_t n = pcm.n;
+    unsigned i;
+
+    for (i = 0; i < 100000 && pcm.n == n; i++) {
+        run_us(1);
+    }
+}
+
+/* The gain the driver must hold at grid sample `p`, for a change from 10000 to 2000 at `join`. */
+static uint32_t fall_at(uint32_t p, uint32_t join)
+{
+    uint32_t k = p - join + 1;
+
+    return k >= 572 ? 2000 : 10000 - 14 * k;
+}
+
+/*
+ * Two sounding notes, no rest, a change 5 ms before the note change. The
+ * second note keeps the gain and its move: the height falls with no jump
+ * and reaches the target 20 ms after the call, inside the second note.
+ */
+TEST(a_gain_change_goes_on_across_a_note_change)
+{
+    static const audio_note_t pair[] = { { 440, 20 }, { 880, 100 } };
+    uint32_t join;
+    uint32_t top = 0;
+    uint32_t prev_g;
+    int changed = 0;
+    unsigned i;
+
+    enter_rest(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play(pair, 2, 0), 0);
+    tick(10);
+    run_us(15000);
+    audio_set_gain(2000);
+    join = gain_n + 1;
+    prev_g = gain_cur;
+    for (i = 0; i < 1200; i++) {
+        uint32_t want;
+        uint32_t s;
+
+        if (!changed && fake_us - last_us >= 20000) {
+            /* 1030 ms: the second note. No sample was skipped. */
+            tick(0);
+            CHECK_EQ(seq.hz, 880);
+            changed = 1;
+        }
+        next_out();
+        want = fall_at(pcm.last_n, join);
+        if (gain_cur != want) {
+            RC_FAIL("output %u, grid %u: gain %u, want %u", i, (unsigned)pcm.last_n,
+                    (unsigned)gain_cur, (unsigned)want);
+            return;
+        }
+        CHECK(prev_g - gain_cur <= 14);
+        prev_g = gain_cur;
+        s = pwm_samples[pwm_count - 1];
+        CHECK(dist(s, 128) <= audio_square_amp_g(ROBCO_AUDIO_TONE_PEAK, gain_cur));
+        if (pcm.last_n - join >= 750) {
+            top = dist(s, 128) > top ? dist(s, 128) : top;
+        }
+    }
+    CHECK(changed);
+    /* The note change fell inside the move: 5 ms is 187 grid samples, the move takes 572. */
+    CHECK_EQ(gain_cur, 2000);
+    CHECK_EQ(top, audio_square_amp_g(ROBCO_AUDIO_TONE_PEAK, 2000));
+}
+
+/*
+ * The same with a rest between the notes. The gain moves on through the
+ * rest, which writes 128, and the note after it starts at the target.
+ */
+TEST(a_note_after_a_rest_starts_at_the_target)
+{
+    static const audio_note_t trio[] = { { 440, 20 }, { 0, 10 }, { 880, 100 } };
+    uint32_t join;
+    int phase = 0;
+    unsigned i;
+
+    enter_rest(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play(trio, 3, 0), 0);
+    tick(10);
+    run_us(15000);
+    audio_set_gain(2000);
+    join = gain_n + 1;
+    for (i = 0; i < 1500; i++) {
+        uint32_t s;
+
+        if (phase == 0 && fake_us - last_us >= 20000) {
+            tick(0);
+            CHECK_EQ(seq.hz, 0);
+            phase = 1;
+        } else if (phase == 1 && fake_us - last_us >= 10000) {
+            /* 1040 ms: 562 grid samples since the change, the move not done. */
+            CHECK(gain_cur > 2000);
+            tick(0);
+            CHECK_EQ(seq.hz, 880);
+            CHECK_EQ(gain_cur, 2000);
+            phase = 2;
+        }
+        next_out();
+        s = pwm_samples[pwm_count - 1];
+        if (phase == 1) {
+            CHECK_EQ(s, 128);
+            CHECK_EQ(gain_cur, fall_at(pcm.last_n, join));
+        } else if (phase == 2) {
+            /* The first sample of the note is high, at the target. */
+            CHECK_EQ(s, 128 + audio_square_amp_g(ROBCO_AUDIO_TONE_PEAK, 2000));
+            CHECK_EQ(gain_cur, 2000);
+            phase = 3;
+        }
+    }
+    CHECK_EQ(phase, 3);
+}
+
+/* In a rest the driver prints no op=gain: the next note's line carries the gain. */
+TEST(trace_a_change_in_a_rest_rides_on_the_next_note)
+{
+    static const audio_note_t trio[] = { { 440, 20 }, { 0, 10 }, { 880, 20 } };
+
+    enter_rest(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_play(trio, 3, 0), 0);
+    tick(10);
+    tick(20);
+    run_us(5000);
+    audio_set_gain(2000);
+    tick(5);
+    tick(20);
+    audio_trace_flush();
+    CHECK_STR(out, "@RC stage=host ev=audio op=tone hz=440 vol=100 t_ms=1010\n"
+                   "@RC stage=host ev=audio op=stop hz=0 vol=100 t_ms=1030\n"
+                   "@RC stage=host ev=audio op=tone hz=880 vol=20 t_ms=1040\n"
+                   "@RC stage=host ev=audio op=stop hz=0 vol=20 t_ms=1060\n");
+}
+
+/* Every t_ms of the trace, in line order, never below the one before. */
+static int t_ms_in_order(const char *s)
+{
+    unsigned long prev = 0;
+    const char *p = s;
+
+    while ((p = strstr(p, "t_ms=")) != 0) {
+        unsigned long t = strtoul(p + 5, 0, 10);
+
+        if (t < prev) {
+            RC_FAIL("t_ms %lu after %lu in:\n%s", t, prev, s);
+            return 0;
+        }
+        prev = t;
+        p += 5;
+    }
+    return 1;
+}
+
+/* The t_ms of the first line that holds `what`, or ~0. */
+static unsigned long t_ms_of(const char *s, const char *what)
+{
+    const char *p = strstr(s, what);
+
+    p = p ? strstr(p, "t_ms=") : 0;
+    return p ? strtoul(p + 5, 0, 10) : ~0ul;
+}
+
+/*
+ * The op=gain line of a centred tone prints the audio clock at the grid
+ * sample where the move starts, to the millisecond. Grid sample n sounds
+ * n / 37.5 ms after the tick at 1010 ms that started the tone.
+ */
+TEST(trace_gain_in_a_centred_tone_takes_its_grid_sample)
+{
+    static const audio_note_t one[] = { { 440, 1000 } };
+    uint32_t lead;
+
+    for (lead = 4900; lead <= 5100; lead += 3) {
+        uint32_t join;
+        unsigned long t;
+
+        enter_rest(AUDIO_BACKEND_TRACE);
+        CHECK_EQ(audio_play(one, 1, 0), 0);
+        tick(10);
+        run_us(lead);
+        audio_set_gain(4321);
+        join = gain_n + 1;
+        audio_trace_flush();
+        t = t_ms_of(out, "op=gain");
+        if (t != 1010ul + join * 1000ul / ROBCO_AUDIO_TONE_RATE) {
+            RC_FAIL("lead %u: t_ms %lu, grid sample %u", (unsigned)lead, t, (unsigned)join);
+            return;
+        }
+        /* The join is the first grid sample, on whole microseconds, not before the call. */
+        CHECK((join * 1000000ull + ROBCO_AUDIO_TONE_RATE - 1) / ROBCO_AUDIO_TONE_RATE >= lead);
+        CHECK(((join - 1) * 1000000ull + ROBCO_AUDIO_TONE_RATE - 1) / ROBCO_AUDIO_TONE_RATE < lead);
+    }
+}
+
+/*
+ * A stop between the call and its grid sample, across a millisecond: the
+ * stop's tick reads 1028 ms, the gain line 1029 ms. The stop line takes
+ * the gain line's time, so the log never goes back.
+ */
+TEST(trace_a_tick_line_never_precedes_the_gain_line)
+{
+    static const audio_note_t one[] = { { 440, 1000 } };
+
+    enter_rest(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_play(one, 1, 0), 0);
+    tick(10);
+    run_us(18995);
+    audio_set_gain(4321);
+    fake_step(2);
+    audio_stop();
+    fake_step(2);
+    tick(0);
+    CHECK_EQ(clock_ms, 1028);
+    audio_trace_flush();
+    CHECK(t_ms_in_order(out));
+    CHECK_STR(out, "@RC stage=host ev=audio op=tone hz=440 vol=100 t_ms=1010\n"
+                   "@RC stage=host ev=audio op=gain gain=4321 t_ms=1029\n"
+                   "@RC stage=host ev=audio op=stop hz=0 vol=43 t_ms=1029\n");
+}
+
+/*
+ * A late tick: the note due at 1030 ms runs at 1037 ms, after a call at
+ * 1035 ms. The note's line takes the gain line's time. A call right after
+ * an on-time tick prints no time before that tick's line.
+ */
+TEST(trace_a_late_tick_never_precedes_the_gain_line)
+{
+    static const audio_note_t pair[] = { { 440, 20 }, { 880, 100 } };
+
+    enter_rest(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_play(pair, 2, 0), 0);
+    tick(10);
+    run_us(25000);
+    audio_set_gain(4321);
+    run_us(2000);
+    tick(0);
+    CHECK_EQ(clock_ms, 1037);
+    audio_set_gain(10000);
+    tick(10);
+    audio_trace_flush();
+    CHECK(t_ms_in_order(out));
+    CHECK_STR(out, "@RC stage=host ev=audio op=tone hz=440 vol=100 t_ms=1010\n"
+                   "@RC stage=host ev=audio op=gain gain=4321 t_ms=1035\n"
+                   "@RC stage=host ev=audio op=tone hz=880 vol=43 t_ms=1035 gain=4321\n"
+                   "@RC stage=host ev=audio op=gain gain=10000 t_ms=1037\n");
 }

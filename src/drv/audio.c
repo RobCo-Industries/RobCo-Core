@@ -43,6 +43,8 @@
  * engine. The tick starts it when a sequence first sounds and halts it in
  * the tick where the sequence ends. Each note restarts the square on the
  * same grid, and a rest writes 128. The trace lines stay those of a tone.
+ * A note after a sounding note keeps the gain and its move. A note after
+ * a rest starts at the target, as a play does.
  * Before the ramp ends, a tone stays the PWM's own pulse.
  */
 #include <stddef.h>
@@ -138,14 +140,15 @@ void audio_pwm_out(uint32_t hz, unsigned vol);
 void audio_pwm_pcm_mode(void);
 void audio_pwm_pcm_mode_at(uint32_t dat);
 void audio_pwm_sample(uint32_t dat);
-void audio_trace_out(uint32_t hz, unsigned vol, uint32_t t_ms);
-void audio_trace_pcm(uint32_t rate, uint32_t len, unsigned vol, uint32_t crc, uint32_t t_ms,
+void audio_trace_out(uint32_t hz, uint32_t gain, uint32_t t_ms);
+void audio_trace_pcm(uint32_t rate, uint32_t len, uint32_t gain, uint32_t crc, uint32_t t_ms,
                      unsigned loop);
 void audio_trace_pcm_end(uint32_t n, uint32_t last, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_next(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_pcm_mix(uint32_t len, uint32_t crc, uint32_t t0_ms, uint64_t dur_us);
-void audio_trace_voice(uint32_t rate, uint32_t spans, uint32_t len, unsigned vol, uint32_t crc,
+void audio_trace_voice(uint32_t rate, uint32_t spans, uint32_t len, uint32_t gain, uint32_t crc,
                        uint32_t t_ms);
+void audio_trace_gain(uint32_t gain, uint32_t t0_ms, uint64_t dur_us);
 void audio_trace_flush(void);
 
 /* The rest ramp: duty 0 to 128 on 3t^2 - 2t^3 over this many samples at this rate. */
@@ -162,7 +165,22 @@ static int pcm_irq;                 /* the channel 3 handler is ours */
 static int pins_set;
 static int pin0, pin1;
 static unsigned fn0, fn1;
-static volatile unsigned volume = ROBCO_AUDIO_VOLUME;
+/*
+ * Gain, in units of 1/10000. The main context writes the target. The
+ * play's level is gain_cur: a play starts at the target, and the sample
+ * IRQ moves it toward the target by gain_step per grid sample. The gain
+ * follows the sample grid, so a late sample catches up. gain_n is the
+ * grid sample up to which gain_cur has moved, kept even while the gain
+ * rests. It never goes back. The IRQ context writes gain_cur, gain_step
+ * and gain_n. audio_set_gain() writes gain_cur and gain_n too, with IRQs
+ * masked: a change starts at the grid sample of the call.
+ */
+static volatile uint32_t gain_target = ROBCO_AUDIO_VOLUME * 100u;
+static uint32_t gain_cur = ROBCO_AUDIO_VOLUME * 100u;
+static uint32_t gain_step;
+static uint32_t gain_n;
+/* Slew step of a centred tone, on its fixed grid. */
+#define TONE_GAIN_STEP          ((AUDIO_GAIN_SLEW + ROBCO_AUDIO_TONE_RATE - 1u) / ROBCO_AUDIO_TONE_RATE)
 
 /* Request from the main context, applied by the next tick. */
 static volatile struct {
@@ -233,6 +251,13 @@ static uint32_t clock_ms;
 static uint32_t last_us;
 static uint32_t acc_us;
 static uint32_t sounding;
+/*
+ * The t_ms of the last op=gain of the tone that plays, and 1 in
+ * tone_mark_set while it holds one. The tone's own lines never print a
+ * time before it. Written with IRQs masked or in the tick.
+ */
+static uint32_t tone_mark_ms;
+static int tone_mark_set;
 
 /*
  * IRQ context only: the tick starts and halts, the channel 3 IRQ runs.
@@ -308,28 +333,45 @@ static void pwm_silence(void)
     }
 }
 
-static void tone_note(uint32_t hz, unsigned vol);
+static void tone_note(uint32_t hz, uint32_t was);
+
+/*
+ * Tick context. The time a tone line prints: never before the last
+ * op=gain of the tone. A gain line takes the timer at the call, a tick
+ * line the time of its tick or its event, so the two can cross by up to
+ * a millisecond, or by the lateness of a late tick.
+ */
+static uint32_t tone_t(uint32_t t_ms)
+{
+    if (tone_mark_set && (int32_t)(t_ms - tone_mark_ms) < 0) {
+        return tone_mark_ms;
+    }
+    return t_ms;
+}
 
 static void output(uint32_t t_ms)
 {
     uint32_t hz = seq.hz;
-    unsigned vol = volume;
+    uint32_t g = gain_target;
+    uint32_t was = sounding;
 
     if (!hz && !sounding) {
         return;
     }
     sounding = hz;
+    t_ms = tone_t(t_ms);
     if (rest_mid) {
-        tone_note(hz, vol);
+        tone_note(hz, was);
         if (backend != AUDIO_BACKEND_PWM) {
-            audio_trace_out(hz, vol, t_ms);
+            audio_trace_out(hz, g, t_ms);
         }
         return;
     }
     if (backend == AUDIO_BACKEND_PWM) {
-        audio_pwm_out(hz, vol);
+        /* A pulse takes the gain per note: no sample IRQ to slew it. */
+        audio_pwm_out(hz, audio_gain_pulse(g));
     } else {
-        audio_trace_out(hz, vol, t_ms);
+        audio_trace_out(hz, g, t_ms);
     }
 }
 
@@ -365,26 +407,36 @@ static uint8_t mix_add(uint8_t a, uint8_t b)
 }
 
 /*
- * IRQ context. One sample, with the overlay, at the current volume. A
- * sample play adds two bytes, clamps and scales. A voice adds the overlay
- * to its value on 1/256 of a step and rounds once, after the volume. The
- * voice runs on both backends, so the trace backend in QEMU pays the same
- * cost per sample as PWM.
+ * IRQ context. One sample, with the overlay, at the play's gain. The gain
+ * first moves toward its target by one step per grid sample since its
+ * last move, an output or a change, so a late sample catches up. A sample play adds two bytes,
+ * clamps and scales. A voice adds the overlay to its value on 1/256 of a
+ * step and rounds once, after the gain. A tone takes its height from the
+ * gain at each sample. The ramp plays at full scale. The voice runs on
+ * both backends, so the trace backend in QEMU pays the same cost per
+ * sample as PWM.
  */
 static void pcm_out(uint32_t pos)
 {
+    uint32_t g = gain_target;
     uint8_t s;
 
+    if (pcm_kind != KIND_RAMP) {
+        /* Kept at rest too: a change counts only the samples after it. */
+        audio_gain_follow(&gain_cur, &gain_n, g, gain_step, pcm.last_n);
+    }
     if (pcm_kind == KIND_TONE) {
-        /* The height holds the volume of the note's start. No overlay. */
-        s = audio_square_at(&square, pcm.last_n);
+        /* No overlay. */
+        s = audio_square_out(audio_square_acc(&square, pcm.last_n),
+                             (int32_t)audio_square_amp_g(ROBCO_AUDIO_TONE_PEAK, gain_cur));
     } else if (pcm_kind == KIND_VOICE) {
         int32_t q = audio_voice_at(&voice, pos);
 
-        s = audio_voice_out(q, mix_at(), volume);
+        s = audio_voice_out_g(q, mix_at(), gain_cur);
+    } else if (pcm_kind == KIND_RAMP) {
+        s = mix_add(pcm.data[pos], mix_at());
     } else {
-        s = audio_pcm_scale(mix_add(pcm.data[pos], mix_at()),
-                            pcm_kind == KIND_RAMP ? 100 : volume);
+        s = audio_pcm_scale_g(mix_add(pcm.data[pos], mix_at()), gain_cur);
     }
     pcm_total++;
     if (backend == AUDIO_BACKEND_PWM) {
@@ -532,12 +584,16 @@ static void pcm_isr(unsigned irq, void *arg)
 /* Tick context. Starts pcm_req: sample 0 plays now. */
 static void pcm_begin(void)
 {
-    unsigned vol = volume;
+    uint32_t g = gain_target;
 
     pcm = pcm_req;
     pcm_kind = pcm_req_kind;
     voice = voice_req;
     ramp_i = 0;
+    /* The play starts at the target: nothing fades in. */
+    gain_cur = g;
+    gain_step = audio_gain_step(pcm.rate);
+    gain_n = pcm.last_n;
     if (backend == AUDIO_BACKEND_PWM) {
         if (pcm_kind == KIND_RAMP) {
             /* The ramp starts from its first sample, not from the midpoint. */
@@ -546,9 +602,9 @@ static void pcm_begin(void)
             audio_pwm_pcm_mode();
         }
     } else if (pcm_kind == KIND_VOICE) {
-        audio_trace_voice(pcm.rate, (uint32_t)voice.count, pcm.len, vol, pcm_req_crc, clock_ms);
+        audio_trace_voice(pcm.rate, (uint32_t)voice.count, pcm.len, g, pcm_req_crc, clock_ms);
     } else {
-        audio_trace_pcm(pcm.rate, pcm.len, pcm_kind == KIND_RAMP ? 100 : vol, pcm_req_crc,
+        audio_trace_pcm(pcm.rate, pcm.len, pcm_kind == KIND_RAMP ? AUDIO_GAIN_FULL : g, pcm_req_crc,
                         clock_ms, (pcm.flags & AUDIO_LOOP) != 0);
     }
     pcm_t0_ms = clock_ms;
@@ -618,6 +674,9 @@ static void tone_begin(void)
 {
     pcm = tone_pcm;
     pcm_kind = KIND_TONE;
+    gain_cur = gain_target;
+    gain_step = TONE_GAIN_STEP;
+    gain_n = pcm.last_n;
     pcm_t0_ms = clock_ms;
     pcm_t0_us = timer_now_us();
     pcm.origin_us = (uint32_t)pcm_t0_us;
@@ -632,15 +691,20 @@ static void tone_begin(void)
 
 /*
  * Tick context, rest at the midpoint only. A new note, or a rest, of the
- * sequence: the next sample starts it at an edge going up, at the volume
- * of now. The first sounding note starts the play.
+ * sequence: the next sample starts it at an edge going up. The sample IRQ
+ * takes the height from the gain. The first sounding note starts the play.
+ * A note after a sounding note, `was` not 0, keeps the gain and its move.
+ * A note after a rest starts at the target, as a play does: the rest
+ * wrote 128, so the height has nothing to jump from.
  */
-static void tone_note(uint32_t hz, unsigned vol)
+static void tone_note(uint32_t hz, uint32_t was)
 {
     audio_square_start(&square, hz, ROBCO_AUDIO_TONE_RATE,
-                       audio_square_amp(ROBCO_AUDIO_TONE_PEAK, vol));
+                       audio_square_amp_g(ROBCO_AUDIO_TONE_PEAK, gain_target));
     if (hz && !(pcm.active && pcm_kind == KIND_TONE)) {
         tone_begin();
+    } else if (hz && !was) {
+        gain_cur = gain_target;
     }
 }
 
@@ -668,10 +732,11 @@ static void audio_tick(void)
             pcm_halt();
         }
         if (cut && backend != AUDIO_BACKEND_PWM) {
-            audio_trace_out(0, volume, clock_ms);
+            audio_trace_out(0, gain_target, tone_t(clock_ms));
             /* Traced already: output() prints only a new tone. PWM keeps its writes. */
             sounding = 0;
         }
+        tone_mark_set = 0;
         if (req.stop) {
             audio_seq_stop(&seq);
         } else if (req.pcm) {
@@ -699,6 +764,9 @@ static void audio_tick(void)
     if (pcm.active && pcm_kind == KIND_TONE && !seq.active) {
         /* The sequence has ended: the pin goes back to 128 from the last sample. */
         pcm_halt();
+    }
+    if (!seq.active && !pcm.active) {
+        tone_mark_set = 0;
     }
     playing = seq.active || pcm.active;
 }
@@ -980,9 +1048,70 @@ int audio_busy(void)
     return b;
 }
 
+/*
+ * A change of target while a play sounds prints one op=gain line. With
+ * nothing playing, in a rest of a sequence, or with a start that waits
+ * for its tick, the next start line carries the gain instead. In a sample
+ * play, a voice or a centred tone the time is that of op=pcm_mix: the
+ * play's next grid sample that has not passed, where the sample IRQ first
+ * slews. A centred tone reads that time on the audio clock, the clock of
+ * its own lines, so the line and the tick lines share one base. A pulse
+ * tone and the rest ramp take the audio clock of the last tick.
+ */
+void audio_set_gain(uint32_t gain)
+{
+    uint32_t s;
+
+    if (gain > AUDIO_GAIN_FULL) {
+        gain = AUDIO_GAIN_FULL;
+    }
+    s = irq_save();
+    if (gain != gain_target) {
+        uint64_t now = timer_now_us();
+
+        if (backend >= 0 && pcm.active && pcm_kind != KIND_RAMP) {
+            /*
+             * The change starts after the grid sample due now: the one
+             * before the join sample, where the op=gain line puts it.
+             * A change under way first takes the steps it is owed.
+             */
+            audio_gain_follow(&gain_cur, &gain_n, gain_target, gain_step,
+                              audio_pcm_join(&pcm, (uint32_t)now) - 1u);
+        }
+        gain_target = gain;
+        if (backend >= 0 && backend != AUDIO_BACKEND_PWM && playing && !req.valid) {
+            if (pcm.active && (pcm_kind == KIND_SAMPLE || pcm_kind == KIND_VOICE)) {
+                audio_trace_gain(gain, pcm_t0_ms,
+                                 (now - pcm_t0_us) +
+                                 (uint32_t)(audio_pcm_join_us(&pcm, (uint32_t)now) -
+                                            (uint32_t)now));
+            } else if (seq.active && !sounding) {
+                /* A rest: the next note's line carries the gain. */
+            } else if (pcm.active && pcm_kind == KIND_TONE) {
+                /*
+                 * The audio clock at the join sample, as the next tick
+                 * would count it from the last: clock_ms and acc_us
+                 * hold the time of last_us. The join lies after the
+                 * last tick, so the time never goes back.
+                 */
+                uint32_t join = audio_pcm_join_us(&pcm, (uint32_t)now);
+
+                tone_mark_ms = clock_ms + (acc_us + (join - last_us)) / 1000u;
+                tone_mark_set = 1;
+                audio_trace_gain(gain, tone_mark_ms, 0);
+            } else {
+                tone_mark_ms = clock_ms;
+                tone_mark_set = 1;
+                audio_trace_gain(gain, clock_ms, 0);
+            }
+        }
+    }
+    irq_restore(s);
+}
+
 void audio_set_volume(unsigned percent)
 {
-    volume = percent > 100 ? 100 : percent;
+    audio_set_gain((percent > 100 ? 100 : percent) * 100u);
 }
 
 int audio_play(const audio_note_t *notes, size_t count, unsigned flags)

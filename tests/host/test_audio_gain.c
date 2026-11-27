@@ -1,0 +1,600 @@
+/*
+ * The gain of the audio driver: the rules of src/lib/audio_gain.c against
+ * the volume rules, the slew, and in src/drv/audio.c the smooth change in
+ * a play and the trace lines. The test builds the driver and the trace
+ * backend in, as test_audio_tone.c does.
+ */
+#include <stdint.h>
+
+#define ROBCO_STAGE_NAME "host"
+
+/* Before the C library headers: macOS turns memcpy and friends into macros. */
+#include "../../src/drv/audio.c"
+#include "../../src/drv/audio_trace.c"
+
+#include "audio_fake.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static uint8_t buf[800];
+
+static uint32_t dist(uint32_t a, uint32_t b)
+{
+    return a > b ? a - b : b - a;
+}
+
+TEST(sample_rule_equals_the_volume_rule)
+{
+    unsigned v;
+    unsigned s;
+
+    for (v = 0; v <= 100; v++) {
+        for (s = 0; s < 256; s++) {
+            if (audio_pcm_scale_g((uint8_t)s, v * 100) != audio_pcm_scale((uint8_t)s, v)) {
+                RC_FAIL("sample %u at volume %u", s, v);
+                return;
+            }
+        }
+    }
+}
+
+TEST(voice_rule_equals_the_volume_rule)
+{
+    static const int32_t qs[] = { -32512, -32511, -12800, -129, -128, -127, -1, 0, 1, 127,
+                                  128, 129, 12800, 32511, 32512, 65280 };
+    unsigned v;
+    unsigned m;
+    size_t i;
+
+    for (v = 0; v <= 100; v++) {
+        for (m = 0; m < 256; m++) {
+            for (i = 0; i < sizeof(qs) / sizeof(qs[0]); i++) {
+                if (audio_voice_out_g(qs[i], (uint8_t)m, v * 100) !=
+                    audio_voice_out(qs[i], (uint8_t)m, v)) {
+                    RC_FAIL("q %d mix %u at volume %u", (int)qs[i], m, v);
+                    return;
+                }
+            }
+        }
+    }
+    /* Every fine level of one step's range, alone. */
+    for (v = 0; v <= 100; v++) {
+        int32_t q;
+
+        for (q = -32768; q <= 32768; q++) {
+            if (audio_voice_out_g(q, 128, v * 100) != audio_voice_out(q, 128, v)) {
+                RC_FAIL("q %d at volume %u", (int)q, v);
+                return;
+            }
+        }
+    }
+}
+
+TEST(square_and_pulse_rules_equal_the_volume_rule)
+{
+    unsigned v;
+    unsigned peak;
+
+    for (v = 0; v <= 100; v++) {
+        for (peak = 0; peak <= 127; peak++) {
+            CHECK_EQ(audio_square_amp_g(peak, v * 100), audio_square_amp(peak, v));
+        }
+        CHECK_EQ(audio_gain_pulse(v * 100), v);
+    }
+}
+
+TEST(full_gain_returns_the_input)
+{
+    unsigned s;
+    int32_t q;
+
+    for (s = 0; s < 256; s++) {
+        CHECK_EQ(audio_pcm_scale_g((uint8_t)s, AUDIO_GAIN_FULL), s);
+        CHECK_EQ(audio_pcm_scale_g((uint8_t)s, 20000), s);
+    }
+    /* A voice on whole steps comes back as its byte. */
+    for (q = -128 * 256; q <= 127 * 256; q += 256) {
+        CHECK_EQ(audio_voice_out_g(q, 128, AUDIO_GAIN_FULL), 128 + q / 256);
+    }
+    CHECK_EQ(audio_square_amp_g(127, AUDIO_GAIN_FULL), 127);
+    CHECK_EQ(audio_gain_pulse(AUDIO_GAIN_FULL), 100);
+}
+
+TEST(no_output_leaves_the_byte_range)
+{
+    static const int32_t qs[] = { -98000, -65280, -32768, 0, 32767, 65280, 98000 };
+    uint32_t g;
+    unsigned s;
+    unsigned m;
+    size_t i;
+
+    for (g = 0; g <= AUDIO_GAIN_FULL; g += 7) {
+        for (s = 0; s < 256; s++) {
+            int d = (int)audio_pcm_scale_g((uint8_t)s, g) - 128;
+            int in = (int)s - 128;
+
+            /* Never further from the midpoint than the input, and on its side. */
+            if ((in >= 0 && (d < 0 || d > in)) || (in < 0 && (d > 0 || d < in))) {
+                RC_FAIL("sample %u at gain %u gives %d", s, (unsigned)g, d + 128);
+                return;
+            }
+        }
+        for (m = 0; m < 256; m += 17) {
+            for (i = 0; i < sizeof(qs) / sizeof(qs[0]); i++) {
+                /* The byte type holds the result only when the rule clamps it. */
+                int32_t x = (qs[i] + ((int32_t)m - 128) * 256) * (int32_t)g;
+                int32_t r = x >= 0 ? (x + 1280000) / 2560000 : -((1280000 - x) / 2560000);
+                int32_t want = r + 128 < 0 ? 0 : r + 128 > 255 ? 255 : r + 128;
+
+                if (audio_voice_out_g(qs[i], (uint8_t)m, g) != want) {
+                    RC_FAIL("voice q %d mix %u gain %u", (int)qs[i], m, (unsigned)g);
+                    return;
+                }
+            }
+        }
+        CHECK(audio_square_amp_g(127, g) <= 127);
+    }
+}
+
+/* From each start, toward each target: no step above `step`, no overshoot, in time. */
+static void check_slew(uint32_t rate)
+{
+    static const uint32_t ends[] = { 0, 1, 99, 5000, 9999, 10000 };
+    uint32_t step = audio_gain_step(rate);
+    size_t a;
+    size_t b;
+
+    CHECK_EQ(step, (500000u + rate - 1) / rate);
+    for (a = 0; a < sizeof(ends) / sizeof(ends[0]); a++) {
+        for (b = 0; b < sizeof(ends) / sizeof(ends[0]); b++) {
+            uint32_t cur = ends[a];
+            uint32_t to = ends[b];
+            uint32_t n = 0;
+
+            while (cur != to) {
+                uint32_t next = audio_gain_slew(cur, to, step);
+
+                if (dist(next, cur) > step || dist(next, to) >= dist(cur, to) ||
+                    (cur < to ? next > to : next < to)) {
+                    RC_FAIL("rate %u: %u to %u steps %u to %u", (unsigned)rate,
+                            (unsigned)ends[a], (unsigned)to, (unsigned)cur, (unsigned)next);
+                    return;
+                }
+                cur = next;
+                n++;
+            }
+            if (n > rate / 50) {
+                RC_FAIL("rate %u: %u to %u took %u samples", (unsigned)rate,
+                        (unsigned)ends[a], (unsigned)to, (unsigned)n);
+            }
+        }
+    }
+}
+
+TEST(slew_at_8000_and_37500)
+{
+    CHECK_EQ(audio_gain_step(8000), 63);
+    CHECK_EQ(audio_gain_step(37500), 14);
+    check_slew(8000);
+    check_slew(37500);
+}
+
+/* The driver: a change in a sample play moves the bytes by the slew, no jump. */
+TEST(a_change_in_a_sample_play_slews)
+{
+    size_t a;
+    size_t i;
+
+    k_memset(buf, 255, sizeof(buf));
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), 8000, 0), 0);
+    tick(10);
+    run_us(1000);
+    a = pwm_count;
+    CHECK(a > 0);
+    CHECK_EQ(pwm_samples[a - 1], 255);
+    audio_set_volume(20);
+    run_us(30000);
+    /* One gain step per sample at 8000 Hz: 63 units, under one byte step. */
+    for (i = a; i < pwm_count; i++) {
+        uint32_t g = i - a + 1 >= 127 ? 2000 : 10000 - 63 * (uint32_t)(i - a + 1);
+
+        if (pwm_samples[i] != audio_pcm_scale_g(255, g)) {
+            RC_FAIL("sample %u: %u, want %u", (unsigned)i, (unsigned)pwm_samples[i],
+                    (unsigned)audio_pcm_scale_g(255, g));
+            return;
+        }
+        CHECK(dist(pwm_samples[i], pwm_samples[i - 1]) <= 1);
+    }
+    /* At 8000 Hz the swing of 8000 units ends within 160 samples, 20 ms. */
+    CHECK_EQ(pwm_samples[a + 159], audio_pcm_scale(255, 20));
+}
+
+/* A play starts at the target: nothing fades in. */
+TEST(a_play_starts_at_the_target)
+{
+    k_memset(buf, 255, sizeof(buf));
+    fresh(AUDIO_BACKEND_PWM);
+    audio_set_volume(20);
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), 8000, 0), 0);
+    tick(10);
+    run_us(500);
+    CHECK(pwm_count > 0);
+    CHECK_EQ(pwm_samples[0], audio_pcm_scale(255, 20));
+}
+
+TEST(trace_one_gain_line_per_change_while_playing)
+{
+    char want[512];
+
+    k_memset(buf, 200, sizeof(buf));
+    fresh(AUDIO_BACKEND_TRACE);
+    /* Nothing plays: no line. */
+    audio_set_gain(5000);
+    audio_set_gain(10000);
+    audio_trace_flush();
+    CHECK_STR(out, "");
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), 8000, 0), 0);
+    /* The start waits for its tick: its start line carries the gain. */
+    audio_set_volume(90);
+    tick(10);
+    audio_set_volume(50);
+    audio_set_volume(50);
+    audio_set_gain(1234);
+    audio_set_gain(99999);
+    run_us(100000 + 1000);
+    tick(10);
+    audio_set_gain(4000);
+    audio_trace_flush();
+    snprintf(want, sizeof(want),
+             "@RC stage=host ev=audio op=pcm rate=8000 len=800 vol=90 crc=%08x t_ms=1010\n"
+             "@RC stage=host ev=audio op=gain gain=5000 t_ms=1010\n"
+             "@RC stage=host ev=audio op=gain gain=1234 t_ms=1010\n"
+             "@RC stage=host ev=audio op=gain gain=10000 t_ms=1010\n"
+             "@RC stage=host ev=audio op=pcm_end n=800 last=799 t_ms=1110\n",
+             (unsigned)crc32(buf, sizeof(buf)));
+    CHECK_STR(out, want);
+}
+
+TEST(trace_start_lines_end_with_gain_off_a_whole_percent)
+{
+    static const audio_note_t one[] = { { 440, 20 } };
+    char want[512];
+
+    k_memset(buf, 200, sizeof(buf));
+    fresh(AUDIO_BACKEND_TRACE);
+    audio_set_gain(1234);
+    CHECK_EQ(audio_play_pcm(buf, 80, 8000, AUDIO_LOOP), 0);
+    tick(10);
+    audio_stop();
+    tick(10);
+    audio_set_gain(1200);
+    CHECK_EQ(audio_play(one, 1, 0), 0);
+    tick(10);
+    tick(30);
+    audio_set_gain(1);
+    CHECK_EQ(audio_play(one, 1, 0), 0);
+    tick(10);
+    tick(30);
+    audio_trace_flush();
+    snprintf(want, sizeof(want),
+             "@RC stage=host ev=audio op=pcm rate=8000 len=80 vol=12 crc=%08x t_ms=1010 loop=1 gain=1234\n"
+             "@RC stage=host ev=audio op=stop hz=0 vol=12 t_ms=1020\n"
+             "@RC stage=host ev=audio op=tone hz=440 vol=12 t_ms=1030\n"
+             "@RC stage=host ev=audio op=stop hz=0 vol=12 t_ms=1050\n"
+             "@RC stage=host ev=audio op=tone hz=440 vol=0 t_ms=1070 gain=1\n"
+             "@RC stage=host ev=audio op=stop hz=0 vol=0 t_ms=1090\n",
+             (unsigned)crc32(buf, 80));
+    CHECK_STR(out, want);
+}
+
+/* Every t_ms of the trace, in line order, never below the one before. */
+static int t_ms_in_order(const char *s)
+{
+    unsigned long prev = 0;
+    const char *p = s;
+
+    while ((p = strstr(p, "t_ms=")) != 0) {
+        unsigned long t = strtoul(p + 5, 0, 10);
+
+        if (t < prev) {
+            RC_FAIL("t_ms %lu after %lu in:\n%s", t, prev, s);
+            return 0;
+        }
+        prev = t;
+        p += 5;
+    }
+    return 1;
+}
+
+/* The t_ms of the first line with `op`, or ~0. */
+static unsigned long t_ms_of(const char *s, const char *op)
+{
+    const char *p = strstr(s, op);
+
+    p = p ? strstr(p, "t_ms=") : 0;
+    return p ? strtoul(p + 5, 0, 10) : ~0ul;
+}
+
+/*
+ * An overlay and a gain change between two ticks, in both orders. The gain
+ * line takes the play's grid, as op=pcm_mix does: it never prints a time
+ * before an overlay line printed before it, and it lands on the grid
+ * sample where the slew starts.
+ */
+static void check_gain_after_and_before_mix(uint32_t rate, uint32_t lead_us)
+{
+    static uint8_t play[4096];
+    static uint8_t over[40];
+    int order;
+
+    k_memset(play, 160, sizeof(play));
+    k_memset(over, 140, sizeof(over));
+    for (order = 0; order < 2; order++) {
+        fresh(AUDIO_BACKEND_TRACE);
+        CHECK_EQ(audio_play_pcm(play, sizeof(play), rate, 0), 0);
+        tick(10);
+        run_us(lead_us);
+        if (order == 0) {
+            CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
+            audio_set_gain(4321);
+        } else {
+            audio_set_gain(4321);
+            CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
+        }
+        run_us(1000);
+        audio_set_gain(7777);
+        tick(10);
+        audio_trace_flush();
+        if (!t_ms_in_order(out)) {
+            RC_FAIL("rate %u lead %u order %d", (unsigned)rate, (unsigned)lead_us, order);
+            return;
+        }
+        CHECK(strstr(out, "op=gain gain=4321") != 0);
+        CHECK(strstr(out, "op=gain gain=7777") != 0);
+        /* Same call time, same grid sample: the same t_ms. */
+        CHECK_EQ(t_ms_of(out, "op=gain gain=4321"), t_ms_of(out, "op=pcm_mix"));
+        CHECK_EQ(t_ms_of(out, "op=gain gain=4321"), 1010 + (lead_us + 1000000u / rate) / 1000);
+    }
+}
+
+TEST(trace_gain_and_overlay_keep_their_order)
+{
+    check_gain_after_and_before_mix(8000, 5000);
+    check_gain_after_and_before_mix(8000, 5010);
+    check_gain_after_and_before_mix(8000, 4990);
+    check_gain_after_and_before_mix(37500, 5000);
+    check_gain_after_and_before_mix(37500, 5013);
+    check_gain_after_and_before_mix(37500, 4990);
+}
+
+/* A tone has no sample grid of its own in the trace: the gain takes the audio clock. */
+TEST(trace_gain_in_a_tone_takes_the_audio_clock)
+{
+    fresh(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_tone(440, 100), 0);
+    tick(10);
+    run_us(5000);
+    audio_set_gain(4321);
+    tick(10);
+    run_us(5000);
+    audio_set_gain(1234);
+    audio_trace_flush();
+    CHECK(t_ms_in_order(out));
+    CHECK_EQ(t_ms_of(out, "op=gain gain=4321"), 1010);
+    /* The second tick ran 15 ms after the first, and the call 5 ms after it. */
+    CHECK_EQ(t_ms_of(out, "op=gain gain=1234"), 1025);
+}
+
+/* The slew over n grid samples: n steps, never past the target, no overflow. */
+TEST(slew_n_moves_n_steps)
+{
+    /* n 0 leaves the gain. */
+    CHECK_EQ(audio_gain_slew_n(5000, 0, 63, 0), 5000);
+    CHECK_EQ(audio_gain_slew_n(5000, 10000, 63, 0), 5000);
+    /* n 1 is the slew of one step, up and down. */
+    CHECK_EQ(audio_gain_slew_n(5000, 10000, 63, 1), audio_gain_slew(5000, 10000, 63));
+    CHECK_EQ(audio_gain_slew_n(5000, 0, 63, 1), audio_gain_slew(5000, 0, 63));
+    CHECK_EQ(audio_gain_slew_n(9990, 10000, 63, 1), 10000);
+    /* n 2. */
+    CHECK_EQ(audio_gain_slew_n(5000, 10000, 63, 2), 5126);
+    CHECK_EQ(audio_gain_slew_n(5000, 0, 63, 2), 4874);
+    /* A count that lands on the target exactly, and one past it. */
+    CHECK_EQ(audio_gain_slew_n(0, 6300, 63, 99), 6237);
+    CHECK_EQ(audio_gain_slew_n(0, 6300, 63, 100), 6300);
+    CHECK_EQ(audio_gain_slew_n(0, 6300, 63, 101), 6300);
+    CHECK_EQ(audio_gain_slew_n(6300, 0, 63, 100), 0);
+    CHECK_EQ(audio_gain_slew_n(6300, 0, 63, 101), 0);
+    /* The largest count, up and down. */
+    CHECK_EQ(audio_gain_slew_n(0, 10000, 63, UINT32_MAX), 10000);
+    CHECK_EQ(audio_gain_slew_n(10000, 0, 63, UINT32_MAX), 0);
+    CHECK_EQ(audio_gain_slew_n(1, 0, AUDIO_GAIN_FULL, UINT32_MAX), 0);
+    /* A step of full gain swings at once. */
+    CHECK_EQ(audio_gain_slew_n(0, 10000, AUDIO_GAIN_FULL, 1), 10000);
+    CHECK_EQ(audio_gain_slew_n(10000, 0, AUDIO_GAIN_FULL, 1), 0);
+    CHECK_EQ(audio_gain_slew_n(10000, 0, AUDIO_GAIN_FULL, UINT32_MAX), 0);
+    CHECK_EQ(audio_gain_slew_n(5000, 5000, AUDIO_GAIN_FULL, UINT32_MAX), 5000);
+    /* Every count from 0 to 200 matches n single steps. */
+    {
+        uint32_t n;
+        uint32_t g = 10000;
+
+        for (n = 0; n <= 200; n++) {
+            CHECK_EQ(audio_gain_slew_n(10000, 0, 63, n), g);
+            g = audio_gain_slew(g, 0, 63);
+        }
+    }
+}
+
+/*
+ * A full swing from 10000 to 0 on grid samples that jump by `jump`
+ * reaches 0 by the first output at or after 20 ms of grid time. With no
+ * skipped sample it equals the slew of one step per sample.
+ */
+static void check_swing_on_the_grid(uint32_t rate, uint32_t jump)
+{
+    uint32_t step = audio_gain_step(rate);
+    uint32_t due = rate / 50;
+    uint32_t pos = 0;
+    uint32_t g = 10000;
+    uint32_t one = 10000;
+
+    while (pos < due) {
+        pos += jump;
+        g = audio_gain_slew_n(g, 0, step, jump);
+    }
+    if (g != 0) {
+        RC_FAIL("rate %u jump %u: gain %u at grid sample %u", (unsigned)rate, (unsigned)jump,
+                (unsigned)g, (unsigned)pos);
+    }
+    g = 10000;
+    for (pos = 0; pos <= due; pos++) {
+        g = audio_gain_slew_n(g, 0, step, 1);
+        one = audio_gain_slew(one, 0, step);
+        if (g != one) {
+            RC_FAIL("rate %u sample %u: %u, want %u", (unsigned)rate, (unsigned)pos,
+                    (unsigned)g, (unsigned)one);
+            return;
+        }
+    }
+}
+
+TEST(a_swing_with_skipped_samples_ends_in_20_ms)
+{
+    check_swing_on_the_grid(8000, 80);
+    check_swing_on_the_grid(37500, 375);
+}
+
+/* The driver: one late IRQ of 10 ms in a change, and the level is there after 20 ms. */
+TEST(a_late_irq_catches_up_the_gain)
+{
+    size_t a;
+
+    k_memset(buf, 255, sizeof(buf));
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), 8000, 0), 0);
+    tick(10);
+    /* A long steady stretch first: it must not count toward the change. */
+    run_us(30000);
+    a = pwm_count;
+    audio_set_volume(20);
+    run_us(1000);
+    /* No jump at the change: the steady stretch did not count. */
+    CHECK(pwm_samples[pwm_count - 1] >= audio_pcm_scale_g(255, 10000 - 63 * 9));
+    /* About 80 grid samples pass with no IRQ. */
+    fake_step(10000);
+    run_us(9000 + 125);
+    CHECK(pwm_count > a);
+    CHECK(pwm_count - a < 160);
+    CHECK_EQ(pwm_samples[pwm_count - 1], audio_pcm_scale(255, 20));
+}
+
+/* Runs the clock until the play outputs its next sample. */
+static void run_to_next_output(void)
+{
+    uint32_t n = pcm.n;
+    unsigned i;
+
+    for (i = 0; i < 100000 && pcm.n == n; i++) {
+        run_us(1);
+    }
+}
+
+/*
+ * The driver: a late IRQ, then a change from full to 0. The grid samples
+ * that passed before the change do not count: the first output after it
+ * is within one step of full gain, and the change still takes 20 ms.
+ */
+static void check_change_after_a_late_irq(uint32_t rate)
+{
+    uint32_t step = audio_gain_step(rate);
+    /* The step rounds up, so 10 ms is near half, not on it. */
+    uint32_t half = rate / 100;
+    uint32_t full = rate / 50;
+    uint32_t at;
+    uint32_t k;
+
+    k_memset(buf, 255, sizeof(buf));
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), rate, AUDIO_LOOP), 0);
+    tick(10);
+    run_us(30000);
+    CHECK_EQ(gain_cur, 10000);
+    /* 10 ms with no sample IRQ, as when the caller masks IRQs. */
+    fake_step(10000);
+    audio_set_gain(0);
+    at = gain_n;
+    run_to_next_output();
+    if (gain_cur < 10000 - step) {
+        RC_FAIL("rate %u: first output at gain %u", (unsigned)rate, (unsigned)gain_cur);
+        return;
+    }
+    for (;;) {
+        k = pcm.last_n - at;
+        if (gain_cur == 0 || k > full) {
+            break;
+        }
+        if (k >= half && k < half + 2 &&
+            (dist(gain_cur, 5000) > 500 || dist(gain_cur, 10000 - step * k) > step)) {
+            RC_FAIL("rate %u: gain %u at grid sample %u of the change", (unsigned)rate,
+                    (unsigned)gain_cur, (unsigned)k);
+            return;
+        }
+        run_to_next_output();
+    }
+    /* At 0 by 20 ms, and not much before: the step rounds up. */
+    if (gain_cur != 0 || k > full || k < full * 19 / 20) {
+        RC_FAIL("rate %u: gain %u at grid sample %u", (unsigned)rate, (unsigned)gain_cur,
+                (unsigned)k);
+    }
+}
+
+TEST(a_change_after_a_late_irq_counts_from_the_change)
+{
+    check_change_after_a_late_irq(8000);
+    check_change_after_a_late_irq(37500);
+}
+
+/*
+ * A change while an earlier one is under way, with a late IRQ between:
+ * the gain only moves toward the newest target, and never by more than
+ * the steps since the last change or the last output.
+ */
+TEST(a_change_over_a_change_with_a_late_irq_moves_to_the_newest)
+{
+    uint32_t step = audio_gain_step(8000);
+    uint32_t prev;
+    uint32_t prev_n;
+    unsigned i;
+
+    k_memset(buf, 255, sizeof(buf));
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), 8000, AUDIO_LOOP), 0);
+    tick(10);
+    run_us(30000);
+    audio_set_gain(0);
+    run_us(5000);
+    CHECK(gain_cur > 0);
+    CHECK(gain_cur < 10000);
+    fake_step(7000);
+    prev = gain_cur;
+    audio_set_gain(10000);
+    /* The first change took the steps it was owed up to the second. */
+    CHECK(gain_cur <= prev);
+    prev = gain_cur;
+    prev_n = gain_n;
+    for (i = 0; i < 400; i++) {
+        run_to_next_output();
+        if (gain_cur < prev ||
+            gain_cur - prev > step * (uint32_t)(pcm.last_n - prev_n)) {
+            RC_FAIL("output %u: gain %u after %u, %u grid samples", i, (unsigned)gain_cur,
+                    (unsigned)prev, (unsigned)(pcm.last_n - prev_n));
+            return;
+        }
+        prev = gain_cur;
+        prev_n = pcm.last_n;
+    }
+    CHECK_EQ(gain_cur, 10000);
+}

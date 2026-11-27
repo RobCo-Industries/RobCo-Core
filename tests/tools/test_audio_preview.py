@@ -1307,3 +1307,54 @@ class Gain(Case):
         a, _ = self.render([pcm(0, d, rate=FR), gain(4, 0)])
         b, _ = self.render([pcm(0, d, rate=FR), gain(4, 0) + " kind=1"])
         self.assertEqual(list(a), list(b))
+
+
+class GainAcrossNotes(Case):
+    """The gain across the notes of one centred play. Grid 37500 Hz, step
+    14, one sample per frame. A change at 52 ms names frame(52) = 1950:
+    frame f holds gain 10000 - 14 * (f - 1949) until it reaches 5000 at
+    frame 1950 + 357 = 2307. 1000 Hz has half 4800 units, 2000 Hz 2400."""
+
+    def test_next_note_keeps_the_move(self):
+        duty, w = self.render(RAMPED + [tone(50, 1000), gain(52, 5000), tone(60, 2000, vol=50),
+                                        stop(100)])
+        self.assertEqual(w, [])
+        x = as_bytes(duty)
+        # Frame 2249, sample 374 of the first note: units 95744 to 96000,
+        # before the 20th edge, low. Gain 10000 - 14 * 300 = 5800:
+        # (127 * 5800 + 5000) / 10000 = 74.
+        self.assertEqual(x[2249], 128 - 74)
+        # Frame 2250 starts the second note at an edge going up. The gain
+        # goes on: 10000 - 14 * 301 = 5786, (127 * 5786 + 5000) / 10000 = 73.
+        self.assertEqual(x[2250], 128 + 73)
+        # Frame 2260, sample 10 of the note: units 2560 to 2816, after the
+        # edge at 2400, low. Gain 10000 - 14 * 311 = 5646: 72.
+        self.assertEqual(x[2260], 128 - 72)
+        # Frame 2320, sample 70: units 17920 to 18176, after 7 edges, low.
+        # The gain reached 5000 at frame 2307: (127 * 5000 + 5000) / 10000 = 64.
+        self.assertEqual(x[2320], 128 - 64)
+        self.assertEqual((max(x[2307:2625]), min(x[2307:2625])), (128 + 64, 128 - 64))
+        # No frame of the move stands above the gain it holds.
+        for f in range(1950, 2307):
+            g = 10000 - 14 * (f - 1949)
+            self.assertLessEqual(abs(x[f] - 128), (127 * g + 5000) // 10000, f)
+
+    def test_note_after_a_rest_starts_at_its_gain(self):
+        duty, w = self.render(RAMPED + [tone(50, 1000), gain(52, 5000), stop(60),
+                                        tone(70, 2000, vol=50), stop(100)])
+        self.assertEqual(w, [])
+        x = as_bytes(duty)
+        # The rest holds 128.
+        self.assertEqual(set(x[frame(60):frame(70)]), {128})
+        # Frame 2625 starts the note at its own gain 5000, high: 64.
+        self.assertEqual(x[frame(70)], 128 + 64)
+        # Frame 2635, sample 10: low, 64.
+        self.assertEqual(x[frame(70) + 10], 128 - 64)
+
+    def test_a_line_off_the_target_starts_at_its_gain(self):
+        # An older driver printed no op=gain: the note takes its own vol.
+        duty, w = self.render(RAMPED + [tone(50, 1000), tone(60, 2000, vol=50), stop(100)])
+        self.assertEqual(w, [])
+        x = as_bytes(duty)
+        self.assertEqual(x[2249], 128 - 127)
+        self.assertEqual(x[2250], 128 + 64)

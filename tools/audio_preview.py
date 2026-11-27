@@ -123,9 +123,15 @@ Rules it applies, from the library's driver:
     a note starts at an edge going up; a sample that holds an edge takes
       the mean of the two levels by the edge's place in it
   With a gain, amp is (peak * gain + 5000) / 10000, taken every sample,
-  so op=gain moves the height of a note that plays.
-  Each op=tone is a new note, so a volume change without op=gain takes
-  effect at the next note. The gap between op=stop and the next op=tone holds 128. The
+  so op=gain moves the height of a note that plays. The move starts at
+  the first frame at or after the t_ms of op=gain.
+  An op=tone right after another centred op=tone, with no op=stop
+  between them, is the next note of the same play. It keeps the gain of
+  the note before and its move, as the driver does, when its gain= or
+  vol= equals the target of that move. Else it starts at its own gain,
+  for a log of a driver that printed no op=gain. A note after op=stop,
+  a rest of a sequence included, starts at its own gain. So does the
+  first note. The gap between op=stop and the next op=tone holds 128. The
   library restarts a note after a late IRQ skips over 64 samples. The
   tool has no late IRQ, so that rule never applies here. The trace does
   not print the peak or the grid: the tool assumes the kernel's peak,
@@ -531,9 +537,12 @@ class VoicePlay(Play):
 
 
 class Tone:
-    """A tone. Centred once the rest ramp has reached its end, else the pulse."""
+    """A tone. Centred once the rest ramp has reached its end, else the pulse.
+    A centred note that follows a centred note with no op=stop between them
+    takes that note's Slew, `carry`: the gain and its move go on."""
 
-    def __init__(self, t0, hz, vol, centred=False, peak=square.TONE_PEAK, gain=None):
+    def __init__(self, t0, hz, vol, centred=False, peak=square.TONE_PEAK, gain=None,
+                 carry=None):
         self.t0 = t0
         self.centred = centred
         self.hz = hz
@@ -544,15 +553,22 @@ class Tone:
         # width is today's.
         pvol = (gain + 50) // 100
         self.amp = square.amp_gain(peak, gain)
-        self.slew = Slew(gain, square.TONE_RATE)
+        # The Slew of a centred tone counts output frames from frame 0, so
+        # the notes of one play share it.
+        self.slew = carry if carry is not None else Slew(gain, square.TONE_RATE)
         self.rng = max(2, (PWM_CLOCK + hz // 2) // hz)
         self.duty = ((self.rng // 2) * pvol + 50) // 100 / self.rng
 
     def set_gain(self, t, gain):
-        # Sample 0 of the grid is the first frame at or after t0. A pulse
-        # keeps the width of its note.
+        # The move starts at the first frame at or after t. A pulse keeps
+        # the width of its note.
         if self.centred:
-            self.slew.changes.append((frame_of(t) - frame_of(self.t0), gain))
+            self.slew.changes.append((frame_of(t), gain))
+
+    def target(self):
+        """The target of the gain after the changes so far."""
+        ch = self.slew.changes
+        return ch[-1][1] if ch else self.slew.target
 
 
 class Renderer:
@@ -652,16 +668,15 @@ class Renderer:
         first = frame_of(tone.t0)
         q = square.Square(tone.hz, tone.amp, OUT_RATE)
         sl = tone.slew
-        g = sl.cur
+        g = None
         for f in range(start, end):
             if f < first:
                 out.append(self.rest)
             else:
-                if sl.changes:
-                    k = sl.at(f - first)
-                    if k != g:
-                        g = k
-                        q.amp = square.amp_gain(tone.peak, g)
+                k = sl.at(f) if sl.changes else sl.cur
+                if k != g:
+                    g = k
+                    q.amp = square.amp_gain(tone.peak, g)
                 out.append(q.next() / 256.0)
 
     def render_play(self, p, start, end):
@@ -857,10 +872,18 @@ class Renderer:
             elif op == "pcm_end":
                 cur.ended = True
             elif op == "tone":
+                prev = self.cur
+                gain = start_gain(f)
+                carry = None
+                if isinstance(prev, Tone) and prev.centred and prev.target() == gain:
+                    # The next note of the same play: the driver keeps the
+                    # gain and its move. A line whose gain differs from the
+                    # target comes from a driver that prints no op=gain: it
+                    # starts at its own gain, as before.
+                    carry = prev.slew
                 self.close(t)
                 # A tone is centred when the rest ramp reached its end before it.
-                self.cur = Tone(t, f["hz"], f["vol"], self.rest == 0.5, self.peak,
-                                start_gain(f))
+                self.cur = Tone(t, f["hz"], f["vol"], self.rest == 0.5, self.peak, gain, carry)
             else:  # stop
                 self.close(t)
         self.lost_end()

@@ -143,8 +143,9 @@ const char *audio_probe_name(int result);
  * Plays one tone, non-blocking. Replaces what plays now. hz 0 is a rest.
  * Before the audio_rest_mid() ramp ends, a tone is the PWM's own pulse.
  * After it, every tone, beep and sequence is a square centred on 128 made
- * on the sample path, ROBCO_AUDIO_TONE_PEAK steps high at volume 100, on a
- * grid of ROBCO_AUDIO_TONE_RATE. The trace lines stay the same.
+ * on the sample path, ROBCO_AUDIO_TONE_PEAK steps high at full gain, on a
+ * grid of ROBCO_AUDIO_TONE_RATE. Its height follows the gain sample by
+ * sample. The trace lines stay the same.
  */
 int audio_tone(uint32_t hz, uint32_t ms);
 
@@ -160,10 +161,31 @@ void audio_stop(void);
  */
 int audio_busy(void);
 
+/* Full gain, in units of 1/10000: every play at its own level. */
+#define AUDIO_GAIN_FULL         10000u
 /*
- * Volume, 0 to 100. Applies from the next note, or the next PCM sample.
- * A pulse tone sets its duty with it; a centred tone its height.
+ * Gain units per second the level moves while a play runs. A full swing
+ * takes 20 ms at any rate: the step per sample is
+ * (AUDIO_GAIN_SLEW + rate - 1) / rate.
  */
+#define AUDIO_GAIN_SLEW         500000u
+
+/*
+ * Gain in units of 1/10000, 0 to AUDIO_GAIN_FULL. Values above count as
+ * AUDIO_GAIN_FULL. A play starts at the gain set last. While a play runs,
+ * the sample IRQ moves its level toward the new gain by a step per grid
+ * sample. A change starts at the grid sample of the call. The gain
+ * follows the sample grid, so a late sample catches up. A change reaches
+ * every kind of play within 20 ms with no jump. A pulse tone, before the
+ * rest ramp ends, takes the gain at its next note. In a centred tone, the
+ * next note of a sequence keeps the gain and its move. A note after a
+ * rest starts at the gain set last. The rest ramp ignores it. On the
+ * trace backend a change while something sounds prints one op=gain line.
+ * In a rest of a sequence it prints none: the next note's line carries it.
+ */
+void audio_set_gain(uint32_t gain);
+
+/* Volume, 0 to 100: audio_set_gain(percent * 100). Values above 100 count as 100. */
 void audio_set_volume(unsigned percent);
 
 /*
@@ -489,6 +511,43 @@ typedef struct {
 
 /* Height of a note in steps: (peak * vol + 50) / 100. vol is capped at 100. */
 unsigned audio_square_amp(unsigned peak, unsigned vol);
+
+/*
+ * Gain rules, src/lib/audio_gain.c. The gain is in units of 1/10000 and
+ * capped at AUDIO_GAIN_FULL. A gain of vol * 100 gives the byte of the
+ * volume rule at vol, and AUDIO_GAIN_FULL returns the input.
+ */
+
+/* 128 + (s - 128) * gain / 10000, rounded as audio_pcm_scale(). */
+uint8_t audio_pcm_scale_g(uint8_t s, uint32_t gain);
+
+/* 128 + round((q + (mix - 128) * 256) * gain / 2560000), as audio_voice_out(). */
+uint8_t audio_voice_out_g(int32_t q, uint8_t mix, uint32_t gain);
+
+/* Height of a centred tone in steps: (peak * gain + 5000) / 10000. */
+unsigned audio_square_amp_g(unsigned peak, uint32_t gain);
+
+/* Volume in percent of a pulse tone: (gain + 50) / 100. */
+unsigned audio_gain_pulse(uint32_t gain);
+
+/* Slew step per sample at `rate`: (AUDIO_GAIN_SLEW + rate - 1) / rate. */
+uint32_t audio_gain_step(uint32_t rate);
+
+/* `cur` moved toward `target` by at most `step`, never past it. */
+uint32_t audio_gain_slew(uint32_t cur, uint32_t target, uint32_t step);
+
+/*
+ * `cur` moved toward `target` by `n` steps of `step`, never past it. n 0
+ * leaves cur, n 1 equals audio_gain_slew(). No overflow for any n and step.
+ */
+uint32_t audio_gain_slew_n(uint32_t cur, uint32_t target, uint32_t step, uint32_t n);
+
+/*
+ * Moves *cur toward `target` by one step of `step` per grid sample from
+ * *n to `at`, then sets *n to `at`. Grid samples wrap at 2^32. When `at`
+ * is not after *n, both stay as they are, so *n never goes back.
+ */
+void audio_gain_follow(uint32_t *cur, uint32_t *n, uint32_t target, uint32_t step, uint32_t at);
 
 /*
  * Starts a note of `hz` at grid `rate`, `amp` steps high. hz 0 is a rest.
