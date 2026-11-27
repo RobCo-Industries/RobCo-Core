@@ -14,11 +14,14 @@ Each text comes under a line that names its repository and path.
 
 A missing LICENSE, a missing third_party folder or a third_party folder
 with neither a licence file nor a PROVENANCE file fails, with an `::error::` line and exit code 1.
-The same inputs give the same bytes. Standard library only.
+The output goes through a temporary file, so a failed write leaves no
+half-written file. The same inputs give the same bytes. Standard library only.
 """
 import argparse
 import os
+import stat
 import sys
+import tempfile
 
 REPOS = ("RobCo-Core", "RETROS-BIOS", "MFBootAgent", "UOS", "Pip-OS", "Deitrix")
 CORE = REPOS[0]
@@ -27,6 +30,34 @@ PREFIXES = ("license", "licence", "copying")
 
 class NoticesError(Exception):
     pass
+
+
+def write_atomic(path, text):
+    """Write text to a temporary file beside path, then replace path with it.
+
+    On failure the temporary file goes and path stays as it was. An
+    existing file keeps its mode."""
+    folder = os.path.dirname(os.path.abspath(path))
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def read_text(path):
@@ -93,11 +124,13 @@ def run(argv):
     args = p.parse_args(argv)
     try:
         text = render(collect(args.work))
+        try:
+            write_atomic(args.out, text)
+        except OSError as e:
+            raise NoticesError(f"cannot write {args.out}: {e.strerror}") from None
     except NoticesError as e:
         print(f"::error::notices: {e}")
         return 1
-    with open(args.out, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
     return 0
 
 

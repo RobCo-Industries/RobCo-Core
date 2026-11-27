@@ -18,11 +18,15 @@ that already has a section.
 
 check passes when the unreleased section holds only blank lines and the
 next section is that version. section prints the version's section.
-Errors are `::error::` lines and exit code 1. Standard library only.
+cut writes a temporary file and then replaces FILE, so a failed write
+leaves FILE as it was. Errors are `::error::` lines and exit code 1. Standard library only.
 """
 import argparse
+import os
 import re
+import stat
 import sys
+import tempfile
 
 UNRELEASED = re.compile(r"^## (Unreleased|\[Unreleased\])\s*$")
 VERSION = re.compile(r"^\d+\.\d+\.\d+$")
@@ -32,6 +36,34 @@ LIST_ITEM = re.compile(r"^ *[-*] ")
 
 class ChangelogError(Exception):
     pass
+
+
+def write_atomic(path, text):
+    """Write text to a temporary file beside path, then replace path with it.
+
+    On failure the temporary file goes and path stays as it was. An
+    existing file keeps its mode."""
+    folder = os.path.dirname(os.path.abspath(path))
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def read_lines(path):
@@ -178,8 +210,10 @@ def run(argv):
             if not DATE.match(args.date):
                 raise ChangelogError(f"date must be YYYY-MM-DD, got {args.date!r}")
             text = "\n".join(cut(lines, args.version, args.date))
-            with open(args.file, "w", encoding="utf-8", newline="") as f:
-                f.write(text)
+            try:
+                write_atomic(args.file, text)
+            except OSError as e:
+                raise ChangelogError(f"cannot write: {e.strerror}") from None
         elif args.command == "check":
             check(lines, args.version)
         else:

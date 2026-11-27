@@ -1,4 +1,6 @@
 """tools/release/cut_changelog.py on small made-up changelogs."""
+import errno
+import importlib.util
 import os
 import subprocess
 import sys
@@ -237,3 +239,34 @@ Closing paragraph.
     out = [l for l in text.splitlines() if l.strip() and not l.startswith("#")]
     assert [l for l in out if l != "- Fixed one."] == [
         l for l in changed if l != "- Fixed one."]
+
+
+def load_tool():
+    spec = importlib.util.spec_from_file_location("cut_changelog", TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def fail_fsync(fd):
+    raise OSError(errno.EIO, "made-up write failure")
+
+
+def test_failed_write_leaves_file_untouched(tmp_path, monkeypatch, capsys):
+    path = write(tmp_path, GROUPED)
+    os.chmod(path, 0o640)
+    before = path.read_bytes()
+    mod = load_tool()
+    monkeypatch.setattr(mod.os, "fsync", fail_fsync)
+    assert mod.run(["cut", str(path), "--version", "0.2.0", "--date", "2026-01-02"]) == 1
+    assert "::error::" in capsys.readouterr().out
+    assert path.read_bytes() == before
+    assert os.listdir(tmp_path) == ["CHANGELOG.md"]
+
+
+def test_cut_keeps_file_mode(tmp_path):
+    path = write(tmp_path, PLAIN)
+    os.chmod(path, 0o640)
+    assert tool("cut", str(path), "--version", "1.0.0", "--date", "2026-01-02").returncode == 0
+    assert os.stat(path).st_mode & 0o777 == 0o640
+    assert os.listdir(tmp_path) == ["CHANGELOG.md"]

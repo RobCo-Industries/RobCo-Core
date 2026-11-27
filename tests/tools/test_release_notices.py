@@ -1,4 +1,6 @@
 """tools/release/notices.py on a small fake work folder."""
+import errno
+import importlib.util
 import os
 import subprocess
 import sys
@@ -92,3 +94,27 @@ def test_root_licence_file_comes_first(work, tmp_path):
     assert heads[0] == "==== RobCo-Core: third_party/COPYING.extra ===="
     assert len(heads) == 4
     assert "Root terms." in text and "loose readme" not in text
+
+
+def load_tool():
+    spec = importlib.util.spec_from_file_location("notices", TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def fail_fsync(fd):
+    raise OSError(errno.EIO, "made-up write failure")
+
+
+def test_failed_write_leaves_old_notices(work, tmp_path, monkeypatch, capsys):
+    folder = tmp_path / "out"
+    folder.mkdir()
+    out = folder / "NOTICES.txt"
+    out.write_bytes(b"old notices\n")
+    mod = load_tool()
+    monkeypatch.setattr(mod.os, "fsync", fail_fsync)
+    assert mod.run(["--work", str(work), "--out", str(out)]) == 1
+    assert "::error::" in capsys.readouterr().out
+    assert out.read_bytes() == b"old notices\n"
+    assert os.listdir(folder) == ["NOTICES.txt"]
