@@ -508,3 +508,61 @@ def test_generated_c_compiles(tmp_path):
                        capture_output=True, text=True, env=minimal_env())
     assert r.returncode == 0, r.stderr
     assert subprocess.run([str(exe)], env=minimal_env()).returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Pinned bytes
+# ---------------------------------------------------------------------------
+
+def pinned_models():
+    """Made-up models that use every feature: glides, partials, ramps, env,
+    noise bands, repeat, fold, loops and split."""
+    return [
+        {"format": 1, "rate_hz": 22050, "ceiling_steps": 100, "sounds": {
+            "chirp": {"len": 3000, "peak_steps": 70, "layers": [
+                {"kind": "tone", "hits": [[0, 0], [1200, -4500]], "len": 1500,
+                 "pitch_mhz": [440000, 3520000], "level_mdb": -3000,
+                 "partials": [[10000, 0], [20000, -6000], [35000, -12000], [123457, -20000]],
+                 "attack_us": 2000, "release_us": 15000,
+                 "env": [[0, 0], [20000, -3000], [45000, -9000], [60000, -40000]]}]},
+            "drop": {"len": 4000, "peak_steps": 50, "layers": [
+                {"kind": "tone", "hits": [[0, 0]], "len": 4000,
+                 "pitch_mhz": [9000000, 120000], "level_mdb": 0,
+                 "partials": [[10000, 0], [30000, -9000], [70000, -15000]],
+                 "attack_us": 1000, "release_us": 40000}]}}},
+        {"format": 1, "rate_hz": 16000, "ceiling_steps": 90, "sounds": {
+            "burst": {"len": 1800, "peak_steps": 60, "layers": [
+                {"kind": "noise", "seed": 12345, "level_mdb": -2000, "hits": [[0, 0], [700, -6000]],
+                 "env": [[0, -40000], [3000, 0], [30000, -8000], [60000, -45000]],
+                 "bands": [[0, -30000], [400, -6000], [2500, 0], [5000, -9000], [8000, -40000]]},
+                {"kind": "tone", "hits": [[0, -6000]], "len": 900,
+                 "pitch_mhz": [1500000, 1500000], "level_mdb": -6000,
+                 "partials": [[10000, 0], [25000, -10000]], "release_us": 20000}]},
+            "ticks": {"len": 1600, "peak_steps": 40, "split": 700, "layers": [
+                {"kind": "noise", "seed": 9, "level_mdb": 0, "repeat": True,
+                 "hits": [[0, 0], [500, -3000], [1000, -6000]],
+                 "env": [[0, -40000], [600, 0], [5000, -20000], [20000, -60000]],
+                 "bands": [[1000, -10000], [3000, 0], [7000, -5000]]}]}}},
+        {"format": 1, "rate_hz": 20000, "ceiling_steps": 60, "sounds": {
+            "hum": {"len": 2000, "peak_steps": 24, "loop": True, "layers": [
+                {"kind": "tone", "hits": [[0, 0]], "len": 2000,
+                 "pitch_mhz": [120000, 120000], "level_mdb": -6000,
+                 "partials": [[10000, 0], [20000, -6000], [30000, -12000]]}]},
+            "fan": {"len": 1500, "peak_steps": 20, "loop": True, "layers": [
+                {"kind": "noise", "seed": 77, "level_mdb": -3000, "fold": 100,
+                 "hits": [[0, 0]], "env": [[0, 0], [80000, 0]],
+                 "bands": [[0, -6000], [200, 0], [1500, -6000], [6000, -30000]]}]}}},
+    ]
+
+
+PINNED = {"chirp": 0x173421A4, "drop": 0xA16C7C0B, "burst": 0x37B3D822,
+          "ticks": 0x4F711EC1, "hum": 0xD0AE90A3, "fan": 0xD43D1D14}
+
+
+def test_pinned_bytes():
+    # A change here changes a table: raise REVISION and say why.
+    got = {}
+    for m in pinned_models():
+        for name, data in T.build(m).items():
+            got[name] = zlib.crc32(data)
+    assert got == PINNED
