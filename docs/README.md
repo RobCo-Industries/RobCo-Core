@@ -19,7 +19,10 @@
 | [spec/BOOT_PROTOCOL.md](./spec/BOOT_PROTOCOL.md) | Stage loading, register handoff, boot info, `@RC` markers |
 | [spec/PIPOS_ABI.md](./spec/PIPOS_ABI.md) | Pip-OS entry state and syscalls. Draft, not implemented. |
 | [spec/SFX_MODEL.md](./spec/SFX_MODEL.md) | Sound effect models and `tools/sfx_table.py` |
-| [spec/TESTING.md](./spec/TESTING.md) | Test layers, QEMU boot method, canary suite, CI |
+| [spec/TESTING.md](./spec/TESTING.md) | Test layers, QEMU boot method, canary suite, CI, the nightly run |
+| [spec/STUDIO_PROJECT.md](./spec/STUDIO_PROJECT.md) | The Studio project files `robco.toml` and `robco.lock`. Draft, not implemented. |
+| [spec/SDK_PACKAGE.md](./spec/SDK_PACKAGE.md) | SDK packages, the cache, the runner ROM and the SDK index. Draft, not implemented. |
+| [spec/STUDIO_CLI.md](./spec/STUDIO_CLI.md) | The `robco` command line. Draft, not implemented. |
 
 ## Other
 
