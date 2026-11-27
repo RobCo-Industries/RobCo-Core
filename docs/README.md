@@ -18,6 +18,7 @@
 | [spec/IMAGE_FORMAT.md](./spec/IMAGE_FORMAT.md) | The `rimg` format, validation, SD card files, `tools/rimg.py` |
 | [spec/BOOT_PROTOCOL.md](./spec/BOOT_PROTOCOL.md) | Stage loading, register handoff, boot info, `@RC` markers |
 | [spec/PIPOS_ABI.md](./spec/PIPOS_ABI.md) | Pip-OS entry state and syscalls. Draft, not implemented. |
+| [spec/SFX_MODEL.md](./spec/SFX_MODEL.md) | Sound effect models and `tools/sfx_table.py` |
 | [spec/TESTING.md](./spec/TESTING.md) | Test layers, QEMU boot method, canary suite, CI |
 
 ## Other

@@ -12,6 +12,7 @@ These files are the contracts for RobCo-Core and every repo built on it. Code fo
 | [TESTING.md](./TESTING.md) | Test layers, QEMU boot methods, `boot.json`, canary suite, SD images, CI, hardware checklists | stable |
 | [STUDIO_PROJECT.md](./STUDIO_PROJECT.md) | The Studio project files `robco.toml` and `robco.lock` | draft |
 | [SDK_PACKAGE.md](./SDK_PACKAGE.md) | SDK packages, `sdk.json`, `flags.json`, the cache and what it records, the runner ROM and the key of a run, the firmware pins, the `templates` package, the SDK index, tool archives, version and hash rules | draft |
+| [SFX_MODEL.md](./SFX_MODEL.md) | Sound effect models, the synthesis that renders them, the checks and `tools/sfx_table.py` | draft |
 | [STUDIO_CLI.md](./STUDIO_CLI.md) | The `robco` command: its commands, output streams, JSON lines, exit codes and the order of checks, the one list of steps of `update`, `build`, `run` and `test`, the simulator card, what ends a run, scenario files and the golden images that every board shares | draft |
 
 Spots marked "pending hardware validation" may change after tests on real boards.
@@ -144,3 +145,9 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Part | State |
 |---|---|
 | Everything. `robco` prints its version and nothing else. | Specified |
+
+### SFX_MODEL.md
+
+| Part | State |
+|---|---|
+| The model format, the synthesis, the checks and the commands in `tools/sfx_table.py` | Implemented |
