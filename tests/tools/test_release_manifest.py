@@ -135,6 +135,57 @@ def test_new_writes_the_six_commits(work, tmp_path):
     assert check(w, out)[0] == 0
 
 
+def new(w, tmp_path):
+    out = tmp_path / "new.json"
+    code, text = tool("new", "--suite", "suite-2026.12", "--work", w, "--out", out)
+    return code, text, out
+
+
+def test_new_takes_the_pinned_library_when_main_is_ahead(work, tmp_path):
+    w, shas, _ = work
+    (w / "RobCo-Core" / "CHANGELOG.md").write_text(CHANGELOG.format(v="0.2.0"))
+    git(w / "RobCo-Core", "commit", "-q", "-am", "ahead")
+    code, text, out = new(w, tmp_path)
+    assert code == 0, text
+    core = json.loads(out.read_text())["repositories"]["RobCo-Core"]
+    assert core == {"version": "0.1.0", "commit": shas["RobCo-Core"]}
+    assert check(w, out, "--rehearsal")[0] == 0
+
+
+def test_new_refuses_stages_that_pin_different_libraries(work, tmp_path):
+    w, shas, _ = work
+    other = commit(w / "RobCo-Core", {"x.txt": "x\n"})
+    commit(w / "UOS", links={"external/robco-core": other}, branch="master")
+    code, text, out = new(w, tmp_path)
+    assert code == 1 and not out.exists()
+    assert errors(text) == [
+        f"::error::manifest: the stages pin different RobCo-Core commits: "
+        f"RETROS-BIOS pins {shas['RobCo-Core'][:12]}, MFBootAgent pins "
+        f"{shas['RobCo-Core'][:12]}, UOS pins {other[:12]}, Pip-OS pins {shas['RobCo-Core'][:12]}"]
+
+
+def test_new_refuses_a_pin_missing_from_the_library(work, tmp_path):
+    w, _, _ = work
+    ghost = "ab" * 20
+    for name in ("RETROS-BIOS", "MFBootAgent", "UOS", "Pip-OS"):
+        commit(w / name, links={"external/robco-core": ghost}, branch=BRANCH[name])
+    commit(w / "Deitrix", links={"external/pip-os": git(w / "Pip-OS", "rev-parse", "HEAD")},
+           branch="master")
+    code, text, _ = new(w, tmp_path)
+    assert code == 1
+    assert errors(text) == [f"::error::manifest: RobCo-Core: the checkout has no commit "
+                            f"{ghost[:12]}, the library commit the stages pin"]
+
+
+def test_new_refuses_a_deitrix_pin_off_the_pipos_head(work, tmp_path):
+    w, shas, _ = work
+    head = commit(w / "Pip-OS", {"y.txt": "y\n"}, branch="master")
+    code, text, _ = new(w, tmp_path)
+    assert code == 1
+    assert errors(text) == [f"::error::manifest: Deitrix: pins Pip-OS {shas['Pip-OS'][:12]}, "
+                            f"the Pip-OS HEAD is {head[:12]}; move the pin first"]
+
+
 def test_new_refuses_a_bad_suite_name(work, tmp_path):
     w, _, _ = work
     code, out = tool("new", "--suite", "release-2026.12", "--work", w, "--out", tmp_path / "x")

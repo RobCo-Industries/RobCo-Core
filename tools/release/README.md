@@ -25,3 +25,12 @@ python3 -I tools/release/notices.py --work w --out NOTICES.txt
 ```
 
 Licence files directly in `third_party/` come first, then the folders. Other loose files there are ignored. Each folder inside a package under `third_party/`, the package folder included, gives its own licence files, or its `PROVENANCE` file when it has none, as the font in `third_party/fixedsys-excelsior/` does. A package folder must state its own terms: one with no licence file and no `PROVENANCE` of its own fails, even when a folder inside it has a licence. A package's own texts come before those of the folders inside it. A folder the tool cannot read fails too.
+
+## assemble.py
+
+Builds the files of a release from one night's two `pins` card folders, as the nightly run uploads them. It checks each folder's `SHA256SUMS`, needs the two `VERSIONS.txt` to be the same, packs each image with `gzip -n` and checks that `gunzip -c` gives the night's SHA-256 again. It writes `assets/` with the two `.gz` images, `fetch_firmware.sh`, `NOTICES.txt`, `VERSIONS.txt`, `<suite>.json` and `SHA256SUMS`, and the release note `NOTES.md`. `--out` must not exist. It does not compare the night with the manifest: `manifest.py verify-night` does.
+
+```sh
+python3 -I tools/release/assemble.py --manifest suite.json --terminal card-terminal \
+    --pipboy card-pipboy --notices NOTICES.txt --fetch-firmware tools/fetch_firmware.sh --out dist
+```
