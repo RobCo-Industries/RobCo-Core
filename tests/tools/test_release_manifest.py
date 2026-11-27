@@ -525,3 +525,15 @@ def test_verify_night_missing_row(work, tmp_path):
     code, out = tool("verify-night", "--manifest", manifest, "--versions", versions)
     assert code == 1
     assert errors(out) == ["::error::manifest: UOS: no row in VERSIONS.txt"]
+
+
+def test_verify_night_repeated_row(work, tmp_path):
+    """A second row for a repository fails, even when it matches the manifest."""
+    w, _, manifest = work
+    versions = night(tmp_path, w)
+    lines = versions.read_text().splitlines()
+    row = next(l for l in lines if l.startswith("| UOS "))
+    versions.write_text("\n".join(lines + [row]) + "\n")
+    code, out = tool("verify-night", "--manifest", manifest, "--versions", versions)
+    assert code == 1
+    assert errors(out) == ["::error::manifest: UOS: 2 rows in VERSIONS.txt, one is expected"]

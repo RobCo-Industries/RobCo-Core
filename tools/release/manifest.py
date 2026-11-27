@@ -348,14 +348,15 @@ def check_errors(data, work, rehearsal=False, tag=None):
 # VERSIONS.txt of a night.
 
 def night_rows(text):
-    """{repository: (commit cell, note cell)} from a plan.py table."""
+    """{repository: [(commit cell, note cell), ...]} from a plan.py table.
+    Every row of a repository is kept, so a second row cannot hide the first."""
     rows = {}
     for line in text.splitlines():
         if not line.startswith("|"):
             continue
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) == 8 and cells[0] in NAMES:
-            rows[cells[0]] = (cells[2].strip("`"), cells[7])
+            rows.setdefault(cells[0], []).append((cells[2].strip("`"), cells[7]))
     return rows
 
 
@@ -367,7 +368,10 @@ def verify_night_errors(data, text):
         if name not in rows:
             errors.append(f"{name}: no row in VERSIONS.txt")
             continue
-        short, note = rows[name]
+        if len(rows[name]) > 1:
+            errors.append(f"{name}: {len(rows[name])} rows in VERSIONS.txt, one is expected")
+            continue
+        short, note = rows[name][0]
         if len(short) != 12 or not commit.startswith(short):
             errors.append(f"{name}: the night built {short!r}, the manifest names {commit[:12]}")
         if note:
