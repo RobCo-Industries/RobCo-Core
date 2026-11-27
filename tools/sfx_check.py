@@ -979,12 +979,13 @@ def check_sound(model, name, folder):
     bands_judged = False
     if rounding:
         notes.append("not judged, the table is mostly rounding")
+    elif cut:
+        # The predicted share rests on the same spectrum as the bands.
+        notes.append("bands not judged, repeated hits cut by the table end")
     elif (m_share < LOW_SHARE) != (p_share < LOW_SHARE):
         faults.append("power under 15 kHz is %.1f %% of the table, the model predicts %.1f %%"
                       % (100.0 * m_share, 100.0 * p_share))
         notes.append("bands not judged")
-    elif cut:
-        notes.append("bands not judged, repeated hits cut by the table end")
     elif m_share < LOW_SHARE:
         notes.append("bands not judged, no power under 15 kHz")
     else:

@@ -695,6 +695,19 @@ def test_cut_repeated_hits_skip_the_bands(tmp_path):
     assert "not judged" not in r.stdout, r.stdout
 
 
+def test_cut_repeated_hits_skip_the_share(tmp_path):
+    # Noise above 15 kHz, the second hit cut to its first 5 samples.
+    m = {"format": 1, "rate_hz": 48000, "ceiling_steps": 90, "sounds": {"cut": {
+        "len": 20, "peak_steps": 4, "layers": [
+            {"kind": "noise", "seed": 15, "level_mdb": 0, "repeat": True,
+             "hits": [[0, 0], [15, 0]],
+             "env": [[0, -60000], [100, 0], [300, 0], [400, -60000]],
+             "bands": [[16000, 0], [23000, 0]]}]}}}
+    r = run(CHECK, *dump(tmp_path, m))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "bands not judged, repeated hits cut by the table end: ok" in r.stdout, r.stdout
+
+
 @pytest.mark.parametrize("seed", range(1, 9))
 def test_single_hit_cut_by_the_end_passes(tmp_path, seed):
     m = burst_model(seed)
