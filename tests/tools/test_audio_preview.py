@@ -563,6 +563,58 @@ class BadLogs(Case):
         self.assertNotIn("Traceback", err.getvalue())
 
 
+class Lost(Case):
+    """Other markers and lost records."""
+
+    DROP = "@RC stage=test ev=audio_drop n=2"
+
+    def test_other_marker_with_a_quoted_string(self):
+        a = self.sound("a", bytes([200]) * 441)
+        other = '@RC stage=test ev=errors n=1 str="no acknowledge"'
+        with_it, w1 = self.render([pcm(0, a), other, end(20)])
+        without, w2 = self.render([pcm(0, a), end(20)])
+        self.assertEqual(with_it, without)
+        self.assertEqual(w1, w2)
+        rc, err, _ = self.main([pcm(0, a), other, end(20)])
+        self.assertEqual(rc, 0, err)
+
+    def test_malformed_audio_line_is_an_error(self):
+        self.assertFails(['@RC stage=test ev=audio op=stop hz=0 vol=5 t_ms=5 "no ack"'],
+                         "a field without '='")
+
+    def test_end_after_a_loss_is_skipped(self):
+        a = self.sound("a", bytes([200]) * 441)
+        rc, err, out = self.main([self.DROP, end(10), pcm(20, a), end(40)])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(err.count("1 markers had no start"), 1, err)
+        self.assertIn("lost 2 records", err)
+        duty, _ = self.render([self.DROP, end(10), pcm(20, a), end(40)])
+        self.assertEqual(duty[frame(20)], 200 / 256)
+        self.assertEqual(duty[frame(41)], 0.0)
+        with open(out, "rb") as f:
+            self.assertGreater(len(f.read()), 44)
+
+    def test_end_without_a_loss_is_an_error(self):
+        a = self.sound("a", bytes([200]) * 441)
+        self.assertFails([end(10), pcm(20, a), end(40)],
+                         "op=pcm_end with no sample play or voice")
+
+    def test_overlay_queue_and_stop_after_a_loss_are_counted(self):
+        a = self.sound("a", bytes([200]) * 441)
+        o = self.sound("o", bytes([140]) * 8)
+        rc, err, _ = self.main([self.DROP, mix(5, o), nxt(6, a), stop(7), tone(10, 440), stop(20)])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(err.count("3 markers had no start"), 1, err)
+        self.assertNotIn("markers had no start", err.replace("3 markers had no start", ""))
+
+    def test_the_loss_ends_at_the_next_start(self):
+        a = self.sound("a", bytes([200]) * 441)
+        rc, err, _ = self.main([self.DROP, pcm(0, a), end(20), end(30)])
+        self.assertEqual(rc, 2, err)
+        self.assertIn("serial.log:4: op=pcm_end with no sample play or voice",
+                      err.splitlines()[-1])
+
+
 class Bounds(Case):
     """Each number of a line is bounded when read, before anything uses it."""
 

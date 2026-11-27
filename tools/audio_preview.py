@@ -31,6 +31,15 @@ Lines it reads, each an "@RC ... ev=audio op=..." marker of any stage:
     line, by a stop or a new sound, drops to duty 0 at once and leaves
     the rest level at duty 0, even when its last sample had sounded.
   ev=audio_drop n=                       records lost: a warning
+  The driver prints ev=audio_drop after the records it drained, so it
+  stands where the loss happened. After it, a marker whose start was lost
+  is skipped: an end, a queued buffer or an overlay. A stop with nothing
+  playing is counted too, but its time still sets the file's end. One
+  warning counts them. The next op=pcm, op=voice or op=tone
+  ends the loss. Without a loss before it, such a marker is a bad log.
+  A start whose end was lost needs nothing: the next start cuts it.
+  The tool parses only a line with the field ev=audio or ev=audio_drop
+  and skips every other marker untouched.
   An ev=audio marker without op= is a program's own status line, not
   trace: the tool skips it. An unknown op= is a bad log.
 
@@ -228,8 +237,13 @@ def parse_marker(text, where):
     i = text.find("@RC ")
     if i < 0:
         return None
+    toks = text[i + 4:].split()
+    # Only an audio trace line is parsed. Any other marker is skipped
+    # untouched, whatever its fields hold, such as a quoted string.
+    if "ev=audio" not in toks and "ev=audio_drop" not in toks:
+        return None
     kv = {}
-    for tok in text[i + 4:].split():
+    for tok in toks:
         if "=" not in tok:
             raise LogError("%s: a field without '=': %r" % (where, tok))
         k, v = tok.split("=", 1)
@@ -314,6 +328,10 @@ def read_log(path):
                 continue
             if m[0] == "drop":
                 dropped += m[1]
+                # The loss keeps its place: the renderer skips the markers
+                # whose start it took.
+                if m[1]:
+                    events.append((where, "drop", {"n": m[1]}))
                 continue
             events.append((where, m[0], m[1]))
     return events, dropped
@@ -585,16 +603,44 @@ class Renderer:
             o = mix[j] if 0 <= j < len(mix) else 128
             out.append(voice.out_byte(q, o, p.vol) / 256.0)
 
+    def lost_end(self):
+        if self.lost is not None and self.lost[1]:
+            self.warn("%s: after the lost records, %d markers had no start: skipped"
+                      % self.lost)
+        self.lost = None
+
+    def orphan(self, op, cur):
+        """True when `op` depends on a start the log does not hold."""
+        if op == "stop":
+            return cur is None
+        if not isinstance(cur, Play) or cur.ended or cur.ramp or cur.loop:
+            return True
+        return op == "pcm_next" and isinstance(cur, VoicePlay)
+
     def run(self, events):
         last = 0
+        self.lost = None        # (where, markers skipped) after a loss
         for where, op, f in events:
+            if op == "drop":
+                self.lost_end()
+                self.lost = (where, 0)
+                continue
+            cur = self.cur
+            if self.lost is not None:
+                if op in ("pcm", "voice", "tone"):
+                    self.lost_end()
+                elif self.orphan(op, cur):
+                    self.lost = (self.lost[0], self.lost[1] + 1)
+                    if op != "stop":
+                        continue
+                    # A stop with nothing playing changes no sound, but its
+                    # time still counts toward the end of the file.
             t = f["t_ms"]
             if t + BACK_SLACK_MS < last:
                 raise LogError("%s: t_ms=%d comes before t_ms=%d of an earlier line"
                                % (where, t, last))
             t = max(t, last)
             last = t
-            cur = self.cur
             if op == "pcm":
                 self.close(t)
                 ramp = is_ramp(op, f)
@@ -652,6 +698,7 @@ class Renderer:
                 self.cur = Tone(t, f["hz"], f["vol"], self.rest == 0.5, self.peak)
             else:  # stop
                 self.close(t)
+        self.lost_end()
         cur = self.cur
         stop = last
         if isinstance(cur, Play) and cur.loop:
@@ -718,6 +765,7 @@ def main(argv=None):
 
     try:
         events, dropped = read_log(a.log)
+        markers = sum(1 for _, op, _ in events if op != "drop")
         pcm = load_pcm(a.pcm)
         scale = a.scale
         if scale == "auto":
@@ -726,7 +774,7 @@ def main(argv=None):
             scale = "nearest" if new else "cut"
         if dropped:
             warn("the trace lost %d records: the file misses sounds" % dropped)
-        if not events:
+        if not markers:
             warn("the log has no ev=audio marker: the file is silent")
         r = Renderer(pcm, scale_nearest if scale == "nearest" else scale_cut, warn,
                      a.tone_peak)
@@ -742,7 +790,7 @@ def main(argv=None):
         print("audio_preview.py: %s: %s" % (e.filename or "", e.strerror), file=sys.stderr)
         return 2
     print("audio_preview.py: %s: %.2f s, %d markers, scale %s"
-          % (a.out, len(samples) / OUT_RATE, len(events), scale))
+          % (a.out, len(samples) / OUT_RATE, markers, scale))
     return 0
 
 
