@@ -404,8 +404,16 @@ def test_render_checks():
     first = [140] + data[1:]
     assert "the first sample is +12 steps from 128, more than 2" in T.check_sound(m, "beep", first)[0]
     loud = noise_model(loop=True, fold=100, peak=40)
+    # The validator refuses it, before and whatever a render gives.
     assert any("a loop's peak_steps must be 32 or less, not 40" in f
-               for f in T.check_sound(loud, "hiss", T.render_sound(loud, "hiss")))
+               for f in T.check_model(loud))
+    assert not any("32 or less" in f
+                   for f in T.check_sound(loud, "hiss", T.render_sound(loud, "hiss")))
+    quiet = noise_model(loop=True, fold=100, peak=40)
+    quiet["sounds"]["hiss"]["layers"][0]["level_mdb"] = -120000
+    quiet["sounds"]["hiss"]["layers"][0]["env"] = [[0, -120000], [52000, -120000]]
+    assert any("a loop's peak_steps must be 32 or less, not 40" in f
+               for f in T.check_model(quiet))
     over = [128 + 95] + data[1:]
     assert any("past ceiling_steps 90" in f for f in T.check_sound(m, "beep", over))
 

@@ -622,8 +622,6 @@ def check_sound(model, name, data):
     if worst != sound["peak_steps"]:
         faults.append(f"{where}: the peak is {worst} steps, not peak_steps {sound['peak_steps']}")
     if sound.get("loop"):
-        if sound["peak_steps"] > 32:
-            faults.append(f"{where}: a loop's peak_steps must be 32 or less, not {sound['peak_steps']}")
         step = 0
         for a, b in zip(data, data[1:]):
             d = a - b if a >= b else b - a
@@ -683,6 +681,7 @@ MAX_HITS = 64
 MAX_PARTIALS = 16
 MAX_ENV = 64
 MAX_BANDS = 24
+LOOP_PEAK_MAX = 32
 MAX_US = MAX_LEN * 1000000 // 8000   # the longest hit at the lowest rate, 32.768 s
 MAX_DIGITS = 15                 # no field takes more than 10 digits
 MDB_MIN, MDB_MAX = -120000, 20000
@@ -935,9 +934,13 @@ def check_model(model):
         if not c.keys(sound, where, "sound"):
             continue
         n = c.field(sound, "sound", "len", where, 1, MAX_LEN)
-        c.field(sound, "sound", "peak_steps", where, 1, 127 if ceiling is None else ceiling)
-        if "loop" in sound:
-            c.field(sound, "sound", "loop", where)
+        peak = c.field(sound, "sound", "peak_steps", where, 1, 127 if ceiling is None else ceiling)
+        loop = c.field(sound, "sound", "loop", where) if "loop" in sound else None
+        # A rule of the model alone, so it is judged here and not after a
+        # render: a loop plays under other sounds and must leave them room.
+        if loop is True and peak is not None and peak > LOOP_PEAK_MAX:
+            c.fault(f"{where}.peak_steps",
+                    f"a loop's peak_steps must be {LOOP_PEAK_MAX} or less, not {peak}")
         tabs = [name]
         if "split" in sound:
             hi = MAX_LEN - 1 if n is None else n - 1
