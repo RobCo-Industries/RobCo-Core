@@ -256,22 +256,33 @@ TEST(a_late_irq_skips_by_the_rule)
     }
 }
 
-TEST(volume_applies_from_the_next_note)
+TEST(volume_slews_within_a_note)
 {
+    uint32_t top = 0;
     size_t a;
+    size_t i;
 
     enter_rest(AUDIO_BACKEND_PWM);
     CHECK_EQ(audio_play(two, 2, 0), 0);
     tick(10);
     run_us(200);
-    audio_set_volume(20);
     a = pwm_count;
-    run_us(200);
-    /* The note keeps its height: a whole high sample at 440 Hz. */
-    CHECK_EQ(pwm_samples[a], 128 + amp_at(100));
+    audio_set_volume(20);
+    run_us(19000);
+    /* No jump: the height falls by at most one gain step per sample. */
+    CHECK(dist(pwm_samples[a], 128) >= amp_at(100) - 1);
+    for (i = a + 1; i < pwm_count; i++) {
+        CHECK(dist(pwm_samples[i], 128) <= dist(pwm_samples[a], 128));
+    }
+    /* Within 20 ms the note sits at the new height, before its next note. */
+    for (i = pwm_count - 100; i < pwm_count; i++) {
+        uint32_t d = dist(pwm_samples[i], 128);
+
+        top = d > top ? d : top;
+    }
+    CHECK_EQ(top, amp_at(20));
     tick(20);
     run_us(100);
-    /* The second note starts high at the new height. */
     CHECK_EQ(pwm_samples[pwm_count - 1], 128 + amp_at(20));
 }
 
