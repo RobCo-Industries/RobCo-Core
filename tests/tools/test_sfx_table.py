@@ -1268,6 +1268,54 @@ def test_plan_refuses_the_same_file_twice(tmp_path, how, monkeypatch):
     assert after == before
 
 
+def _nodes_case(tmp_path, how):
+    """(args, words the one error line holds) for a plan whose nodes clash."""
+    p = write_model(tmp_path, tone_model())
+    c, h = tmp_path / "sfx_t.c", tmp_path / "sfx_t.h"
+    if how == "--c and --dump at one path":
+        o = tmp_path / "out_sfx.c"
+        return [p, "--c", o, "--h", h, "--prefix", "sfx_", "--dump", o], "a file and a folder"
+    if how in ("--dump under --c", "--dump under --c, --dump first"):
+        (tmp_path / "d").mkdir()
+        c = tmp_path / "d" / "sfx.c"
+        dump = ["--dump", c / "x"]
+        table = ["--c", c, "--h", h, "--prefix", "sfx_"]
+        args = dump + table if how.endswith("first") else table + dump
+        return [p, *args], "lies under"
+    if how == "--wav at the header":
+        return [p, "--c", c, "--h", h, "--prefix", "sfx_", "--wav", h], "a file and a folder"
+    if how == "new folder is --c by a link":
+        (tmp_path / "sfx_l.c").symlink_to(tmp_path / "new")
+        return ([p, "--c", tmp_path / "sfx_l.c", "--h", h, "--prefix", "sfx_",
+                 "--dump", tmp_path / "new"], "a file and a folder")
+    if how == "new folder is --c by case":
+        return ([p, "--c", tmp_path / "OUT_sfx.c", "--h", h, "--prefix", "sfx_",
+                 "--wav", tmp_path / "out_sfx.c"], "a file and a folder")
+    if how == "the model's folder as --c":
+        sub = tmp_path / "m_sfx.c"
+        sub.mkdir()
+        q = write_model(sub, tone_model())
+        return [q, "--c", sub, "--h", h, "--prefix", "sfx_"], "a file and a folder"
+    raise AssertionError(how)
+
+
+NODE_CASES = ["--c and --dump at one path", "--dump under --c", "--dump under --c, --dump first",
+              "--wav at the header", "new folder is --c by a link", "new folder is --c by case",
+              "the model's folder as --c"]
+
+
+@pytest.mark.parametrize("how", NODE_CASES)
+def test_plan_refuses_a_path_that_is_a_file_and_a_folder(tmp_path, how):
+    args, words = _nodes_case(tmp_path, how)
+    names = lambda: sorted(str(x.relative_to(tmp_path)) for x in tmp_path.rglob("*"))
+    before = names()
+    r = run(*args)
+    assert r.returncode == 64, r.stderr
+    errors = [x for x in r.stderr.splitlines() if "error:" in x]
+    assert len(errors) == 1 and words in errors[0], r.stderr
+    assert "Traceback" not in r.stderr and names() == before
+
+
 def test_dump_and_wav_may_share_a_folder(tmp_path):
     p = write_model(tmp_path, _two_sounds())
     r = run(p, "--dump", tmp_path / "o", "--wav", tmp_path / "o")
