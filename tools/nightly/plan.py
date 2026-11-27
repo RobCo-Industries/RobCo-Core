@@ -233,7 +233,18 @@ def plan_pairings(rows, work, pairing):
     return plan, names
 
 
-def table(rows, note):
+def core_head_line(plan):
+    """The line that names the library and image of the core-head entries,
+    or None when core-head is not planned."""
+    for entry in plan.get("stages", {}).get("include", []):
+        if entry["pairing"] == "core-head":
+            return (f"In `core-head` every sibling builds on RobCo-Core "
+                    f"`{entry['core_sha'][:12]}`, in the image `{entry['tag']}`. "
+                    f"The Library and Image tag columns show the `pins` side.")
+    return None
+
+
+def table(rows, note, extra=None):
     lines = ["| Repository | Ref | Commit | Library | Pip-OS | Behind main | Image tag | Note |",
              "|---|---|---|---|---|---|---|---|"]
 
@@ -246,6 +257,8 @@ def table(rows, note):
                      f"{short(row['pipos'])} | {row['behind']} | `{row['tag']}` | "
                      f"{'. '.join(row['notes'])} |")
     lines += ["", note, ""]
+    if extra:
+        lines += [extra, ""]
     return "\n".join(lines)
 
 
@@ -269,7 +282,7 @@ def run(argv, environ=os.environ):
         for line in str(e).splitlines():
             print(f"::error::plan: {line}")
         return 1
-    text = table(rows, note)
+    text = table(rows, note, core_head_line(plan))
     heading = ("## Nightly versions\n\nPairings planned: "
                + ", ".join(f"`{n}`" for n in names) + ".\n\n")
     append(args.summary, heading + text)

@@ -174,6 +174,28 @@ def test_both_holds_pins_then_core_head(tmp_path, work):
     assert "Pairings planned: `pins`, `core-head`." in summary
 
 
+@pytest.mark.parametrize("pairing", ["core-head", "both"])
+def test_table_names_the_core_head_library_and_image(tmp_path, work, pairing):
+    w, _ = work
+    head = head_tag(w, "headtag00000")
+    proc, _, summary, versions = run_plan(tmp_path, w, pairing=pairing)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    line = (f"In `core-head` every sibling builds on RobCo-Core `{head[:12]}`, "
+            "in the image `headtag00000`. The Library and Image tag columns show "
+            "the `pins` side.")
+    assert line in summary
+    assert line in versions.read_text()
+
+
+def test_pins_table_has_no_core_head_line(tmp_path, work):
+    w, _ = work
+    head_tag(w, "headtag00000")
+    proc, _, summary, versions = run_plan(tmp_path, w, pairing="pins")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "In `core-head`" not in summary
+    assert "In `core-head`" not in versions.read_text()
+
+
 def test_pins_is_unchanged_by_the_library_head(tmp_path, work):
     w, shas = work
     head_tag(w, "headtag00000")
