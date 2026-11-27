@@ -683,7 +683,7 @@ MAX_HITS = 64
 MAX_PARTIALS = 16
 MAX_ENV = 64
 MAX_BANDS = 24
-MAX_US = 10000000
+MAX_US = MAX_LEN * 1000000 // 8000   # the longest hit at the lowest rate, 32.768 s
 MAX_DIGITS = 15                 # no field takes more than 10 digits
 MDB_MIN, MDB_MAX = -120000, 20000
 NAME = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
@@ -1410,6 +1410,12 @@ def commented(text):
 def _check(args, plan):
     # The paths of a write of this command line, from the plan.
     h, c = plan.file("--h", args.h), plan.file("--c", args.c)
+    # A check answers for the same command line as a write, so it refuses
+    # the paths a write would refuse.
+    fault = plan.fault()
+    if fault:
+        print(f"sfx_table.py: error: {fault}", file=sys.stderr)
+        return EX_USAGE
     try:
         h_raw = _read_bytes(h.real)
         c_raw = _read_bytes(c.real)

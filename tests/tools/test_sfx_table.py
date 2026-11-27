@@ -1927,7 +1927,7 @@ LEVELS = [
     (_cut_sound, [f"{S}: missing field 'len'", f"{S}.peak_steps: must be a whole number",
               f"{S}.loop: must be true or false"]),
     (_cut_tone, [f"{L0}: missing field 'pitch_mhz'", f"{L0}.level_mdb: must be a whole number",
-             f"{L0}.attack_us: must be 0 to 10000000, not -1"]),
+             f"{L0}.attack_us: must be 0 to 32768000, not -1"]),
     (_cut_noise, [f"{L1}: missing field 'seed'", f"{L1}.repeat: must be true or false",
               f"{L1}.fold: must be 0 to 4, not -1"]),
     (_cut_items, [f"{L0}: missing field 'len'", f"{L0}.hits[1][1]: must be a whole number",
@@ -2047,3 +2047,37 @@ def test_fuzz_of_broken_models(tmp_path, capsys):
             assert any(f": {tag}" in x or f": {where or 'model'}: missing field {key!r}" in x
                        for x in lines), (where, key, err)
         p.unlink()
+
+
+# ---------------------------------------------------------------------------
+# A check refuses what a write refuses, and times reach the longest hit
+# ---------------------------------------------------------------------------
+
+def test_check_refuses_the_paths_a_write_refuses(tmp_path):
+    """After a good write, the source is made a hard link of the header. A
+    write of the same command line refuses the two as one file, so the check
+    must not answer current."""
+    p, c, h = _generate(tmp_path, tone_model())
+    assert run(p, "--c", c, "--h", h, "--prefix", "demo_sfx_", "--check").returncode == 0
+    c.unlink()
+    try:
+        os.link(h, c)
+    except OSError:
+        pytest.skip("this file system cannot make a hard link")
+    for extra in ((), ("--check",), ("--check", "--full")):
+        r = run(p, "--c", c, "--h", h, "--prefix", "demo_sfx_", *extra)
+        assert r.returncode == 64, (extra, r.stderr)
+        assert "Traceback" not in r.stderr
+
+
+def test_a_time_reaches_the_longest_hit():
+    """At 8000 Hz a tone of 160000 samples lasts 20 s: its ramps and envelope
+    may use all of it. The cap is the longest hit at the lowest rate."""
+    assert T.MAX_US == 32768000
+    m = tone_model(len=160000)
+    layer = m["sounds"]["beep"]["layers"][0]
+    layer.update(len=160000, attack_us=12000000, release_us=8000000,
+                 env=[[0, 0], [20000000, 0]])
+    assert T.check_model(m) == []
+    layer["attack_us"] = T.MAX_US + 1
+    assert any("attack_us: must be 0 to 32768000" in f for f in T.check_model(m))

@@ -48,7 +48,7 @@ The tables below list every field of the format. The tool checks each one throug
 | `level_mdb` | -120000 to 20000 | Level of the layer in millidecibels |
 | `partials` | 1 to 16 pairs | `[multiple, level]`: the multiple of the pitch times 10000, 1 to 1000000, and the level in millidecibels added to `level_mdb` |
 | `attack_us`, `release_us` | 0 to the hit's length, optional | Linear ramps at the start and the end of a hit, in microseconds |
-| `env` | 1 to 64 pairs, optional | `[time, level]`: time in microseconds from the hit, level in millidecibels. Times must not go down. |
+| `env` | 1 to 64 pairs, optional | `[time, level]`: time in microseconds from the hit, 0 to 32768000, level in millidecibels. Times must not go down. |
 
 ### A noise layer
 
@@ -183,7 +183,7 @@ tools/sfx_table.py MODEL --wav DIR
 | Option | Does |
 |---|---|
 | `--c`, `--h`, `--prefix` | Writes the tables in C. The header defines `NAME_SFX_MODEL_SHA256`, `NAME_SFX_TOOL_REVISION`, `NAME_SFX_RATE_HZ`, and for each sound `_PEAK` and `_LOOP`. For each table it defines `_LEN` and `_CRC32` and declares `const uint8_t name_sfx_<table>[]`. Both files start with a comment that says they are generated and names the model file. |
-| `--check` | Compares the SHA-256 of `MODEL` and the tool revision with the lines in `OUT.h`, and with the opening comment of both files. Fast: it renders nothing. |
+| `--check` | Compares the SHA-256 of `MODEL` and the tool revision with the lines in `OUT.h`, and with the opening comment of both files. Fast: it renders nothing. It first checks the paths as a write does, and refuses with exit 64 the paths a write would refuse. |
 | `--check --full` | Also renders every sound again and compares both files byte for byte |
 | `--dump DIR` | Writes each table as a raw `<table>.u8` file |
 | `--wav DIR` | Writes each sound as an 8-bit mono WAV at `rate_hz`, whole, not split. A loop plays three times so its join is heard. |
