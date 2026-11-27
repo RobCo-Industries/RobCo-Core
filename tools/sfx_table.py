@@ -11,8 +11,8 @@ OUT.h hold sfx, and the prefix ends in sfx_, so every name written is clear
 of C's own names. --check writes nothing: it
 compares the model's SHA-256 and the tool revision recorded in OUT.h and in
 the comment of OUT.c. With --full it renders every sound again and compares
-both files byte for byte. A run checks its whole plan first: no two paths
-are the same file and none is MODEL. Then every file is written to a
+both files byte for byte. A run checks its whole plan first: no path
+is two files or both a file and a folder, and no output is MODEL. Then every file is written to a
 temporary name and all are renamed, OUT.h last. A failure restores the old
 files.
 
