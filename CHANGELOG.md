@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `tools/audio_preview.py` reads a play's gain: an optional `gain=` of 0 to 10000 at the end of a start line, and an `op=gain gain= t_ms=` line that moves the gain of the play that runs toward a new target by `(500000 + rate - 1) / rate` per sample. Without them the gain is `vol * 100` and every log gives the same bytes as before. A centred tone takes its height from the gain every sample, a pulse tone keeps the width of its note.
 - Another workflow of RobCo-Core can call the nightly run with the same seven inputs. A called run has its own concurrency group. Both card builds pass `CARD_NOTE`, the path of `VERSIONS.txt`, to `make`.
 - The nightly run gains the `core-head` pairing: every sibling builds on the planned RobCo-Core commit, in its image, and the tests run on `raspi0` and `raspi2b`. `both`, the default, plans `pins` then `core-head`, and either one fails the run. A red pairing does not skip the other one. The version table names the library commit and image of `core-head`. A stale sibling pin fails `pins` and `both` but not `core-head` alone. A sibling that lists neither `raspi0` nor `raspi2b` fails the plan of `core-head` with a clear error.
 - The README and the doc indexes match the tree: the panel, the expander, the second volume, user mode, the audio paths, the sound tools, the nightly run, the hardware results and every spec file.
