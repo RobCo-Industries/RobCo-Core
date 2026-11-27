@@ -1824,6 +1824,56 @@ def test_roll_back_keeps_a_folder_it_did_not_make(tmp_path, monkeypatch, capsys)
 
 
 # ---------------------------------------------------------------------------
+# A path is resolved once, in the plan
+# ---------------------------------------------------------------------------
+
+# Path calls allowed outside class Plan, each with its reason in the tool:
+# _side and _backup join a side file's name to a resolved path.
+PATH_CALLS_OUTSIDE_PLAN = {"join": 2}
+
+
+def test_paths_resolve_only_in_the_plan():
+    import ast
+    tree = ast.parse(open(TOOL, encoding="utf-8").read())
+    plan = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Plan")
+    inside = {id(n) for n in ast.walk(plan)}
+    found = {}
+    for n in ast.walk(tree):
+        name = n.attr if isinstance(n, ast.Attribute) else n.id if isinstance(n, ast.Name) else None
+        if name in ("realpath", "abspath", "join") and id(n) not in inside:
+            if name == "join" and not (isinstance(n, ast.Attribute)
+                                       and isinstance(n.value, ast.Attribute)
+                                       and n.value.attr == "path"):
+                continue        # str.join, not a path join
+            found[name] = found.get(name, 0) + 1
+    assert found == PATH_CALLS_OUTSIDE_PLAN
+
+
+def test_publish_writes_where_the_plan_resolved(tmp_path, monkeypatch, capsys):
+    # Another program retargets the output's link to the model right after
+    # the plan. The run writes where the plan resolved; the model stays.
+    model = write_model(tmp_path, tone_model())
+    before = model.read_bytes()
+    target = tmp_path / "target_sfx.c"
+    target.write_bytes(b"old")
+    link = tmp_path / "sfx_t.c"
+    link.symlink_to(target)
+    plan_fault = T.Plan.fault
+
+    def fault(self):
+        r = plan_fault(self)
+        link.unlink()
+        link.symlink_to(model)
+        return r
+    monkeypatch.setattr(T.Plan, "fault", fault)
+    code = T.main([str(model), "--c", str(link), "--h", str(tmp_path / "sfx_t.h"),
+                   "--prefix", "x_sfx_"])
+    assert code == 0, capsys.readouterr().err
+    assert model.read_bytes() == before
+    assert target.read_bytes().startswith(b"/*")
+
+
+# ---------------------------------------------------------------------------
 # Every independent field gets its line
 # ---------------------------------------------------------------------------
 
