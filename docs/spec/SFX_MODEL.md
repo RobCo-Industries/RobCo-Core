@@ -320,6 +320,8 @@ A band or frame whose noise fills only part of it holds fewer values than its wi
 
 A band or frame is in range when its measured value is within 30 dB of the strongest measured one, or its predicted value is within 30 dB of the strongest predicted one. The predicted value here is the whole prediction, after the gain. The tool skips every value out of range.
 
+The tool applies its rules to each band and frame in this order. First the range rule. Then the floor rule and the one-step rule, below. Only a value that survives them can be silent, tight or thin. A quiet start of a hit rounds to rest values, so a silent check before the floor rule would fail a good table.
+
 A value in range by its prediction can be silent: measured at zero, or more than 30 dB under its prediction. A silent value fails the sound with `frame at T.T ms is silent, the model predicts power` or `band at F Hz is silent, the model predicts power`. Each kind gives at most one such reason, the first one found. A silent value does not enter the statistics. So a table that leaves out a hit of the model fails, even though the gains absorb the lost power.
 
 The tool judges every other value in range, in one of two tiers:
@@ -333,6 +335,8 @@ Bands run from 0 in steps of `W` up to 15 kHz, and the tool drops a last partial
 
 The prediction of a sound with a noise layer includes the rounding of each sample to a whole step. It adds this rounding as white noise of power 1/12 step squared per sample, spread evenly from 0 to half the rate, and each gain matches the model part only. A quiet table needs it: its weak bands sit close to the rounding noise, so a prediction without it reads them too low. The white floor is only an average, since at a low level the rounding error follows the waveform. So the tool does not judge a band or frame whose floor is more than half of its whole prediction.
 
+The tool also does not judge a frame of a sound with noise whose whole prediction is under 1 step squared per sample, an rms under one step. Such a frame holds samples of mostly 0 or one step, so its energy is a small whole number that neither the floor nor the gamma bound describes. Bands sum over the whole table and keep the floor rule only. A sound of tones only predicts its rounded table, so this rule does not touch it.
+
 When the floor of the whole table is more than half of its measured energy over the full spectrum, the table is mostly rounding. It says nothing about the spectrum or the envelope of the model. The tool then judges neither the bands, nor the frames, nor the level. Its line says `not judged, the table is mostly rounding` and prints no level. It still checks the length and the peak. A sound of tones only has no floor, so this never applies to it.
 
 A sound of tones only rounds along its waveform, so its rounding is not white noise. For such a sound the tool predicts the rounded table itself. It scales the render so its loudest sample sits at `peak_steps`, rounds each sample to a whole step with a half away from zero, and measures that. It adds no white floor and applies no gain.
@@ -343,7 +347,7 @@ A sound with a noise layer also gets a level check, since the frame gain hides t
 
 A sound where the table and the model both hold less than 1 % of the power under 15 kHz is judged without its bands. Its line says `bands not judged, no power under 15 kHz`. The line still prints the band numbers it measured.
 
-It checks the fields it needs and their types, and bounds every number it reads with the ranges of `tools/sfx_table.py`. It also checks the rules its prediction relies on: band frequencies that rise, a `fold` of at most half the samples of the noise envelope, a noise envelope of 1 to 262144 samples, an attack and a release inside the tone, envelope times that do not go down, hits inside the sound, a pitch above zero, lengths above zero, and at least one layer and one hit. An invalid model exits with code 2 and names the sound and the field. It does not repeat every check of `tools/sfx_table.py`.
+It checks the fields it needs and their types, and bounds every number it reads with the ranges of `tools/sfx_table.py`. It also checks the rules its prediction relies on: band frequencies that rise, a `fold` of at most half the samples of the noise envelope, a noise envelope of 1 to 262144 samples, an attack and a release inside the tone, envelope times that do not go down, hits inside the sound, a pitch above zero, lengths above zero, and at least one layer and one hit. It checks every sound name with the rule of `tools/sfx_table.py` before it reads a table, so a name such as `../escape` never leads out of `DIR`. An invalid model exits with code 2 and names the sound and the field. It does not repeat every check of `tools/sfx_table.py`.
 
 A loop is a sound with `loop` set. A one-shot with noise has a noise layer and no `loop`.
 
