@@ -1275,7 +1275,9 @@ def plan_faults(model, writes, folders):
     set of nodes, each a path with a kind. Files: the model and every
     output of writes, a list of (label, path). Folders: each of folders, a
     list of (label, path) for --dump and --wav, and the folder of each file.
-    Paths compare by _same_file.
+    Each path is resolved once with os.path.realpath, and every check reads
+    the resolved path: the caller writes there too. Paths compare by
+    _same_file.
 
     Returns (fault, new) where fault is one line, or None if the plan is
     good, and new the resolved folders to make, parents first. Refused: two
@@ -1284,45 +1286,48 @@ def plan_faults(model, writes, folders):
     disk; a folder that is a file on disk; a missing folder that is neither
     made by the run nor in a folder that is; one new folder written two
     ways that differ only by case."""
-    files = [("MODEL", model)] + list(writes)
+    R = os.path.realpath
+    # Each node is (label, spelling, resolved path). Every check reads the
+    # resolved path only, the one publish writes; messages show the spelling.
+    files = [(lb, p, R(p)) for lb, p in [("MODEL", model)] + list(writes)]
     dirs, seen = [], set()
-    for label, path in list(folders) + [(f"the folder of {lb}", os.path.dirname(p) or ".")
-                                        for lb, p in files]:
-        real = os.path.realpath(path)
+    for label, path, real in ([(lb, d, R(d)) for lb, d in folders]
+                              + [(f"the folder of {lb}", os.path.dirname(p) or ".",
+                                  os.path.dirname(r)) for lb, p, r in files]):
         if real not in seen:
             seen.add(real)
-            dirs.append((label, path))
-    for i, (la, pa) in enumerate(files):
-        for lb, pb in files[i + 1:]:
-            if _same_file(pa, pb):
+            dirs.append((label, path, real))
+    for i, (la, pa, ra) in enumerate(files):
+        for lb, pb, rb in files[i + 1:]:
+            if _same_file(ra, rb):
                 return f"{la} {pa!r} and {lb} {pb!r} are the same file", []
-    for lf, pf in files:
-        for ld, pd in dirs:
-            if _same_file(pf, pd):
+    for lf, pf, rf in files:
+        for ld, pd, rd in dirs:
+            if _same_file(rf, rd):
                 return f"{lf} {pf!r} and {ld} {pd!r} are one path, a file and a folder", []
-        for ln, pn in files + dirs:
-            if _under(pn, pf):
+        for ln, pn, rn in files + dirs:
+            if _under(rn, rf):
                 return f"{ln} {pn!r} lies under {lf} {pf!r}, a file", []
-        if os.path.isdir(pf):
+        if os.path.isdir(rf):
             return f"{lf} {pf!r} is a directory", []
-    new = [(ld, pd) for ld, pd in folders if not os.path.isdir(pd)]
-    for i, (la, pa) in enumerate(new):
-        for lb, pb in new[i + 1:]:
-            if _same_file(pa, pb) and os.path.realpath(pa) != os.path.realpath(pb):
+    new = [(ld, pd, R(pd)) for ld, pd in folders if not os.path.isdir(R(pd))]
+    for i, (la, pa, ra) in enumerate(new):
+        for lb, pb, rb in new[i + 1:]:
+            if _same_file(ra, rb) and ra != rb:
                 return (f"{la} {pa!r} and {lb} {pb!r} differ only by case:"
                         " write the folder the same way twice"), []
-    for ld, pd in dirs:
-        if os.path.lexists(pd) and not os.path.isdir(pd):
+    for ld, pd, rd in dirs:
+        if os.path.lexists(rd) and not os.path.isdir(rd):
             return f"{ld} {pd!r} is not a directory", []
         # A folder the run makes needs its parent; any other must exist.
-        if not any(_same_file(pd, d) for _, d in new):
-            if not os.path.isdir(pd):
+        if not any(_same_file(rd, d) for _, _, d in new):
+            if not os.path.isdir(rd):
                 return f"{ld} {pd!r} does not exist", []
             continue
-        parent = os.path.dirname(os.path.realpath(pd))
-        if not os.path.isdir(parent) and not any(_same_file(parent, d) for _, d in new):
+        parent = os.path.dirname(rd)
+        if not os.path.isdir(parent) and not any(_same_file(parent, d) for _, _, d in new):
             return f"{ld} {pd!r}: the folder {parent!r} does not exist", []
-    return None, sorted({os.path.realpath(d) for _, d in new}, key=len)
+    return None, sorted({r for _, _, r in new}, key=len)
 
 
 class Parser(argparse.ArgumentParser):
@@ -1354,12 +1359,16 @@ def commented(text):
 
 
 def _check(args, model_path):
+    # The same resolved paths as a write of this command line.
+    real = {os.path.realpath(p): p for p in (args.h, args.c, model_path)}
+    h_real, c_real, model_real = (os.path.realpath(p) for p in (args.h, args.c, model_path))
     try:
-        h_raw = _read_bytes(args.h)
-        c_raw = _read_bytes(args.c)
-        sha = hashlib.sha256(_read_bytes(model_path)).hexdigest()
+        h_raw = _read_bytes(h_real)
+        c_raw = _read_bytes(c_real)
+        sha = hashlib.sha256(_read_bytes(model_real)).hexdigest()
     except OSError as e:
-        print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
+        print(f"sfx_table.py: {real.get(e.filename, e.filename)}: {e.strerror}",
+              file=sys.stderr)
         return EX_STALE
     h_text, c_text = _text(h_raw), _text(c_raw)
     rec = recorded(h_text, args.prefix) if h_text is not None else None
@@ -1382,7 +1391,7 @@ def _check(args, model_path):
               file=sys.stderr)
         return EX_STALE
     if args.full:
-        model, _ = load_model(model_path)
+        model, _ = load_model(model_real)
         built = build(model)
         source = os.path.basename(model_path)
         h_name = os.path.basename(args.h)
@@ -1445,14 +1454,14 @@ def _main(p, args):
     try:
         if args.check:
             return _check(args, args.model)
-        model, sha = load_model(args.model)
+        model, sha = load_model(os.path.realpath(args.model))
         built = build(model)
     except ModelError as e:
         for f in e.faults:
             print(f"sfx_table.py: {args.model}: {f}", file=sys.stderr)
         return EX_MODEL
     except OSError as e:
-        print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
+        print(f"sfx_table.py: {args.model}: {e.strerror}", file=sys.stderr)
         return EX_STALE
 
     items = []
@@ -1489,10 +1498,15 @@ def _main(p, args):
         p.print_usage(sys.stderr)
         print(f"sfx_table.py: error: {fault}", file=sys.stderr)
         return EX_USAGE
+    # The plan resolved every path once; publish writes only there, so the
+    # plan and the publish never disagree. Messages show the spelling.
+    shown = {os.path.realpath(path): path for _, path, _ in items}
+    shown.update((os.path.realpath(d), d) for _, d in folders)
     try:
-        publish([(path, data) for _, path, data in items], made)
+        publish([(os.path.realpath(path), data) for _, path, data in items], made)
     except OSError as e:
-        print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
+        print(f"sfx_table.py: {shown.get(e.filename, e.filename)}: {e.strerror}",
+              file=sys.stderr)
         return EX_STALE
     return 0
 
