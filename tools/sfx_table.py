@@ -1022,7 +1022,14 @@ def _comment(source, sha):
 def header_guard(h_name):
     """The include guard of a header name. It starts with SFX_GUARD_, so it
     is never a name C reserves, such as E plus a capital for <errno.h>,
-    whatever the file is called."""
+    whatever the file is called.
+
+    The map is one to one on the names H_FILE takes. Such a name is a stem
+    of [a-z0-9_] and then .h. The stem goes to capitals letter by letter,
+    and two different stems give two different capital stems, because the
+    stem has no capital to meet. The one . becomes _, but every guard ends
+    in _H after its stem, so the stem is the guard minus SFX_GUARD_ and _H.
+    Two different names therefore give two different guards."""
     return "SFX_GUARD_" + re.sub(r"[^A-Z0-9]", "_", h_name.upper())
 
 
@@ -1215,13 +1222,14 @@ def recorded(h_text, prefix):
 # ---------------------------------------------------------------------------
 
 # The file names of --c and --h, as written. Each goes into the generated C:
-# the header's name into #include "..." and the include guard. Letters,
-# digits, _, . and - only, starting with a letter, so the name needs no
-# escape in a C string, is ASCII, and gives a guard that is a C name. Each
-# name holds sfx, which no standard or system header's name does, so a
-# generated header never takes the place of one on the include path.
-C_FILE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\.c")
-H_FILE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\.h")
+# the header's name into #include "..." and the include guard. A lower-case
+# letter, then lower-case letters, digits and _, then one . and the
+# extension, so the name needs no escape in a C string, is ASCII, and maps
+# to its guard one to one: see header_guard. Each name holds sfx, which no
+# standard or system header's name does, so a generated header never takes
+# the place of one on the include path.
+C_FILE = re.compile(r"[a-z][a-z0-9_]*\.c")
+H_FILE = re.compile(r"[a-z][a-z0-9_]*\.h")
 
 
 def file_name_faults(c_path, h_path):
@@ -1231,8 +1239,8 @@ def file_name_faults(c_path, h_path):
     for opt, path, rule, ext in (("--c", c_path, C_FILE, ".c"), ("--h", h_path, H_FILE, ".h")):
         name = os.path.basename(path)
         if not rule.fullmatch(name) or "sfx" not in name:
-            faults.append(f"{opt} {name!r}: the file name must be a letter, then letters,"
-                          f" digits, _, . or -, hold sfx, and end in {ext}")
+            faults.append(f"{opt} {name!r}: the file name must be a lower-case letter, then"
+                          f" lower-case letters, digits or _, hold sfx, and end in {ext}")
     return faults
 
 
