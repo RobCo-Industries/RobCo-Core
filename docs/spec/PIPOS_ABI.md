@@ -127,8 +127,8 @@ Numbers 0x01 to 0x04, 0x10, 0x11, 0x20, 0x21, 0x30, 0x40, 0x41, 0x50 and 0x51 ke
 | `0x26` | `sample_queue` | `const uint8 *data, uint32 length` | 0, or an error | draft |
 | `0x27` | `sample_rate` | `uint32 hz`, 8000 or 37500 | Previous rate, or `-PIP_EINVAL` | draft |
 | `0x28` | `sound_kind` | `uint32 kind`, 0 to 3 | Previous kind, or `-PIP_EINVAL` or `-PIP_EPERM` | draft |
-| `0x29` | `sound_level` | `uint32 kind, uint32 level`. `kind` is 0 to 3. `level` is 0 to 100, or `PIP_LEVEL_ASK` to read. | Level of that kind before the call, or `-PIP_EINVAL` or `-PIP_EPERM` | draft |
-| `0x2A` | `sound_store` | none | 0, or `-PIP_EPERM` or `-PIP_EIO`. ROM only. | draft |
+| `0x29` | `sound_level` | `uint32 which, uint32 level`. `which` is a kind, 0 to 3, or `PIP_LEVEL_MASTER`, 4. `level` is 0 to 100, or `PIP_LEVEL_ASK` to read. | That level before the call, or `-PIP_EINVAL` or `-PIP_EPERM` | draft |
+| `0x2A` | `sound_store` | none | 0, or `-PIP_EPERM`, `-PIP_ENOSPC` or `-PIP_EIO`. ROM only. | draft |
 | `0x30` | `read_sensor` | `uint32 sensor, uint32 *value` | 0, or `-PIP_ENODEV` | stable |
 | `0x31` | `sensor_available` | `uint32 sensor` | 1 or 0 | stable |
 | `0x40` | `get_time` | `uint32 *unix_seconds` | 0, or `-PIP_ENODEV` when no clock is set | stable |
@@ -299,21 +299,22 @@ There is one voice. `tone`, `sample` and `play_seq` return at once and the sound
 | `audio_stop` | Stops the sound and drops a waiting sample. Returns 0 also when nothing plays. |
 | `sample_rate` | `hz` is 8000 or 37500. Sets the rate of `sample` and `sample_queue` and returns the rate set before the call. Any other value returns `-PIP_EINVAL` and changes nothing. Added in ABI 1.5. See [Sample rate](#sample-rate). |
 | `sound_kind` | `kind` is 0 to 3, a `PIP_SND_*` value. Sets the kind of the sounds the image starts after the call and returns the kind set before. It starts and stops nothing. A holotape may set two of the four kinds. Added in ABI 1.6. See [Sound kinds and levels](#sound-kinds-and-levels). |
-| `sound_level` | `kind` is 0 to 3. `level` is 0 to 100 to set the level of that kind, or `PIP_LEVEL_ASK` to read it. Returns the level before the call. A holotape may only read. Added in ABI 1.6. |
-| `sound_store` | Writes the master and the four levels to the boot card. ROM only. Added in ABI 1.6. See [Stored levels](#stored-levels). |
+| `sound_level` | `which` is a kind, 0 to 3, or `PIP_LEVEL_MASTER`, 4, for the master. `level` is 0 to 100 to set that level, or `PIP_LEVEL_ASK` to read it. Returns the level before the call. A holotape may only read. Added in ABI 1.6. See [The three calls](#the-three-calls). |
+| `sound_store` | Writes the master and the four levels to the boot card. It starts no sound and cuts none. ROM only. Added in ABI 1.6. See [Stored levels](#stored-levels). |
 
 A value outside these limits returns `-PIP_EINVAL`. `tone`, `sample`, `sample_queue` and `play_seq` return `-PIP_EIO` when the audio driver refuses the sound. A call refused for its arguments plays nothing and leaves the current sound playing.
 
 When several errors apply, a call returns the first one in this order:
 
-1. A number out of its limits: `-PIP_EINVAL`. These are the frequency and duration of `tone`, the length of `sample` and `sample_queue`, the count of `play_seq`, the level of `volume`, the rate of `sample_rate`, the kind of `sound_kind` and the kind and level of `sound_level`.
+1. A number out of its limits: `-PIP_EINVAL`. These are the frequency and duration of `tone`, the length of `sample` and `sample_queue`, the count of `play_seq`, the level of `volume`, the rate of `sample_rate`, the kind of `sound_kind` and the `which` and the level of `sound_level`.
 2. A call or a value this caller may not use: `-PIP_EPERM`. Since ABI 1.6. For a holotape these are `sound_store`, a `sound_level` that sets a level, and `sound_kind` with `PIP_SND_RADIO` or `PIP_SND_SFX`.
 3. A bad pointer: `-PIP_EFAULT`.
 4. A bad note in `play_seq`: `-PIP_EINVAL`.
 5. A sample already waiting, for `sample_queue`: `-PIP_EBUSY`.
-6. The audio driver refuses the sound, or the card write of `sound_store` fails: `-PIP_EIO`.
+6. The audio driver refuses the sound: `-PIP_EIO`.
+7. A storage error, for `sound_store`: `-PIP_ENOSPC` for a full card, and `-PIP_EIO` for a missing card, a failed card or another file system error. These are the codes of the save calls, see [Files](#files).
 
-So `sample_queue` with a bad length or pointer returns that error even when a sample already waits. A holotape that calls `sound_level` with kind 4 and a level of 50 gets `-PIP_EINVAL`, not `-PIP_EPERM`. A holotape that calls `sound_store` with no card gets `-PIP_EPERM`, not `-PIP_EIO`.
+So `sample_queue` with a bad length or pointer returns that error even when a sample already waits. A holotape that calls `sound_level` with a `which` of 5 and a level of 50 gets `-PIP_EINVAL`, not `-PIP_EPERM`. A holotape that calls `sound_store` with no card gets `-PIP_EPERM`, not `-PIP_EIO`.
 
 A refused call changes nothing. It stops no sound, so the audio trace prints no `op=stop` line for it. `audio_stop` with nothing playing returns 0 and prints no line either. A call that replaces a playing sound prints `op=stop` once, then its start line, as the stop rule in the [audio guide](../guide/api/audio.md) states.
 
@@ -401,6 +402,7 @@ ABI 1.6 gives the device five sound levels. One is the master, the level `volume
 #define PIP_SND_SFX         1
 #define PIP_SND_RECORDINGS  2
 #define PIP_SND_GAMES       3
+#define PIP_LEVEL_MASTER    4             /* sound_level only: the master, not a kind */
 #define PIP_LEVEL_ASK       0xFFFFFFFFu   /* sound_level: read the level, change nothing */
 ```
 
@@ -414,6 +416,8 @@ ABI 1.6 gives the device five sound levels. One is the master, the level `volume
 The image that starts a sound picks its kind. This document does not say which kind a given sound takes. A sound that fits two kinds, such as a recorded piece on a radio station, takes the kind its ROM picks.
 
 Each level is 0 to 100. The built-in value of each of the four levels is 100. `PIPOS.CFG` and the [stored levels](#stored-levels) can replace it, and the user can change it. So a ROM reads a level with `PIP_LEVEL_ASK` and never assumes its value.
+
+The master is not a kind. No sound has it as its kind, and `sound_kind` takes 0 to 3 only. `PIP_LEVEL_MASTER` is a fifth value for the first argument of `sound_level`, so that call reaches all five levels.
 
 This section is a rule for Pip-OS and for the audio driver of RobCo-Core. Neither follows it yet.
 
@@ -472,7 +476,7 @@ The play took its kind when it started, so the image can set the old kind back r
 |---|---|
 | Argument | `uint32 kind`, 0 to 3, a `PIP_SND_*` value |
 | Return | The kind in force before the call, 0 to 3 |
-| Errors, in this order | `-PIP_EINVAL` for a kind above 3. Then `-PIP_EPERM` for a kind the caller may not set. |
+| Errors, in this order | `-PIP_EINVAL` for a kind above 3, `PIP_LEVEL_MASTER` included. Then `-PIP_EPERM` for a kind the caller may not set. |
 | A ROM | May set every kind |
 | A holotape | May set `PIP_SND_GAMES` and `PIP_SND_RECORDINGS`. `PIP_SND_RADIO` and `PIP_SND_SFX` return `-PIP_EPERM`. |
 | No busy error | A call that passes these checks always succeeds, whatever plays or waits |
@@ -482,14 +486,15 @@ The play took its kind when it started, so the image can set the old kind back r
 
 | Rule | Detail |
 |---|---|
-| Arguments | `uint32 kind`, 0 to 3. `uint32 level`, 0 to 100 to set the level of that kind, or `PIP_LEVEL_ASK`, `0xFFFFFFFF`, to read it. |
-| Return | The level of that kind before the call, 0 to 100. With `PIP_LEVEL_ASK` that is the level in force, and the call changes nothing. |
-| Errors, in this order | `-PIP_EINVAL` for a kind above 3, or for a level that is neither 0 to 100 nor `PIP_LEVEL_ASK`. Then `-PIP_EPERM` when a holotape sets a level. |
-| A ROM | May read and set all four levels |
-| A holotape | May read all four levels. A set returns `-PIP_EPERM`. |
-| What a set changes | One of the four levels of the device. A sound of that kind that plays follows it, as [Level changes](#level-changes) says. The call never writes the card. |
+| Arguments | `uint32 which`, the level to reach: a kind, 0 to 3, or `PIP_LEVEL_MASTER`, 4, for the master. `uint32 level`, 0 to 100 to set that level, or `PIP_LEVEL_ASK`, `0xFFFFFFFF`, to read it. |
+| Return | That level before the call, 0 to 100. With `PIP_LEVEL_ASK` that is the level in force, and the call changes nothing. |
+| Errors, in this order | `-PIP_EINVAL` for a `which` above 4, or for a level that is neither 0 to 100 nor `PIP_LEVEL_ASK`. Then `-PIP_EPERM` when a holotape sets a level, the master included. |
+| A ROM | May read and set all five levels |
+| A holotape | May read all five levels. A set returns `-PIP_EPERM`, for the master as for the four others. Its own `volume` stays its trim. |
+| What a set changes | One of the five levels of the device. A sound that plays follows it when the level is the master or the level of that sound's kind, as [Level changes](#level-changes) says. The call never writes the card. |
 | How long a set lasts | The level stays after the image ends, until the next power-on. `sound_store` keeps it longer. |
-| The master | It has no kind number. `volume` sets it. |
+| `PIP_LEVEL_MASTER` | `sound_level(PIP_LEVEL_MASTER, PIP_LEVEL_ASK)` returns the master and changes nothing. `sound_level(PIP_LEVEL_MASTER, v)` sets the master as `volume(v)` does for a ROM and returns the master before the call. |
+| Why the master is here | `volume` cannot read the master without setting it. A ROM that shows the master on a screen must be able to read it and change nothing. |
 | A refused call | Changes no level |
 
 `sound_store`, number `0x2A`:
@@ -498,10 +503,11 @@ The play took its kind when it started, so the image can set the old kind back r
 |---|---|
 | Arguments | None |
 | Return | 0 once the boot card holds the master and the four levels in force |
-| Errors, in this order | `-PIP_EPERM` for a holotape. Then `-PIP_EIO` when the boot card is missing or read-only, or when the write fails. |
+| Errors, in this order | `-PIP_EPERM` for a holotape. Then a storage error, with the codes of the save calls: `-PIP_ENOSPC` for a full card, and `-PIP_EIO` for a missing card, a failed card, a read-only card or another file system error. |
 | A ROM | May call it |
 | A holotape | Always gets `-PIP_EPERM` |
 | What it writes | The file of [Stored levels](#stored-levels) |
+| Sound | It starts no sound and cuts none. The disk click, which Pip-OS plays for card work when `PIPOS.CFG` sets `[audio] system_sound = yes`, treats this write as it treats the write of `write_save`. |
 | A refused or failed call | Changes no level. The levels in force stay in force, and the card keeps the file it had. |
 
 #### Volume, master and trim
@@ -510,8 +516,8 @@ From ABI 1.6 `volume` does one of two things, by its caller. Its number, its arg
 
 | Caller | What `volume(level)` does from ABI 1.6 |
 |---|---|
-| A ROM | Sets the master of the device, 0 to 100, and returns the master before the call. This is what `volume` did before 1.6. The master stays after the ROM ends, until the next power-on. `sound_store` keeps it longer. |
-| A holotape | Sets the holotape's trim, 0 to 100, and returns the trim before the call. It does not change the master, and it changes none of the four levels. |
+| A ROM | Sets the master of the device, 0 to 100, and returns the master before the call. This is what `volume` did before 1.6. The master stays after the ROM ends, until the next power-on. `sound_store` keeps it longer. `sound_level(PIP_LEVEL_MASTER, level)` does the same, and it can also read the master. |
+| A holotape | Sets the holotape's trim, 0 to 100, and returns the trim before the call. It does not change the master, and it changes none of the four levels. A holotape reads the master with `sound_level(PIP_LEVEL_MASTER, PIP_LEVEL_ASK)`. |
 
 The trim follows these rules:
 
@@ -552,7 +558,7 @@ The master and the trim are linear. The four levels follow a square law. Half th
 
 ```mermaid
 flowchart LR
-    rom["ROM"] -- "volume" --> master["Master"]
+    rom["ROM"] -- "volume, sound_level" --> master["Master"]
     rom -- "sound_level" --> levels["Four levels"]
     rom -- "sound_kind" --> kind["Kind of the next play"]
     tape["Holotape"] -- "volume" --> trim["Trim of the holotape"]
@@ -585,7 +591,7 @@ A ROM may rely on these rules:
 
 #### Level changes
 
-Three things can change the gain of a sound that plays. `sound_level` does it when it sets the level of that play's kind. `volume` from a ROM does it through the master. `volume` from a holotape does it through the trim, for the holotape's own play. `sound_kind` never does, because a play keeps its kind.
+Three things can change the gain of a sound that plays. `sound_level` does it when it sets the level of that play's kind, or the master. `volume` from a ROM does it through the master. `volume` from a holotape does it through the trim, for the holotape's own play. `sound_kind` never does, because a play keeps its kind.
 
 | Rule | Detail |
 |---|---|
@@ -603,19 +609,24 @@ Pip-OS keeps the master and the four levels in one file on the boot card, so the
 | Rule | Detail |
 |---|---|
 | The file | `/PIPBOY/PIPOS.SET` on the boot card |
-| Format | INI text, read by the parser that reads `PIPOS.CFG`. One section, `[audio]`, with five keys: `volume`, `radio`, `sfx`, `recordings` and `games`. Each value is 0 to 100. `volume` is the master. Pip-OS accepts only these five keys in this file. |
+| Format | INI text in the syntax of `PIPOS.CFG`, at most 512 bytes. One section, `[audio]`, with five keys: `volume`, `radio`, `sfx`, `recordings` and `games`. `volume` is the master. |
+| What Pip-OS writes | Exactly six lines, each ended by one line feed, and no other byte: `[audio]`, then `volume = N`, `radio = N`, `sfx = N`, `recordings = N` and `games = N`, in that order. Each `N` is a decimal number, 0 to 100, with no leading zero. The file is 72 bytes at most. |
+| What Pip-OS accepts | The section `[audio]` only, and only the five keys, each at most once, each a whole number 0 to 100. Comments and blank lines are fine, since a person may edit the file on a computer. A key that is absent keeps the value from before the file. |
+| A file that is not valid | One that is larger than 512 bytes, has a syntax error, another section, another key or a key twice, or has a value that is not a whole number 0 to 100. Pip-OS then ignores the whole file. No part of it applies. |
 | Who writes it | Pip-OS only, inside `sound_store`, with RobCo-Core's atomic write. A power cut leaves the old file or the new one. |
 | When | Only when a ROM calls `sound_store`. `volume` and `sound_level` never write the card, and no other event does. |
 | What | The master and the four levels in force at the call. Pip-OS stores no kind and no trim. |
-| Order at boot | First the built-in values, 100 for the master and for each level. Then `PIPOS.CFG`, whose `[audio]` section takes the same five keys. Then `PIPOS.SET`. A value in `PIPOS.SET` wins over `PIPOS.CFG`, and a value in `PIPOS.CFG` wins over the built-in one. |
+| Order at boot | First the built-in values, 100 for the master and for each level. Then `PIPOS.CFG`, whose `[audio]` section takes the same five keys. Then `PIPOS.SET`. A key in `PIPOS.SET` wins over `PIPOS.CFG`, and a key in `PIPOS.CFG` wins over the built-in value. |
 | Before the first sound | Pip-OS reads both files before it starts its first sound, so the power-on beep follows the stored levels |
 | A deleted file | The next boot uses the values of `PIPOS.CFG` again |
-| A missing or bad file | A `PIPOS.SET` that is missing, too large or not valid never stops the boot. Pip-OS keeps the values it has after `PIPOS.CFG`. For a file that is too large or not valid it also prints one `ev=levels` marker. |
+| A missing file | It is not an error and prints nothing. A fresh card has none. Pip-OS keeps the values it has after `PIPOS.CFG`. |
+| A file that is not valid, at boot | It never stops the boot. Pip-OS keeps the values it has after `PIPOS.CFG` and prints one `ev=levels` line, see [Trace lines](#trace-lines). |
+| A valid file | It prints nothing. The gain on the start line of the next sound shows it. |
 | `PIPOS.CFG` | Pip-OS never writes it |
 
 No image can write `PIPOS.SET` directly. The [file calls](#files) are read only, and the [save calls](#save-files) reach `/PIPBOY/SAVE` only. `sound_store` is the one way to the file, and only a ROM may call it.
 
-A file looks like this:
+The file Pip-OS writes looks like this, 68 bytes here:
 
 ```ini
 [audio]
@@ -636,7 +647,7 @@ A level that no `sound_store` saved is lost at power-off. So a ROM that lets its
 | A holotape built for 1.5 or older on a 1.6 Pip-OS | Its sounds are `games` and follow that level. Its `volume` sets its trim. It can lower its own sounds, it cannot raise the device's level, and its setting ends with it. |
 | A ROM built for 1.6 on a Pip-OS before 1.6 | The three calls return `-PIP_ENOSYS`. `volume` is the only level and nothing stores it. The ROM reads `abi_version` once at start, hides the four levels from its user and keeps the master in a save of its own. |
 | A holotape built for 1.6 on a Pip-OS before 1.6 | The three calls return `-PIP_ENOSYS`. Its `volume` sets the device's level there, and that level stays after the holotape ends. |
-| The SDK | The headers hide `pip_sound_kind`, `pip_sound_level`, `pip_sound_store` and their numbers when `PIPOS_ABI_TARGET` is below `0x00010006`, as [Calls newer than the target ABI](#calls-newer-than-the-target-abi) says. `PIP_SND_*` and `PIP_LEVEL_ASK` stay visible. |
+| The SDK | The headers hide `pip_sound_kind`, `pip_sound_level`, `pip_sound_store` and their numbers when `PIPOS_ABI_TARGET` is below `0x00010006`, as [Calls newer than the target ABI](#calls-newer-than-the-target-abi) says. `PIP_SND_*`, `PIP_LEVEL_MASTER` and `PIP_LEVEL_ASK` stay visible. |
 
 #### Trace lines
 
@@ -657,7 +668,8 @@ A test may rely on these lines of the audio trace. The other fields of each line
 | Sounds Pip-OS starts itself | Their start lines carry the gain of `sfx` with a trim of 100, also while a ROM or a holotape runs |
 | A holotape at trim 100 | Its start lines carry the gain of its kind. A `volume(100)` from a holotape leaves that gain as it is. |
 | Full level | With the four levels at 100 and no trim under 100, the `ev=audio` lines are those of 1.5 at the same master. The one new line is `op=gain`, for a `volume` call while a sound plays. |
-| `ev=levels` | One `@RC` line with `ev=levels` at boot when `PIPOS.SET` is too large or not valid |
+| `ev=levels` | At boot, when `PIPOS.SET` is not valid, Pip-OS prints one line: `@RC stage=pipos ev=levels result=bad reason=<size\|syntax\|key\|value>`. A missing file and a valid file print no `ev=levels` line. |
+| `reason=` of `ev=levels` | `size` for a file larger than 512 bytes. `syntax` for a syntax error. `key` for another section, another key or a key twice. `value` for a value that is not a whole number 0 to 100. When several apply, the line names the first one in the order `size`, `syntax`, `key`, `value`. |
 
 A sound at master 80 and level 40 starts with `vol=12` and ends its line with `gain=1280`. A sound at master 80 and level 50 starts with `vol=20` and has no `gain` field.
 
@@ -666,8 +678,6 @@ A sound at master 80 and level 40 starts with `vol=12` and ends its line with `g
 - Which kind a ROM gives each of its sounds. The ROM picks.
 - A check of a holotape's kind. A holotape says by itself whether it is `games` or `recordings`, and Pip-OS takes its word.
 - Two kinds at once. There is one voice, so this version has no rule for mixing two kinds.
-- The size limit of `PIPOS.SET`, the exact text Pip-OS writes, what else makes the file not valid, and the fields of the `ev=levels` line after `ev=levels`.
-- Whether a missing `PIPOS.SET` prints the `ev=levels` line.
 
 ## Time, sensors and power
 
@@ -999,6 +1009,6 @@ A project that also has a `robco.toml` sets `ABI` to the value of `target.abi`, 
 | 1.3 | `hw_flags` in `sys_info` |
 | 1.4 | Removable holotapes: `[holotape] slot` in `PIPOS.CFG`, `PIP_HW_TAPE`, `flags` in `pip_holo_info_t`, `PIP_EV_TAPE`, the `holo_eject_event` mask, `-PIP_ENODEV` from `holo_launch` |
 | 1.5 | `sample_rate`: `sample` and `sample_queue` play at 8000 or 37500 Hz. `PIP_HW_AUDIO_MID` in `hw_flags`: the audio output rests at its midpoint. |
-| 1.6 | Sound kinds and levels: `sound_kind`, `sound_level` and `sound_store`, numbers `0x28` to `0x2A`. Four levels beside the master, one gain per play, and a level change with no click. The levels are stored in `/PIPBOY/PIPOS.SET`, and `PIPOS.CFG` takes the keys `radio`, `sfx`, `recordings` and `games` under `[audio]`. `volume` from a holotape sets a trim that ends with the holotape. No new `hw_flags` bit. Pip-OS implements it in its own repository later. Until then it reports ABI 1.5, returns `-PIP_ENOSYS` for the three numbers and keeps the `volume` of 1.5. |
+| 1.6 | Sound kinds and levels: `sound_kind`, `sound_level` and `sound_store`, numbers `0x28` to `0x2A`. Four levels beside the master, `PIP_LEVEL_MASTER` to read the master, one gain per play, and a level change with no click. The levels are stored in `/PIPBOY/PIPOS.SET`, and `PIPOS.CFG` takes the keys `radio`, `sfx`, `recordings` and `games` under `[audio]`. `volume` from a holotape sets a trim that ends with the holotape. No new `hw_flags` bit. Pip-OS implements it in its own repository later. Until then it reports ABI 1.5, returns `-PIP_ENOSYS` for the three numbers and keeps the `volume` of 1.5. |
 
 Pip-OS implements every version up to 1.5 and reports ABI 1.5.
