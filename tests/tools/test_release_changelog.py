@@ -186,3 +186,54 @@ def test_section_missing_version(tmp_path):
     r = tool("section", str(path), "--version", "2.0.0")
     assert r.returncode == 1
     assert "has no section" in r.stdout
+
+
+MIXED = """# Changelog
+
+## Unreleased
+
+### Changed
+First paragraph.
+
+Second paragraph.
+
+### Fixed
+- Fixed one.
+
+### Changed
+- Changed one.
+  More on changed one.
+
+### Changed
+- Changed two.
+
+### Changed
+Closing paragraph.
+"""
+
+
+def test_join_keeps_paragraphs_and_joins_lists(tmp_path):
+    path = write(tmp_path, MIXED)
+    r = tool("cut", str(path), "--version", "1.0.0", "--date", "2026-01-02")
+    assert r.returncode == 0, r.stdout
+    text = path.read_text()
+    assert text[text.index("### Changed"):] == """### Changed
+
+First paragraph.
+
+Second paragraph.
+
+- Changed one.
+  More on changed one.
+- Changed two.
+
+Closing paragraph.
+
+### Fixed
+
+- Fixed one.
+"""
+    changed = [l for l in MIXED.splitlines() if l.strip() and not l.startswith("#")]
+    out = [l for l in text.splitlines() if l.strip() and not l.startswith("#")]
+    assert [l for l in out if l != "- Fixed one."] == [
+        l for l in changed if l != "- Fixed one."]

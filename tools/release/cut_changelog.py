@@ -11,7 +11,8 @@ runs to the next `## ` heading or the end of the file.
 cut moves the unreleased entries under a new `## [X.Y.Z] - YYYY-MM-DD`
 heading and leaves the unreleased heading, empty, above it. A `### ` group
 that appears more than once is joined into its first place, its entries
-in file order. Lines before the first group stay first. No entry is
+in file order. Joined parts keep their own lines and blank lines, with
+one blank line between them, or none when a list meets a list. Lines before the first group stay first. No entry is
 rewritten. cut refuses an unreleased section with no entry and a version
 that already has a section.
 
@@ -26,6 +27,7 @@ import sys
 UNRELEASED = re.compile(r"^## (Unreleased|\[Unreleased\])\s*$")
 VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+LIST_ITEM = re.compile(r"^ *[-*] ")
 
 
 class ChangelogError(Exception):
@@ -77,6 +79,27 @@ def trim(block):
     return block
 
 
+def ends_in_list(part):
+    """True when the last block of the part, after its last blank line, is a list."""
+    start = len(part)
+    while start > 0 and part[start - 1].strip():
+        start -= 1
+    return start < len(part) and bool(LIST_ITEM.match(part[start]))
+
+
+def join_parts(parts):
+    """Join trimmed parts with one blank line, or none between two lists."""
+    out = []
+    for p in parts:
+        p = trim(p)
+        if not p:
+            continue
+        if out and not (ends_in_list(out) and LIST_ITEM.match(p[0])):
+            out.append("")
+        out += p
+    return out
+
+
 def join_groups(body):
     """Lines before the first group, then each group once, in first order."""
     lead, order, groups = [], [], {}
@@ -96,7 +119,7 @@ def join_groups(body):
     if lead:
         out += lead + [""]
     for name in order:
-        entries = [line for p in groups[name] for line in trim(p)]
+        entries = join_parts(groups[name])
         if entries:
             out += [name, ""] + entries + [""]
     return out
