@@ -253,6 +253,7 @@ def test_library_pin_and_deitrix_pin_differ(work):
     "# Changelog\n\n## Unreleased\n\n- Pending.\n\n## 0.1.0\n",
     "# Changelog\n\n## [Unreleased]\n\n## [0.0.9] - 2026-11-01\n",
     "# Changelog\n\n## [0.1.0]\n",
+    "# Changelog\n\n## [Unreleased]\n\n## [0.1.0]\n\n- x\n\n## [Unreleased]\n\n- late\n",
 ])
 def test_changelog_rule_and_rehearsal(work, log):
     w, _, manifest = work
@@ -311,6 +312,17 @@ def test_checkout_at_another_commit_reads_the_named_one(work):
     commit(w / "RETROS-BIOS", {"src/robco_config.h": header("RETROS", "0.9.0")}, branch="main")
     code, out = check(w, manifest)
     assert code == 0, out
+
+
+def test_commit_field_naming_a_tag_object(work):
+    """The name of an annotated tag peels to the commit and is refused."""
+    w, shas, manifest = work
+    tag = git(w / "UOS", "mktag", stdin=f"object {shas['UOS']}\ntype commit\ntag v0.1.0\n"
+                                           "tagger T <t@example.invalid> 0 +0000\n\nx\n")
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(commit=tag))
+    code, out = check(w, manifest)
+    assert code == 1
+    assert errors(out) == [f"::error::manifest: UOS: {tag[:12]} is a tag, not a commit"]
 
 
 def test_commit_missing_from_the_checkout(work):

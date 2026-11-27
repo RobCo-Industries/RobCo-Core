@@ -191,6 +191,10 @@ def heading_version(heading):
 
 def changelog_problems(text, version):
     sections = changelog_sections(text)
+    # A merge can leave a second Unreleased section further down, with
+    # entries that the first, empty one would hide.
+    if sum(1 for heading, _ in sections if is_unreleased(heading)) > 1:
+        return ["more than one Unreleased section"]
     for i, (heading, body) in enumerate(sections):
         if is_unreleased(heading):
             problems = []
@@ -302,6 +306,14 @@ def check_errors(data, work, rehearsal=False, tag=None):
                 errors.append(f"{name}: the checkout has no commit {commit[:12]}")
                 missing.add(name)
                 commit = None
+            else:
+                # The object itself must be the commit. The name of an
+                # annotated tag peels to one and is another object.
+                kind = git(repo, "cat-file", "-t", commit)
+                if kind != "commit":
+                    errors.append(f"{name}: {commit[:12]} is a {kind}, not a commit")
+                    missing.add(name)
+                    commit = None
         if commit:
             try:
                 branch = DEFAULT_BRANCH[name]
