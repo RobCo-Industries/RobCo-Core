@@ -2098,3 +2098,251 @@ def test_a_time_reaches_the_longest_hit():
     assert T.check_model(m) == []
     layer["attack_us"] = T.MAX_US + 1
     assert any("attack_us: must be 0 to 32768000" in f for f in T.check_model(m))
+
+
+# ---------------------------------------------------------------------------
+# A bed under the other sounds
+# ---------------------------------------------------------------------------
+
+def _shot(length, peak):
+    """A 2000 Hz sine at 8000 Hz for 8 samples, then rest to length."""
+    return {"len": length, "peak_steps": peak, "layers": [
+        {"kind": "tone", "hits": [[0, 0]], "len": 8, "pitch_mhz": [2000000, 2000000],
+         "level_mdb": 0, "partials": [[10000, 0]]}]}
+
+
+def _bed_model(split=None):
+    """A loop of 800 samples, drone, and two one-shots, beep and blip."""
+    drone = {"len": 800, "peak_steps": 10, "loop": True, "layers": [
+        {"kind": "tone", "hits": [[0, 0]], "len": 800, "pitch_mhz": [2000500, 2000500],
+         "level_mdb": 0, "partials": [[10000, 0]]}]}
+    if split:
+        drone["split"] = split
+    return {"format": 1, "rate_hz": 8000, "ceiling_steps": 127,
+            "sounds": {"drone": drone, "beep": _shot(9, 8), "blip": _shot(12, 6)}}
+
+
+def _bed_run(tmp_path, m, *extra):
+    p = write_model(tmp_path, m)
+    c, h = tmp_path / "sfx_table.c", tmp_path / "sfx_table.h"
+    r = run(p, "--c", c, "--h", h, "--prefix", "demo_sfx_", *extra)
+    return r, p, c, h
+
+
+def test_bed_heads_and_rests(tmp_path):
+    m = _bed_model()
+    r, p, c, h = _bed_run(tmp_path, m, "--bed", "drone", "--dump", tmp_path / "d")
+    assert r.returncode == 0, r.stderr
+    built = T.build(m)
+    bed = built["drone"]
+    ht = h.read_text()
+    assert '#define DEMO_SFX_BED_NAME "drone"' in ht
+    assert "#define DEMO_SFX_BED_HEAD_MAX 12u" in ht
+    for name in ("beep", "blip"):
+        shot = built[name]
+        want = bytes(min(255, max(0, shot[i] + bed[i] - 128)) for i in range(len(shot)))
+        head = (tmp_path / "d" / f"{name}_head.u8").read_bytes()
+        rest = (tmp_path / "d" / f"{name}_rest.u8").read_bytes()
+        assert head == want
+        assert rest == bed[len(shot):800]
+        un = "DEMO_SFX_" + name.upper()
+        assert f"#define {un}_HEAD_LEN {len(head)}u" in ht
+        assert f"#define {un}_HEAD_CRC32 0x{zlib.crc32(head):08x}u" in ht
+        assert f"#define {un}_REST_LEN {len(rest)}u" in ht
+        assert f"#define {un}_REST_CRC32 0x{zlib.crc32(rest):08x}u" in ht
+    # The bed is a loop, so it gets no head; the C file gains nothing.
+    assert "DRONE_HEAD" not in ht and not (tmp_path / "d" / "drone_head.u8").exists()
+    with_bed = c.read_bytes()
+    r, *_ = _bed_run(tmp_path, m)
+    assert r.returncode == 0 and c.read_bytes() == with_bed
+
+
+def test_bed_with_split_rests_end_at_the_first_part(tmp_path):
+    m = _bed_model(split=300)
+    r, *_ = _bed_run(tmp_path, m, "--bed", "drone", "--dump", tmp_path / "d")
+    assert r.returncode == 0, r.stderr
+    bed = T.build(m)["drone"]
+    assert (tmp_path / "d" / "beep_rest.u8").read_bytes() == bed[9:300]
+    assert (tmp_path / "d" / "blip_rest.u8").read_bytes() == bed[12:300]
+
+
+def test_bed_over_bed_wav(tmp_path):
+    m = _bed_model()
+    p = write_model(tmp_path, m)
+    r = run(p, "--bed", "drone", "--wav", tmp_path / "w", "--dump", tmp_path / "d")
+    assert r.returncode == 0, r.stderr
+    built = T.build(m)
+    head = (tmp_path / "d" / "beep_head.u8").read_bytes()
+    rest = (tmp_path / "d" / "beep_rest.u8").read_bytes()
+    with wave.open(str(tmp_path / "w" / "beep_over_bed.wav")) as w:
+        assert w.readframes(w.getnframes()) == head + rest + built["drone"]
+    assert not (tmp_path / "w" / "drone_over_bed.wav").exists()
+
+
+def _with(m, name, **fields):
+    m["sounds"][name].update(fields)
+    return m
+
+
+@pytest.mark.parametrize("bed,model,code,words", [
+    ("nope", _bed_model(), 64, "the model has no such sound"),
+    ("beep", _bed_model(), 64, "is not a loop"),
+    ("drone", _with(_bed_model(), "blip", len=800), 2, "must be under 800"),
+    ("drone", _with(_bed_model(split=300), "blip", len=300), 2, "must be under 300"),
+    ("drone", _with(_bed_model(), "beep", peak_steps=118), 2, "add up to 128, over 127"),
+])
+def test_bed_refusals(tmp_path, bed, model, code, words):
+    r, *_ = _bed_run(tmp_path, model, "--bed", bed, "--dump", tmp_path / "d")
+    assert r.returncode == code, r.stderr
+    assert words in r.stderr and "Traceback" not in r.stderr
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
+
+
+def test_bed_peak_sum_of_127_is_taken(tmp_path):
+    r, *_ = _bed_run(tmp_path, _with(_bed_model(), "beep", peak_steps=117), "--bed", "drone")
+    assert r.returncode == 0, r.stderr
+
+
+def test_check_sees_the_bed(tmp_path):
+    m = _bed_model()
+    m["sounds"]["drone2"] = copy.deepcopy(m["sounds"]["drone"])
+    r, p, c, h = _bed_run(tmp_path, m)
+    assert r.returncode == 0, r.stderr
+    args = ("--c", c, "--h", h, "--prefix", "demo_sfx_", "--check")
+    assert run(p, *args).returncode == 0
+    r = run(p, *args, "--bed", "drone")
+    assert r.returncode == 1 and "made without --bed, checked with --bed drone" in r.stderr
+    assert _bed_run(tmp_path, m, "--bed", "drone")[0].returncode == 0
+    assert run(p, *args, "--bed", "drone").returncode == 0
+    assert run(p, *args, "--bed", "drone", "--full").returncode == 0
+    r = run(p, *args)
+    assert r.returncode == 1 and "made with --bed drone, checked without --bed" in r.stderr
+    r = run(p, *args, "--bed", "drone2")
+    assert r.returncode == 1 and "checked with --bed drone2" in r.stderr
+    ht = h.read_text()
+    crc = re.search(r"DEMO_SFX_BEEP_HEAD_CRC32 (0x[0-9a-f]{8}u)", ht).group(1)
+    h.write_text(ht.replace(crc, "0x00000000u"))
+    assert run(p, *args, "--bed", "drone").returncode == 0     # the fast check
+    r = run(p, *args, "--bed", "drone", "--full")
+    assert r.returncode == 1 and "differs from a new render" in r.stderr
+
+
+@pytest.mark.parametrize("clash,option", [
+    ("beep_head", "--dump"), ("beep_rest", "--dump"), ("beep_over_bed", "--wav"),
+    ("beep_head", "--c")])
+def test_bed_name_clashes_are_refused(tmp_path, clash, option):
+    m = _bed_model()
+    m["sounds"][clash] = _shot(10, 5)
+    p = write_model(tmp_path, m)
+    if option == "--c":
+        r = run(p, "--c", tmp_path / "sfx_t.c", "--h", tmp_path / "sfx_t.h", "--prefix", "x_sfx_",
+                "--bed", "drone")
+    else:
+        r = run(p, option, tmp_path / "d", "--bed", "drone")
+    assert r.returncode == 64, r.stderr
+    assert "already given by" in r.stderr
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
+    # Without --bed the same model is fine.
+    assert run(p, option if option != "--c" else "--dump", tmp_path / "d").returncode == 0
+
+
+def test_without_a_bed_nothing_mentions_a_head(tmp_path):
+    m = _bed_model()
+    r, _, c, h = _bed_run(tmp_path, m, "--dump", tmp_path / "d", "--wav", tmp_path / "w")
+    assert r.returncode == 0, r.stderr
+    for f in (c, h):
+        text = f.read_text()
+        assert "HEAD" not in text and "REST" not in text and "BED" not in text
+    names = os.listdir(tmp_path / "d") + os.listdir(tmp_path / "w")
+    assert not [n for n in names if "_head" in n or "_rest" in n or "over_bed" in n]
+
+
+@pytest.mark.skipif(shutil.which("cc") is None, reason="no host C compiler")
+def test_generated_c_compiles_with_a_bed(tmp_path):
+    m = _bed_model(split=300)
+    r, _, c, h = _bed_run(tmp_path, m, "--bed", "drone")
+    assert r.returncode == 0, r.stderr
+    main = tmp_path / "main.c"
+    main.write_text(
+        '#include "sfx_table.h"\n'
+        "static uint8_t heads[DEMO_SFX_BED_HEAD_MAX];\n"
+        "_Static_assert(DEMO_SFX_BEEP_HEAD_LEN + DEMO_SFX_BEEP_REST_LEN"
+        " == DEMO_SFX_DRONE_1_LEN, \"len\");\n"
+        "int main(void)\n{\n"
+        "    heads[0] = demo_sfx_drone_1[0];\n"
+        "    return heads[0] == 128 && DEMO_SFX_BEEP_REST_CRC32 != 0u ? 0 : 1;\n}\n")
+    exe = tmp_path / "a.out"
+    r = subprocess.run(["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-I", str(tmp_path),
+                        str(c), str(main), "-o", str(exe)],
+                       capture_output=True, text=True, env=minimal_env())
+    assert r.returncode == 0, r.stderr
+    assert subprocess.run([str(exe)], env=minimal_env()).returncode == 0
+
+
+def test_a_long_bed_under_many_one_shots_stays_small(tmp_path):
+    # A rest is a slice of the bed. The tool used to copy it for each
+    # one-shot: this model took about 1.5 GB. Now it takes about 60 MB.
+    bed = {"len": 262144, "peak_steps": 10, "loop": True, "layers": [
+        {"kind": "tone", "hits": [[0, 0]], "len": 262144, "pitch_mhz": [2000000, 2000000],
+         "level_mdb": 0, "partials": [[10000, 0]]}]}
+    sounds = {"drone": bed}
+    for i in range(5000):
+        sounds[f"s{i}"] = _shot(9, 8)
+    p = write_model(tmp_path, {"format": 1, "rate_hz": 8000, "ceiling_steps": 127,
+                               "sounds": sounds})
+    # ru_maxrss of the children, read in a parent that does nothing else.
+    probe = ("import resource, subprocess, sys\n"
+             "r = subprocess.run(sys.argv[1:])\n"
+             "print(r.returncode, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)\n")
+    r = subprocess.run([sys.executable, "-I", "-c", probe, sys.executable, "-I", TOOL, str(p),
+                        "--c", str(tmp_path / "sfx_t.c"), "--h", str(tmp_path / "sfx_t.h"),
+                        "--prefix", "x_sfx_", "--bed", "drone"],
+                       capture_output=True, text=True, env=minimal_env(), timeout=60)
+    code, rss = map(int, r.stdout.split())
+    assert code == 0, r.stderr
+    peak = rss if sys.platform == "darwin" else rss * 1024
+    assert peak < 300 * 1024 * 1024, peak
+
+
+def test_dumping_many_rests_stays_small(tmp_path):
+    # Each rest file is made only while it is written. 400 rests of a
+    # 262144-byte bed are 100 MB on disk. Kept in memory they would add
+    # that much to the peak, which stays near 50 MB.
+    bed = {"len": 262144, "peak_steps": 10, "loop": True, "layers": [
+        {"kind": "tone", "hits": [[0, 0]], "len": 262144, "pitch_mhz": [2000000, 2000000],
+         "level_mdb": 0, "partials": [[10000, 0]]}]}
+    sounds = {"drone": bed}
+    for i in range(400):
+        sounds[f"s{i}"] = _shot(9, 8)
+    p = write_model(tmp_path, {"format": 1, "rate_hz": 8000, "ceiling_steps": 127,
+                               "sounds": sounds})
+    probe = ("import resource, subprocess, sys\n"
+             "r = subprocess.run(sys.argv[1:])\n"
+             "print(r.returncode, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)\n")
+    out = tmp_path / "dump"
+    r = subprocess.run([sys.executable, "-I", "-c", probe, sys.executable, "-I", TOOL, str(p),
+                        "--dump", str(out), "--bed", "drone"],
+                       capture_output=True, text=True, env=minimal_env(), timeout=120)
+    code, rss = map(int, r.stdout.split())
+    assert code == 0, r.stderr
+    rests = sorted(out.glob("*_rest.u8"))
+    assert len(rests) == 400 and rests[0].stat().st_size == 262144 - 9
+    peak = rss if sys.platform == "darwin" else rss * 1024
+    assert peak < 110 * 1024 * 1024, peak
+
+
+@pytest.mark.parametrize("bed,words", [
+    ("nope", "--bed 'nope': the model has no such sound"),
+    ("beep", "--bed 'beep': the sound is not a loop")])
+@pytest.mark.parametrize("made", [None, (), ("--bed", "drone")])
+def test_check_refuses_a_bad_bed_as_a_write_does(tmp_path, bed, words, made):
+    m = _bed_model()
+    p = write_model(tmp_path, m)
+    c, h = tmp_path / "sfx_table.c", tmp_path / "sfx_table.h"
+    table = ("--c", c, "--h", h, "--prefix", "demo_sfx_")
+    if made is not None:
+        assert run(p, *table, *made).returncode == 0
+    wrote = run(p, *table, "--bed", bed)
+    checked = run(p, *table, "--check", "--bed", bed)
+    assert wrote.returncode == checked.returncode == 64, checked.stderr
+    assert checked.stderr == wrote.stderr == f"sfx_table.py: error: {words}\n"

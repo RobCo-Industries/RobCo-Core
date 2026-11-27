@@ -180,6 +180,8 @@ tools/sfx_table.py MODEL --dump DIR
 tools/sfx_table.py MODEL --wav DIR
 ```
 
+Each form also takes `--bed NAME`. See "A bed under the other sounds" below.
+
 | Option | Does |
 |---|---|
 | `--c`, `--h`, `--prefix` | Writes the tables in C. The header defines `NAME_SFX_MODEL_SHA256`, `NAME_SFX_TOOL_REVISION`, `NAME_SFX_RATE_HZ`, and for each sound `_PEAK` and `_LOOP`. For each table it defines `_LEN` and `_CRC32` and declares `const uint8_t name_sfx_<table>[]`. Both files start with a comment that says they are generated and names the model file. |
@@ -187,6 +189,7 @@ tools/sfx_table.py MODEL --wav DIR
 | `--check --full` | Also renders every sound again and compares both files byte for byte |
 | `--dump DIR` | Writes each table as a raw `<table>.u8` file |
 | `--wav DIR` | Writes each sound as an 8-bit mono WAV at `rate_hz`, whole, not split. A loop plays three times so its join is heard. |
+| `--bed NAME` | Names a loop that plays under the other sounds. The header, `--dump`, `--wav` and `--check` then cover the head and the rest of each one-shot. |
 
 Every name the tool writes carries the marker `sfx`. No C or POSIX keyword, type, function, macro or reserved pattern holds it, so the tool needs no list of taken names. Earlier lists of keywords, `<stdint.h>` names and standard headers each missed a name, such as `size_t` from the sound `t` and the prefix `size_`.
 
@@ -270,6 +273,41 @@ The fast check proves that `OUT.h` and the opening comment of `OUT.c` both name 
 The tool revision is 1. It goes up whenever a byte of any table can change.
 
 A script can import the tool. `load_model(path)` returns the checked model and its SHA-256. `render_sound(model, name)` returns the bytes of one sound before the checks. `render_steps(model, name)` returns the scaled values before rounding. `check_sound(model, name, data)` returns the faults.
+
+## A bed under the other sounds
+
+A program plays one sound at a time. A bed is a quiet loop under its short sounds, such as a fan under a terminal or a hum under a wrist computer. The program keeps the bed going with no mixing in the audio driver:
+
+- At start-up it mixes each one-shot with the first bytes of the bed into RAM: `head[i] = clamp(shot[i] + bed[i] - 128, 0, 255)` for `i` from 0 to the one-shot's length minus 1.
+- To play a one-shot of `n` bytes over the bed, it starts `head`, then queues the rest of the bed's first part, `bed[n .. first_part_len)`, behind it.
+- The bed's first part is the whole table of a loop without `split`, or the `_1` table of a loop with `split`.
+
+The program computes the heads itself. `--bed NAME` tells it what the right bytes are, so a host test can compare them.
+
+`NAME` must be a sound of the model with `loop` set. Every sound without `loop` is a one-shot. Any other loop is neither the bed nor a one-shot and gets no head.
+
+The tool refuses `--bed` when:
+
+- `NAME` is not a sound of the model, or not a loop. This is a usage error, exit 64.
+- A one-shot is as long as the bed's first part or longer. Its rest would be empty. Exit 2.
+- The `peak_steps` of the loudest one-shot plus the bed's `peak_steps` is over 127. The sum would need the clamp. The clamp stays in the rule, but the tool refuses a model that needs it. Exit 2.
+
+With `--bed`, the header gains these lines, and the C file gains nothing. A head lives in the program's RAM, and a rest is a slice of the bed's table.
+
+- `NAME_SFX_BED_NAME`, the bed's name as a string, such as `"drone"`.
+- `NAME_SFX_BED_HEAD_MAX`, the length of the longest head, so a program can size its buffers. It is 0 with no one-shot.
+- For each one-shot, `_HEAD_LEN`, `_HEAD_CRC32`, `_REST_LEN` and `_REST_CRC32` after the sound's name, such as `NAME_SFX_BEEP_REST_LEN`.
+
+`--dump DIR` also writes `<sound>_head.u8` and `<sound>_rest.u8` for each one-shot. `--wav DIR` also writes `<sound>_over_bed.wav`: the head, the rest, then the whole bed once more, so a listener hears the sound over the bed and the join back into it. A sound named `beep_head` and a one-shot `beep` would give one file twice, or one macro twice. The tool refuses such a clash with one line, exit 64.
+
+The header records the bed's name, as it records the model's SHA-256 and the tool revision. `--check --bed NAME` first judges `NAME` against the model as a write does, with the same messages and exit codes, before it reads the header. It then says a header is out of date, exit 1, when it was made without `--bed` and is checked with it, the other way round, or with another bed. `--check --full` also compares the head and rest lines byte for byte. The tool keeps one copy of the bed. It computes each rest's length and CRC-32 from that copy, and makes a rest's bytes only when it writes its file. Without `--bed` the tool writes exactly what it wrote before the option existed, so the tool revision stays 1.
+
+A worked example with small numbers. The bed `drone` has a first part of 6 bytes, `128, 131, 128, 125, 128, 131`. The one-shot `beep` has 3 bytes, `130, 136, 126`.
+
+- `head[0] = 130 + 128 - 128 = 130`, `head[1] = 136 + 131 - 128 = 139`, `head[2] = 126 + 128 - 128 = 126`.
+- The rest is `bed[3 .. 6)`, which is `125, 128, 131`.
+- The program plays `130, 139, 126`, then `125, 128, 131`, then the bed from its start.
+- The header gives `BEEP_HEAD_LEN 3u`, `BEEP_REST_LEN 3u` and the CRC-32 of each.
 
 ## Checking a table
 

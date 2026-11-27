@@ -6,6 +6,11 @@
     sfx_table.py MODEL --dump DIR
     sfx_table.py MODEL --wav DIR
 
+Each form takes --bed NAME, a loop that plays under the other sounds: the
+header then gives the CRC-32 of each one-shot's head, its sum with the
+bed, and the length and CRC-32 of its rest, the bed's first part after it.
+--dump writes each head and rest, and --wav each one-shot over the bed.
+
 --dump and --wav may go with the first form. The file names of OUT.c and
 OUT.h hold sfx, and the prefix ends in sfx_, so every name written is clear
 of C's own names. --check writes nothing: it
@@ -648,6 +653,57 @@ def tables(model, name, data):
     return [(name + "_1", data[:split]), (name + "_2", data[split:])]
 
 
+def bed_first(model, bed, data):
+    """The bed's first part: its whole table, or its _1 table with split."""
+    return tables(model, bed, data)[0][1]
+
+
+def one_shots(model, bed):
+    """The names of the one-shots under a bed: every sound without loop."""
+    return [n for n, s in model["sounds"].items() if not s.get("loop")] if bed else []
+
+
+def bed_faults(model, bed):
+    """(usage faults, model faults) of --bed NAME on a checked model.
+
+    Usage: NAME is not a sound, or not a loop. Model: a one-shot is not
+    strictly shorter than the bed's first part, or the loudest one-shot and
+    the bed add up past 127 steps. Both lists are empty when the bed fits."""
+    sounds = model["sounds"]
+    if bed not in sounds:
+        return [f"--bed {bed!r}: the model has no such sound"], []
+    if not sounds[bed].get("loop"):
+        return [f"--bed {bed!r}: the sound is not a loop"], []
+    first = sounds[bed].get("split", sounds[bed]["len"])
+    faults = []
+    shots = one_shots(model, bed)
+    for name in shots:
+        if sounds[name]["len"] >= first:
+            faults.append(f"sound {name!r}: its len {sounds[name]['len']} must be under"
+                          f" {first}, the length of the first part of the bed {bed!r}")
+    if shots:
+        loud = max(shots, key=lambda n: sounds[n]["peak_steps"])
+        total = sounds[loud]["peak_steps"] + sounds[bed]["peak_steps"]
+        if total > 127:
+            faults.append(f"sound {loud!r}: its peak_steps and the bed {bed!r}'s add up to"
+                          f" {total}, over 127")
+    return [], faults
+
+
+def bed_mix(model, built, bed):
+    """{one-shot name: (head, rest)}. head[i] is shot[i] + bed[i] - 128,
+    clamped to 0 to 255, as bytes. The rest is the bed's first part after
+    the head, as a memoryview of the bed: no copy per one-shot, so a long
+    bed under many one-shots costs no more memory than the bed itself."""
+    first = memoryview(bed_first(model, bed, built[bed]))
+    out = {}
+    for name in one_shots(model, bed):
+        shot = built[name]
+        head = bytes(min(255, max(0, a + b - 128)) for a, b in zip(shot, first))
+        out[name] = (head, first[len(shot):])
+    return out
+
+
 def build(model):
     """{sound name: bytes} for every sound, checked. Raises ModelError."""
     out, faults = {}, []
@@ -1045,12 +1101,18 @@ def header_guard(h_name):
     return "SFX_GUARD_" + re.sub(r"[^A-Z0-9]", "_", h_name.upper())
 
 
-def c_names(model, built, prefix, h_name):
+BED_SUFFIXES = ("_HEAD_LEN", "_HEAD_CRC32", "_REST_LEN", "_REST_CRC32")
+
+
+def c_names(model, built, prefix, h_name, bed=None):
     """[(identifier, where it comes from)] for every name the C files define."""
     up = prefix.upper()
     out = [(header_guard(h_name), f"the include guard of --h {h_name!r}")]
-    for s in ("MODEL_SHA256", "TOOL_REVISION", "RATE_HZ"):
+    tops = ("MODEL_SHA256", "TOOL_REVISION", "RATE_HZ") + (("BED_NAME", "BED_HEAD_MAX")
+                                                         if bed else ())
+    for s in tops:
         out.append((up + s, f"--prefix {prefix!r}"))
+    shots = one_shots(model, bed)
     for name, data in built.items():
         where = f"--prefix {prefix!r} and sound {name!r}"
         out.append((up + name.upper() + "_PEAK", where))
@@ -1059,6 +1121,29 @@ def c_names(model, built, prefix, h_name):
             out.append((prefix + t, where))
             out.append((up + t.upper() + "_LEN", where))
             out.append((up + t.upper() + "_CRC32", where))
+        if name in shots:
+            for s in BED_SUFFIXES:
+                out.append((up + name.upper() + s, f"{where} under --bed {bed!r}"))
+    return out
+
+
+def out_file_names(model, built, bed, dump, wav):
+    """[(file name, where it comes from)] for every --dump and --wav file.
+    The two folders may be one, but .u8 and .wav never meet."""
+    out = []
+    shots = one_shots(model, bed)
+    if dump:
+        for name, data in built.items():
+            for t, _ in tables(model, name, data):
+                out.append((t + ".u8", f"--dump and sound {name!r}"))
+            if name in shots:
+                for part in ("_head", "_rest"):
+                    out.append((name + part + ".u8", f"--dump, --bed {bed!r} and sound {name!r}"))
+    if wav:
+        for name in built:
+            out.append((name + ".wav", f"--wav and sound {name!r}"))
+            if name in shots:
+                out.append((name + "_over_bed.wav", f"--wav, --bed {bed!r} and sound {name!r}"))
     return out
 
 
@@ -1075,14 +1160,20 @@ def c_name_faults(names):
     return faults
 
 
-def c_header(model, built, prefix, source, sha, h_name):
+def c_header(model, built, prefix, source, sha, h_name, bed=None):
     up = prefix.upper()
     guard = header_guard(h_name)
     lines = [_comment(source, sha), f"#ifndef {guard}", f"#define {guard}", "",
              "#include <stdint.h>", "",
              f'#define {up}MODEL_SHA256 "{sha}"',
              f"#define {up}TOOL_REVISION {REVISION}",
-             f"#define {up}RATE_HZ {model['rate_hz']}u", ""]
+             f"#define {up}RATE_HZ {model['rate_hz']}u"]
+    mix = bed_mix(model, built, bed) if bed else {}
+    if bed:
+        biggest = max((len(h) for h, _ in mix.values()), default=0)
+        lines.append(f'#define {up}BED_NAME "{bed}"')
+        lines.append(f"#define {up}BED_HEAD_MAX {biggest}u")
+    lines.append("")
     for name, data in built.items():
         sound = model["sounds"][name]
         un = up + name.upper()
@@ -1093,6 +1184,12 @@ def c_header(model, built, prefix, source, sha, h_name):
             lines.append(f"#define {ut}_LEN {len(part)}u")
             lines.append(f"#define {ut}_CRC32 0x{zlib.crc32(bytes(part)):08x}u")
             lines.append(f"extern const uint8_t {prefix}{t}[{ut}_LEN];")
+        if name in mix:
+            head, rest = mix[name]
+            lines.append(f"#define {un}_HEAD_LEN {len(head)}u")
+            lines.append(f"#define {un}_HEAD_CRC32 0x{zlib.crc32(head):08x}u")
+            lines.append(f"#define {un}_REST_LEN {len(rest)}u")
+            lines.append(f"#define {un}_REST_CRC32 0x{zlib.crc32(rest):08x}u")
         lines.append("")
     lines.append(f"#endif /* {guard} */")
     return "\n".join(lines) + "\n"
@@ -1172,7 +1269,8 @@ def publish(items, new_dirs=()):
     new_dirs is made, parents first; one that exists by then is used and
     not made. Each item goes to a temporary file in its folder. Then each
     existing path gets a backup, and the temporary files are renamed in
-    order, so the caller puts the header last.
+    order, so the caller puts the header last. The bytes of an item may be
+    a function that returns them.
 
     Every side file and folder is recorded the moment it exists, before
     anything goes into it. On any failure, every path this call renamed
@@ -1194,8 +1292,10 @@ def publish(items, new_dirs=()):
         for path, data in items:
             tmp, f = _side(path, "tmp", sides)
             temps.append((tmp, path))
+            # A callable makes its bytes only now, so a run with many large
+            # files holds one of them at a time.
             with f:
-                f.write(data)
+                f.write(data() if callable(data) else data)
         for _, path in temps:
             if os.path.lexists(path):
                 backups[path] = _backup(path, sides)
@@ -1229,6 +1329,13 @@ def recorded(h_text, prefix):
     if not s or not r:
         return None
     return s.group(1), int(r.group(1))
+
+
+def recorded_bed(h_text, prefix):
+    """The bed's name recorded in a generated header, or None for none."""
+    up = re.escape(prefix.upper())
+    b = re.search(rf'^#define {up}BED_NAME "([a-z][a-z0-9_]*)"$', h_text, re.M)
+    return b.group(1) if b else None
 
 
 # ---------------------------------------------------------------------------
@@ -1419,6 +1526,15 @@ def _check(args, plan):
     if fault:
         print(f"sfx_table.py: error: {fault}", file=sys.stderr)
         return EX_USAGE
+    # A bed is judged against the model as a write judges it, with the same
+    # codes, before any comparison: a bad name is a usage error, not stale.
+    # A fault of the model or of reading it goes to the caller, as in a write.
+    model = None
+    if args.bed is not None:
+        model, _ = load_model(plan.model.real)
+        code = _bed_refusal(args, model)
+        if code:
+            return code
     try:
         h_raw = _read_bytes(h.real)
         c_raw = _read_bytes(c.real)
@@ -1446,12 +1562,22 @@ def _check(args, plan):
               " SHA-256 and revision as the header. Run sfx_table.py again.",
               file=sys.stderr)
         return EX_STALE
+    # The C file is the same with or without a bed, so only the header
+    # records it.
+    bed = recorded_bed(h_text, args.prefix)
+    if bed != args.bed:
+        made = "without --bed" if bed is None else f"with --bed {bed}"
+        asked = "without --bed" if args.bed is None else f"with --bed {args.bed}"
+        print(f"sfx_table.py: {args.h}: made {made}, checked {asked}."
+              " Run sfx_table.py again.", file=sys.stderr)
+        return EX_STALE
     if args.full:
-        model, _ = load_model(plan.model.real)
+        if model is None:
+            model, _ = load_model(plan.model.real)
         built = build(model)
         source = os.path.basename(args.model)
         h_name = os.path.basename(args.h)
-        h_new = c_header(model, built, args.prefix, source, sha, h_name)
+        h_new = c_header(model, built, args.prefix, source, sha, h_name, args.bed)
         if h_new.encode("ascii") != h_raw:
             print(f"sfx_table.py: {args.h}: differs from a new render", file=sys.stderr)
             return EX_STALE
@@ -1459,6 +1585,22 @@ def _check(args, plan):
             print(f"sfx_table.py: {args.c}: differs from a new render", file=sys.stderr)
             return EX_STALE
     return 0
+
+
+def _bed_refusal(args, model):
+    """The exit code that refuses --bed on a checked model, or 0. A name
+    that is not a loop of the model is a usage error; sounds that do not
+    fit under the bed are a model fault."""
+    if args.bed is None:
+        return 0
+    usage, faults = bed_faults(model, args.bed)
+    for f in usage:
+        print(f"sfx_table.py: error: {f}", file=sys.stderr)
+    if usage:
+        return EX_USAGE
+    for f in faults:
+        print(f"sfx_table.py: {args.model}: {f}", file=sys.stderr)
+    return EX_MODEL if faults else 0
 
 
 def main(argv=None):
@@ -1472,6 +1614,8 @@ def main(argv=None):
     p.add_argument("--full", action="store_true", help="with --check: render and compare bytes")
     p.add_argument("--dump", metavar="DIR", help="write each table as a raw .u8 file")
     p.add_argument("--wav", metavar="DIR", help="write each sound as an 8-bit mono WAV")
+    p.add_argument("--bed", metavar="NAME",
+                   help="a loop that plays under every one-shot: write their heads and rests")
     args = p.parse_args(argv)
     try:
         return _main(p, args)
@@ -1512,6 +1656,9 @@ def _main(p, args):
         if args.check:
             return _check(args, plan)
         model, sha = load_model(plan.model.real)
+        code = _bed_refusal(args, model)
+        if code:
+            return code
         built = build(model)
     except ModelError as e:
         for f in e.faults:
@@ -1525,8 +1672,10 @@ def _main(p, args):
     if args.c is not None:
         h_name = os.path.basename(args.h)
         source = os.path.basename(args.model)
-        h_text = c_header(model, built, args.prefix, source=source, sha=sha, h_name=h_name)
-        faults = c_name_faults(c_names(model, built, args.prefix, h_name))
+        faults = c_name_faults(c_names(model, built, args.prefix, h_name, args.bed))
+        if not faults:
+            h_text = c_header(model, built, args.prefix, source=source, sha=sha, h_name=h_name,
+                              bed=args.bed)
         if faults:
             p.print_usage(sys.stderr)
             for f in faults:
@@ -1537,15 +1686,33 @@ def _main(p, args):
     # --dump and --wav name each file after a table or a sound. A sound
     # name matches NAME, so a file name is [a-z][a-z0-9_]* with .u8 or
     # .wav: no path separator, no dot file, ASCII. A test checks it.
+    # With --bed, <sound>_head.u8 or _over_bed.wav can meet a table or
+    # sound of that name, such as a sound x_head: refuse it by name.
+    faults = c_name_faults(out_file_names(model, built, args.bed, args.dump, args.wav))
+    if faults:
+        p.print_usage(sys.stderr)
+        for f in faults:
+            print(f"sfx_table.py: error: {f}", file=sys.stderr)
+        return EX_USAGE
+    mix = bed_mix(model, built, args.bed) if args.bed else {}
     if args.dump:
         items += [(plan.file_in("--dump", t + ".u8"), bytes(part))
                   for name, data in built.items()
                   for t, part in tables(model, name, data)]
+        for name, (head, rest) in mix.items():
+            items.append((plan.file_in("--dump", name + "_head.u8"), head))
+            items.append((plan.file_in("--dump", name + "_rest.u8"), rest.tobytes))
     if args.wav:
         for name, data in built.items():
             times = 3 if model["sounds"][name].get("loop") else 1
             items.append((plan.file_in("--wav", name + ".wav"),
                           wav_bytes(data * times, model["rate_hz"])))
+        # The head, the rest, then the whole bed once more: the sound over
+        # the bed and the join back into it.
+        for name, (head, rest) in mix.items():
+            items.append((plan.file_in("--wav", name + "_over_bed.wav"),
+                          lambda h=head, r=rest: wav_bytes(h + r + built[args.bed],
+                                                           model["rate_hz"])))
     if args.c is not None:
         # The header last: it carries the hash that --check reads.
         items.append((plan.file("--h", args.h), h_text.encode("ascii")))
