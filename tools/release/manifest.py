@@ -167,11 +167,35 @@ def code_version(work, name, commit):
 HEADING_RE = re.compile(r"^##\s+(.*?)\s*$")
 
 
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def fenced(lines):
+    """For each line, True when it is a code fence or inside one. A fence
+    opens with three or more backticks or tildes and closes with a line of
+    the same mark, at least as long, and nothing else. A heading inside is text."""
+    out, mark = [], None
+    for line in lines:
+        m = FENCE_RE.match(line)
+        if mark is None and m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            mark = m.group(1)
+            out.append(True)
+        elif mark is not None and m and m.group(1)[0] == mark[0] \
+                and len(m.group(1)) >= len(mark) and not m.group(2).strip():
+            mark = None
+            out.append(True)
+        else:
+            out.append(mark is not None)
+    return out
+
+
 def changelog_sections(text):
     """[(heading, body lines)] for each level-two heading."""
     sections = []
-    for line in text.splitlines():
-        m = HEADING_RE.match(line)
+    lines = text.splitlines()
+    code = fenced(lines)
+    for i, line in enumerate(lines):
+        m = None if code[i] else HEADING_RE.match(line)
         if m:
             sections.append((m.group(1), []))
         elif sections:
@@ -264,14 +288,17 @@ def load_valid(path):
     return data
 
 
-def default_ref(repo, branch):
+def default_refs(repo, branch):
+    """The refs of the default branch the checkout holds: the remote one,
+    the local one, or both. One of them can be behind the other."""
+    refs = []
     for ref in (f"origin/{branch}", branch):
         try:
             git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
-            return ref
+            refs.append(ref)
         except ManifestError:
             continue
-    return None
+    return refs
 
 
 def on_branch(repo, commit, ref):
@@ -317,10 +344,10 @@ def check_errors(data, work, rehearsal=False, tag=None):
         if commit:
             try:
                 branch = DEFAULT_BRANCH[name]
-                ref = default_ref(repo, branch)
-                if ref is None:
+                refs = default_refs(repo, branch)
+                if not refs:
                     errors.append(f"{name}: no {branch} branch in the checkout")
-                elif not on_branch(repo, commit, ref):
+                elif not any(on_branch(repo, commit, ref) for ref in refs):
                     errors.append(f"{name}: {commit[:12]} is not on {branch}")
             except ManifestError as e:
                 errors.append(f"{name}: {e}")

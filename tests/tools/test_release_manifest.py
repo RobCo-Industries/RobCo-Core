@@ -314,6 +314,29 @@ def test_checkout_at_another_commit_reads_the_named_one(work):
     assert code == 0, out
 
 
+def test_changelog_heading_in_a_code_fence_is_text(work):
+    """A fenced `## [Unreleased]` in an old entry is no second section."""
+    w, _, manifest = work
+    log = ("# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-12-01\n\n- An example:\n\n"
+           "````markdown\n```\n## [Unreleased]\n```\n\n## [9.9.9]\n````\n")
+    commit(w / "UOS", {"CHANGELOG.md": log}, branch="master")
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(
+        commit=git(w / "UOS", "rev-parse", "HEAD")))
+    code, out = check(w, manifest)
+    assert code == 0, out
+
+
+def test_commit_on_the_local_branch_ahead_of_a_stale_remote_ref(work):
+    """Either ref of the default branch may hold the commit."""
+    w, _, manifest = work
+    old = git(w / "UOS", "rev-parse", "HEAD")
+    git(w / "UOS", "update-ref", "refs/remotes/origin/master", old)
+    new = commit(w / "UOS", {"NOTE.txt": "later\n"}, branch="master")
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(commit=new))
+    code, out = check(w, manifest)
+    assert code == 0, out
+
+
 def test_commit_field_naming_a_tag_object(work):
     """The name of an annotated tag peels to the commit and is refused."""
     w, shas, manifest = work
