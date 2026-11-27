@@ -714,6 +714,6 @@ A project that also has a `robco.toml` sets `ABI` to the value of `target.abi`, 
 | 1.2 | Button 6, Back |
 | 1.3 | `hw_flags` in `sys_info` |
 | 1.4 | Removable holotapes: `[holotape] slot` in `PIPOS.CFG`, `PIP_HW_TAPE`, `flags` in `pip_holo_info_t`, `PIP_EV_TAPE`, the `holo_eject_event` mask, `-PIP_ENODEV` from `holo_launch` |
-| 1.5 | `sample_rate`: `sample` and `sample_queue` play at 8000 or 37500 Hz. `PIP_HW_AUDIO_MID` in `hw_flags`: the audio output rests at its midpoint. Pip-OS implements both in its own repository later. Until then it reports ABI 1.4, returns `-PIP_ENOSYS` for number `0x27` and never sets the bit. |
+| 1.5 | `sample_rate`: `sample` and `sample_queue` play at 8000 or 37500 Hz. `PIP_HW_AUDIO_MID` in `hw_flags`: the audio output rests at its midpoint. |
 
-Pip-OS implements every version up to 1.4 and reports ABI 1.4.
+Pip-OS implements every version up to 1.5 and reports ABI 1.5.
