@@ -169,7 +169,7 @@ Every other function call stays in range for any model the file rules allow: `ex
 
 Behind these checks is a backstop. `sin`, `cos`, `ln`, `exp` and `sqrt` refuse an argument out of their range. The tool then refuses the model with one line that names the sound and the layer and says the arithmetic left its range, exit 2. A valid model never reaches it: a test feeds the tool a few hundred random models and checks that validation or a check refuses each one first. Any other unexpected error prints one line, `internal error`, with the model and the error, exit 70. The tool never prints a Python traceback.
 
-Each fault in the file gets its own line too: an unknown field, a missing field, a wrong type, a number out of range, a list too long or too short. Each line names the sound and the field. The exit code is 2.
+Each fault in the file gets its own line too: an unknown field, a missing field, a wrong type, a number out of range, a list too long or too short. Each line names the sound and the field. A missing or bad field hides no other fault: every field that can be judged on its own is judged. Only a check that needs the bad value is skipped, such as the sine bound without a tone's `len`, or the render cost while any fault stands. A bad `format` or a layer's bad `kind` stops the checks below it, since the other fields then have no meaning. The exit code is 2.
 
 ## The commands
 
@@ -223,7 +223,7 @@ It compares two paths by one rule. Two paths are the same when:
 
 The case rule is strict on every system, also where the file system tells case apart. A run that passes on one system then passes on all.
 
-The tool takes a path by where it resolves. It resolves each path once in the plan, and the plan, the folders it makes, the temporary and backup files, the renames and `--check` all use that resolved path. A missing folder in the middle, as in `missing/../out`, resolves past it as text, so that run writes in `out`. A symbolic link output keeps its link and the tool writes its target. Messages show each path as written.
+The tool takes a path by where it resolves. It resolves each path once in the plan, and the plan, the folders it makes, the temporary and backup files, the renames, loading `MODEL` and `--check` all use that resolved path. The tool checks the plan it resolved and never resolves a path a second time. It cannot protect against another program that changes the folders while it runs. A missing folder in the middle, as in `missing/../out`, resolves past it as text, so that run writes in `out`. A symbolic link output keeps its link and the tool writes its target. Messages show each path as written.
 
 It refuses the run, exit 64, with one line that names the paths and the rule, when:
 
