@@ -691,14 +691,16 @@ def bed_faults(model, bed):
 
 
 def bed_mix(model, built, bed):
-    """{one-shot name: (head, rest)} as bytes. head[i] is shot[i] + bed[i]
-    - 128, clamped to 0 to 255; the rest is the bed's first part after it."""
-    first = bed_first(model, bed, built[bed])
+    """{one-shot name: (head, rest)}. head[i] is shot[i] + bed[i] - 128,
+    clamped to 0 to 255, as bytes. The rest is the bed's first part after
+    the head, as a memoryview of the bed: no copy per one-shot, so a long
+    bed under many one-shots costs no more memory than the bed itself."""
+    first = memoryview(bed_first(model, bed, built[bed]))
     out = {}
     for name in one_shots(model, bed):
         shot = built[name]
         head = bytes(min(255, max(0, a + b - 128)) for a, b in zip(shot, first))
-        out[name] = (head, bytes(first[len(shot):]))
+        out[name] = (head, first[len(shot):])
     return out
 
 
@@ -1267,7 +1269,8 @@ def publish(items, new_dirs=()):
     new_dirs is made, parents first; one that exists by then is used and
     not made. Each item goes to a temporary file in its folder. Then each
     existing path gets a backup, and the temporary files are renamed in
-    order, so the caller puts the header last.
+    order, so the caller puts the header last. The bytes of an item may be
+    a function that returns them.
 
     Every side file and folder is recorded the moment it exists, before
     anything goes into it. On any failure, every path this call renamed
@@ -1289,8 +1292,10 @@ def publish(items, new_dirs=()):
         for path, data in items:
             tmp, f = _side(path, "tmp", sides)
             temps.append((tmp, path))
+            # A callable makes its bytes only now, so a run with many large
+            # files holds one of them at a time.
             with f:
-                f.write(data)
+                f.write(data() if callable(data) else data)
         for _, path in temps:
             if os.path.lexists(path):
                 backups[path] = _backup(path, sides)
@@ -1521,6 +1526,15 @@ def _check(args, plan):
     if fault:
         print(f"sfx_table.py: error: {fault}", file=sys.stderr)
         return EX_USAGE
+    # A bed is judged against the model as a write judges it, with the same
+    # codes, before any comparison: a bad name is a usage error, not stale.
+    # A fault of the model or of reading it goes to the caller, as in a write.
+    model = None
+    if args.bed is not None:
+        model, _ = load_model(plan.model.real)
+        code = _bed_refusal(args, model)
+        if code:
+            return code
     try:
         h_raw = _read_bytes(h.real)
         c_raw = _read_bytes(c.real)
@@ -1558,10 +1572,8 @@ def _check(args, plan):
               " Run sfx_table.py again.", file=sys.stderr)
         return EX_STALE
     if args.full:
-        model, _ = load_model(plan.model.real)
-        code = _bed_refusal(args, model)
-        if code:
-            return code
+        if model is None:
+            model, _ = load_model(plan.model.real)
         built = build(model)
         source = os.path.basename(args.model)
         h_name = os.path.basename(args.h)
@@ -1689,7 +1701,7 @@ def _main(p, args):
                   for t, part in tables(model, name, data)]
         for name, (head, rest) in mix.items():
             items.append((plan.file_in("--dump", name + "_head.u8"), head))
-            items.append((plan.file_in("--dump", name + "_rest.u8"), rest))
+            items.append((plan.file_in("--dump", name + "_rest.u8"), rest.tobytes))
     if args.wav:
         for name, data in built.items():
             times = 3 if model["sounds"][name].get("loop") else 1
@@ -1699,7 +1711,8 @@ def _main(p, args):
         # the bed and the join back into it.
         for name, (head, rest) in mix.items():
             items.append((plan.file_in("--wav", name + "_over_bed.wav"),
-                          wav_bytes(head + rest + built[args.bed], model["rate_hz"])))
+                          lambda h=head, r=rest: wav_bytes(h + r + built[args.bed],
+                                                           model["rate_hz"])))
     if args.c is not None:
         # The header last: it carries the hash that --check reads.
         items.append((plan.file("--h", args.h), h_text.encode("ascii")))

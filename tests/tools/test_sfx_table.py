@@ -2277,3 +2277,45 @@ def test_generated_c_compiles_with_a_bed(tmp_path):
                        capture_output=True, text=True, env=minimal_env())
     assert r.returncode == 0, r.stderr
     assert subprocess.run([str(exe)], env=minimal_env()).returncode == 0
+
+
+def test_a_long_bed_under_many_one_shots_stays_small(tmp_path):
+    # A rest is a slice of the bed. The tool used to copy it for each
+    # one-shot: this model took about 1.5 GB. Now it takes about 60 MB.
+    bed = {"len": 262144, "peak_steps": 10, "loop": True, "layers": [
+        {"kind": "tone", "hits": [[0, 0]], "len": 262144, "pitch_mhz": [2000000, 2000000],
+         "level_mdb": 0, "partials": [[10000, 0]]}]}
+    sounds = {"drone": bed}
+    for i in range(5000):
+        sounds[f"s{i}"] = _shot(9, 8)
+    p = write_model(tmp_path, {"format": 1, "rate_hz": 8000, "ceiling_steps": 127,
+                               "sounds": sounds})
+    # ru_maxrss of the children, read in a parent that does nothing else.
+    probe = ("import resource, subprocess, sys\n"
+             "r = subprocess.run(sys.argv[1:])\n"
+             "print(r.returncode, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)\n")
+    r = subprocess.run([sys.executable, "-I", "-c", probe, sys.executable, "-I", TOOL, str(p),
+                        "--c", str(tmp_path / "sfx_t.c"), "--h", str(tmp_path / "sfx_t.h"),
+                        "--prefix", "x_sfx_", "--bed", "drone"],
+                       capture_output=True, text=True, env=minimal_env(), timeout=60)
+    code, rss = map(int, r.stdout.split())
+    assert code == 0, r.stderr
+    peak = rss if sys.platform == "darwin" else rss * 1024
+    assert peak < 300 * 1024 * 1024, peak
+
+
+@pytest.mark.parametrize("bed,words", [
+    ("nope", "--bed 'nope': the model has no such sound"),
+    ("beep", "--bed 'beep': the sound is not a loop")])
+@pytest.mark.parametrize("made", [None, (), ("--bed", "drone")])
+def test_check_refuses_a_bad_bed_as_a_write_does(tmp_path, bed, words, made):
+    m = _bed_model()
+    p = write_model(tmp_path, m)
+    c, h = tmp_path / "sfx_table.c", tmp_path / "sfx_table.h"
+    table = ("--c", c, "--h", h, "--prefix", "demo_sfx_")
+    if made is not None:
+        assert run(p, *table, *made).returncode == 0
+    wrote = run(p, *table, "--bed", bed)
+    checked = run(p, *table, "--check", "--bed", bed)
+    assert wrote.returncode == checked.returncode == 64, checked.stderr
+    assert checked.stderr == wrote.stderr == f"sfx_table.py: error: {words}\n"
