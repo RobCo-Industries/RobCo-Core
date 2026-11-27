@@ -299,7 +299,17 @@ A fixed tolerance needs enough independent values in each band and each frame. L
 
 - The effective duration is `T = (sum p)^2 / (sum p^2) / rate` seconds.
 - The effective bandwidth is `B = (sum S)^2 / (sum S^2) * rate / M` Hz.
-- The band width is `W = max(250, 6 / T)` Hz and the frame length `F = max(0.005, 6 / B)` seconds. Each judged value then holds at least 12 independent numbers.
+- The band width is `W = max(250, K_band / T)` Hz and the frame length `F = max(0.005, K_frame / B)` seconds.
+- `K_band` and `K_frame` count the independent complex values a judged value must hold. A one-shot with noise takes `K_band = 10` and `K_frame = 20`. A loop takes `K_band = 200` and `K_frame = 20`.
+
+Each limit sits about five standard deviations out, so a table with dozens of bands or hundreds of frames does not fail by chance. A 10 dB limit needs 20 independent real numbers, a 6 or 7 dB limit 40, and a 1.5 dB limit about 400.
+
+A band or frame whose noise fills only part of it holds fewer values than its width says. So each one is judged only when it holds enough values itself:
+
+- Band `b` holds `N_b = T * (rate / M) * (sum S[j])^2 / (sum S[j]^2)` over the bins `j` of the band.
+- Frame `f` holds `N_f = (B / rate) * (sum p[i])^2 / (sum p[i]^2)` over the samples `i` of the frame.
+- Tones are fixed, not random. With `q` the noise part of the predicted value, before the rounding floor, the value counts `N_eff = N / (q * (2 - q))`. A value with no noise is always judged.
+- A value with `N_eff` under `K_band` or `K_frame` is left out of the statistics, like a value more than 30 dB under the strongest.
 
 Bands run from 0 in steps of `W` up to 15 kHz, and the tool drops a last partial band. Frames run from sample 0 in steps of `F`, rounded to whole samples. A last frame shorter than half of `F` joins the frame before it. The line prints the widths after the kind, as `bands 250 Hz, frames 5.0 ms`.
 
@@ -314,8 +324,8 @@ A sound with a noise layer also gets a level check, since the frame gain hides t
 Some sounds are judged without their bands or their frames:
 
 - A sound where the table and the model both hold less than 1 % of the power under 15 kHz. Its line says `bands not judged, no power under 15 kHz`.
-- A sound with a noise layer where fewer than 3 bands fit. Its line says `bands not judged, too short`.
-- A sound with a noise layer where fewer than 3 frames fit. Its line says `frames not judged, too narrow`.
+- A sound with a noise layer where fewer than 3 bands fit or hold enough values. Its line says `bands not judged, too short`.
+- A sound with a noise layer where fewer than 3 frames fit or hold enough values. Its line says `frames not judged, too narrow`.
 
 A sound can carry both notes. The line still prints the band numbers it measured.
 

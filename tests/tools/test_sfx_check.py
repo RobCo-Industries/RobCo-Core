@@ -247,9 +247,10 @@ def test_short_noise_passes(tmp_path):
     p, d = dump(tmp_path, short_model())
     r = run(CHECK, p, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    # Its bands are wide enough to judge: no note.
-    assert re.search(r"bands \d+ Hz, frames 5\.0 ms, .*: ok$", r.stdout.strip()), r.stdout
-    assert "not judged" not in r.stdout, r.stdout
+    # Its bands hold too few independent values; its frames are judged.
+    assert re.search(r"bands \d+ Hz, frames 5\.0 ms, .*, bands not judged, too short: ok$",
+                     r.stdout.strip()), r.stdout
+    assert "frames not judged" not in r.stdout, r.stdout
 
 
 def test_short_noise_frame_8db_off_fails(tmp_path):
@@ -360,7 +361,7 @@ def test_one_frame_tick_checks_its_level(tmp_path):
     p, d = dump(tmp_path, tick_model())
     r = run(CHECK, p, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert re.search(r"worst \d+\.\d\d dB, level -?\d+\.\d\d dB, frames not judged, too narrow",
+    assert re.search(r"worst \d+\.\d\d dB, level -?\d+\.\d\d dB, bands not judged, too short, frames not judged, too narrow",
                      r.stdout)
 
     def spike(data):
@@ -497,6 +498,11 @@ def burst_model(seed=1):
              "bands": [[500, 0], [6000, 0]]}]}}}
 
 
+def test_short_last_frame_joins_a_single_frame():
+    sfx_check = _import_check()
+    assert sfx_check.to_frames([1.0] * 12, 10) == [12.0]
+
+
 def test_one_hit_spectrum_sums_to_its_power():
     sfx_check = _import_check()
     m = burst_model()
@@ -534,10 +540,11 @@ def test_repeated_hits_close_together_pass(tmp_path):
     assert r.returncode == 1, r.stdout + r.stderr
 
 
-def test_narrow_noise_gets_long_frames(tmp_path):
+@pytest.mark.parametrize("seed", range(1, 11))
+def test_narrow_noise_gets_long_frames(tmp_path, seed):
     m = {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"narrow": {
         "len": RATE, "peak_steps": 60, "layers": [
-            {"kind": "noise", "seed": 1, "level_mdb": 0, "hits": [[0, 0]],
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[0, 0]],
              "env": [[0, -60000], [10000, 0], [990000, 0], [1000000, -60000]],
              "bands": [[1900, -40000], [2000, 0], [2200, 0], [2300, -40000]]}]}}}
     p, d = dump(tmp_path, m)
@@ -545,6 +552,20 @@ def test_narrow_noise_gets_long_frames(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     ms = float(re.search(r"frames (\d+\.\d) ms", r.stdout).group(1))
     assert ms > 5.0, r.stdout
+
+
+@pytest.mark.parametrize("seed", range(1, 6))
+def test_short_noise_loop_gets_wide_bands(tmp_path, seed):
+    m = {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"hiss": {
+        "len": RATE // 10, "peak_steps": 30, "loop": True, "layers": [
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, 0], [100000, 0]],
+             "bands": [[500, 0], [6000, 0]]}]}}}
+    p, d = dump(tmp_path, m)
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    hz = int(re.search(r"bands (\d+) Hz", r.stdout).group(1))
+    assert hz > 250, r.stdout
 
 
 def test_2ms_tick_passes_with_a_note_and_checks_its_level(tmp_path):

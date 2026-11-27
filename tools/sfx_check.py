@@ -39,10 +39,13 @@ FILTER_FFT = 8192
 # Rounding each sample to a whole step adds white noise of this power, in
 # steps squared, per sample: a uniform error over one step.
 ROUND_POWER = 1.0 / 12.0
-# A judged band or frame of a sound with noise spans at least this many
-# times the inverse of the sound's effective duration or bandwidth, so it
-# holds at least twice as many independent values.
-SPAN = 6.0
+# The count of independent complex values a judged band or frame of a
+# sound with noise must hold, by kind of sound. Each limit sits about five
+# standard deviations out, so a table with dozens of bands or hundreds of
+# frames does not fail by chance. A 10 dB limit needs 20 real numbers, a
+# 6 or 7 dB limit 40, and a 1.5 dB limit about 400.
+SPAN = {"noise": {"band": 10.0, "frame": 20.0},
+        "loop": {"band": 200.0, "frame": 20.0}}
 # Fewer bands or frames than this are not judged.
 MIN_COUNT = 3
 # Bands are not judged when the table and the model both hold less than
@@ -535,17 +538,35 @@ def predict(sound, rate, size):
     return spectrum, sample, noise_spec, noise_pow
 
 
-def widths(noise_spec, noise_pow, rate, size):
+def widths(noise_spec, noise_pow, rate, size, kind):
     """The band width in Hz and the frame length in samples for a sound
-    with noise, from its effective duration and bandwidth."""
+    with noise of this kind, from its effective duration and bandwidth."""
+    span = SPAN[kind]
     sp, sp2 = sum(noise_pow), sum(p * p for p in noise_pow)
     ss, ss2 = sum(noise_spec), sum(v * v for v in noise_spec)
     dur = sp * sp / sp2 / rate if sp2 > 0.0 else 0.0
     bw = ss * ss / ss2 * rate / size if ss2 > 0.0 else 0.0
-    band = max(BAND_HZ, SPAN / dur) if dur > 0.0 else float("inf")
-    frame = max(FRAME_S, SPAN / bw) if bw > 0.0 else float("inf")
+    band = max(BAND_HZ, span["band"] / dur) if dur > 0.0 else float("inf")
+    frame = max(FRAME_S, span["frame"] / bw) if bw > 0.0 else float("inf")
     step = max(1, int(round(min(frame * rate, 1e12))))
-    return band, step
+    return band, step, dur, bw
+
+
+def counts(sums, squares, scale):
+    """The independent values of each band or frame: `scale` times the
+    effective number of its bins or samples."""
+    return [scale * u * u / v if v > 0.0 else 0.0 for u, v in zip(sums, squares)]
+
+
+def enough(n, noise, whole, need):
+    """Whether each value holds enough independent values to judge. Tones
+    are fixed, so a value with share `q` of noise counts n / (q (2 - q));
+    a value with no noise is always judged."""
+    out = []
+    for c, u, w in zip(n, noise, whole):
+        q = min(1.0, u / w) if w > 0.0 else 0.0
+        out.append(q <= 0.0 or c / (q * (2.0 - q)) >= need)
+    return out
 
 
 def to_bands(spec, rate, size, width):
@@ -571,7 +592,8 @@ def to_frames(power, step):
     out = [sum(power[i:i + step]) for i in range(0, len(power), step)]
     rest = len(power) % step
     if len(out) > 1 and rest and rest < step / 2.0:
-        out[-2] += out.pop()
+        last = out.pop()
+        out[-1] += last
     return out
 
 
@@ -603,14 +625,17 @@ def read_table(name, sound, folder):
     return data
 
 
-def errors_db(meas, pred, gain):
-    """dB errors over the entries within FLOOR_DB of the strongest measured."""
+def errors_db(meas, pred, gain, keep=None):
+    """dB errors over the kept entries within FLOOR_DB of the strongest
+    measured."""
     top = max(meas)
     if top <= 0.0:
         return []
+    if keep is None:
+        keep = [True] * len(meas)
     out = []
-    for m, p in zip(meas, pred):
-        if m <= 0.0 or 10.0 * math.log10(top / m) > FLOOR_DB:
+    for m, p, k in zip(meas, pred, keep):
+        if not k or m <= 0.0 or 10.0 * math.log10(top / m) > FLOOR_DB:
             continue
         p *= gain
         out.append(float("inf") if p <= 0.0 else abs(10.0 * math.log10(m / p)))
@@ -653,11 +678,19 @@ def check_sound(model, name, folder):
             size <<= 1
         mspec = onesided(fft([complex(v) for v in x] + [0j] * (size - len(x))), size)
         pspec, ps, nspec, npow = predict(sound, rate, size)
-        width, step = widths(nspec, npow, rate, size)
+        width, step, dur, bw = widths(nspec, npow, rate, size, kind)
         mb, m_low = to_bands(mspec, rate, size, width)
         pb, p_low_model = to_bands(pspec, rate, size, width)
         mf = to_frames([v * v for v in x], step)
         pf = to_frames(ps, step)
+        nb_spec, _ = to_bands(nspec, rate, size, width)
+        nb_sq, _ = to_bands([v * v for v in nspec], rate, size, width)
+        nf_pow = to_frames(npow, step)
+        nf_sq = to_frames([v * v for v in npow], step)
+        keep_b = enough(counts(nb_spec, nb_sq, dur * rate / size), nb_spec, pb,
+                        SPAN[kind]["band"])
+        keep_f = enough(counts(nf_pow, nf_sq, bw / rate), nf_pow, pf,
+                        SPAN[kind]["frame"])
         # Rounding adds white noise of n * ROUND_POWER in all, spread
         # evenly from 0 to half the rate.
         nyq = rate / 2.0
@@ -702,9 +735,10 @@ def check_sound(model, name, folder):
         band_gain = frame_gain = 1.0
         m_low, m_all = sum(mb), sum(mf)
         p_low = sum(pb)
-    be = stats(errors_db(mb, [p * band_gain + f for p, f in zip(pb, fb)], 1.0)) \
+        keep_b, keep_f = [True] * len(mb), [True] * len(mf)
+    be = stats(errors_db(mb, [p * band_gain + f for p, f in zip(pb, fb)], 1.0, keep_b)) \
         if mb else stats([])
-    fe = stats(errors_db(mf, [p * frame_gain + f for p, f in zip(pf, ff)], 1.0))
+    fe = stats(errors_db(mf, [p * frame_gain + f for p, f in zip(pf, ff)], 1.0, keep_f))
     # Share of the energy under 15 kHz, measured and predicted.
     m_share = m_low / m_all if m_all > 0.0 else 0.0
     p_share = p_low / p_all if p_all > 0.0 else 0.0
@@ -725,11 +759,11 @@ def check_sound(model, name, folder):
         notes.append("bands not judged")
     elif m_share < LOW_SHARE:
         notes.append("bands not judged, no power under 15 kHz")
-    elif has_noise and len(mb) < MIN_COUNT:
+    elif has_noise and sum(keep_b) < MIN_COUNT:
         notes.append("bands not judged, too short")
     else:
         bands_judged = True
-    frames_judged = not (has_noise and len(mf) < MIN_COUNT)
+    frames_judged = not (has_noise and sum(keep_f) < MIN_COUNT)
     if not frames_judged:
         notes.append("frames not judged, too narrow")
     judged = (("band", be),) if bands_judged else ()
