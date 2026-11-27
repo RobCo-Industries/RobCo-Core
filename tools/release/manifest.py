@@ -434,9 +434,19 @@ def remote_table(pairs):
     return table
 
 
+# What git needs to reach a remote, and nothing else of the environment:
+# where programs and settings are, how to sign in over SSH, and proxies.
+REMOTE_ENV = ("PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSH_AUTH_SOCK",
+              "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+              "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME", "SSL_CERT_FILE", "SSL_CERT_DIR",
+              "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+              "https_proxy", "http_proxy", "all_proxy", "no_proxy")
+
+
 def remote_tag(url, tag):
     """The commit the remote's tag points at, peeled, or None."""
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    env = {name: os.environ[name] for name in REMOTE_ENV if name in os.environ}
+    env["GIT_TERMINAL_PROMPT"] = "0"
     proc = subprocess.run(["git", "ls-remote", "--tags", url, f"refs/tags/{tag}",
                            f"refs/tags/{tag}^{{}}"], capture_output=True, text=True, env=env)
     if proc.returncode != 0:
