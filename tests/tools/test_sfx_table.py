@@ -272,11 +272,12 @@ def test_split(tmp_path):
     assert [p[0] for p in parts] == ["hiss_1", "hiss_2"]
     assert len(parts[0][1]) == 300 and parts[0][1] + parts[1][1] == whole
     p = write_model(tmp_path, m)
-    r = run(p, "--c", tmp_path / "t.c", "--h", tmp_path / "t.h", "--prefix", "x_",
+    r = run(p, "--c", tmp_path / "sfx_t.c", "--h", tmp_path / "sfx_t.h", "--prefix", "x_sfx_",
             "--dump", tmp_path / "d")
     assert r.returncode == 0, r.stderr
-    h = (tmp_path / "t.h").read_text()
-    assert "#define X_HISS_1_LEN 300u" in h and "extern const uint8_t x_hiss_2[X_HISS_2_LEN];" in h
+    h = (tmp_path / "sfx_t.h").read_text()
+    assert "#define X_SFX_HISS_1_LEN 300u" in h
+    assert "extern const uint8_t x_sfx_hiss_2[X_SFX_HISS_2_LEN];" in h
     assert (tmp_path / "d" / "hiss_1.u8").read_bytes() == parts[0][1]
     assert (tmp_path / "d" / "hiss_2.u8").read_bytes() == parts[1][1]
 
@@ -418,66 +419,78 @@ def test_cli_refuses_a_failed_check(tmp_path):
 
 def test_usage_errors(tmp_path):
     p = write_model(tmp_path, tone_model())
-    c, h, x = tmp_path / "a.c", tmp_path / "a.h", tmp_path / "x"
+    c, h, x = tmp_path / "sfx_a.c", tmp_path / "sfx_a.h", tmp_path / "x"
     for args in ((p,), (p, "--c", c), (p, "--full"), (p, "--check", "--dump", x),
                  (p, "--c", c, "--h", h, "--prefix", "Bad"),
                  (p, "--c", c, "--h", h, "--prefix", "_x"),
                  (p, "--c", c, "--h", h, "--prefix", "__x"),
                  (p, "--c", c, "--h", h, "--prefix", "1x"),
-                 (p, "--c", c, "--h", tmp_path / "1.h", "--prefix", "x_"),
-                 (p, "--c", c, "--h", tmp_path / "_x.h", "--prefix", "x_"),
-                 (p, "--c", c, "--h", tmp_path / "x_rate_hz", "--prefix", "x_"),
-                 (tmp_path / "s\u00f6nd.json", "--c", c, "--h", h, "--prefix", "x_"),
-                 (tmp_path / "a\nb.json", "--c", c, "--h", h, "--prefix", "x_"),
-                 (tmp_path / "x??=.json", "--c", c, "--h", h, "--prefix", "x_"),
-                 (tmp_path / "a b.json", "--c", c, "--h", h, "--prefix", "x_"),
-                 (tmp_path / "a*b.json", "--c", c, "--h", h, "--prefix", "x_"),
-                 (tmp_path / "-m.json", "--c", c, "--h", h, "--prefix", "x_")):
+                 (p, "--c", c, "--h", h, "--prefix", "x_"),
+                 (p, "--c", c, "--h", h, "--prefix", "sfx"),
+                 (p, "--c", c, "--h", h, "--prefix", "x__sfx_"),
+                 (p, "--c", c, "--h", h, "--prefix", "_sfx_"),
+                 (p, "--c", c, "--h", h, "--prefix", "sfx_x_"),
+                 (p, "--c", c, "--h", h, "--prefix", "a" * 29 + "_sfx_"),
+                 (p, "--c", tmp_path / "a.c", "--h", h, "--prefix", "sfx_"),
+                 (p, "--c", c, "--h", tmp_path / "a.h", "--prefix", "sfx_"),
+                 (p, "--c", c, "--h", tmp_path / "1.h", "--prefix", "x_sfx_"),
+                 (p, "--c", c, "--h", tmp_path / "_x.h", "--prefix", "x_sfx_"),
+                 (p, "--c", c, "--h", tmp_path / "x_rate_hz", "--prefix", "x_sfx_"),
+                 (tmp_path / "s\u00f6nd.json", "--c", c, "--h", h, "--prefix", "x_sfx_"),
+                 (tmp_path / "a\nb.json", "--c", c, "--h", h, "--prefix", "x_sfx_"),
+                 (tmp_path / "x??=.json", "--c", c, "--h", h, "--prefix", "x_sfx_"),
+                 (tmp_path / "a b.json", "--c", c, "--h", h, "--prefix", "x_sfx_"),
+                 (tmp_path / "a*b.json", "--c", c, "--h", h, "--prefix", "x_sfx_"),
+                 (tmp_path / "-m.json", "--c", c, "--h", h, "--prefix", "x_sfx_")):
         r = run(*args)
         assert r.returncode == 64, args
     assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
 
 
-@pytest.mark.parametrize("prefix,sound,h_name,bad", [
-    ("f", "loat", "t.h", "float, a C keyword"),
-    ("b", "ool", "t.h", "bool, a C keyword"),
-    ("static_", "assert", "t.h", "static_assert, a C keyword"),
-    ("thread_", "local", "t.h", "thread_local, a C keyword"),
-    ("nullpt", "r", "t.h", "nullptr, a C keyword"),
-    ("typ", "eof", "t.h", "typeof, a C keyword"),
-    ("a", "sm", "t.h", "asm, a C keyword"),
-    ("uint8_", "t", "t.h", "uint8_t, a name of <stdint.h>"),
-    ("in", "t32_t", "t.h", "int32_t, a name of <stdint.h>"),
-])
-def test_bad_c_names_are_refused(tmp_path, prefix, sound, h_name, bad):
-    m = tone_model()
-    m["sounds"] = {sound: m["sounds"]["beep"]}
-    p = write_model(tmp_path, m)
-    c, h = tmp_path / "t.c", tmp_path / h_name
-    r = run(p, "--c", c, "--h", h, "--prefix", prefix)
-    assert r.returncode == 64, r.stderr
-    assert bad in r.stderr and "Traceback" not in r.stderr
+# Names the keyword list, the <stdint.h> patterns, the reserved-name check
+# and the standard header list once refused, each by its own rule. The marker
+# rule refuses them all: no such name ends in sfx_ or holds sfx.
+OLD_NAME_CASES = [
+    ("f", "loat"), ("b", "ool"), ("static_", "assert"), ("thread_", "local"),
+    ("nullpt", "r"), ("typ", "eof"), ("a", "sm"), ("uint8_", "t"), ("in", "t32_t"),
+    ("size_", "t"), ("_", "x"), ("__", "x"), ("uint8_max", "x"), ("size_max", "x"),
+]
+OLD_HEADER_CASES = ["stdint.h", "Stdint.h", "stdbit.h", "string.h", "unistd.h",
+                    "pthread.h", "ar.h", "AR.h", "ucontext.h", "wordexp.h", "stddef.h"]
+
+
+def test_old_name_lists_are_refused_by_the_marker_rule(tmp_path):
+    p = write_model(tmp_path, tone_model())
+    c, h = tmp_path / "sfx_t.c", tmp_path / "sfx_t.h"
+    for prefix, sound in OLD_NAME_CASES:
+        assert not T.PREFIX.match(prefix), prefix
+        assert "sfx" not in (prefix + sound).lower()
+        r = run(p, "--c", c, "--h", h, "--prefix", prefix)
+        assert r.returncode == 64 and f"--prefix {prefix!r} must match" in r.stderr, prefix
+    for name in OLD_HEADER_CASES:
+        r = run(p, "--c", c, "--h", tmp_path / name, "--prefix", "sfx_")
+        assert r.returncode == 64 and "hold sfx" in r.stderr, name
     assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
 
 
-def test_bad_c_names_split_and_reserved():
+@pytest.mark.parametrize("prefix", ["sfx_", "uos_sfx_", "dx_sfx_", "a1_b2_sfx_",
+                                    "a" * 27 + "_sfx_"])
+def test_marker_prefixes_are_taken(prefix):
+    assert T.PREFIX.match(prefix) and len(prefix) <= 32
+
+
+def test_own_names_that_clash_are_refused():
     m = tone_model(split=4)
-    m["sounds"] = {"loat_1": m["sounds"]["beep"]}
-    faults = T.c_name_faults(T.c_names(m, {"loat_1": bytes(8)}, "f", "t.h"))
-    assert faults == []
-    m["sounds"] = {"ool": tone_model()["sounds"]["beep"]}
-    assert T.c_name_faults(T.c_names(m, {"ool": bytes(8)}, "b", "t.h")) == [
-        "--prefix 'b' and sound 'ool' give bool, a C keyword"]
-    assert T.c_name_faults([("_X", "here")]) == ["here give _X, a reserved C name"]
+    beep = m["sounds"]["beep"]
+    m["sounds"] = {"a": beep, "a_1": tone_model()["sounds"]["beep"]}
+    built = {"a": bytes(8), "a_1": bytes(8)}
+    faults = T.c_name_faults(T.c_names(m, built, "sfx_", "sfx_t.h"))
+    assert faults and all("already given by" in f for f in faults)
     assert T.c_name_faults([("A", "one"), ("A", "two")]) == ["two give A, already given by one"]
-    # A guard ends in _H now, so these clashes cannot come from the command
-    # line. The check stays as a second line of defence.
     m["sounds"] = {"beep": tone_model()["sounds"]["beep"]}
-    for h_name, bad in (("uint8_max", "UINT8_MAX, a name of <stdint.h>"),
-                        ("size_max", "SIZE_MAX, a name of <stdint.h>"),
-                        ("x_beep_peak", "X_BEEP_PEAK, already given by"),
-                        ("x_model_sha256", "X_MODEL_SHA256, already given by")):
-        faults = T.c_name_faults(T.c_names(m, {"beep": bytes(8)}, "x_", h_name))
+    for h_name, bad in (("sfx_beep_peak", "SFX_BEEP_PEAK, already given by"),
+                        ("sfx_model_sha256", "SFX_MODEL_SHA256, already given by")):
+        faults = T.c_name_faults(T.c_names(m, {"beep": bytes(8)}, "sfx_", h_name))
         assert len(faults) == 1 and bad in faults[0]
 
 
@@ -563,7 +576,7 @@ def test_unwritable_source_leaves_both_old_files(tmp_path):
     cdir, hdir = tmp_path / "c", tmp_path / "h"
     cdir.mkdir()
     hdir.mkdir()
-    c, h = cdir / "t.c", hdir / "t.h"
+    c, h = cdir / "sfx_t.c", hdir / "sfx_t.h"
     args = ("--c", c, "--h", h, "--prefix", "demo_sfx_")
     assert run(p, *args).returncode == 0
     old_c, old_h = c.read_bytes(), h.read_bytes()
@@ -575,7 +588,7 @@ def test_unwritable_source_leaves_both_old_files(tmp_path):
     finally:
         cdir.chmod(0o755)
     assert r.returncode == 1 and "Permission denied" in r.stderr
-    assert len([x for x in r.stderr.splitlines() if "warning:" not in x]) == 1
+    assert len(r.stderr.splitlines()) == 1
     assert c.read_bytes() == old_c and h.read_bytes() == old_h
     _no_temp_left(cdir, hdir)
     r = run(p, *args, "--check")
@@ -590,7 +603,7 @@ def test_unwritable_header_leaves_both_old_files(tmp_path):
     cdir, hdir = tmp_path / "c", tmp_path / "h"
     cdir.mkdir()
     hdir.mkdir()
-    c, h = cdir / "t.c", hdir / "t.h"
+    c, h = cdir / "sfx_t.c", hdir / "sfx_t.h"
     args = ("--c", c, "--h", h, "--prefix", "demo_sfx_")
     assert run(p, *args).returncode == 0
     old_c = c.read_bytes()
@@ -865,12 +878,13 @@ def test_extreme_models_render_or_are_refused(tmp_path, sound):
 
 @pytest.mark.skipif(shutil.which("cc") is None, reason="no host C compiler")
 @pytest.mark.parametrize("prefix,h_name", [
-    ("demo_sfx_", "sfx_table.h"), ("a", "t.h"), ("snd__", "sfx-table.h"),
-    ("z9_", "my.sounds.h"), ("q_", "h1.h"), ("x_", "x_rate_hz.h")])
+    ("demo_sfx_", "sfx_table.h"), ("sfx_", "t_sfx.h"), ("snd_sfx_", "sfx-table.h"),
+    ("z9_sfx_", "my.sfx.h"), ("q_sfx_", "h1sfx.h"), ("x_sfx_", "x_sfx_rate_hz.h"),
+    ("size_sfx_", "Big_sfx.h")])
 def test_generated_c_compiles_for_names(tmp_path, prefix, h_name):
     m = _two_sounds()
     p = write_model(tmp_path, m)
-    c, h = tmp_path / "out.c", tmp_path / h_name
+    c, h = tmp_path / "out_sfx.c", tmp_path / h_name
     r = run(p, "--c", c, "--h", h, "--prefix", prefix)
     assert r.returncode == 0, r.stderr
     main = tmp_path / "main.c"
@@ -1133,30 +1147,28 @@ def test_fuzz_never_reaches_the_backstop(tmp_path, capsys):
 
 BAD_FILE_NAMES = [
     ("--h", 'x"q.h', "the file name must be"),
-    ("--h", "sönd.h", "the file name must be"),
-    ("--h", "x q.h", "the file name must be"),
-    ("--h", "x\\q.h", "the file name must be"),
-    ("--h", "x'q.h", "the file name must be"),
-    ("--h", "x*q.h", "the file name must be"),
-    ("--h", "1.h", "the file name must be"),
-    ("--h", "_x.h", "the file name must be"),
-    ("--h", "-x.h", "the file name must be"),
-    ("--h", ".h", "the file name must be"),
-    ("--h", "x.hpp", "the file name must be"),
-    ("--h", "x_rate_hz", "the file name must be"),
-    ("--h", "x.h\n", "the file name must be"),
-    ("--h", "stdint.h", "a standard C or POSIX header"),
-    ("--h", "STDINT.H", "the file name must be"),
-    ("--h", "Stdint.h", "a standard C or POSIX header"),
-    ("--h", "stdbit.h", "a standard C or POSIX header"),
-    ("--h", "string.h", "a standard C or POSIX header"),
-    ("--h", "unistd.h", "a standard C or POSIX header"),
-    ("--h", "pthread.h", "a standard C or POSIX header"),
+    ("--h", "söndsfx.h", "the file name must be"),
+    ("--h", "x qsfx.h", "the file name must be"),
+    ("--h", "x\\qsfx.h", "the file name must be"),
+    ("--h", "x'qsfx.h", "the file name must be"),
+    ("--h", "x*qsfx.h", "the file name must be"),
+    ("--h", "1sfx.h", "the file name must be"),
+    ("--h", "_xsfx.h", "the file name must be"),
+    ("--h", "-xsfx.h", "the file name must be"),
+    ("--h", ".sfx.h", "the file name must be"),
+    ("--h", "sfx.hpp", "the file name must be"),
+    ("--h", "sfx_rate_hz", "the file name must be"),
+    ("--h", "sfx.h\n", "the file name must be"),
+    ("--h", "stdint.h", "hold sfx"),
+    ("--h", "SFX.H", "the file name must be"),
+    ("--h", "Sfx_t.h", "hold sfx"),
+    ("--h", "s_fx.h", "hold sfx"),
+    ("--c", "out.c", "hold sfx"),
     ("--c", 'x"q.c', "the file name must be"),
-    ("--c", "out.h", "the file name must be"),
-    ("--c", "a b.c", "the file name must be"),
-    ("--c", "1.c", "the file name must be"),
-    ("--c", "sönd.c", "the file name must be"),
+    ("--c", "sfx.h", "the file name must be"),
+    ("--c", "a bsfx.c", "the file name must be"),
+    ("--c", "1sfx.c", "the file name must be"),
+    ("--c", "söndsfx.c", "the file name must be"),
 ]
 
 
@@ -1165,56 +1177,14 @@ BAD_FILE_NAMES = [
 @pytest.mark.parametrize("check", [False, True])
 def test_bad_file_names_are_refused(tmp_path, option, name, message, check):
     p = write_model(tmp_path, tone_model())
-    names = {"--c": "t.c", "--h": "t.h", option: name}
-    args = [p, "--c", tmp_path / names["--c"], "--h", tmp_path / names["--h"], "--prefix", "x_"]
+    names = {"--c": "sfx_t.c", "--h": "sfx_t.h", option: name}
+    args = [p, "--c", tmp_path / names["--c"], "--h", tmp_path / names["--h"], "--prefix", "x_sfx_"]
     r = run(*args, *(["--check"] if check else []))
     assert r.returncode == 64, r.stderr
     errors = [line for line in r.stderr.splitlines() if "error:" in line]
     assert len(errors) == 1 and message in errors[0] and option in errors[0]
     assert "Traceback" not in r.stderr
     assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
-
-
-# The test's own copy of the standard header names, written apart from the
-# tool's table: C23 (ISO/IEC 9899:2024, 7.1.2), the plain file names of the
-# POSIX.1-2024 headers index, older POSIX and SUS issues, and System V ar.h.
-C23_NAMES = """assert complex ctype errno fenv float inttypes iso646 limits locale
-    math setjmp signal stdalign stdarg stdatomic stdbit stdbool stdckdint
-    stddef stdint stdio stdlib stdnoreturn string tgmath threads time uchar
-    wchar wctype"""
-POSIX_NAMES = """aio assert complex cpio ctype devctl dirent dlfcn endian errno
-    fcntl fenv float fmtmsg fnmatch ftw glob grp iconv inttypes iso646
-    langinfo libintl libgen limits locale math monetary mqueue ndbm netdb
-    nl_types poll pthread pwd regex sched search semaphore setjmp signal
-    spawn stdalign stdarg stdatomic stdbool stddef stdint stdio stdlib
-    stdnoreturn string strings syslog tar termios tgmath threads time uchar
-    unistd utmpx wchar wctype wordexp"""
-OLDER_NAMES = "re_comp regexp stropts trace ucontext ulimit utime varargs ar"
-
-
-def test_header_table_is_sorted_and_whole():
-    table = T.STANDARD_HEADERS
-    assert list(table) == sorted(table), "not sorted"
-    assert len(set(table)) == len(table), "a duplicate"
-    c23 = {n + ".h" for n in C23_NAMES.split()}
-    assert len(c23) == 31
-    mine = c23 | {n + ".h" for n in (POSIX_NAMES + " " + OLDER_NAMES).split()}
-    assert mine == set(table), (sorted(mine - set(table)), sorted(set(table) - mine))
-
-
-@pytest.mark.parametrize("name", ["ar.h", "AR.h", "ucontext.h", "stdbit.h", "wordexp.h"])
-def test_listed_header_names_are_refused(tmp_path, name):
-    p = write_model(tmp_path, tone_model())
-    r = run(p, "--c", tmp_path / "t.c", "--h", tmp_path / name, "--prefix", "x_")
-    assert r.returncode == 64 and "a standard C or POSIX header" in r.stderr
-
-
-def test_header_without_the_prefix_warns(tmp_path):
-    p = write_model(tmp_path, tone_model())
-    r = run(p, "--c", tmp_path / "t.c", "--h", tmp_path / "t.h", "--prefix", "x_")
-    assert r.returncode == 0 and "warning: --h 't.h' does not start with" in r.stderr
-    r = run(p, "--c", tmp_path / "t.c", "--h", tmp_path / "x_t.h", "--prefix", "x_")
-    assert r.returncode == 0 and r.stderr == ""
 
 
 def test_dump_and_wav_names_are_safe(tmp_path):
@@ -1237,36 +1207,36 @@ def test_dump_and_wav_names_are_safe(tmp_path):
 def _alias(tmp_path, how):
     """(args, files the run must leave as they are) for one spelling of
     the same file twice."""
-    p = write_model(tmp_path, tone_model(), name="model.c")
+    p = write_model(tmp_path, tone_model(), name="sfx.c")
     sub = tmp_path / "sub"
     sub.mkdir()
-    c, h = tmp_path / "t.c", tmp_path / "t.h"
+    c, h = tmp_path / "sfx_t.c", tmp_path / "sfx_t.h"
     if how == "model as --c":
-        return [p, "--c", p, "--h", h, "--prefix", "x_"]
+        return [p, "--c", p, "--h", h, "--prefix", "x_sfx_"]
     if how == "relative and absolute":
-        return [p, "--c", os.path.relpath(p), "--h", h, "--prefix", "x_"]
+        return [p, "--c", os.path.relpath(p), "--h", h, "--prefix", "x_sfx_"]
     if how == "dot and dot-dot":
-        return [p, "--c", sub / ".." / "." / "model.c", "--h", h, "--prefix", "x_"]
+        return [p, "--c", sub / ".." / "." / "sfx.c", "--h", h, "--prefix", "x_sfx_"]
     if how == "symbolic link":
-        (sub / "link.c").symlink_to(p)
-        return [p, "--c", sub / "link.c", "--h", h, "--prefix", "x_"]
+        (sub / "sfx_link.c").symlink_to(p)
+        return [p, "--c", sub / "sfx_link.c", "--h", h, "--prefix", "x_sfx_"]
     if how == "hard link":
         try:
-            os.link(p, sub / "hard.c")
+            os.link(p, sub / "sfx_hard.c")
         except OSError as e:
             pytest.skip(f"this file system makes no hard link: {e}")
-        return [p, "--c", sub / "hard.c", "--h", h, "--prefix", "x_"]
+        return [p, "--c", sub / "sfx_hard.c", "--h", h, "--prefix", "x_sfx_"]
     if how == "case":
-        return [p, "--c", tmp_path / "MODEL.c", "--h", h, "--prefix", "x_"]
+        return [p, "--c", tmp_path / "SFX.c", "--h", h, "--prefix", "x_sfx_"]
     if how == "header link to source":
-        (sub / "x_t.h").symlink_to(c)
+        (sub / "x_sfx_t.h").symlink_to(c)
         c.write_text("old\n")
-        return [p, "--c", c, "--h", sub / "x_t.h", "--prefix", "x_"]
+        return [p, "--c", c, "--h", sub / "x_sfx_t.h", "--prefix", "x_sfx_"]
     if how == "--c is a directory":
-        (sub / "d.c").mkdir()
-        return [p, "--c", sub / "d.c", "--h", h, "--prefix", "x_"]
+        (sub / "sfx_d.c").mkdir()
+        return [p, "--c", sub / "sfx_d.c", "--h", h, "--prefix", "x_sfx_"]
     if how == "missing folder":
-        return [p, "--c", tmp_path / "none" / "t.c", "--h", h, "--prefix", "x_"]
+        return [p, "--c", tmp_path / "none" / "sfx_t.c", "--h", h, "--prefix", "x_sfx_"]
     if how == "--dump is a file":
         (tmp_path / "f").write_text("x")
         return [p, "--dump", tmp_path / "f"]
@@ -1312,9 +1282,9 @@ def test_dump_and_wav_may_share_a_folder(tmp_path):
 def _combined(tmp_path):
     m = _two_sounds()
     p = write_model(tmp_path, m)
-    c, h = tmp_path / "x_t.c", tmp_path / "x_t.h"
+    c, h = tmp_path / "x_sfx_t.c", tmp_path / "x_sfx_t.h"
     d, w = tmp_path / "d", tmp_path / "w"
-    args = [str(p), "--c", str(c), "--h", str(h), "--prefix", "x_",
+    args = [str(p), "--c", str(c), "--h", str(h), "--prefix", "x_sfx_",
             "--dump", str(d), "--wav", str(w)]
     assert T.main(args) == 0
     m["sounds"]["beep"]["len"] = 10
@@ -1376,8 +1346,8 @@ def test_combined_run_rolls_back(tmp_path, monkeypatch, capsys, fail_at):
 def test_combined_run_removes_new_files_and_folders(tmp_path, monkeypatch):
     m = _two_sounds()
     p = write_model(tmp_path, m)
-    args = [str(p), "--c", str(tmp_path / "x_t.c"), "--h", str(tmp_path / "x_t.h"),
-            "--prefix", "x_", "--dump", str(tmp_path / "d"), "--wav", str(tmp_path / "w")]
+    args = [str(p), "--c", str(tmp_path / "x_sfx_t.c"), "--h", str(tmp_path / "x_sfx_t.h"),
+            "--prefix", "x_sfx_", "--dump", str(tmp_path / "d"), "--wav", str(tmp_path / "w")]
     real = os.replace
     n = []
 
@@ -1410,13 +1380,13 @@ def test_finding_dump_rolled_back_when_wav_fails(tmp_path, monkeypatch):
 
 def test_finding_model_named_like_the_source(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    p = write_model(tmp_path, tone_model(), name="model.c")
+    p = write_model(tmp_path, tone_model(), name="sfx.c")
     old = p.read_bytes()
-    r = subprocess.run([sys.executable, "-I", TOOL, "model.c", "--c", "model.c", "--h",
-                        "x_t.h", "--prefix", "x_"], capture_output=True, text=True,
+    r = subprocess.run([sys.executable, "-I", TOOL, "sfx.c", "--c", "sfx.c", "--h",
+                        "x_sfx_t.h", "--prefix", "x_sfx_"], capture_output=True, text=True,
                        env=minimal_env(), cwd=tmp_path)
-    assert r.returncode == 64 and "MODEL 'model.c' and --c 'model.c'" in r.stderr
-    assert p.read_bytes() == old and sorted(os.listdir(tmp_path)) == ["model.c"]
+    assert r.returncode == 64 and "MODEL 'sfx.c' and --c 'sfx.c'" in r.stderr
+    assert p.read_bytes() == old and sorted(os.listdir(tmp_path)) == ["sfx.c"]
 
 
 # ---------------------------------------------------------------------------
@@ -1611,8 +1581,8 @@ def _faulty(monkeypatch, fail_op, fail_n, no_link):
 def _publish_run(tmp_path, fresh):
     m = _two_sounds()
     p = write_model(tmp_path, m)
-    args = [str(p), "--c", str(tmp_path / "x_t.c"), "--h", str(tmp_path / "x_t.h"),
-            "--prefix", "x_", "--dump", str(tmp_path / "w" / "d"), "--wav", str(tmp_path / "w")]
+    args = [str(p), "--c", str(tmp_path / "x_sfx_t.c"), "--h", str(tmp_path / "x_sfx_t.h"),
+            "--prefix", "x_sfx_", "--dump", str(tmp_path / "w" / "d"), "--wav", str(tmp_path / "w")]
     if not fresh:
         assert T.main(args) == 0
         m["sounds"]["beep"]["len"] = 10
