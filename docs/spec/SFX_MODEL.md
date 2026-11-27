@@ -57,7 +57,7 @@ A model is one JSON object in UTF-8. Every number is a whole number, so a file r
 | `seed` | 0 to 4294967295 | Seed of the noise generator |
 | `level_mdb` | -120000 to 20000 | The rms level of the layer where the envelope is 0 dB |
 | `env` | 2 to 64 pairs | As for a tone. The last time sets the length of a hit. |
-| `bands` | 2 to 24 pairs | `[frequency, level]`: the filter curve. Frequency in hertz, 0 to `rate_hz / 2`, never going down. Level in millidecibels. |
+| `bands` | 2 to 24 pairs | `[frequency, level]`: the filter curve. Frequency in hertz, 0 to `rate_hz / 2`, each above the one before. Level in millidecibels. |
 | `fold` | 0 to half the hit's length, optional | Samples faded in and out at each end of a hit |
 | `repeat` | `true` or `false`, optional | Every hit replays the noise of the first hit |
 
@@ -115,7 +115,7 @@ The generator is xorshift32: `s ^= s << 13`, `s ^= s >> 17`, `s ^= s << 5`, each
 
 The filter has 511 taps, built from `bands`:
 
-1. For `k` from 0 to 512 the bin frequency is `k * rate_hz / 1024`. Its level is the curve: straight lines in dB between points, the later point's level where two share a frequency, and no level below the first or above the last point. `amp[k] = db_gain(level)`, or 0 with no level.
+1. For `k` from 0 to 512 the bin frequency is `k * rate_hz / 1024`. Its level is the curve: straight lines in dB between points, and no level below the first or above the last point. `amp[k] = db_gain(level)`, or 0 with no level.
 2. `c[j] = cos(2 pi * j / 1024)` for `j` from 0 to 1023.
 3. For `m` from 0 to 255: `v = amp[0] + amp[512] * c[512 m mod 1024]`, then for `k` from 1 to 511 `v = v + 2 * amp[k] * c[k m mod 1024]`. The Hann window gives `v = v * (0.5 + 0.5 * cos(pi * m / 256))`. Tap `255 + m` and tap `255 - m` take `v`.
 4. `e = sqrt(h[0]^2 + h[1]^2 + ... + h[510]^2)`, summed in that order, and every tap becomes `h[j] / e`. The filter has unit power. A curve that gives no bin is refused.

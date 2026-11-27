@@ -304,6 +304,7 @@ def curve_db(bands, f):
     for (f0, m0), (f1, m1) in zip(bands, bands[1:]):
         if f <= f1:
             d0, d1 = m0 / 1000.0, m1 / 1000.0
+            # Validation keeps the frequencies rising, so f1 > f0 here.
             return d0 + (d1 - d0) * (f - f0) / (f1 - f0) if f1 > f0 else d1
     return bands[-1][1] / 1000.0
 
@@ -756,11 +757,11 @@ def _check_layer(c, layer, li, sound, rate, where):
     else:
         c.int(layer["seed"], f"{w}.seed", 0, MASK)
         if c.pairs(layer["bands"], f"{w}.bands", 2, MAX_BANDS):
-            last = 0
+            last = -1
             for i, (hz, m) in enumerate(layer["bands"]):
                 if c.int(hz, f"{w}.bands[{i}][0]", 0, rate // 2):
-                    if hz < last:
-                        c.fault(f"{w}.bands[{i}][0]", "must not be below the point above it")
+                    if hz <= last:
+                        c.fault(f"{w}.bands[{i}][0]", "must be above the point above it")
                     last = hz
                 c.int(m, f"{w}.bands[{i}][1]", MDB_MIN, MDB_MAX)
         if "repeat" in layer:
