@@ -1821,3 +1821,179 @@ def test_roll_back_keeps_a_folder_it_did_not_make(tmp_path, monkeypatch, capsys)
     assert T.main([str(p), "--dump", str(tmp_path / "d"), "--wav", str(tmp_path / "w")]) == 1
     assert os.listdir(tmp_path / "d") == [] and os.listdir(tmp_path / "w") == []
     capsys.readouterr()
+
+
+# ---------------------------------------------------------------------------
+# Every independent field gets its line
+# ---------------------------------------------------------------------------
+
+def _broken(edit):
+    m = _every_field()
+    edit(m, m["sounds"]["beep"], *m["sounds"]["beep"]["layers"])
+    return T.check_model(m)
+
+
+S, L0, L1 = "sound 'beep'", "sound 'beep'.layers[0]", "sound 'beep'.layers[1]"
+
+
+def _cut_top(m, s, tone, noise):
+    del m["ceiling_steps"]
+    m["extra"] = 1
+    s["peak_steps"] = 0
+
+
+def _cut_sound(m, s, tone, noise):
+    del s["len"]
+    s["peak_steps"] = "x"
+    s["loop"] = 1
+
+
+def _cut_tone(m, s, tone, noise):
+    del tone["pitch_mhz"]
+    tone["level_mdb"] = "x"
+    tone["attack_us"] = -1
+
+
+def _cut_noise(m, s, tone, noise):
+    del noise["seed"]
+    noise["repeat"] = "yes"
+    noise["fold"] = -1
+
+
+def _cut_items(m, s, tone, noise):
+    del tone["len"]
+    tone["hits"] = [[0, 0], [0, "x"]]
+    tone["partials"] = [[0, 0]]
+
+
+def _cut_short_list(m, s, tone, noise):
+    del noise["seed"]
+    noise["bands"] = [[-1, 0]]
+
+
+LEVELS = [
+    (_cut_top, ["extra: unknown field", "model: missing field 'ceiling_steps'",
+            f"{S}.peak_steps: must be 1 to 127, not 0"]),
+    (_cut_sound, [f"{S}: missing field 'len'", f"{S}.peak_steps: must be a whole number",
+              f"{S}.loop: must be true or false"]),
+    (_cut_tone, [f"{L0}: missing field 'pitch_mhz'", f"{L0}.level_mdb: must be a whole number",
+             f"{L0}.attack_us: must be 0 to 10000000, not -1"]),
+    (_cut_noise, [f"{L1}: missing field 'seed'", f"{L1}.repeat: must be true or false",
+              f"{L1}.fold: must be 0 to 4, not -1"]),
+    (_cut_items, [f"{L0}: missing field 'len'", f"{L0}.hits[1][1]: must be a whole number",
+              f"{L0}.partials[0][0]: must be 1 to 1000000, not 0"]),
+    (_cut_short_list, [f"{L1}: missing field 'seed'", f"{L1}.bands: must hold 2 to 24 points, not 1",
+                   f"{L1}.bands[0][0]: must be 0 to 4000, not -1"]),
+]
+
+
+@pytest.mark.parametrize("edit,lines", LEVELS, ids=[e.__name__ for e, _ in LEVELS])
+def test_a_missing_field_hides_no_other_fault(edit, lines):
+    assert _broken(edit) == lines
+    assert _broken(edit) == lines           # a stable order
+
+
+def _over_budget():
+    tone = {"kind": "tone", "hits": [[0, 0]], "len": T.MAX_LEN, "pitch_mhz": [1000, 1000],
+            "level_mdb": 0, "partials": [[10000, 0]] * T.MAX_PARTIALS}
+    return {"format": 1, "rate_hz": 8000, "ceiling_steps": 127, "sounds": {"big": {
+        "len": T.MAX_LEN, "peak_steps": 8, "layers": [dict(tone) for _ in range(T.MAX_LAYERS)]}}}
+
+
+def _split_past_len():
+    m = tone_model(split=20)
+    assert any(".split" in f for f in T.check_model(m))
+    return m
+
+
+def _attack_past_len():
+    m = tone_model()
+    m["sounds"]["beep"]["layers"][0]["attack_us"] = 5000
+    assert any("must fit inside" in f for f in T.check_model(m))
+    return m
+
+
+def _fold_past_env():
+    m = noise_model()
+    m["sounds"]["hiss"]["layers"][0]["fold"] = 1000
+    return m
+
+
+# (model, path to the object, inputs, words of the dependent fault)
+DEPENDENT = [
+    (_review_glide, ("sounds", "dive", "layers", 0), ("len", "pitch_mhz", "partials"),
+     "the sine of multiple"),
+    (_review_glide, (), ("rate_hz",), "the sine of multiple"),
+    (_over_budget, ("sounds", "big"), ("len",), "budget"),
+    (_over_budget, ("sounds", "big", "layers", 0), ("len", "partials"), "budget"),
+    (_split_past_len, ("sounds", "beep"), ("len",), ".split"),
+    (_attack_past_len, ("sounds", "beep", "layers", 0), ("len",), "must fit inside"),
+    (_attack_past_len, (), ("rate_hz",), "must fit inside"),
+    (_fold_past_env, ("sounds", "hiss", "layers", 0), ("env",), ".fold"),
+    (_fold_past_env, (), ("rate_hz",), ".fold"),
+]
+WRONG = [None, "x", True, [], {}, 1.5]
+
+
+@pytest.mark.parametrize("make,path,keys,words", DEPENDENT)
+def test_a_dependent_check_waits_for_its_inputs(make, path, keys, words):
+    assert any(words in f for f in T.check_model(make()))
+    for key in keys:
+        for wrong in ["delete"] + WRONG:
+            m = make()
+            obj = m
+            for k in path:
+                obj = obj[k]
+            if wrong == "delete":
+                del obj[key]
+            else:
+                obj[key] = wrong
+            faults = T.check_model(m)
+            assert not any(words in f for f in faults), (key, wrong, faults)
+            assert any(f"missing field {key!r}" in f or f".{key}" in f or f.startswith(key)
+                       for f in faults), (key, wrong, faults)
+
+
+def _damage(rng, m):
+    """Damage one to three leaf fields of model m. Returns (where, key) of
+    each: a line must name it."""
+    spots = [("", m, "top", k) for k in ("rate_hz", "ceiling_steps")]
+    for name, s in m["sounds"].items():
+        w = f"sound {name!r}"
+        spots += [(w, s, "sound", k) for k in s if k != "layers"]
+        for li, layer in enumerate(s["layers"]):
+            spots += [(f"{w}.layers[{li}]", layer, layer["kind"], k)
+                      for k in layer if k != "kind"]
+    done = []
+    for where, obj, section, key in rng.sample(spots, rng.randint(1, min(3, len(spots)))):
+        kind = T.FIELDS[section][key]
+        how = rng.choice(("delete", "type", "range"))
+        if how == "delete" and key in T.REQUIRED[section]:
+            del obj[key]
+        elif how == "range" and kind in ("int", "pair", "pairs"):
+            obj[key] = {"int": 10 ** 12, "pair": [10 ** 12, 1],
+                        "pairs": [[10 ** 12, 0], [10 ** 12, 0]]}[kind]
+        else:
+            obj[key] = "x"
+        done.append((where, key))
+    return done
+
+
+def test_fuzz_of_broken_models(tmp_path, capsys):
+    # Each damaged field gets its line, and no run reaches a traceback or
+    # the internal error line.
+    rng = random.Random(2027)
+    for i in range(200):
+        m = _fuzz_model(rng)
+        damaged = _damage(rng, m)
+        p = write_model(tmp_path, m, f"m{i}.json")
+        code = T.main([str(p), "--dump", str(tmp_path / f"d{i}")])
+        err = capsys.readouterr().err
+        assert code == 2, (m, err)
+        assert "internal error" not in err and "Traceback" not in err and T.BACKSTOP not in err
+        lines = err.splitlines()
+        for where, key in damaged:
+            tag = f"{where}.{key}" if where else key
+            assert any(f": {tag}" in x or f": {where or 'model'}: missing field {key!r}" in x
+                       for x in lines), (where, key, err)
+        p.unlink()
