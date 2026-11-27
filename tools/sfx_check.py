@@ -12,8 +12,9 @@ This tool shares no code with sfx_table.py. It holds its own small copy of
 the pure math it needs and uses Python's math module: it judges by
 tolerance, not by bytes.
 
-Exit codes: 0 all sounds pass, 1 a sound fails, 2 the model is not valid or
-a table file is missing or has the wrong length, 64 usage, 70 internal fault.
+Exit codes: 0 all sounds pass, 1 a sound fails, 2 the model is not valid, a
+table file is missing or has the wrong length, or a sound is too costly to
+check, 64 usage, 70 internal fault.
 """
 
 import cmath
@@ -61,6 +62,8 @@ LEVEL_MAX_DB = 14.0
 MAX_LEN = 262144
 MAX_US = MAX_LEN * 1000000 // 8000
 MDB = (-120000, 20000)
+# The most steps of the noise prediction one sound may take.
+WORK_LIMIT = 200_000_000
 
 # Tolerances in dB, by kind of sound. Each rule names a statistic of the
 # absolute errors and its limit.
@@ -78,6 +81,10 @@ class ModelError(Exception):
 
 
 class TableError(Exception):
+    pass
+
+
+class CostError(Exception):
     pass
 
 
@@ -262,6 +269,33 @@ def fft(x):
     return a
 
 
+def dft(x):
+    """The DFT of a complex list of any length: the FFT when the length is
+    a power of 2, else Bluestein's chirp method on a power-of-2 FFT."""
+    n = len(x)
+    if n & (n - 1) == 0:
+        return fft(x)
+    m = 1
+    while m < 2 * n - 1:
+        m <<= 1
+    # k^2 modulo 2n keeps the chirp's angle small and exact.
+    w = [cmath.exp(-1j * math.pi * (k * k % (2 * n)) / n) for k in range(n)]
+    a = [v * c for v, c in zip(x, w)] + [0j] * (m - n)
+    b = [0j] * m
+    for k in range(n):
+        b[k] = w[k].conjugate()
+        if k:
+            b[m - k] = b[k]
+    prod = [u * v for u, v in zip(fft(a), fft(b))]
+    # The inverse FFT by conjugation.
+    conv = fft([v.conjugate() for v in prod])
+    return [conv[k].conjugate() / m * w[k] for k in range(n)]
+
+
+def _side_weight(k, size):
+    return 1.0 if k == 0 or 2 * k == size else 2.0
+
+
 def band_energy(x, rate, nbands):
     """Energy of x in each 250 Hz band, so that all bands sum to sum(x^2)."""
     n = 1
@@ -385,22 +419,38 @@ def hit_gain(layer, rate):
     return gain
 
 
-def table_autocorr(g, first, n, loop):
-    """The autocorrelation of a hit's gain as it lands in the table: cut
-    after `first` samples, then in a loop each further n samples wrap."""
-    r = autocorr(g[:first])
-    if loop:
-        for a in range(first, len(g), n):
-            r = [u + v for u, v in zip(r, autocorr(g[a:a + n]))]
-    return r
+def autocorr_steps(n):
+    """The steps autocorr() takes on n values."""
+    return sum(n - d for d in range(min(FIR_TAPS, n)))
+
+
+def merge_hits(layer, rate):
+    """The hits of a noise layer as (start, linear level). In a repeat
+    layer, hits at one start play one waveform, so they become one hit
+    whose level is the sum of theirs."""
+    hits = [(s, db_gain((layer["level_mdb"] + lv) / 1000.0)) for s, lv in layer["hits"]]
+    if not layer.get("repeat", False):
+        return hits
+    out = {}
+    for s, a in hits:
+        out[s] = out.get(s, 0.0) + a
+    return sorted(out.items())
+
+
+def repeat_cut(layer, sound, rate):
+    """True for a repeat layer of a one-shot where the table end cuts a hit."""
+    if sound.get("loop") or not layer.get("repeat", False):
+        return False
+    ng = ceil_div(layer["env"][-1][0] * rate, 1000000)
+    return any(s + ng > sound["len"] for s, _ in layer["hits"])
 
 
 def onesided(spec, size):
-    """|X|^2 of the first half of an FFT, scaled as band_energy() scales it,
+    """|X|^2 of the first half of a DFT, scaled as band_energy() scales it,
     so the values sum to the sum of the squared samples."""
     out = []
     for k in range(size // 2 + 1):
-        w = 1.0 if k == 0 or k == size // 2 else 2.0
+        w = _side_weight(k, size)
         z = spec[k]
         out.append(w * (z.real * z.real + z.imag * z.imag) / size)
     return out
@@ -415,10 +465,10 @@ def lag_spectrum(c, size):
         x[d % size] += v
         if d:
             x[-d % size] += v
-    spec = fft(x)
+    spec = dft(x)
     out = []
     for k in range(size // 2 + 1):
-        w = 1.0 if k == 0 or k == size // 2 else 2.0
+        w = _side_weight(k, size)
         out.append(w * max(spec[k].real, 0.0) / size)
     return out
 
@@ -436,60 +486,106 @@ def comb(hits, size):
 
 def noise_layer(layer, sound, rate, size):
     """The expected one-sided spectrum of a noise layer on `size` bins, and
-    its expected power at each sample of the sound."""
+    its expected power at each sample of the sound. A loop is periodic, so
+    its spectrum lives on its own n bins, where a wrapped hit is only a
+    phase; a one-shot uses `size` zero-padded bins."""
     h = fir_taps(layer["bands"], rate)
     rh = autocorr(h)
     g = hit_gain(layer, rate)
     n, loop = sound["len"], sound.get("loop", False)
     repeat = layer.get("repeat", False)
-    hits = [(s, db_gain((layer["level_mdb"] + lv) / 1000.0)) for s, lv in layer["hits"]]
-    if repeat:
+    hits = merge_hits(layer, rate)
+    if loop:
+        # The whole hit, however often it wraps.
+        rg = autocorr(g)
+        one = lag_spectrum([u * v for u, v in zip(rh, rg)], size)
+        if repeat:
+            spectrum = [u * v for u, v in zip(one, comb(hits, size))]
+        else:
+            e = sum(a * a for _, a in hits)
+            spectrum = [u * e for u in one]
+    elif repeat:
         # Every hit replays one waveform: one hit's spectrum times the comb
-        # of the starts.
-        first = n if loop else max(min(len(g), n - s) for s, _ in hits)
-        rg = table_autocorr(g, first, n, loop)
+        # of the starts. Exact when no hit is cut; else the bands are not
+        # judged and this only sizes the widths.
+        first = max(min(len(g), n - s) for s, _ in hits)
+        rg = autocorr(g[:first])
         one = lag_spectrum([u * v for u, v in zip(rh, rg)], size)
         spectrum = [u * v for u, v in zip(one, comb(hits, size))]
     else:
-        # Unrelated hits add as powers. Sum their lags, then one FFT.
+        # Unrelated hits add as powers, each with the part that lands in
+        # the table. Sum their lags, then one DFT.
         c = [0.0] * FIR_TAPS
         cache = {}
         for s, a in hits:
-            first = n - s if loop else min(len(g), n - s)
+            first = min(len(g), n - s)
             if first not in cache:
-                cache[first] = table_autocorr(g, first, n, loop)
+                cache[first] = autocorr(g[:first])
             c = [u + a * a * v * w for u, v, w in zip(c, rh, cache[first])]
         spectrum = lag_spectrum(c, size)
     return spectrum, layer_power(g, rh, hits, n, loop, repeat)
 
 
-def layer_power(g, rh, hits, n, loop, repeat):
-    """Expected power at each sample: each hit's own power, plus with
-    repeat the cross terms of hits whose noise sits at most 510 samples
-    apart. Hit k's sample i and hit l's sample i - d land on one table
-    sample when d is the start difference, modulo n in a loop."""
-    power = [0.0] * n
+def power_spans(size, hits, n, loop, repeat):
+    """Each run of stream sample pairs that land on one table sample:
+    (k, l, d, lo, hi) means hit k's samples lo to hi - 1 pair with hit l's
+    samples d lower. Only hits of one stream pair: the same hit, or any
+    two hits of a repeat layer, at most 510 samples apart in the stream."""
     top = FIR_TAPS - 1
     pairs = ([(k, l) for k in range(len(hits)) for l in range(len(hits))]
              if repeat else [(k, k) for k in range(len(hits))])
-    size = len(g)
     for k, l in pairs:
-        sk, ak = hits[k]
-        sl, al = hits[l]
-        base = sl - sk
+        sk = hits[k][0]
+        base = hits[l][0] - sk
         if loop:
-            lags = [d for d in range(base % n - (top // n + 1) * n, top + 1, n)
-                    if -top <= d <= top]
+            lags = range(base % n - (top // n + 1) * n, top + 1, n)
         else:
-            lags = [base] if -top <= base <= top else []
+            lags = (base,)
         for d in lags:
-            lo, hi = max(0, d), min(size, size + d)
-            if lo >= hi:
+            if not -top <= d <= top:
                 continue
-            coef = ak * al * rh[abs(d)]
-            prod = list(map(operator.mul, g[lo:hi], g[lo - d:hi - d]))
-            _add(power, sk + lo, prod, coef, loop)
+            lo = max(0, d)
+            hi = min(size, size + d) if loop else min(size, size + d, n - sk)
+            if lo < hi:
+                yield k, l, d, lo, hi
+
+
+def layer_power(g, rh, hits, n, loop, repeat):
+    """Expected power at each table sample: the sum over every pair of
+    landed stream samples j and j' that share a noise stream of
+    a a' g[j] g[j'] rh[j' - j]."""
+    power = [0.0] * n
+    for k, l, d, lo, hi in power_spans(len(g), hits, n, loop, repeat):
+        coef = hits[k][1] * hits[l][1] * rh[abs(d)]
+        prod = list(map(operator.mul, g[lo:hi], g[lo - d:hi - d]))
+        _add(power, hits[k][0] + lo, prod, coef, loop)
     return power
+
+
+def work(sound, rate, size):
+    """The steps the noise prediction of a sound takes: the pairs of the
+    power, the autocorrelations of the gains and the combs."""
+    n, loop = sound["len"], sound.get("loop", False)
+    total = 0
+    for layer in sound["layers"]:
+        if layer["kind"] != "noise":
+            continue
+        ng = ceil_div(layer["env"][-1][0] * rate, 1000000)
+        repeat = layer.get("repeat", False)
+        hits = merge_hits(layer, rate)
+        for _, _, _, lo, hi in power_spans(ng, hits, n, loop, repeat):
+            total += hi - lo
+        if loop:
+            total += autocorr_steps(ng)
+        elif repeat:
+            total += autocorr_steps(max(min(ng, n - s) for s, _ in hits))
+        else:
+            total += sum(autocorr_steps(m) for m in {min(ng, n - s) for s, _ in hits})
+        if repeat:
+            total += len(hits) * (size // 2 + 1)
+        if total > WORK_LIMIT:
+            break
+    return total
 
 
 def render_tones(sound, rate):
@@ -527,7 +623,7 @@ def predict(sound, rate, size):
     tone = render_tones(sound, rate)
     spectrum = [0.0] * (size // 2 + 1)
     if any(layer["kind"] == "tone" for layer in sound["layers"]):
-        spectrum = onesided(fft([complex(v) for v in tone] + [0j] * (size - len(tone))), size)
+        spectrum = onesided(dft([complex(v) for v in tone] + [0j] * (size - len(tone))), size)
     noise_spec = [0.0] * len(spectrum)
     noise_pow = [0.0] * sound["len"]
     for layer in sound["layers"]:
@@ -705,7 +801,9 @@ def judge(meas, pred, neff, need):
         if m <= 0.0 or 10.0 * math.log10(top / m) > FLOOR_DB:
             continue
         e = float("inf") if p <= 0.0 else 10.0 * math.log10(m / p)
-        if n >= need:
+        # A flat band of a loop holds the count exactly; rounding in the
+        # sums must not make it thin.
+        if n >= need * (1.0 - 1e-9):
             errs.append(abs(e))
             continue
         thin += 1
@@ -746,16 +844,24 @@ def check_sound(model, name, folder):
     kind = kind_of(sound)
     faults = []
     notes = []
+    if kind != "tones":
+        size = len(data) if kind == "loop" else 1
+        while size < len(data):
+            size <<= 1
+        steps = work(sound, rate, size)
+        if steps > WORK_LIMIT:
+            raise CostError("sounds.%s: too costly to check, %d steps, the limit is %d"
+                            % (name, steps, WORK_LIMIT))
     peak = max(abs(b - 128) for b in data)
     if peak != sound["peak_steps"]:
         faults.append("peak is %d steps, the model says %d" % (peak, sound["peak_steps"]))
     x = [b - 128.0 for b in data]
     has_noise = any(layer["kind"] == "noise" for layer in sound["layers"])
+    cut = any(layer["kind"] == "noise" and repeat_cut(layer, sound, rate)
+              for layer in sound["layers"])
     if has_noise:
-        size = 1
-        while size < len(x):
-            size <<= 1
-        mspec = onesided(fft([complex(v) for v in x] + [0j] * (size - len(x))), size)
+        # A loop is periodic: its own n bins, no zero padding.
+        mspec = onesided(dft([complex(v) for v in x] + [0j] * (size - len(x))), size)
         pspec, ps, nspec, npow = predict(sound, rate, size)
         width, step, dur, bw = widths(nspec, npow, rate, size, kind)
         mb, m_low = to_bands(mspec, rate, size, width)
@@ -838,6 +944,8 @@ def check_sound(model, name, folder):
         faults.append("power under 15 kHz is %.1f %% of the table, the model predicts %.1f %%"
                       % (100.0 * m_share, 100.0 * p_share))
         notes.append("bands not judged")
+    elif cut:
+        notes.append("bands not judged, repeated hits cut by the table end")
     elif m_share < LOW_SHARE:
         notes.append("bands not judged, no power under 15 kHz")
     else:
@@ -884,7 +992,7 @@ def main(argv):
     for name in model["sounds"]:
         try:
             line, ok = check_sound(model, name, folder)
-        except (TableError, ModelError) as e:
+        except (TableError, ModelError, CostError) as e:
             sys.stderr.write("sfx_check.py: %s\n" % e)
             return EX_MODEL
         print(line)

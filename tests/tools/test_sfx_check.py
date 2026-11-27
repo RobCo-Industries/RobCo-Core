@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -630,3 +631,94 @@ def test_incomplete_gamma_known_values(x):
 def test_incomplete_gamma_median_near_its_shape():
     sfx_check = _import_check()
     assert sfx_check.gamma_p(10000.0, 10000.0) == pytest.approx(0.5, abs=0.01)
+
+
+@pytest.mark.parametrize("n", [1, 2, 7, 100, 2049])
+def test_dft_of_any_length_matches_a_direct_sum(n):
+    sfx_check = _import_check()
+    x = [complex(math.sin(1.3 * i + 0.2), math.cos(0.7 * i * i)) for i in range(n)]
+    got = sfx_check.dft(x)
+    for k in sorted({0, 1 % n, n // 2, n - 1}):
+        want = sum(v * complex(math.cos(2 * math.pi * k * i / n), -math.sin(2 * math.pi * k * i / n))
+                   for i, v in enumerate(x))
+        assert abs(got[k] - want) <= 1e-9 * max(1.0, abs(want)) * n, (n, k)
+
+
+def odd_loop_model(seed):
+    """A 2049-sample noise loop with one hit at sample 1000."""
+    n = 2049
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"odd": {
+        "len": n, "peak_steps": 30, "loop": True, "layers": [
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[1000, 0]],
+             "fold": 100, "env": [[0, 0], [(n + 100) * 1000000 // RATE, 0]],
+             "bands": [[500, 0], [6000, 0]]}]}}}
+
+
+@pytest.mark.parametrize("seed", range(1, 13))
+def test_odd_loop_with_a_late_hit_passes(tmp_path, seed):
+    p, d = dump(tmp_path, odd_loop_model(seed))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_one_sample_loop_of_many_hits_is_quick(tmp_path):
+    m = {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"dot": {
+        "len": 1, "peak_steps": 1, "loop": True, "layers": [
+            {"kind": "noise", "seed": 3, "level_mdb": -20000, "repeat": True,
+             "hits": [[0, 0]] * 64, "env": [[0, 0], [500 * 1000000 // RATE, 0]],
+             "bands": [[500, 0], [6000, 0]]}]}}}
+    p, d = dump(tmp_path, m)
+    t = time.monotonic()
+    r = run(CHECK, p, d)
+    assert time.monotonic() - t < 10.0
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def cut_model(repeat):
+    """Two hits, the second cut by the table end."""
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"cut": {
+        "len": 6000, "peak_steps": 60, "layers": [
+            {"kind": "noise", "seed": 5, "level_mdb": 0, "repeat": repeat,
+             "hits": [[0, 0], [4000, 0]],
+             "env": [[0, -60000], [5000, 0], [90000, 0], [95000, -60000], [200000, -60000]],
+             "bands": [[500, 0], [6000, 0]]}]}}}
+
+
+def test_cut_repeated_hits_skip_the_bands(tmp_path):
+    p, d = dump(tmp_path, cut_model(True))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "bands not judged, repeated hits cut by the table end: ok" in r.stdout, r.stdout
+    p, d = dump(tmp_path, cut_model(False), "b.json", "b")
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "not judged" not in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize("seed", range(1, 9))
+def test_single_hit_cut_by_the_end_passes(tmp_path, seed):
+    m = burst_model(seed)
+    m["sounds"]["burst"]["len"] = 250
+    # Silent past 12 ms, so the cut end is quiet as the generator wants.
+    m["sounds"]["burst"]["layers"][0]["env"] = [
+        [0, -60000], [1000, 0], [11000, 0], [12000, -60000], [20000, -60000]]
+    r = run(CHECK, *dump(tmp_path, m))
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_too_costly_sound_gives_2(tmp_path):
+    n = 262144
+    m = {"format": 1, "rate_hz": 8000, "ceiling_steps": 90, "sounds": {"big": {
+        "len": n, "peak_steps": 40, "layers": [
+            {"kind": "noise", "seed": 1, "level_mdb": 0, "hits": [[k, 0] for k in range(64)],
+             "env": [[0, 0], [n * 1000000 // 8000, 0]],
+             "bands": [[100, 0], [3000, 0]]}]}}}
+    p = tmp_path / "model.json"
+    p.write_text(json.dumps(m))
+    (tmp_path / "big.u8").write_bytes(bytes([128]) * n)
+    t = time.monotonic()
+    r = run(CHECK, p, tmp_path)
+    assert time.monotonic() - t < 10.0
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert re.search(r"sounds\.big: too costly to check, \d+ steps, the limit is 200000000",
+                     r.stderr), r.stderr
