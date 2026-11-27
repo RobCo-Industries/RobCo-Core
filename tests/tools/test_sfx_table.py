@@ -488,10 +488,14 @@ def test_own_names_that_clash_are_refused():
     assert faults and all("already given by" in f for f in faults)
     assert T.c_name_faults([("A", "one"), ("A", "two")]) == ["two give A, already given by one"]
     m["sounds"] = {"beep": tone_model()["sounds"]["beep"]}
-    for h_name, bad in (("sfx_beep_peak", "SFX_BEEP_PEAK, already given by"),
-                        ("sfx_model_sha256", "SFX_MODEL_SHA256, already given by")):
-        faults = T.c_name_faults(T.c_names(m, {"beep": bytes(8)}, "sfx_", h_name))
-        assert len(faults) == 1 and bad in faults[0]
+    # The guard starts with SFX_GUARD_ and ends with the file's _H, and every
+    # macro ends with its own suffix, so a guard never meets a macro, and
+    # never a name C reserves such as E plus a capital.
+    for h_name in ("sfx_beep_peak.h", "sfx_model_sha256.h", "Esfx.h", "SIGsfx.h"):
+        names = T.c_names(m, {"beep": bytes(8)}, "sfx_", h_name)
+        assert names[0][0].startswith("SFX_GUARD_") and names[0][0].endswith("_H")
+        assert T.c_name_faults(names) == []
+    assert T.header_guard("Esfx.h") == "SFX_GUARD_ESFX_H"
 
 
 # ---------------------------------------------------------------------------

@@ -1020,10 +1020,10 @@ def _comment(source, sha):
 
 
 def header_guard(h_name):
-    """The include guard of a header name, or None if it is not a valid,
-    unreserved C identifier."""
-    guard = re.sub(r"[^A-Z0-9]", "_", h_name.upper())
-    return guard if GUARD.match(guard) else None
+    """The include guard of a header name. It starts with SFX_GUARD_, so it
+    is never a name C reserves, such as E plus a capital for <errno.h>,
+    whatever the file is called."""
+    return "SFX_GUARD_" + re.sub(r"[^A-Z0-9]", "_", h_name.upper())
 
 
 def c_names(model, built, prefix, h_name):
@@ -1046,8 +1046,8 @@ def c_names(model, built, prefix, h_name):
 def c_name_faults(names):
     """One line for each identifier written twice. The marker rule of
     PREFIX keeps every name clear of C's own names, so only the tool's own
-    names can clash: two sounds that give one table name, a split's _1 and
-    _2 against another sound, or the guard against a macro."""
+    names can clash: two sounds that give one table name, or a split's _1
+    and _2 against another sound. The guard has its own start, SFX_GUARD_."""
     faults, seen = [], {}
     for ident, where in names:
         if ident in seen:

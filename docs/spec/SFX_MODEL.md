@@ -200,9 +200,9 @@ The tool checks file names as written, before it reads the model:
 
 No standard or system header has a name that holds `sfx`. So a generated header never takes the place of one on the include path, and the tool keeps no list of header names.
 
-A bad prefix or file name gets one line, exit 64. The include guard is the file name of `OUT.h` in capitals with every other character as `_`.
+A bad prefix or file name gets one line, exit 64. The include guard is `SFX_GUARD_` followed by the file name of `OUT.h` in capitals with every other character as `_`, so it is never a name C reserves.
 
-The tool then checks that the names it writes do not clash with each other: two sounds that give one table name, the `_1` and `_2` tables of a split against another sound, or the guard against a macro. Each clash gets one line that names it and the options and sound it comes from, exit 64. Two sounds whose table names clash are a model fault, exit 2.
+The tool then checks that the names it writes do not clash with each other: two sounds that give one table name, or the `_1` and `_2` tables of a split against another sound. The guard cannot clash: no other name starts with `SFX_GUARD_` and ends with `_H`. Each clash gets one line that names it and the options and sound it comes from, exit 64. Two sounds whose table names clash are a model fault, exit 2.
 
 `--dump` and `--wav` can join the first form. They name each file after a table or a sound, such as `beep_1.u8` or `beep.wav`. A sound name is already `a` to `z`, `0` to `9` and `_`, so these names need no other check.
 
