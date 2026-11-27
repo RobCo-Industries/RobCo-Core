@@ -182,6 +182,9 @@ def test_bad_arguments_refused(tmp_path):
     assert tool("cut", str(path), "--version", "1.0.00", "--date", "2026-01-02").returncode == 1
     assert tool("cut", str(path), "--version", "1.0.0", "--date", "2026-02-30").returncode == 1
     assert tool("cut", str(path), "--version", "1.0.0", "--date", "2026-13-01").returncode == 1
+    # A line end after the value is not part of a version or a date.
+    assert tool("cut", str(path), "--version", "1.0.0\n", "--date", "2026-01-02").returncode == 1
+    assert tool("cut", str(path), "--version", "1.0.0", "--date", "2026-01-02\n").returncode == 1
     assert path.read_text() == PLAIN
     assert tool("check", str(tmp_path / "missing.md"), "--version", "1.0.0").returncode == 1
     nohead = write(tmp_path, "# Changelog\n\n## [1.0.0]\n")
@@ -325,6 +328,12 @@ def test_numbered_and_plus_lists_join_as_one_list(tmp_path, first, second):
     path = write(tmp_path, log)
     assert tool("cut", str(path), "--version", "0.2.0", "--date", "2026-02-03").returncode == 0
     assert f"### Added\n\n{first}\n{second}\n\n### Fixed" in path.read_text()
+
+
+def test_half_bracketed_heading_is_no_version_section(tmp_path):
+    path = write(tmp_path, "# Changelog\n\n## [Unreleased]\n\n## [1.0.0\n\n- x\n")
+    assert tool("check", str(path), "--version", "1.0.0").returncode == 1
+    assert tool("section", str(path), "--version", "1.0.0").returncode == 1
 
 
 def load_tool():

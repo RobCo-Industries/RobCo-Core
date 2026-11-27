@@ -127,8 +127,9 @@ def unreleased_span(lines):
 
 
 def version_heading(line, version):
-    m = re.match(r"^## \[?([^\]\s]+)\]?(\s|$)", line)
-    return bool(m) and m.group(1) == version
+    # A whole bracketed name or a bare one: `## [1.0.0` is neither.
+    m = re.match(r"^## (?:\[([^\]\s]+)\]|([^\[\]\s]+))(\s|$)", line)
+    return bool(m) and (m.group(1) or m.group(2)) == version
 
 
 def find_version(lines, version):
@@ -236,11 +237,11 @@ def run(argv):
             s.add_argument("--date", required=True)
     args = p.parse_args(argv)
     try:
-        if not VERSION.match(args.version):
+        if not VERSION.fullmatch(args.version):
             raise ChangelogError(f"version must be X.Y.Z with no leading zero, got {args.version!r}")
         lines = read_lines(args.file)
         if args.command == "cut":
-            if not DATE.match(args.date):
+            if not DATE.fullmatch(args.date):
                 raise ChangelogError(f"date must be YYYY-MM-DD, got {args.date!r}")
             try:
                 datetime.date.fromisoformat(args.date)
