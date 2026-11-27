@@ -444,10 +444,6 @@ def test_usage_errors(tmp_path):
     ("a", "sm", "t.h", "asm, a C keyword"),
     ("uint8_", "t", "t.h", "uint8_t, a name of <stdint.h>"),
     ("in", "t32_t", "t.h", "int32_t, a name of <stdint.h>"),
-    ("x_", "beep", "uint8_max", "UINT8_MAX, a name of <stdint.h>"),
-    ("x_", "beep", "size_max", "SIZE_MAX, a name of <stdint.h>"),
-    ("x_", "beep", "x_beep_peak", "X_BEEP_PEAK, already given by"),
-    ("x_", "beep", "x_model_sha256", "X_MODEL_SHA256, already given by"),
 ])
 def test_bad_c_names_are_refused(tmp_path, prefix, sound, h_name, bad):
     m = tone_model()
@@ -470,6 +466,15 @@ def test_bad_c_names_split_and_reserved():
         "--prefix 'b' and sound 'ool' give bool, a C keyword"]
     assert T.c_name_faults([("_X", "here")]) == ["here give _X, a reserved C name"]
     assert T.c_name_faults([("A", "one"), ("A", "two")]) == ["two give A, already given by one"]
+    # A guard ends in _H now, so these clashes cannot come from the command
+    # line. The check stays as a second line of defence.
+    m["sounds"] = {"beep": tone_model()["sounds"]["beep"]}
+    for h_name, bad in (("uint8_max", "UINT8_MAX, a name of <stdint.h>"),
+                        ("size_max", "SIZE_MAX, a name of <stdint.h>"),
+                        ("x_beep_peak", "X_BEEP_PEAK, already given by"),
+                        ("x_model_sha256", "X_MODEL_SHA256, already given by")):
+        faults = T.c_name_faults(T.c_names(m, {"beep": bytes(8)}, "x_", h_name))
+        assert len(faults) == 1 and bad in faults[0]
 
 
 # ---------------------------------------------------------------------------
@@ -870,6 +875,7 @@ def test_generated_c_compiles_for_names(tmp_path, prefix, h_name):
                        capture_output=True, text=True, env=minimal_env())
     assert r.returncode == 0, r.stderr
 
+
 # ---------------------------------------------------------------------------
 # Every number a JSON integer, every field typed
 # ---------------------------------------------------------------------------
@@ -960,7 +966,6 @@ def test_every_field_checks_its_type():
                     (section, key, wrong, faults)
                 count += 1
     assert count > 80
-
 
 # ---------------------------------------------------------------------------
 # The sine bound per partial, and the backstop behind it
@@ -1115,3 +1120,70 @@ def test_fuzz_never_reaches_the_backstop(tmp_path, capsys):
         seen["sine"] += "the sine of multiple" in err
     # The fuzz reaches both outcomes and the sine bound.
     assert seen[0] > 20 and seen[2] > 20 and seen["sine"] > 5, seen
+
+# ---------------------------------------------------------------------------
+# File names
+# ---------------------------------------------------------------------------
+
+BAD_FILE_NAMES = [
+    ("--h", 'x"q.h', "the file name must be"),
+    ("--h", "sönd.h", "the file name must be"),
+    ("--h", "x q.h", "the file name must be"),
+    ("--h", "x\\q.h", "the file name must be"),
+    ("--h", "x'q.h", "the file name must be"),
+    ("--h", "x*q.h", "the file name must be"),
+    ("--h", "1.h", "the file name must be"),
+    ("--h", "_x.h", "the file name must be"),
+    ("--h", "-x.h", "the file name must be"),
+    ("--h", ".h", "the file name must be"),
+    ("--h", "x.hpp", "the file name must be"),
+    ("--h", "x_rate_hz", "the file name must be"),
+    ("--h", "x.h\n", "the file name must be"),
+    ("--h", "stdint.h", "a standard C or POSIX header"),
+    ("--h", "STDINT.H", "the file name must be"),
+    ("--h", "Stdint.h", "a standard C or POSIX header"),
+    ("--h", "stdbit.h", "a standard C or POSIX header"),
+    ("--h", "string.h", "a standard C or POSIX header"),
+    ("--h", "unistd.h", "a standard C or POSIX header"),
+    ("--h", "pthread.h", "a standard C or POSIX header"),
+    ("--c", 'x"q.c', "the file name must be"),
+    ("--c", "out.h", "the file name must be"),
+    ("--c", "a b.c", "the file name must be"),
+    ("--c", "1.c", "the file name must be"),
+    ("--c", "sönd.c", "the file name must be"),
+]
+
+
+@pytest.mark.parametrize("option,name,message", BAD_FILE_NAMES,
+                         ids=[f"{o}-{n!r}" for o, n, _ in BAD_FILE_NAMES])
+@pytest.mark.parametrize("check", [False, True])
+def test_bad_file_names_are_refused(tmp_path, option, name, message, check):
+    p = write_model(tmp_path, tone_model())
+    names = {"--c": "t.c", "--h": "t.h", option: name}
+    args = [p, "--c", tmp_path / names["--c"], "--h", tmp_path / names["--h"], "--prefix", "x_"]
+    r = run(*args, *(["--check"] if check else []))
+    assert r.returncode == 64, r.stderr
+    errors = [line for line in r.stderr.splitlines() if "error:" in line]
+    assert len(errors) == 1 and message in errors[0] and option in errors[0]
+    assert "Traceback" not in r.stderr
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
+
+
+def test_header_lists():
+    # The 31 headers of C23 and the top-level headers of POSIX.1-2024.
+    assert len(T.C_HEADERS) == 31 and "stdint.h" in T.C_HEADERS
+    assert {"stdbit.h", "stdckdint.h", "threads.h"} <= T.C_HEADERS
+    assert {"unistd.h", "endian.h", "devctl.h"} <= T.POSIX_HEADERS
+
+
+def test_dump_and_wav_names_are_safe(tmp_path):
+    m = _two_sounds()
+    m["sounds"]["a"] = tone_model(split=4)["sounds"]["beep"]
+    m["sounds"]["z9_"] = tone_model()["sounds"]["beep"]
+    p = write_model(tmp_path, m)
+    r = run(p, "--dump", tmp_path / "d", "--wav", tmp_path / "w")
+    assert r.returncode == 0, r.stderr
+    names = os.listdir(tmp_path / "d") + os.listdir(tmp_path / "w")
+    assert "a_1.u8" in names and "z9_.wav" in names
+    for n in names:
+        assert re.fullmatch(r"[a-z][a-z0-9_]*\.(u8|wav)", n), n

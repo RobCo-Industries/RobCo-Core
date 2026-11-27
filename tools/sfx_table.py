@@ -1124,6 +1124,54 @@ def recorded(h_text, prefix):
 # Command line
 # ---------------------------------------------------------------------------
 
+# The file names of --c and --h, as written. Each goes into the generated C:
+# the header's name into #include "..." and the include guard. Letters,
+# digits, _, . and - only, starting with a letter, so the name needs no
+# escape in a C string, is ASCII, and gives a guard that is a C name.
+C_FILE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\.c")
+H_FILE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\.h")
+
+# Headers a generated header must not be named after: in a folder on the
+# include path it would take the place of the system one, and the
+# generated #include <stdint.h> would find itself. The C list is every
+# standard header of C23, ISO/IEC 9899:2024, 7.1.2. The POSIX list is every
+# header at the top level of POSIX.1-2024, IEEE Std 1003.1-2024, Base
+# Definitions, Headers chapter, with stropts.h and trace.h of older issues.
+# Headers in a folder, such as <sys/types.h>, cannot clash with a plain
+# file name. The match ignores case, for file systems that do.
+C_HEADERS = frozenset("""
+    assert.h complex.h ctype.h errno.h fenv.h float.h inttypes.h iso646.h
+    limits.h locale.h math.h setjmp.h signal.h stdalign.h stdarg.h
+    stdatomic.h stdbit.h stdbool.h stdckdint.h stddef.h stdint.h stdio.h
+    stdlib.h stdnoreturn.h string.h tgmath.h threads.h time.h uchar.h
+    wchar.h wctype.h
+""".split())
+POSIX_HEADERS = frozenset("""
+    aio.h cpio.h devctl.h dirent.h dlfcn.h endian.h fcntl.h fmtmsg.h
+    fnmatch.h ftw.h glob.h grp.h iconv.h langinfo.h libgen.h libintl.h
+    monetary.h mqueue.h ndbm.h netdb.h nl_types.h poll.h pthread.h pwd.h
+    regex.h sched.h search.h semaphore.h spawn.h strings.h stropts.h
+    syslog.h tar.h termios.h trace.h ulimit.h unistd.h utime.h utmpx.h
+    wordexp.h
+""".split())
+
+
+def file_name_faults(c_path, h_path):
+    """One line for each bad file name of --c and --h. Empty when both are
+    good."""
+    faults = []
+    c_name, h_name = os.path.basename(c_path), os.path.basename(h_path)
+    if not C_FILE.fullmatch(c_name):
+        faults.append(f"--c {c_name!r}: the file name must be a letter, then letters,"
+                      " digits, _, . or -, and end in .c")
+    if not H_FILE.fullmatch(h_name):
+        faults.append(f"--h {h_name!r}: the file name must be a letter, then letters,"
+                      " digits, _, . or -, and end in .h")
+    elif h_name.lower() in C_HEADERS | POSIX_HEADERS:
+        faults.append(f"--h {h_name!r}: the name of a standard C or POSIX header")
+    return faults
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         self.print_usage(sys.stderr)
@@ -1224,9 +1272,9 @@ def _main(p, args):
     if args.prefix is not None and not PREFIX.match(args.prefix):
         p.error("--prefix must be a to z, 0 to 9 and _, start with a letter,"
                 " at most 32 characters")
-    if args.h is not None and header_guard(os.path.basename(args.h)) is None:
-        p.error("--h must have a file name that starts with a letter, so its"
-                " include guard is a valid C name")
+    if args.c is not None and args.h is not None:
+        for f in file_name_faults(args.c, args.h):
+            p.error(f)
     if args.c is not None and not re.fullmatch(r"[ -~]+", os.path.basename(args.model)):
         p.error("MODEL must have a file name of printable ASCII: it goes into the"
                 " comment of each generated file")
@@ -1267,6 +1315,9 @@ def _main(p, args):
             publish([(args.c, c_source(model, built, args.prefix, source, sha,
                                        h_name).encode("ascii")),
                      (args.h, h_text.encode("ascii"))], undo=False)
+        # --dump and --wav name each file after a table or a sound. A sound
+        # name matches NAME, so a file name is [a-z][a-z0-9_]* with .u8 or
+        # .wav: no path separator, no dot file, ASCII. A test checks it.
         if args.dump:
             os.makedirs(args.dump, exist_ok=True)
             publish([(os.path.join(args.dump, t + ".u8"), bytes(part))

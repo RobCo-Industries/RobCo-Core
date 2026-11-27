@@ -177,7 +177,16 @@ tools/sfx_table.py MODEL --wav DIR
 | `--dump DIR` | Writes each table as a raw `<table>.u8` file |
 | `--wav DIR` | Writes each sound as an 8-bit mono WAV at `rate_hz`, whole, not split. A loop plays three times so its join is heard. |
 
-`NAME_` is `a` to `z`, `0` to `9` and `_`, starts with a letter, at most 32 characters. A leading `_` would make reserved C names. The include guard is the file name of `OUT.h` in capitals with every other character as `_`. The tool refuses a file name whose guard does not start with a letter.
+`NAME_` is `a` to `z`, `0` to `9` and `_`, starts with a letter, at most 32 characters. A leading `_` would make reserved C names.
+
+The tool checks file names as written, before it reads the model:
+
+- The file name of `OUT.c` is a letter, then letters, digits, `_`, `.` or `-`, and ends in `.c`.
+- The file name of `OUT.h` follows the same rule and ends in `.h`. It goes into `#include "..."` in `OUT.c`, so it needs no escape and is ASCII.
+- The file name of `OUT.h` is not the name of a standard C or POSIX header, in any case. In a folder on the include path such a file would take the place of the system header, and the generated `#include <stdint.h>` would find itself. The C list is the 31 headers of C23, ISO/IEC 9899:2024, 7.1.2. The POSIX list is the top-level headers of POSIX.1-2024, IEEE Std 1003.1-2024, Base Definitions, with `stropts.h` and `trace.h` of older issues.
+- The file name of `MODEL` is printable ASCII, because it goes into the opening comment.
+
+A bad file name gets one line, exit 64. The include guard is the file name of `OUT.h` in capitals with every other character as `_`.
 
 The tool then checks every name it would write, after it joins the parts: each table name, each macro and the include guard. It refuses a name that is:
 
@@ -186,9 +195,9 @@ The tool then checks every name it would write, after it joins the parts: each t
 - a name of `<stdint.h>` or a pattern C reserves for it, such as `uint8_t`, `int32_t` or `UINT8_MAX`;
 - a name the same run writes twice, such as a guard equal to a table macro.
 
-Each refused name gets one line that names it and the options and sound it comes from. The exit code is 64: a change of `--prefix` or `--h` fixes it. Two sounds whose table names clash are a model fault, exit 2. The file name of `MODEL` must be printable ASCII, because it goes into the opening comment.
+Each refused name gets one line that names it and the options and sound it comes from. The exit code is 64: a change of `--prefix` or `--h` fixes it. Two sounds whose table names clash are a model fault, exit 2.
 
-`--dump` and `--wav` can join the first form.
+`--dump` and `--wav` can join the first form. They name each file after a table or a sound, such as `beep_1.u8` or `beep.wav`. A sound name is already `a` to `z`, `0` to `9` and `_`, so these names need no other check.
 
 ### How the files are written
 
