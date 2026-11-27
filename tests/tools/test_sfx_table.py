@@ -1541,3 +1541,199 @@ def test_budget_counts_kept_samples_only():
     assert T.render_cost(m) == 1000 * T.SINE_COST + T.FIR_TAPS + T.DESIGN_COST
     m = _cut_model([[999, 0]] * 4, loop=True)
     assert T.render_cost(m) == 1000 * T.SINE_COST + 4 * 800 * T.FIR_TAPS + T.DESIGN_COST
+
+
+# ---------------------------------------------------------------------------
+# A failure at any file operation of a publish leaves the folder as it was
+# ---------------------------------------------------------------------------
+
+def _tree(root):
+    out = {}
+    for folder, dirs, files in os.walk(root):
+        for d in dirs:
+            out[os.path.relpath(os.path.join(folder, d), root)] = "dir"
+        for f in files:
+            p = os.path.join(folder, f)
+            with open(p, "rb") as fh:
+                out[os.path.relpath(p, root)] = fh.read()
+    return out
+
+
+class _Writer:
+    """A file whose write() goes through a counted fake."""
+
+    def __init__(self, f, hook):
+        self.f, self.hook = f, hook
+
+    def write(self, data):
+        self.hook("write")
+        return self.f.write(data)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.f.close()
+
+
+def _faulty(monkeypatch, fail_op, fail_n, no_link):
+    """Count every file operation of publish; raise on the fail_n-th call of
+    fail_op. With no_link every hard link fails, so backups are copies."""
+    counts = {}
+    real = {k: getattr(os, k) for k in ("mkdir", "open", "fdopen", "link", "replace")}
+    real_open = open
+
+    def hook(op):
+        counts[op] = counts.get(op, 0) + 1
+        if op == fail_op and counts[op] == fail_n:
+            raise OSError(28, "No space left on device", op)
+
+    def wrap(name):
+        def f(*a, **k):
+            hook(name)
+            if name == "link" and no_link:
+                raise OSError(1, "Operation not permitted", a[1])
+            r = real[name](*a, **k)
+            return _Writer(r, hook) if name == "fdopen" else r
+        return f
+
+    for name in real:
+        monkeypatch.setattr(T.os, name, wrap(name))
+
+    def reader(*a, **k):
+        hook("read open")
+        return real_open(*a, **k)
+
+    monkeypatch.setattr(T, "open", reader, raising=False)
+    return counts
+
+
+def _publish_run(tmp_path, fresh):
+    m = _two_sounds()
+    p = write_model(tmp_path, m)
+    args = [str(p), "--c", str(tmp_path / "x_t.c"), "--h", str(tmp_path / "x_t.h"),
+            "--prefix", "x_", "--dump", str(tmp_path / "w" / "d"), "--wav", str(tmp_path / "w")]
+    if not fresh:
+        assert T.main(args) == 0
+        m["sounds"]["beep"]["len"] = 10
+        write_model(tmp_path, m)
+    return args
+
+
+def _op_counts(tmp_path, fresh, no_link, monkeypatch):
+    base = tmp_path / "count"
+    base.mkdir()
+    args = _publish_run(base, fresh)
+    with monkeypatch.context() as mp:
+        counts = _faulty(mp, None, 0, no_link)
+        assert T.main(args) == 0
+    shutil.rmtree(base)
+    return counts
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+@pytest.mark.parametrize("no_link", [False, True])
+def test_a_failure_at_each_file_operation_leaves_the_folder(tmp_path, monkeypatch, capsys,
+                                                            fresh, no_link):
+    counts = _op_counts(tmp_path, fresh, no_link, monkeypatch)
+    if not fresh:
+        assert counts.get("replace", 0) > 0 and counts.get("link", 0) > 0
+        if no_link:
+            assert counts.get("read open", 0) > 0
+    else:
+        assert counts.get("mkdir") == 2
+    tried = 0
+    for op, total in sorted(counts.items()):
+        for n in range(1, total + 1):
+            root = tmp_path / f"{op.replace(' ', '_')}_{n}"
+            root.mkdir()
+            args = _publish_run(root, fresh)
+            before = _tree(root)
+            with monkeypatch.context() as mp:
+                _faulty(mp, op, n, no_link)
+                code = T.main(args)
+            if op == "link":
+                assert code == 0, "a failed link falls back to a copy"
+                assert not [f for f in _tree(root) if f.endswith((".tmp", ".bak"))]
+            else:
+                assert code == 1, (op, n)
+                assert _tree(root) == before, (op, n)
+            tried += 1
+    assert tried == sum(counts.values())
+    capsys.readouterr()
+
+
+def test_failed_backup_copy_leaves_no_partial_backup(tmp_path, monkeypatch, capsys):
+    # The review's case: the link fails, then the copy's read fails.
+    args = _publish_run(tmp_path, fresh=False)
+    before = _tree(tmp_path)
+    with monkeypatch.context() as mp:
+        _faulty(mp, "read open", 1, no_link=True)
+        assert T.main(args) == 1
+    assert _tree(tmp_path) == before
+    capsys.readouterr()
+
+
+# ---------------------------------------------------------------------------
+# New --dump and --wav folders: one folder under two spellings
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("dump,wav", [("out", "./out"), ("out/", "out"),
+                                      ("lnk/out", "out"), ("out/../out", "out")])
+def test_two_spellings_of_one_new_folder(tmp_path, monkeypatch, dump, wav):
+    monkeypatch.chdir(tmp_path)
+    os.symlink(".", "lnk")
+    p = write_model(tmp_path, _two_sounds())
+    r = subprocess.run([sys.executable, "-I", TOOL, str(p), "--dump", dump, "--wav", wav],
+                       capture_output=True, text=True, env=minimal_env(), cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert {"beep.u8", "beep.wav", "hiss.wav"} <= set(os.listdir(tmp_path / "out"))
+
+
+def test_new_folders_that_differ_by_case_are_refused(tmp_path):
+    p = write_model(tmp_path, _two_sounds())
+    r = run(p, "--dump", tmp_path / "out", "--wav", tmp_path / "OUT")
+    assert r.returncode == 64 and "differ only by case" in r.stderr
+    assert sorted(os.listdir(tmp_path)) == ["model.json"]
+
+
+def test_new_dump_folder_inside_a_new_wav_folder(tmp_path):
+    p = write_model(tmp_path, _two_sounds())
+    r = run(p, "--dump", tmp_path / "w" / "d", "--wav", tmp_path / "w")
+    assert r.returncode == 0, r.stderr
+    assert "beep.u8" in os.listdir(tmp_path / "w" / "d")
+    assert "beep.wav" in os.listdir(tmp_path / "w")
+
+
+def _race(monkeypatch):
+    """Another process makes each new folder just before the run does."""
+    real = os.mkdir
+
+    def mkdir(path, *a, **k):
+        real(path, *a, **k)
+        raise FileExistsError(17, "File exists", path)
+
+    monkeypatch.setattr(T.os, "mkdir", mkdir)
+
+
+def test_a_folder_made_by_another_process_is_used(tmp_path, monkeypatch):
+    p = write_model(tmp_path, _two_sounds())
+    _race(monkeypatch)
+    assert T.main([str(p), "--dump", str(tmp_path / "d"), "--wav", str(tmp_path / "w")]) == 0
+    assert "beep.u8" in os.listdir(tmp_path / "d")
+
+
+def test_roll_back_keeps_a_folder_it_did_not_make(tmp_path, monkeypatch, capsys):
+    p = write_model(tmp_path, _two_sounds())
+    _race(monkeypatch)
+    real = os.replace
+
+    def replace(a, b):
+        if str(b).endswith(".wav"):
+            raise OSError(5, "Input/output error", str(b))
+        real(a, b)
+
+    monkeypatch.setattr(T.os, "replace", replace)
+    assert T.main([str(p), "--dump", str(tmp_path / "d"), "--wav", str(tmp_path / "w")]) == 1
+    assert os.listdir(tmp_path / "d") == [] and os.listdir(tmp_path / "w") == []
+    capsys.readouterr()
