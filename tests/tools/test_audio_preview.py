@@ -607,6 +607,40 @@ class Lost(Case):
         self.assertEqual(err.count("3 markers had no start"), 1, err)
         self.assertNotIn("markers had no start", err.replace("3 markers had no start", ""))
 
+    def test_the_ramp_end_after_a_loss_is_applied(self):
+        lines = [pcm(0, bs.RAMP), end(40), tone(100, 1000), stop(160)]
+        plain, w0 = self.render(lines)
+        lost, w1 = self.render(lines[:1] + [self.DROP] + lines[1:])
+        self.assertEqual(lost[frame(60)], 0.5)
+        self.assertEqual(plain, lost)
+        self.assertEqual((w0, w1), ([], []))
+        pulse, _ = self.render([tone(100, 1000), stop(160)])
+        self.assertNotEqual(list(lost[frame(100):frame(160)]),
+                            list(pulse[frame(100):frame(160)]))
+
+    def test_an_overlay_on_a_loop_after_a_loss_is_applied(self):
+        a = self.sound("a", bytes([150]) * 200)
+        o = self.sound("o", bytes([140]) * 400)
+        lines = [pcm(0, a, rate=8000, loop=True), mix(100, o), stop(300)]
+        plain, w0 = self.render(lines)
+        lost, w1 = self.render(lines[:1] + [self.DROP] + lines[1:])
+        self.assertEqual(lost[frame(100)], 162 / 256)
+        self.assertEqual(plain, lost)
+        self.assertEqual((w0, w1), ([], []))
+
+    def test_a_queue_and_end_of_a_play_after_a_loss_are_applied(self):
+        a = self.sound("a", bytes([200]) * 441)
+        b = self.sound("b", bytes([100]) * 441)
+        lines = [pcm(0, a), nxt(10, b), end(40), stop(60)]
+        plain, w0 = self.render(lines)
+        lost, w1 = self.render(lines[:1] + [self.DROP] + lines[1:])
+        self.assertEqual(lost[frame(30)], 100 / 256)
+        self.assertEqual(plain, lost)
+        self.assertEqual((w0, w1), ([], []))
+        rc, err, _ = self.main(lines[:1] + [self.DROP] + lines[1:])
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("markers had no start", err)
+
     def test_the_loss_ends_at_the_next_start(self):
         a = self.sound("a", bytes([200]) * 441)
         rc, err, _ = self.main([self.DROP, pcm(0, a), end(20), end(30)])

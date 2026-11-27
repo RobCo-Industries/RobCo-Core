@@ -37,6 +37,8 @@ Lines it reads, each an "@RC ... ev=audio op=..." marker of any stage:
   playing is counted too, but its time still sets the file's end. One
   warning counts them. The next op=pcm, op=voice or op=tone
   ends the loss. Without a loss before it, such a marker is a bad log.
+  A marker that fits the play active now is applied as usual, even after
+  a loss: the tool cannot see a lost start that changed the play.
   A start whose end was lost needs nothing: the next start cuts it.
   The tool parses only a line with the field ev=audio or ev=audio_drop
   and skips every other marker untouched.
@@ -609,13 +611,32 @@ class Renderer:
                       % self.lost)
         self.lost = None
 
-    def orphan(self, op, cur):
-        """True when `op` depends on a start the log does not hold."""
-        if op == "stop":
-            return cur is None
-        if not isinstance(cur, Play) or cur.ended or cur.ramp or cur.loop:
-            return True
-        return op == "pcm_next" and isinstance(cur, VoicePlay)
+    def misplaced(self, op, cur, where):
+        """The error text when `op` does not fit the play active now, else None.
+        Both paths use it: outside a loss the error is raised, inside one the
+        marker is skipped."""
+        if op == "pcm_next":
+            if not isinstance(cur, Play) or cur.ended:
+                return "%s: op=pcm_next with no sample play" % where
+            if cur.ramp:
+                return "%s: op=pcm_next on the rest ramp" % where
+            if cur.loop:
+                return ("%s: op=pcm_next on a loop: the library refuses a "
+                        "queue while a loop plays" % where)
+            if isinstance(cur, VoicePlay):
+                return ("%s: op=pcm_next on a voice: the library refuses a "
+                        "queue while a voice plays" % where)
+        elif op == "pcm_mix":
+            if not isinstance(cur, Play) or cur.ended:
+                return "%s: op=pcm_mix with no sample play or voice" % where
+            if cur.ramp:
+                return "%s: op=pcm_mix on the rest ramp" % where
+        elif op == "pcm_end":
+            if not isinstance(cur, Play) or cur.ended:
+                return "%s: op=pcm_end with no sample play or voice" % where
+            if cur.loop:
+                return "%s: op=pcm_end on a loop: a loop never ends by itself" % where
+        return None
 
     def run(self, events):
         last = 0
@@ -629,7 +650,8 @@ class Renderer:
             if self.lost is not None:
                 if op in ("pcm", "voice", "tone"):
                     self.lost_end()
-                elif self.orphan(op, cur):
+                elif (cur is None if op == "stop"
+                      else self.misplaced(op, cur, where) is not None):
                     self.lost = (self.lost[0], self.lost[1] + 1)
                     if op != "stop":
                         continue
@@ -641,6 +663,9 @@ class Renderer:
                                % (where, t, last))
             t = max(t, last)
             last = t
+            bad = self.misplaced(op, cur, where)
+            if bad is not None:
+                raise LogError(bad)
             if op == "pcm":
                 self.close(t)
                 ramp = is_ramp(op, f)
@@ -656,24 +681,10 @@ class Renderer:
                 spans = self.lookup_voice(f["crc"], f["spans"], f["len"], where)
                 self.cur = VoicePlay(t, f["rate"], f["vol"], spans, f["len"])
             elif op == "pcm_next":
-                if not isinstance(cur, Play) or cur.ended:
-                    raise LogError("%s: op=pcm_next with no sample play" % where)
-                if cur.ramp:
-                    raise LogError("%s: op=pcm_next on the rest ramp" % where)
-                if cur.loop:
-                    raise LogError("%s: op=pcm_next on a loop: the library refuses a "
-                                   "queue while a loop plays" % where)
-                if isinstance(cur, VoicePlay):
-                    raise LogError("%s: op=pcm_next on a voice: the library refuses a "
-                                   "queue while a voice plays" % where)
                 if len(cur.data) + f["len"] > MAX_PCM_LEN:
                     raise LogError("%s: the play's buffers pass %d bytes" % (where, MAX_PCM_LEN))
                 cur.data += self.lookup(f["crc"], f["len"])
             elif op == "pcm_mix":
-                if not isinstance(cur, Play) or cur.ended:
-                    raise LogError("%s: op=pcm_mix with no sample play or voice" % where)
-                if cur.ramp:
-                    raise LogError("%s: op=pcm_mix on the rest ramp" % where)
                 k = -((cur.t0 - t) * cur.rate // 1000)      # first grid point at or after t
                 if cur.mixes:
                     busy = cur.mixes[-1][0] + len(cur.mixes[-1][1])
@@ -686,11 +697,6 @@ class Renderer:
                         k = busy
                 cur.mixes.append((k, self.lookup(f["crc"], f["len"])))
             elif op == "pcm_end":
-                if not isinstance(cur, Play) or cur.ended:
-                    raise LogError("%s: op=pcm_end with no sample play or voice" % where)
-                if cur.loop:
-                    raise LogError("%s: op=pcm_end on a loop: a loop never ends by itself"
-                                   % where)
                 cur.ended = True
             elif op == "tone":
                 self.close(t)
