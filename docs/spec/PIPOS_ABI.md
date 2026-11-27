@@ -611,7 +611,7 @@ Pip-OS keeps the master and the four levels in one file on the boot card, so the
 | The file | `/PIPBOY/PIPOS.SET` on the boot card |
 | Format | INI text in the syntax of `PIPOS.CFG`, at most 512 bytes. One section, `[audio]`, with five keys: `volume`, `radio`, `sfx`, `recordings` and `games`. `volume` is the master. |
 | What Pip-OS writes | Exactly six lines, each ended by one line feed, and no other byte: `[audio]`, then `volume = N`, `radio = N`, `sfx = N`, `recordings = N` and `games = N`, in that order. Each `N` is a decimal number, 0 to 100, with no leading zero. The file is 72 bytes at most. |
-| What Pip-OS accepts | The section `[audio]` only, and only the five keys, each at most once, each a whole number 0 to 100. Comments and blank lines are fine, since a person may edit the file on a computer. A key that is absent keeps the value from before the file. |
+| What Pip-OS accepts | The section `[audio]` only, and only the five keys, each at most once, each a whole number 0 to 100, in decimal digits. Leading zeros are fine, so `080` is 80. Comments and blank lines are fine, since a person may edit the file on a computer. A key that is absent keeps the value from before the file. |
 | A file that is not valid | One that is larger than 512 bytes, has a syntax error, another section, another key or a key twice, or has a value that is not a whole number 0 to 100. Pip-OS then ignores the whole file. No part of it applies. |
 | Who writes it | Pip-OS only, inside `sound_store`, with RobCo-Core's atomic write. A power cut leaves the old file or the new one. |
 | When | Only when a ROM calls `sound_store`. `volume` and `sound_level` never write the card, and no other event does. |
@@ -620,6 +620,7 @@ Pip-OS keeps the master and the four levels in one file on the boot card, so the
 | Before the first sound | Pip-OS reads both files before it starts its first sound, so the power-on beep follows the stored levels |
 | A deleted file | The next boot uses the values of `PIPOS.CFG` again |
 | A missing file | It is not an error and prints nothing. A fresh card has none. Pip-OS keeps the values it has after `PIPOS.CFG`. |
+| A file that cannot be read | A card error while Pip-OS reads the file counts as a file that is not valid, with the reason `read`. |
 | A file that is not valid, at boot | It never stops the boot. Pip-OS keeps the values it has after `PIPOS.CFG` and prints one `ev=levels` line, see [Trace lines](#trace-lines). |
 | A valid file | It prints nothing. The gain on the start line of the next sound shows it. |
 | `PIPOS.CFG` | Pip-OS never writes it |
@@ -668,8 +669,8 @@ A test may rely on these lines of the audio trace. The other fields of each line
 | Sounds Pip-OS starts itself | Their start lines carry the gain of `sfx` with a trim of 100, also while a ROM or a holotape runs |
 | A holotape at trim 100 | Its start lines carry the gain of its kind. A `volume(100)` from a holotape leaves that gain as it is. |
 | Full level | With the four levels at 100 and no trim under 100, the `ev=audio` lines are those of 1.5 at the same master. The one new line is `op=gain`, for a `volume` call while a sound plays. |
-| `ev=levels` | At boot, when `PIPOS.SET` is not valid, Pip-OS prints one line: `@RC stage=pipos ev=levels result=bad reason=<size\|syntax\|key\|value>`. A missing file and a valid file print no `ev=levels` line. |
-| `reason=` of `ev=levels` | `size` for a file larger than 512 bytes. `syntax` for a syntax error. `key` for another section, another key or a key twice. `value` for a value that is not a whole number 0 to 100. When several apply, the line names the first one in the order `size`, `syntax`, `key`, `value`. |
+| `ev=levels` | At boot, when `PIPOS.SET` is not valid, Pip-OS prints one line: `@RC stage=pipos ev=levels result=bad reason=<read\|size\|syntax\|key\|value>`. A missing file and a valid file print no `ev=levels` line. |
+| `reason=` of `ev=levels` | `read` for a card error while reading the file. `size` for a file larger than 512 bytes. `syntax` for a syntax error. `key` for another section, another key or a key twice. `value` for a value that is not a whole number 0 to 100. When several apply, the line names the first one in the order `read`, `size`, `syntax`, `key`, `value`. |
 
 A sound at master 80 and level 40 starts with `vol=12` and ends its line with `gain=1280`. A sound at master 80 and level 50 starts with `vol=20` and has no `gain` field.
 
