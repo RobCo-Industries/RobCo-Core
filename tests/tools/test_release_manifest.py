@@ -137,7 +137,7 @@ def test_new_writes_the_six_commits(work, tmp_path):
 
 def test_new_refuses_a_bad_suite_name(work, tmp_path):
     w, _, _ = work
-    code, out = tool("new", "--suite", "pipos-1.5.0", "--work", w, "--out", tmp_path / "x")
+    code, out = tool("new", "--suite", "release-2026.12", "--work", w, "--out", tmp_path / "x")
     assert code == 1 and errors(out)
     assert not (tmp_path / "x").exists()
 
