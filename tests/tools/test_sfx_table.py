@@ -1417,3 +1417,127 @@ def test_finding_model_named_like_the_source(tmp_path, monkeypatch):
                        env=minimal_env(), cwd=tmp_path)
     assert r.returncode == 64 and "MODEL 'model.c' and --c 'model.c'" in r.stderr
     assert p.read_bytes() == old and sorted(os.listdir(tmp_path)) == ["model.c"]
+
+
+# ---------------------------------------------------------------------------
+# A one-shot noise hit filters only the samples that sound
+# ---------------------------------------------------------------------------
+
+def _old_render_noise(layer, sound, out, rate, where, direct=False):
+    """render_noise() as it was before the cut: every hit filtered whole."""
+    loop = sound.get("loop", False)
+    h = T.fir_design(layer["bands"], rate)
+    gain = T.noise_gain(layer, rate)
+    n = len(gain)
+    same = None
+    conv = T.convolve_direct if direct else T.convolve
+    for k, (at, hit_mdb) in enumerate(layer["hits"]):
+        if layer.get("repeat") and same is not None:
+            one = same
+        else:
+            w = T.white(T.start_state(layer["seed"], k), n + T.FIR_TAPS - 1)
+            y = conv(h, w, n)
+            one = [y[i] * gain[i] if gain[i] else 0.0 for i in range(n)]
+            same = one
+        m = n if loop else min(n, len(out) - at)
+        T._add(out, at, one[:m], T.db_gain((layer["level_mdb"] + hit_mdb) / 1000.0), loop)
+
+
+def _cut_model(hits, repeat=False, fold=0, loop=False):
+    # n = 800 samples at 20000 Hz.
+    layer = {"kind": "noise", "seed": 3, "level_mdb": 0, "hits": hits,
+             "env": [[0, -20000], [5000, 0], [40000, -30000]],
+             "bands": [[300, -9000], [2000, 0], [8000, -20000]]}
+    if fold:
+        layer["fold"] = fold
+    if repeat:
+        layer["repeat"] = True
+    sound = {"len": 1000, "peak_steps": 20, "layers": [layer]}
+    if loop:
+        sound["loop"] = True
+    return {"format": 1, "rate_hz": 20000, "ceiling_steps": 90, "sounds": {"s": sound}}
+
+
+# Hits that run past the end by 1, by half and by all but 1 of their 800.
+CUT_HITS = [[[201, 0]], [[600, -3000]], [[999, 0]], [[0, 0], [201, -2000], [600, 0], [999, -6000]],
+            [[999, 0], [600, -1000], [0, 0]]]
+
+
+@pytest.mark.parametrize("hits", CUT_HITS)
+@pytest.mark.parametrize("repeat,fold,loop", [(False, 0, False), (True, 0, False),
+                                              (False, 300, False), (True, 300, False),
+                                              (False, 0, True)])
+def test_cut_hit_is_bit_equal_to_the_whole_render(monkeypatch, hits, repeat, fold, loop):
+    m = _cut_model(hits, repeat, fold, loop)
+    new = T.render_float(m, "s")
+    monkeypatch.setattr(T, "render_noise", _old_render_noise)
+    old = T.render_float(m, "s")
+    assert [struct.pack("<d", v) for v in new] == [struct.pack("<d", v) for v in old]
+
+
+def test_cut_hit_filters_only_what_sounds(monkeypatch):
+    m = _cut_model([[999, 0]] * 3)
+    lengths = []
+    real = T.convolve
+
+    def conv(h, w, n):
+        lengths.append(n)
+        return real(h, w, n)
+
+    monkeypatch.setattr(T, "convolve", conv)
+    T.render_float(m, "s")
+    assert lengths == [1, 1, 1]
+
+
+def test_late_hits_on_a_long_noise_are_cheap():
+    # The review's case: a 262144-sample hit, 64 hits on the last sample.
+    layer = {"kind": "noise", "seed": 1, "level_mdb": 0, "hits": [[999, 0]] * 64,
+             "env": [[0, 0], [5461333, 0]], "bands": [[0, 0], [8000, 0]]}
+    m = {"format": 1, "rate_hz": 48000, "ceiling_steps": 90,
+         "sounds": {"s": {"len": 1000, "peak_steps": 20, "layers": [layer]}}}
+    assert T.noise_len(layer, 48000) == 262144
+    assert T.check_model(m) == []
+    assert T.render_cost(m) < 10 ** 7
+    T.render_float(m, "s")
+
+
+# ---------------------------------------------------------------------------
+# The render budget
+# ---------------------------------------------------------------------------
+
+def _noise_loop(seconds, layers, tone=False, rate=48000):
+    n = round(seconds * rate)
+    out = [{"kind": "noise", "seed": s, "level_mdb": -3000, "hits": [[0, 0]],
+            "env": [[0, 0], [round(seconds * 1000000), 0]],
+            "bands": [[0, -6000], [200, 0], [1500, -6000], [6000, -30000]]}
+           for s in range(layers)]
+    if tone:
+        out.append({"kind": "tone", "hits": [[0, 0]], "len": n, "pitch_mhz": [100000, 100000],
+                    "level_mdb": 0, "partials": [[10000 * (k + 1), 0] for k in range(16)]})
+    return {"format": 1, "rate_hz": rate, "ceiling_steps": 60, "sounds": {"l": {
+        "len": n, "peak_steps": 20, "loop": True, "layers": out}}}
+
+
+def test_a_three_second_loop_is_in_the_budget():
+    m = _noise_loop(3, 2, tone=True)
+    assert T.check_model(m) == []
+    assert T.render_cost(m) < T.MAX_COST // 4
+
+
+def test_a_model_over_the_budget_is_refused_in_one_line(tmp_path):
+    m = _noise_loop(5, 9)
+    assert T.render_cost(m) > T.MAX_COST
+    r = run(write_model(tmp_path, m), "--dump", tmp_path / "d")
+    assert r.returncode == 2
+    lines = r.stderr.splitlines()
+    assert len(lines) == 1 and "over the budget of 1000000000" in lines[0], r.stderr
+    assert not (tmp_path / "d").exists()
+
+
+def test_budget_counts_kept_samples_only():
+    m = _cut_model([[999, 0]] * 4)
+    assert T.render_cost(m) == 1000 * T.SINE_COST + 4 * T.FIR_TAPS + T.DESIGN_COST
+    m = _cut_model([[999, 0]] * 4, repeat=True)
+    assert T.render_cost(m) == 1000 * T.SINE_COST + T.FIR_TAPS + T.DESIGN_COST
+    m = _cut_model([[999, 0]] * 4, loop=True)
+    assert T.render_cost(m) == 1000 * T.SINE_COST + 4 * 800 * T.FIR_TAPS + T.DESIGN_COST
