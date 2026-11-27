@@ -208,13 +208,23 @@ def test_pins_is_unchanged_by_the_library_head(tmp_path, work):
     assert "Pairings planned: `pins`." in summary
 
 
-def test_pin_mismatch_fails_and_names_the_sibling(tmp_path, work):
+@pytest.mark.parametrize("pairing", ["pins", "both"])
+def test_pin_mismatch_fails_and_names_the_sibling(tmp_path, work, pairing):
     w, _ = work
     core_copy(w / "UOS" / "external" / "robco-core", pins_ok=False)
-    proc, outputs, _, _ = run_plan(tmp_path, w)
+    proc, outputs, _, _ = run_plan(tmp_path, w, pairing=pairing)
     assert proc.returncode == 1
     assert outputs == {}
     assert "::error::plan: UOS: check_pins.sh failed: check-pins: tag differs" in proc.stdout
+
+
+def test_core_head_alone_skips_the_pin_check(tmp_path, work):
+    w, _ = work
+    core_copy(w / "UOS" / "external" / "robco-core", pins_ok=False)
+    proc, outputs, _, _ = run_plan(tmp_path, w, pairing="core-head")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "check_pins" not in proc.stdout
+    assert outputs["uos"]["include"]
 
 
 def test_every_problem_is_listed(tmp_path, work):

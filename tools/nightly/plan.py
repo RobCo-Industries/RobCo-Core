@@ -5,10 +5,11 @@
 
 --work holds one checkout per repository, named as the repository:
 w/RobCo-Core and the five siblings, each sibling with its submodules.
-The script reads each checkout with git and runs each sibling's own
-tools/check_pins.sh on its .github/workflows/ci.yml, which proves that
-the image tag in the sibling's CI equals the ci/IMAGE_TAG the nightly
-reads. A mismatch, a missing file or a failed git command fails the plan.
+The script reads each checkout with git. When the pins pairing is
+planned, it also runs each sibling's own tools/check_pins.sh on its
+.github/workflows/ci.yml, which proves that the image tag in the
+sibling's CI equals the ci/IMAGE_TAG the nightly reads. A mismatch, a
+missing file or a failed git command fails the plan.
 
 It builds one record per built thing: the commit, the library commit
 and, for Deitrix, the Pip-OS commit it builds with, and the image tag.
@@ -23,7 +24,8 @@ Two pairings exist. "pins" builds each sibling on its own library pin.
 "core-head" builds every sibling on the w/RobCo-Core commit, in the image
 of that commit's ci/IMAGE_TAG, and runs the tests on raspi0 and raspi2b
 only. "both" puts the pins entries first, then the core-head entries.
-check_pins.sh checks the pins side only.
+check_pins.sh checks the pins side only, so it does not run when
+core-head is planned alone.
 
 The ref each checkout was asked for comes from the environment, for the
 table only: NIGHTLY_REF_CORE, NIGHTLY_REF_RETROS, NIGHTLY_REF_MFBOOT,
@@ -134,7 +136,7 @@ def differs(what, pinned, built):
     return f"{what}: pinned `{pinned[:12]}`, built with `{built[:12]}`"
 
 
-def resolve(work, environ=None):
+def resolve(work, environ=None, pins=True):
     """Read every checkout and return one record per built thing, by name.
 
     A record holds repo, ref, sha (the commit built), core (the library
@@ -142,7 +144,8 @@ def resolve(work, environ=None):
     (the image it builds in), behind (library commits behind main) and
     notes, one per value that differs from the repository's own pin. The
     matrices, the summary and VERSIONS.txt all read these records and
-    nothing else. Raises PlanError listing every problem."""
+    nothing else. pins runs each sibling's check_pins.sh. Raises
+    PlanError listing every problem."""
     environ = os.environ if environ is None else environ
     errors = []
     rows = {}
@@ -168,7 +171,8 @@ def resolve(work, environ=None):
             sha = git(repo_dir, "rev-parse", "HEAD")
             pin = pinned_core(repo_dir, core_path)
             tag = image_tag(os.path.join(repo_dir, core_path))
-            check_pins(repo_dir, core_path)
+            if pins:
+                check_pins(repo_dir, core_path)
             if name == "Deitrix":
                 pinned["pipos"] = git(repo_dir, "rev-parse", "HEAD:external/pip-os")
         except PlanError as e:
@@ -276,7 +280,7 @@ def run(argv, environ=os.environ):
     p.add_argument("--versions")
     args = p.parse_args(argv)
     try:
-        rows, note = resolve(args.work, environ)
+        rows, note = resolve(args.work, environ, pins=args.pairing != "core-head")
         plan, names = plan_pairings(rows, args.work, args.pairing)
     except PlanError as e:
         for line in str(e).splitlines():

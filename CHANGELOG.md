@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The nightly run gains the `core-head` pairing: every sibling builds on the planned RobCo-Core commit, in its image, and the tests run on `raspi0` and `raspi2b`. `both`, the default, plans `pins` then `core-head`, and either one fails the run. A red pairing does not skip the other one. The version table names the library commit and image of `core-head`.
+- The nightly run gains the `core-head` pairing: every sibling builds on the planned RobCo-Core commit, in its image, and the tests run on `raspi0` and `raspi2b`. `both`, the default, plans `pins` then `core-head`, and either one fails the run. A red pairing does not skip the other one. The version table names the library commit and image of `core-head`. A stale sibling pin fails `pins` and `both` but not `core-head` alone.
 - The nightly test jobs rerun their failed tests once with `pytest --lf`. `tools/nightly/junit_gate.py` takes the rerun file and labels each failed test `FLAKY` or `BROKEN` in an annotation and in the run summary. The job stays red either way.
 - `tools/sfx_table.py --bed NAME` names a loop that plays under the other sounds. The header gives each one-shot's head CRC-32, its rest's length and CRC-32, the bed's name and the longest head. `--dump` writes each head and rest, `--wav` each one-shot over the bed, and `--check` sees a change of bed. It refuses a one-shot as long as the bed's first part and peaks that add up past 127. Without `--bed` the output does not change.
 - The trace's `op=pcm` line ends with `loop=1` when the play loops. A play that does not loop prints the same line as before.
