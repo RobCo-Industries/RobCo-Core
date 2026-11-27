@@ -222,13 +222,17 @@ Before it writes anything, the tool lists every file of the run: `MODEL`, which 
 
 The case rule is strict on every system, also where the file system tells case apart. A run that passes on one system then passes on all.
 
-The tool also refuses an output that is a directory, an output in a folder that does not exist, and a `--dump` or `--wav` folder that is a file or lies in a folder that does not exist. It makes a missing `--dump` or `--wav` folder itself. `--dump` and `--wav` may name the same folder: their files end in `.u8` and `.wav`, so the tool checks the files, not the folders. The only file a run reads is `MODEL`, and it reads it before it writes, so the check that no output is `MODEL` covers every read.
+The tool also refuses an output that is a directory, an output in a folder that does not exist, and a `--dump` or `--wav` folder that is a file or lies in a folder that does not exist. It makes a missing `--dump` or `--wav` folder itself. `--dump` and `--wav` may name the same folder: their files end in `.u8` and `.wav`, so the tool checks the files, not the folders.
+
+The tool compares two new folders by the same rule as files. Two spellings of one folder, such as `out`, `./out`, `out/` or one through a symbolic link, make one folder. Two new folders that differ only by case are refused, exit 64: where the file system tells case apart they are two folders. A new `--dump` folder may lie in a new `--wav` folder, and the other way round: the tool makes the outer one first. A folder that another process makes between the plan and the run is used as it is, and a roll back never removes it. The only file a run reads is `MODEL`, and it reads it before it writes, so the check that no output is `MODEL` covers every read.
 
 ### How the files are written
 
 A run publishes all its files as one. The tool writes each file to a temporary name `.<name>.<pid>.tmp` in the same folder. It then keeps the old content of each file that exists under `.<name>.<pid>.bak`, a hard link or else a copy. Then it renames each temporary file over its target: `OUT.c`, each `.u8` file, each `.wav` file, and `OUT.h` last, because `OUT.h` carries the hash that `--check` reads. A file is never left half written.
 
-On a failure the tool rolls back. Roll back means: each file this run already renamed gets its old content back from its backup, or is removed if it did not exist before; every temporary and backup file is removed; and a `--dump` or `--wav` folder this run made is removed. The tool then exits 1 with one message. On success it removes the backups.
+The tool records each temporary file, backup and folder the moment it exists, before it writes into it. A failure at any step, even in the middle of a backup copy, then finds it.
+
+On a failure the tool rolls back. Roll back means: each file this run already renamed gets its old content back from its backup, or is removed if it did not exist before; every temporary and backup file is removed; and a `--dump` or `--wav` folder this run made is removed. A test makes each file operation of a run fail in turn and checks that the folders hold exactly what they held before. The tool then exits 1 with one message. On success it removes the backups.
 
 The table below is for the full run, `--c --h --dump --wav` together. "Old" means the content from before the run, or no file if there was none. `--check` reads only `OUT.h` and `OUT.c`, which are always old after a failure, so it answers as it did before the run: stale if the model changed.
 
@@ -236,11 +240,12 @@ The table below is for the full run, `--c --h --dump --wav` together. "Old" mean
 |---|---|---|---|---|---|
 | A temporary file cannot be made or written | old | old | old | old | stale if the model changed |
 | A backup cannot be made as a hard link | the tool makes a copy and goes on | | | | |
-| A backup copy cannot be made | old | old | old | old | stale if the model changed |
+| A new folder cannot be made | old | old | old | old | stale if the model changed |
+| A backup copy cannot be made or written | old | old | old | old | stale if the model changed |
 | The rename of `OUT.c` fails | old | old | old | old | stale if the model changed |
 | The rename of a `.u8` or `.wav` file fails | old | old | old | old | stale if the model changed |
 | The rename of `OUT.h` fails | old | old | old | old | stale if the model changed |
-| A restore fails during the roll back | new for that file | | | old | stale if the model changed: `OUT.h` is never renamed when a later step fails |
+| A restore fails during the roll back | new for that file, and its `.bak` file stays with the old content | | | old | stale if the model changed: `OUT.h` is never renamed when a later step fails |
 | The tool is killed after some renames | new up to the kill | | | old | stale if the model changed; `.tmp` and `.bak` files stay, and the `.bak` files hold the old content |
 
 Files from an older model under other names stay in the `--dump` and `--wav` folders.
