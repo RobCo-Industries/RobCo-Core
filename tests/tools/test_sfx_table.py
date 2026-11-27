@@ -479,6 +479,30 @@ def test_marker_prefixes_are_taken(prefix):
     assert T.PREFIX.match(prefix) and len(prefix) <= 32
 
 
+def _header_names(count, seed):
+    """count header names that H_FILE takes, made with a fixed seed. Short
+    stems over few letters, so near names such as sfx_a.h and sfxa.h meet."""
+    rng = random.Random(seed)
+    out = []
+    while len(out) < count:
+        tail = "".join(rng.choice("a_1x") for _ in range(rng.randint(0, 3)))
+        head = rng.choice(["", "a", "x_", "a1"])
+        name = f"{head}sfx{tail}.h"
+        if not name[0].isalpha():
+            name = "s" + name
+        assert T.H_FILE.fullmatch(name) and not T.file_name_faults("sfx.c", name), name
+        out.append(name)
+    return out
+
+
+def test_header_guards_are_one_to_one():
+    names = sorted(set(_header_names(400, 7)))
+    assert len(names) > 100
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            assert T.header_guard(a) != T.header_guard(b), (a, b)
+
+
 def test_own_names_that_clash_are_refused():
     m = tone_model(split=4)
     beep = m["sounds"]["beep"]
@@ -491,11 +515,11 @@ def test_own_names_that_clash_are_refused():
     # The guard starts with SFX_GUARD_ and ends with the file's _H, and every
     # macro ends with its own suffix, so a guard never meets a macro, and
     # never a name C reserves such as E plus a capital.
-    for h_name in ("sfx_beep_peak.h", "sfx_model_sha256.h", "Esfx.h", "SIGsfx.h"):
+    for h_name in ("sfx_beep_peak.h", "sfx_model_sha256.h", "esfx.h", "sigsfx.h"):
         names = T.c_names(m, {"beep": bytes(8)}, "sfx_", h_name)
         assert names[0][0].startswith("SFX_GUARD_") and names[0][0].endswith("_H")
         assert T.c_name_faults(names) == []
-    assert T.header_guard("Esfx.h") == "SFX_GUARD_ESFX_H"
+    assert T.header_guard("esfx.h") == "SFX_GUARD_ESFX_H"
 
 
 # ---------------------------------------------------------------------------
@@ -882,9 +906,9 @@ def test_extreme_models_render_or_are_refused(tmp_path, sound):
 
 @pytest.mark.skipif(shutil.which("cc") is None, reason="no host C compiler")
 @pytest.mark.parametrize("prefix,h_name", [
-    ("demo_sfx_", "sfx_table.h"), ("sfx_", "t_sfx.h"), ("snd_sfx_", "sfx-table.h"),
-    ("z9_sfx_", "my.sfx.h"), ("q_sfx_", "h1sfx.h"), ("x_sfx_", "x_sfx_rate_hz.h"),
-    ("size_sfx_", "Big_sfx.h")])
+    ("demo_sfx_", "sfx_table.h"), ("sfx_", "t_sfx.h"), ("snd_sfx_", "sfx_x_table.h"),
+    ("z9_sfx_", "my_sfx9.h"), ("q_sfx_", "h1sfx.h"), ("x_sfx_", "x_sfx_rate_hz.h"),
+    ("size_sfx_", "big_sfx.h")])
 def test_generated_c_compiles_for_names(tmp_path, prefix, h_name):
     m = _two_sounds()
     p = write_model(tmp_path, m)
@@ -1173,6 +1197,11 @@ BAD_FILE_NAMES = [
     ("--c", "a bsfx.c", "the file name must be"),
     ("--c", "1sfx.c", "the file name must be"),
     ("--c", "söndsfx.c", "the file name must be"),
+    ("--h", "sfx-a.h", "the file name must be"),
+    ("--h", "my.sfx.h", "the file name must be"),
+    ("--h", "Big_sfx.h", "the file name must be"),
+    ("--c", "sfx_A.c", "the file name must be"),
+    ("--c", "sfx-a.c", "the file name must be"),
 ]
 
 
@@ -1231,7 +1260,10 @@ def _alias(tmp_path, how):
             pytest.skip(f"this file system makes no hard link: {e}")
         return [p, "--c", sub / "sfx_hard.c", "--h", h, "--prefix", "x_sfx_"]
     if how == "case":
-        return [p, "--c", tmp_path / "SFX.c", "--h", h, "--prefix", "x_sfx_"]
+        q = tmp_path / "Sfx.c"
+        if not q.exists():
+            q.write_bytes(p.read_bytes())
+        return [q, "--c", p, "--h", h, "--prefix", "x_sfx_"]
     if how == "header link to source":
         (sub / "x_sfx_t.h").symlink_to(c)
         c.write_text("old\n")
@@ -1256,6 +1288,36 @@ ALIASES = ["model as --c", "relative and absolute", "dot and dot-dot", "symbolic
            "hard link", "case", "header link to source", "--c is a directory",
            "missing folder", "--dump is a file", "--dump in a missing folder",
            "--wav file is the model"]
+
+
+def _run_in(cwd, *args):
+    return subprocess.run([sys.executable, "-I", TOOL, *map(str, args)], capture_output=True,
+                          text=True, env=minimal_env(), cwd=cwd)
+
+
+@pytest.mark.parametrize("how", ["missing middle", "link in the middle"])
+def test_a_path_is_taken_by_where_it_resolves(tmp_path, how):
+    """The plan resolves each path once and the run writes only there, so
+    a spelling that cannot be walked still works, and --check of the same
+    command line reads the same files."""
+    write_model(tmp_path, tone_model())
+    if how == "missing middle":
+        out, where = "missing/../out", tmp_path / "out"
+    else:
+        (tmp_path / "a" / "real").mkdir(parents=True)
+        (tmp_path / "link").symlink_to(tmp_path / "a" / "real")
+        out, where = "link/../out", tmp_path / "a" / "out"
+    table = ["model.json", "--c", f"{out}/sfx_t.c", "--h", f"{out}/sfx_t.h",
+             "--prefix", "x_sfx_"]
+    r = _run_in(tmp_path, *table, "--dump", out)
+    assert r.returncode == 0, r.stderr
+    assert sorted(f.name for f in where.iterdir()) == ["beep.u8", "sfx_t.c", "sfx_t.h"]
+    assert not (tmp_path / "missing").exists()
+    if how != "missing middle":
+        assert not (tmp_path / "out").exists()
+    for extra in ([], ["--full"]):
+        r = _run_in(tmp_path, *table, "--check", *extra)
+        assert r.returncode == 0, r.stderr
 
 
 @pytest.mark.parametrize("how", ALIASES)
@@ -1293,8 +1355,8 @@ def _nodes_case(tmp_path, how):
         return ([p, "--c", tmp_path / "sfx_l.c", "--h", h, "--prefix", "sfx_",
                  "--dump", tmp_path / "new"], "a file and a folder")
     if how == "new folder is --c by case":
-        return ([p, "--c", tmp_path / "OUT_sfx.c", "--h", h, "--prefix", "sfx_",
-                 "--wav", tmp_path / "out_sfx.c"], "a file and a folder")
+        return ([p, "--c", tmp_path / "out_sfx.c", "--h", h, "--prefix", "sfx_",
+                 "--wav", tmp_path / "OUT_sfx.c"], "a file and a folder")
     if how == "the model's folder as --c":
         sub = tmp_path / "m_sfx.c"
         sub.mkdir()
