@@ -56,6 +56,21 @@ def test_folder_with_neither_fails(work, tmp_path):
     assert not out.exists()
 
 
+def test_nested_provenance_beside_licence(work, tmp_path):
+    third = work / "RobCo-Core" / "third_party"
+    (third / "bundle" / "addon").mkdir(parents=True)
+    (third / "bundle" / "LICENSE").write_text("Bundle terms.\n")
+    (third / "bundle" / "addon" / "PROVENANCE").write_text("Addon terms.\n")
+    out = tmp_path / "NOTICES.txt"
+    r = tool("--work", str(work), "--out", str(out))
+    assert r.returncode == 0, r.stdout
+    text = out.read_text()
+    heads = [l for l in text.splitlines() if l.startswith("==== RobCo-Core: third_party/b")]
+    assert heads == ["==== RobCo-Core: third_party/bundle/LICENSE ====",
+                     "==== RobCo-Core: third_party/bundle/addon/PROVENANCE ===="]
+    assert "Bundle terms." in text and "Addon terms." in text
+
+
 def test_same_bytes_each_run(work, tmp_path):
     a, b = tmp_path / "a.txt", tmp_path / "b.txt"
     assert tool("--work", str(work), "--out", str(a)).returncode == 0

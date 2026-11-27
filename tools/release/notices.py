@@ -9,11 +9,12 @@ the six repositories, in a fixed order, then every licence file under
 w/RobCo-Core/third_party/: first the licence files directly in it, then
 folder by folder, each in sorted order. Other loose files are ignored. A licence
 file is one whose name starts with LICENSE, LICENCE or COPYING, in any
-case. A folder with no licence file gives its PROVENANCE file instead.
+case. Every folder inside a package, the package folder included, gives
+its own licence files, or its PROVENANCE file when it has none.
 Each text comes under a line that names its repository and path.
 
-A missing LICENSE, a missing third_party folder or a third_party folder
-with neither a licence file nor a PROVENANCE file fails, with an `::error::` line and exit code 1.
+A missing LICENSE, a missing third_party folder or a package folder
+that gives no text fails, with an `::error::` line and exit code 1.
 The output goes through a temporary file, so a failed write leaves no
 half-written file. The same inputs give the same bytes. Standard library only.
 """
@@ -73,13 +74,18 @@ def read_text(path):
     return text.replace("\r\n", "\n").rstrip() + "\n"
 
 
-def licence_files(root):
+def package_files(root):
+    """Paths, relative to root, that a package folder contributes.
+
+    Each folder gives its own licence files, or its PROVENANCE file when
+    it has none."""
     found = []
     for folder, dirs, files in os.walk(root):
         dirs.sort()
-        for name in sorted(files):
-            if name.lower().startswith(PREFIXES):
-                found.append(os.path.relpath(os.path.join(folder, name), root))
+        own = [n for n in files if n.lower().startswith(PREFIXES)]
+        if not own and "PROVENANCE" in files:
+            own = ["PROVENANCE"]
+        found += [os.path.relpath(os.path.join(folder, n), root) for n in own]
     return sorted(p.replace(os.sep, "/") for p in found)
 
 
@@ -97,9 +103,7 @@ def collect(work):
         folder = os.path.join(third, name)
         if not os.path.isdir(folder):
             continue
-        found = licence_files(folder)
-        if not found and os.path.isfile(os.path.join(folder, "PROVENANCE")):
-            found = ["PROVENANCE"]
+        found = package_files(folder)
         if not found:
             raise NoticesError(f"third_party/{name} has no licence file and no PROVENANCE")
         paths += [f"{name}/{rel}" for rel in found]
