@@ -611,6 +611,7 @@ MAX_PARTIALS = 16
 MAX_ENV = 64
 MAX_BANDS = 24
 MAX_US = 10000000
+MAX_DIGITS = 15                 # no field takes more than 10 digits
 MDB_MIN, MDB_MAX = -120000, 20000
 NAME = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
 # A prefix starts with a letter: a leading _ would make the upper-case macro
@@ -618,11 +619,34 @@ NAME = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
 PREFIX = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
 GUARD = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
-TOP_KEYS = {"format", "rate_hz", "ceiling_steps", "sounds"}
-SOUND_KEYS = {"len", "peak_steps", "layers", "loop", "split"}
-TONE_KEYS = {"kind", "hits", "len", "pitch_mhz", "level_mdb", "partials",
-             "attack_us", "release_us", "env"}
-NOISE_KEYS = {"kind", "hits", "seed", "level_mdb", "env", "bands", "fold", "repeat"}
+# Every field of the format and its JSON type, by section of the spec's
+# field tables. The validator reads each field through _Checker.field(),
+# which takes the type from here, so no field skips its type check. A test
+# compares this list with the tables in docs/spec/SFX_MODEL.md.
+FIELDS = {
+    "top": {"format": "int", "rate_hz": "int", "ceiling_steps": "int", "sounds": "object"},
+    "sound": {"len": "int", "peak_steps": "int", "layers": "list", "loop": "bool",
+              "split": "int"},
+    "tone": {"kind": "kind", "hits": "pairs", "len": "int", "pitch_mhz": "pair",
+             "level_mdb": "int", "partials": "pairs", "attack_us": "int",
+             "release_us": "int", "env": "pairs"},
+    "noise": {"kind": "kind", "hits": "pairs", "seed": "int", "level_mdb": "int",
+              "env": "pairs", "bands": "pairs", "fold": "int", "repeat": "bool"},
+}
+REQUIRED = {
+    "top": {"format", "rate_hz", "ceiling_steps", "sounds"},
+    "sound": {"len", "peak_steps", "layers"},
+    "tone": {"kind", "hits", "len", "pitch_mhz", "level_mdb", "partials"},
+    "noise": {"kind", "hits", "seed", "level_mdb", "env", "bands"},
+}
+TOP_KEYS = set(FIELDS["top"])
+SOUND_KEYS = set(FIELDS["sound"])
+TONE_KEYS = set(FIELDS["tone"])
+NOISE_KEYS = set(FIELDS["noise"])
+
+
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
 
 
 class _Checker:
@@ -630,62 +654,111 @@ class _Checker:
         self.faults = []
 
     def fault(self, where, text):
-        self.faults.append(f"{where}: {text}")
+        self.faults.append(f"{where or 'model'}: {text}")
 
-    def keys(self, obj, where, allowed, required):
+    def keys(self, obj, where, section):
         if not isinstance(obj, dict):
             self.fault(where, "must be an object")
             return False
         for k in obj:
-            if k not in allowed:
+            if k not in FIELDS[section]:
                 self.fault(f"{where}.{k}" if where else k, "unknown field")
         ok = True
-        for k in sorted(required):
+        for k in sorted(REQUIRED[section]):
             if k not in obj:
-                self.fault(where or "model", f"missing field {k!r}")
+                self.fault(where, f"missing field {k!r}")
                 ok = False
         return ok
 
     def int(self, v, where, lo, hi):
-        if isinstance(v, bool) or not isinstance(v, int):
+        if not _is_int(v):
             self.fault(where, "must be a whole number")
             return False
         if not lo <= v <= hi:
-            self.fault(where, f"must be {lo} to {hi}, not {v}")
+            self.fault(where, f"must be {lo}, not {v}" if lo == hi
+                       else f"must be {lo} to {hi}, not {v}")
             return False
         return True
 
-    def bool(self, v, where):
-        if not isinstance(v, bool):
-            self.fault(where, "must be true or false")
-            return False
-        return True
+    def field(self, obj, section, key, where, lo=None, hi=None, items=None):
+        """The value of obj[key] if its type and range are right, else None.
 
-    def pairs(self, v, where, lo, hi):
+        The type comes from FIELDS. lo and hi bound an int, or the length of
+        a list. items gives the two ranges of the numbers in each pair.
+        A fault names the field. A bound that depends on other fields is
+        checked by the caller after this.
+        """
+        kind = FIELDS[section][key]
+        v = obj[key]
+        w = f"{where}.{key}" if where else key
+        if kind == "int":
+            return v if self.int(v, w, lo, hi) else None
+        if kind == "bool":
+            if isinstance(v, bool):
+                return v
+            self.fault(w, "must be true or false")
+        elif kind == "kind":
+            if v == section:
+                return v
+            self.fault(w, 'must be "tone" or "noise"')
+        elif kind == "object":
+            if isinstance(v, dict) and v:
+                return v
+            self.fault(w, "must be an object with at least one sound")
+        elif kind == "list":
+            if isinstance(v, list) and lo <= len(v) <= hi:
+                return v
+            self.fault(w, f"must be a list of {lo} to {hi} layers")
+        elif kind == "pair":
+            if not isinstance(v, list) or len(v) != 2:
+                self.fault(w, "must be [from, to] in millihertz")
+                return None
+            ok = [self.int(x, f"{w}[{i}]", lo, hi) for i, x in enumerate(v)]
+            return v if all(ok) else None
+        else:
+            return self._pairs(v, w, lo, hi, items)
+        return None
+
+    def _pairs(self, v, w, lo, hi, items):
         if not isinstance(v, list):
-            self.fault(where, "must be a list")
-            return False
+            self.fault(w, "must be a list")
+            return None
         if not lo <= len(v) <= hi:
-            self.fault(where, f"must hold {lo} to {hi} points, not {len(v)}")
-            return False
-        ok = True
+            self.fault(w, f"must hold {lo} to {hi} points, not {len(v)}")
+            return None
+        shape = True
         for i, p in enumerate(v):
             if not isinstance(p, list) or len(p) != 2:
-                self.fault(f"{where}[{i}]", "must be a pair of whole numbers")
-                ok = False
-        return ok
+                self.fault(f"{w}[{i}]", "must be a pair of whole numbers")
+                shape = False
+        if not shape:
+            return None
+        ok = True
+        for i, p in enumerate(v):
+            for j in (0, 1):
+                if not self.int(p[j], f"{w}[{i}][{j}]", *items[j]):
+                    ok = False
+        return v if ok else None
 
 
 def sine_bound(n, from_mhz, to_mhz, multiple, rate):
     """An upper bound of every sine argument of a tone partial, phase * mult.
 
-    A partial calls sin() only while f * mult < rate / 2. With a pitch that
-    rises or holds, every earlier f is no higher, so the argument stays under
-    pi * n. With a falling pitch the phase after n samples is at most
-    2 pi / rate * (f0 + n * (f0 - f1) / ln(f0 / f1)): the sum of a falling
-    geometric series is at most its first term plus its integral. A partial
-    that is above half the rate even at f1 never calls sin(). The 1 % margin
-    covers the loop move of 0.05 % and the rounding of the phase sum.
+    Each partial on its own: a lower multiple can sound while a higher one
+    is silent, so the largest multiple bounds nothing.
+
+    At sample i, phase is the sum of 2 pi f_j / rate for j < i, and the
+    partial calls sin(phase * mult) only while f_i * mult < rate / 2.
+    - Rising or held pitch: every f_j <= f_i, so phase * mult <=
+      2 pi i f_i mult / rate < pi i < pi n. A partial that goes silent part
+      way never calls sin() again. pi * 262144 is far under the limit.
+    - Falling pitch: the partial may start silent and sound from some sample
+      on, so bound the whole sum. The phase after n samples is at most
+      2 pi / rate * (f0 + n * (f0 - f1) / ln(f0 / f1)): a falling geometric
+      sum is at most its first term plus its integral. A partial still above
+      half the rate at f1, with 1 % to spare, never calls sin().
+    The 1 % margins cover the loop move of 0.05 % and the rounding of the
+    ratio, of f and of the phase sum, each under 1e-10 relative.
     Validation only: no output byte depends on it.
     """
     mult = multiple / 10000.0
@@ -698,102 +771,76 @@ def sine_bound(n, from_mhz, to_mhz, multiple, rate):
     return 1.01 * mult * TWO_PI * cycles / rate
 
 
-def _check_layer(c, layer, li, sound, rate, where):
+def _check_layer(c, layer, li, slen, rate, where):
     w = f"{where}.layers[{li}]"
     if not isinstance(layer, dict):
         c.fault(w, "must be an object")
         return
     kind = layer.get("kind")
-    if kind == "tone":
-        allowed, required = TONE_KEYS, {"kind", "hits", "len", "pitch_mhz", "level_mdb", "partials"}
-    elif kind == "noise":
-        allowed, required = NOISE_KEYS, {"kind", "hits", "seed", "level_mdb", "env", "bands"}
-    else:
+    if kind not in ("tone", "noise"):
         c.fault(f"{w}.kind", 'must be "tone" or "noise"')
         return
-    if not c.keys(layer, w, allowed, required):
+    if not c.keys(layer, w, kind):
         return
-    slen = sound.get("len") if isinstance(sound.get("len"), int) else MAX_LEN
-    if c.pairs(layer["hits"], f"{w}.hits", 1, MAX_HITS):
-        for i, (at, m) in enumerate(layer["hits"]):
-            c.int(at, f"{w}.hits[{i}][0]", 0, slen - 1)
-            c.int(m, f"{w}.hits[{i}][1]", MDB_MIN, MDB_MAX)
-    c.int(layer["level_mdb"], f"{w}.level_mdb", MDB_MIN, MDB_MAX)
-    env_ok = "env" in layer and c.pairs(layer["env"], f"{w}.env",
-                                        1 if kind == "tone" else 2, MAX_ENV)
-    if env_ok:
-        last = 0
-        for i, (t, m) in enumerate(layer["env"]):
-            if c.int(t, f"{w}.env[{i}][0]", 0, MAX_US):
-                if t < last:
-                    c.fault(f"{w}.env[{i}][0]", "must not come before the point above it")
-                    env_ok = False
-                last = t
-            else:
-                env_ok = False
-            c.int(m, f"{w}.env[{i}][1]", MDB_MIN, MDB_MAX)
+    c.field(layer, kind, "kind", w)
+    mdb = (MDB_MIN, MDB_MAX)
+    c.field(layer, kind, "hits", w, 1, MAX_HITS, ((0, slen - 1), mdb))
+    c.field(layer, kind, "level_mdb", w, *mdb)
+    env = None
+    if "env" in layer:
+        env = c.field(layer, kind, "env", w, 1 if kind == "tone" else 2, MAX_ENV,
+                      ((0, MAX_US), mdb))
+        for i in range(1, len(env) if env else 0):
+            if env[i][0] < env[i - 1][0]:
+                c.fault(f"{w}.env[{i}][0]", "must not come before the point above it")
+                env = None
+                break
     if kind == "tone":
-        n = layer["len"]
-        n_ok = c.int(n, f"{w}.len", 1, MAX_LEN)
-        p = layer["pitch_mhz"]
-        if not isinstance(p, list) or len(p) != 2:
-            c.fault(f"{w}.pitch_mhz", "must be [from, to] in millihertz")
-        else:
-            for i, v in enumerate(p):
-                c.int(v, f"{w}.pitch_mhz[{i}]", 1, rate * 500)
-        pitch_ok = (isinstance(p, list) and len(p) == 2
-                    and all(not isinstance(v, bool) and isinstance(v, int)
-                            and 1 <= v <= rate * 500 for v in p))
-        top = 0
-        if c.pairs(layer["partials"], f"{w}.partials", 1, MAX_PARTIALS):
-            for i, (mult, m) in enumerate(layer["partials"]):
-                if c.int(mult, f"{w}.partials[{i}][0]", 1, 1000000) and mult > top:
-                    top = mult
-                c.int(m, f"{w}.partials[{i}][1]", MDB_MIN, MDB_MAX)
-        if n_ok and pitch_ok and top:
-            bound = sine_bound(n, p[0], p[1], top, rate)
-            if bound > SINE_LIMIT:
-                c.fault(f"{w}.partials", f"the sine of multiple {top} can reach"
-                        f" {bound:.0f} radians, past the limit {SINE_LIMIT:.0f}."
-                        " Shorten the glide or lower the multiple.")
+        n = c.field(layer, kind, "len", w, 1, MAX_LEN)
+        pitch = c.field(layer, kind, "pitch_mhz", w, 1, rate * 500)
+        partials = c.field(layer, kind, "partials", w, 1, MAX_PARTIALS, ((1, 1000000), mdb))
+        if n is not None and pitch is not None and partials is not None:
+            for i, (mult, _) in enumerate(partials):
+                bound = sine_bound(n, pitch[0], pitch[1], mult, rate)
+                if bound > SINE_LIMIT:
+                    c.fault(f"{w}.partials[{i}]", f"the sine of multiple {mult} can reach"
+                            f" {bound:.0f} radians, past the limit {SINE_LIMIT:.0f}."
+                            " Shorten the glide or lower the multiple.")
         for key in ("attack_us", "release_us"):
-            if key in layer and c.int(layer[key], f"{w}.{key}", 0, MAX_US) and n_ok:
-                if layer[key] * rate > n * 1000000:
+            if key in layer:
+                v = c.field(layer, kind, key, w, 0, MAX_US)
+                if v is not None and n is not None and v * rate > n * 1000000:
                     c.fault(f"{w}.{key}", "must fit inside the tone's len")
     else:
-        c.int(layer["seed"], f"{w}.seed", 0, MASK)
-        if c.pairs(layer["bands"], f"{w}.bands", 2, MAX_BANDS):
-            last = -1
-            for i, (hz, m) in enumerate(layer["bands"]):
-                if c.int(hz, f"{w}.bands[{i}][0]", 0, rate // 2):
-                    if hz <= last:
-                        c.fault(f"{w}.bands[{i}][0]", "must be above the point above it")
-                    last = hz
-                c.int(m, f"{w}.bands[{i}][1]", MDB_MIN, MDB_MAX)
+        c.field(layer, kind, "seed", w, 0, MASK)
+        bands = c.field(layer, kind, "bands", w, 2, MAX_BANDS, ((0, rate // 2), mdb))
+        for i in range(1, len(bands) if bands else 0):
+            if bands[i][0] <= bands[i - 1][0]:
+                c.fault(f"{w}.bands[{i}][0]", "must be above the point above it")
         if "repeat" in layer:
-            c.bool(layer["repeat"], f"{w}.repeat")
-        if env_ok:
+            c.field(layer, kind, "repeat", w)
+        fold_hi = MAX_LEN // 2
+        if env is not None:
             n = noise_len(layer, rate)
             if n < 1 or n > MAX_LEN:
                 c.fault(f"{w}.env", f"must span 1 to {MAX_LEN} samples, not {n}")
-            elif "fold" in layer and c.int(layer["fold"], f"{w}.fold", 0, n // 2):
-                pass
+            else:
+                fold_hi = n // 2
+        if "fold" in layer:
+            c.field(layer, kind, "fold", w, 0, fold_hi)
 
 
 def check_model(model):
     """Faults of a parsed model, as a list of messages."""
     c = _Checker()
-    if not c.keys(model, "", TOP_KEYS, TOP_KEYS):
+    if not c.keys(model, "", "top"):
         return c.faults
-    if isinstance(model["format"], bool) or model["format"] != FORMAT:
-        c.fault("format", f"must be {FORMAT}")
+    if c.field(model, "top", "format", "", FORMAT, FORMAT) is None:
         return c.faults
-    rate_ok = c.int(model["rate_hz"], "rate_hz", 8000, 48000)
-    c.int(model["ceiling_steps"], "ceiling_steps", 1, 127)
-    ceiling = model["ceiling_steps"] if isinstance(model["ceiling_steps"], int) else 127
-    sounds = model["sounds"]
-    if not isinstance(sounds, dict) or not sounds:
-        c.fault("sounds", "must be an object with at least one sound")
+    rate = c.field(model, "top", "rate_hz", "", 8000, 48000)
+    ceiling = c.field(model, "top", "ceiling_steps", "", 1, 127)
+    sounds = c.field(model, "top", "sounds", "")
+    if sounds is None:
         return c.faults
     names = set()
     for name, sound in sounds.items():
@@ -801,28 +848,26 @@ def check_model(model):
         if not NAME.match(name):
             c.fault(where, "the name must be a to z, 0 to 9 and _, start with a letter,"
                            " at most 32 characters")
-        if not c.keys(sound, where, SOUND_KEYS, {"len", "peak_steps", "layers"}):
+        if not c.keys(sound, where, "sound"):
             continue
-        len_ok = c.int(sound["len"], f"{where}.len", 1, MAX_LEN)
-        c.int(sound["peak_steps"], f"{where}.peak_steps", 1, ceiling)
+        n = c.field(sound, "sound", "len", where, 1, MAX_LEN)
+        c.field(sound, "sound", "peak_steps", where, 1, 127 if ceiling is None else ceiling)
         if "loop" in sound:
-            c.bool(sound["loop"], f"{where}.loop")
+            c.field(sound, "sound", "loop", where)
         tabs = [name]
         if "split" in sound:
-            if len_ok and c.int(sound["split"], f"{where}.split", 1, sound["len"] - 1):
+            hi = MAX_LEN - 1 if n is None else n - 1
+            if c.field(sound, "sound", "split", where, 1, hi) is not None and n is not None:
                 tabs = [name + "_1", name + "_2"]
         for t in tabs:
             if t in names:
                 c.fault(where, f"the table name {t!r} is taken twice")
             names.add(t)
-        layers = sound["layers"]
-        if not isinstance(layers, list) or not 1 <= len(layers) <= MAX_LAYERS:
-            c.fault(f"{where}.layers", f"must be a list of 1 to {MAX_LAYERS} layers")
-            continue
-        if not rate_ok:
+        layers = c.field(sound, "sound", "layers", where, 1, MAX_LAYERS)
+        if layers is None or rate is None:
             continue
         for li, layer in enumerate(layers):
-            _check_layer(c, layer, li, sound, model["rate_hz"], where)
+            _check_layer(c, layer, li, MAX_LEN if n is None else n, rate, where)
     return c.faults
 
 
@@ -839,12 +884,29 @@ def _no_constant(text):
     raise ValueError(f"{text} is not a number of the format")
 
 
+def _no_float(text):
+    raise ValueError(f"{text} is not a whole number: write JSON integers only")
+
+
+def _whole(text):
+    if len(text.lstrip("-")) > MAX_DIGITS:
+        raise ValueError(f"a number of {len(text.lstrip('-'))} digits is too large"
+                         " for any field")
+    return int(text)
+
+
 def parse_model(text):
-    """A model from JSON text, checked. Raises ModelError."""
+    """A model from JSON text, checked. Raises ModelError.
+
+    Every number must be a JSON integer: a decimal point or an exponent,
+    as in 1.0 or 1e0, is refused while parsing, before any value compares
+    equal to an integer. NaN, Infinity and a field twice are refused too.
+    """
     try:
         model = json.loads(text, object_pairs_hook=_no_duplicates,
-                           parse_constant=_no_constant)
-    except ValueError as e:
+                           parse_constant=_no_constant, parse_float=_no_float,
+                           parse_int=_whole)
+    except (ValueError, RecursionError) as e:
         raise ModelError([f"not valid JSON: {e}"]) from None
     faults = check_model(model)
     if faults:

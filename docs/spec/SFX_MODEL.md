@@ -6,7 +6,9 @@ A program checks in its model file and the generated table. The table records th
 
 ## The file
 
-A model is one JSON object in UTF-8. Every number is a whole number, so a file reads the same on every machine. A number with a decimal point, a duplicated field, `NaN` or `Infinity` is refused. `true` and `false` are not numbers.
+A model is one JSON object in UTF-8. Every number is a JSON integer, so a file reads the same on every machine. The type counts, not the value: `1.0`, `1e0` and `-0.0` are refused while the file is parsed, even where `1` or `0` would do. `NaN`, `Infinity`, a number of more than 15 digits and a duplicated field are refused too. `true` and `false` are not numbers, and a number is not `true` or `false`.
+
+The tables below list every field of the format. The tool checks each one through the same typed check, and a test fails if its list of fields and these tables differ.
 
 ```json
 { "format": 1, "rate_hz": 37500, "ceiling_steps": 90,
@@ -145,10 +147,12 @@ The tool refuses a sound, with one message per fault, when:
 - a loop tone needs a move over 0.05 % to reach whole cycles;
 - a one-shot's first sample sits more than 2 steps from 128, or its last more than 8.
 
-The tool also refuses a tone whose sine can pass its limit of 1600000. It takes the largest partial multiple `mult` and bounds the argument `phase * mult` from the model alone, with `n` the hit's `len`, `f0 = from / 1000` and `f1 = to / 1000`:
+The tool also refuses a tone whose sine can pass its limit of 1600000. It bounds the argument `phase * mult` of each partial on its own, from the model alone, with `n` the hit's `len`, `f0 = from / 1000` and `f1 = to / 1000`. The largest multiple is not enough: in a falling glide it can stay above `rate_hz / 2` while a lower one sounds.
 
-- With a pitch that rises or holds, a partial only sounds below `rate_hz / 2`, and so did every earlier step. The bound is `pi * n`, always under the limit.
-- With a falling pitch, a partial with `f1 * mult * 0.99` at or above `rate_hz / 2` never sounds. Else the bound is `1.01 * mult * 2 pi * (f0 + n * (f0 - f1) / ln(f0 / f1)) / rate_hz`. The sum of a falling geometric series is at most its first term plus its integral. The 1 % covers the loop move and rounding.
+- With a pitch that rises or holds, a partial only sounds below `rate_hz / 2`, and every earlier step was no higher. The bound is `pi * n`, always under the limit. A partial that goes silent part way never sounds again.
+- With a falling pitch, a partial can start silent and sound from some sample on, so the bound takes the whole phase sum. A partial with `f1 * mult * 0.99` at or above `rate_hz / 2` never sounds. Else the bound is `1.01 * mult * 2 pi * (f0 + n * (f0 - f1) / ln(f0 / f1)) / rate_hz`. The sum of a falling geometric series is at most its first term plus its integral. The 1 % covers the loop move and rounding.
+
+Each partial past the limit gets its own line, which names it, such as `partials[0]`.
 
 Every other function call stays in range for any model the file rules allow: `exp` sees -28 to 5, `ln` a positive pitch ratio, `sqrt` a positive sum.
 

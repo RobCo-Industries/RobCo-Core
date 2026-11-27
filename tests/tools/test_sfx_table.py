@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -304,7 +305,7 @@ TL = TICK + ("layers", 0)
 REFUSALS = [
     (_set(("extra",), 1), "extra: unknown field"),
     (_set(("format",), 2), "format: must be 1"),
-    (_set(("rate_hz",), 37500.0), "rate_hz: must be a whole number"),
+    (_set(("rate_hz",), True), "rate_hz: must be a whole number"),
     (_set(("rate_hz",), 100), "rate_hz: must be 8000 to 48000, not 100"),
     (_set(("ceiling_steps",), 128), "ceiling_steps: must be 1 to 127"),
     (_set(("sounds",), {}), "sounds: must be an object with at least one sound"),
@@ -321,7 +322,7 @@ REFUSALS = [
     (_set(HL + ("hits",), [[0, 0, 0]]), "layers[0].hits[0]: must be a pair"),
     (_set(HL + ("hits",), [[2000, 0]]), "layers[0].hits[0][0]: must be 0 to 1999, not 2000"),
     (_set(HL + ("hits",), [[0, 0]] * 65), "layers[0].hits: must hold 1 to 64 points"),
-    (_set(HL + ("level_mdb",), -6.5), "layers[0].level_mdb: must be a whole number"),
+    (_set(HL + ("level_mdb",), False), "layers[0].level_mdb: must be a whole number"),
     (_set(HL + ("seed",), True), "layers[0].seed: must be a whole number"),
     (_set(HL + ("seed",), 1 << 32), "layers[0].seed: must be 0 to 4294967295"),
     (_set(HL + ("env",), [[0, 0]]), "layers[0].env: must hold 2 to 64 points, not 1"),
@@ -373,7 +374,7 @@ def test_refusal_of_bad_json(tmp_path, text, message):
 
 def test_every_fault_has_its_line(tmp_path):
     m = _bad(lambda m: None)
-    m["rate_hz"] = 1.5
+    m["rate_hz"] = True
     m["sounds"]["hiss"]["peak_steps"] = 0
     r = run(write_model(tmp_path, m), "--dump", tmp_path)
     lines = r.stderr.strip().splitlines()
@@ -787,7 +788,7 @@ def test_long_falling_glide_with_a_high_partial_is_refused(tmp_path):
     r = run(write_model(tmp_path, m), "--dump", tmp_path / "d")
     assert r.returncode == 2 and "Traceback" not in r.stderr
     assert r.stderr.count("\n") == 1
-    assert "sound 'dive'.layers[0].partials: the sine of multiple 1000000" in r.stderr
+    assert "sound 'dive'.layers[0].partials[0]: the sine of multiple 1000000" in r.stderr
 
 
 def test_sine_bound_holds():
@@ -857,3 +858,94 @@ def test_generated_c_compiles_for_names(tmp_path, prefix, h_name):
                         str(c), str(main), "-o", str(tmp_path / "a.out")],
                        capture_output=True, text=True, env=minimal_env())
     assert r.returncode == 0, r.stderr
+
+# ---------------------------------------------------------------------------
+# Every number a JSON integer, every field typed
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value", ["1.0", "1e0", "1E0", "1.5e3", "-0.0", "10e-1"])
+def test_format_must_be_a_json_integer(tmp_path, value):
+    p = tmp_path / "m.json"
+    p.write_text(json.dumps(tone_model()).replace('"format": 1', f'"format": {value}'))
+    r = run(p, "--dump", tmp_path / "d")
+    assert r.returncode == 2 and r.stderr.count("\n") == 1
+    assert f"{value} is not a whole number" in r.stderr and "Traceback" not in r.stderr
+
+
+@pytest.mark.parametrize("text,message", [
+    ('{"format": Infinity}', "Infinity is not a number"),
+    ('{"format": -Infinity}', "-Infinity is not a number"),
+    ('{"format": 1, "rate_hz": 1' + "0" * 30 + "}", "too large for any field"),
+    ('{"format": 1, "rate_hz": 8000.5}', "8000.5 is not a whole number"),
+    ("[" * 100000 + "]" * 100000, "model: must be an object"),
+], ids=["inf", "-inf", "long", "decimal", "deep"])
+def test_refusal_of_bad_numbers(tmp_path, text, message):
+    p = tmp_path / "m.json"
+    p.write_text(text)
+    r = run(p, "--dump", tmp_path / "d")
+    assert r.returncode == 2 and message in r.stderr and "Traceback" not in r.stderr
+
+
+def _spec_fields():
+    text = open(os.path.join(ROOT, "docs", "spec", "SFX_MODEL.md"), encoding="utf-8").read()
+    out = {}
+    for title, section in (("Top level", "top"), ("A sound", "sound"),
+                           ("A tone layer", "tone"), ("A noise layer", "noise")):
+        body = text.split(f"### {title}\n", 1)[1].split("\n#", 1)[0]
+        names = set()
+        for row in body.splitlines():
+            if row.startswith("| `"):
+                names.update(re.findall(r"`([a-z_]+)`", row.split("|")[1]))
+        out[section] = names
+    return out
+
+
+def test_field_list_matches_the_spec():
+    assert _spec_fields() == {k: set(v) for k, v in T.FIELDS.items()}
+    for k, v in T.REQUIRED.items():
+        assert v <= set(T.FIELDS[k])
+
+
+def _every_field():
+    # A model that passes check_model and holds every field of the format.
+    tone = {"kind": "tone", "hits": [[0, 0]], "len": 8, "pitch_mhz": [2000000, 2000000],
+            "level_mdb": 0, "partials": [[10000, 0]], "attack_us": 100, "release_us": 100,
+            "env": [[0, 0]]}
+    noise = {"kind": "noise", "hits": [[0, 0]], "seed": 1, "level_mdb": 0,
+             "env": [[0, 0], [1000, 0]], "bands": [[0, 0], [4000, 0]], "fold": 1,
+             "repeat": False}
+    sound = {"len": 8, "peak_steps": 8, "layers": [tone, noise], "loop": False, "split": 4}
+    return {"format": 1, "rate_hz": 8000, "ceiling_steps": 90, "sounds": {"beep": sound}}
+
+
+def _field_paths():
+    m = _every_field()
+    yield "top", (), m
+    s = m["sounds"]["beep"]
+    yield "sound", ("sounds", "beep"), s
+    yield "tone", ("sounds", "beep", "layers", 0), s["layers"][0]
+    yield "noise", ("sounds", "beep", "layers", 1), s["layers"][1]
+
+
+def test_every_field_checks_its_type():
+    # Each field of FIELDS, given a wrong type, gives a fault that names it.
+    assert T.check_model(_every_field()) == []
+    count = 0
+    for section, path, obj in _field_paths():
+        assert set(obj) == set(T.FIELDS[section])
+        for key, kind in T.FIELDS[section].items():
+            wrongs = {"int": [True, 1.0, 10 ** 30, "1", None], "bool": [0, 1, "true", None],
+                      "kind": [1, True, "other"], "object": [[], 1, {}],
+                      "list": [{}, 1, True], "pair": [[1.0, 1], [True, 1], 1],
+                      "pairs": [[[1.0, 0]], [[0, True]], [[0, 10 ** 30]], [1], 1]}[kind]
+            for wrong in wrongs:
+                m = _every_field()
+                target = m
+                for k in path:
+                    target = target[k]
+                target[key] = wrong
+                faults = T.check_model(m)
+                assert any(f".{key}" in f or f.startswith(key) for f in faults), \
+                    (section, key, wrong, faults)
+                count += 1
+    assert count > 80
