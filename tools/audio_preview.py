@@ -69,7 +69,8 @@ Rules it applies, from the library's driver:
   rounds to the nearest step, a half step away from 128, as
   audio_pcm_scale() in src/lib/audio_pcm.c does.
   --scale auto, the default, picks nearest when the log has an op=pcm_mix
-  or op=voice line or the rest ramp, whole or cut, and cut otherwise.
+  or op=voice line, a loop=1 field or the rest ramp, whole or cut, and cut
+  otherwise.
   A play keeps the volume its line prints. The driver applies a volume
   change to the samples that follow, but prints no line for it, so the
   file is wrong for a play whose volume changes on the way.
@@ -720,7 +721,8 @@ def main(argv=None):
         pcm = load_pcm(a.pcm)
         scale = a.scale
         if scale == "auto":
-            new = any(op in ("pcm_mix", "voice") or is_ramp(op, f) for _, op, f in events)
+            new = any(op in ("pcm_mix", "voice") or is_ramp(op, f) or "loop" in f
+                      for _, op, f in events)
             scale = "nearest" if new else "cut"
         if dropped:
             warn("the trace lost %d records: the file misses sounds" % dropped)

@@ -163,7 +163,8 @@ class Volume(Case):
         d = self.sound("a", bytes([129]) * 2205)
         o = self.sound("o", bytes([128]) * 10)
         for lines, want in (([pcm(0, d, vol=50)], "cut"),
-                            ([pcm(0, d, vol=50), mix(0, o)], "nearest")):
+                            ([pcm(0, d, vol=50), mix(0, o)], "nearest"),
+                            ([pcm(0, d, vol=50, loop=True), stop(100)], "nearest")):
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                 bs.main([self.log(lines), os.path.join(self.dir, "o.wav"),
