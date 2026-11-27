@@ -479,15 +479,19 @@ def noise_len(layer, rate):
     return ceil_div(layer["env"][-1][0] * rate, 1000000)
 
 
-def noise_gain(layer, rate):
-    """The gain of one noise hit: its envelope, then the fold."""
+def noise_gain(layer, rate, m=None):
+    """The gain of one noise hit: its envelope, then the fold. With m, only
+    the first m values, each the same as in the whole list."""
     n = noise_len(layer, rate)
-    gain = env_gain(layer["env"], n, rate)
+    m = n if m is None else m
+    gain = env_gain(layer["env"], m, rate)
     fold = layer.get("fold", 0)
     for i in range(fold):
         u = (i + 0.5) / fold        # 0 < u < 1: sin() and cos() see under pi/2
-        gain[i] *= sin(HALF_PI * u)
-        gain[n - fold + i] *= cos(HALF_PI * u)
+        if i < m:
+            gain[i] *= sin(HALF_PI * u)
+        if n - fold + i < m:
+            gain[n - fold + i] *= cos(HALF_PI * u)
     return gain
 
 
@@ -496,20 +500,59 @@ def render_noise(layer, sound, out, rate, where, direct=False):
     h = fir_design(layer["bands"], rate)
     if h is None:
         raise ModelError([f"{where}.bands: the curve is silent on every bin"])
-    gain = noise_gain(layer, rate)
-    n = len(gain)
+    keep = noise_kept(layer, len(out), noise_len(layer, rate), loop)
+    gain = noise_gain(layer, rate, max(keep))
     same = None
     conv = convolve_direct if direct else convolve
     for k, (at, hit_mdb) in enumerate(layer["hits"]):
         if layer.get("repeat") and same is not None:
             one = same
         else:
-            w = white(start_state(layer["seed"], k), n + FIR_TAPS - 1)
-            y = conv(h, w, n)
-            one = [y[i] * gain[i] if gain[i] else 0.0 for i in range(n)]
+            # Only the kept samples: the generator runs in order, so the
+            # first m + 510 values are the same as in a longer run, and
+            # each kept output adds the same products in the same order.
+            m = max(keep) if layer.get("repeat") else keep[k]
+            w = white(start_state(layer["seed"], k), m + FIR_TAPS - 1)
+            y = conv(h, w, m)
+            one = [y[i] * gain[i] if gain[i] else 0.0 for i in range(m)]
             same = one
-        m = n if loop else min(n, len(out) - at)
-        _add(out, at, one[:m], db_gain((layer["level_mdb"] + hit_mdb) / 1000.0), loop)
+        _add(out, at, one[:keep[k]], db_gain((layer["level_mdb"] + hit_mdb) / 1000.0), loop)
+
+
+def noise_kept(layer, slen, n, loop):
+    """The samples of each hit that reach the sound: all n in a loop, which
+    wraps the rest, else those before the sound's end."""
+    return [n if loop else min(n, slen - at) for at, _ in layer["hits"]]
+
+
+# The work of a render, in filter products. A sine of a partial takes
+# about 18 products of time, so it counts SINE_COST, and so does each
+# sample of a sound, which is summed, scaled and rounded. Designing a
+# filter takes about DESIGN_COST. One unit is about 42 ns on the
+# reference machine, so the budget is about 42 s. See the spec.
+SINE_COST = 32
+DESIGN_COST = 131072
+MAX_COST = 1000000000
+
+
+def render_cost(model):
+    """The work of a render: FIR_TAPS products for each kept noise sample,
+    SINE_COST for each tone sample of each partial and for each sample of a
+    sound, DESIGN_COST for each noise layer. A repeat layer filters once.
+    The model must be valid."""
+    rate = model["rate_hz"]
+    cost = 0
+    for sound in model["sounds"].values():
+        cost += sound["len"] * SINE_COST
+        for layer in sound["layers"]:
+            if layer["kind"] == "tone":
+                cost += layer["len"] * len(layer["partials"]) * SINE_COST
+                continue
+            keep = noise_kept(layer, sound["len"], noise_len(layer, rate),
+                              sound.get("loop", False))
+            cost += (max(keep) if layer.get("repeat") else sum(keep)) * FIR_TAPS
+            cost += DESIGN_COST
+    return cost
 
 
 def render_float(model, name, direct=False):
@@ -895,6 +938,11 @@ def check_model(model):
             continue
         for li, layer in enumerate(layers):
             _check_layer(c, layer, li, MAX_LEN if n is None else n, rate, where)
+    if not c.faults:
+        cost = render_cost(model)
+        if cost > MAX_COST:
+            c.fault("", f"the render costs {cost} units, over the budget of {MAX_COST}."
+                    " Shorten the sounds, or cut hits, layers or partials.")
     return c.faults
 
 
