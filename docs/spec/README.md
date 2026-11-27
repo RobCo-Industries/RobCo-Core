@@ -124,7 +124,8 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Game logic and UI host tests, file fault tests | Specified |
 | `expect.py`, `screen.py`, `inputs.py` | Specified |
 | Reusable workflow for sibling repos | Implemented |
-| `boot.json` and its writer in the harness | Specified |
+| Nightly run, `.github/workflows/nightly.yml` and `tools/nightly/` | Implemented |
+| `boot.json` and its writer in the harness, `tests/harness/bootjson.py` | Implemented |
 
 ### STUDIO_PROJECT.md
 
@@ -144,7 +145,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 
 | Part | State |
 |---|---|
-| Everything. `robco` prints its version and nothing else. | Specified |
+| Everything. No code in this repo implements it. | Specified |
 
 ### SFX_MODEL.md
 
