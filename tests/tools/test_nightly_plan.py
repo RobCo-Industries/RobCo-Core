@@ -158,6 +158,26 @@ def test_core_head_keeps_only_the_boards_a_sibling_lists(tmp_path, work):
     assert [e["board"] for e in outputs["agent"]["include"]] == ["raspi0", "raspi2b"]
 
 
+@pytest.mark.parametrize("pairing", ["core-head", "both"])
+def test_core_head_fails_when_a_sibling_lists_neither_board(tmp_path, work, pairing):
+    w, _ = work
+    (w / "UOS" / "pytest.ini").write_text("[pytest]\nrobco_boards = raspi1ap raspi3b\n")
+    proc, outputs, _, _ = run_plan(tmp_path, w, pairing=pairing)
+    assert proc.returncode == 1
+    assert outputs == {}
+    assert ("::error::plan: UOS lists no board that core-head tests on: "
+            "it needs raspi0 or raspi2b") in proc.stdout
+
+
+def test_one_core_head_board_is_enough(tmp_path, work):
+    w, _ = work
+    (w / "UOS" / "pytest.ini").write_text("[pytest]\nrobco_boards = raspi1ap raspi0\n")
+    proc, outputs, _, _ = run_plan(tmp_path, w, pairing="both")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [(e["pairing"], e["board"]) for e in outputs["uos"]["include"]] == [
+        ("pins", "raspi1ap"), ("pins", "raspi0"), ("core-head", "raspi0")]
+
+
 def test_both_holds_pins_then_core_head(tmp_path, work):
     w, shas = work
     head = head_tag(w, "headtag00000")

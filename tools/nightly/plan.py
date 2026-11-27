@@ -23,7 +23,9 @@ tag, and board in the three test matrices.
 Two pairings exist. "pins" builds each sibling on its own library pin.
 "core-head" builds every sibling on the w/RobCo-Core commit, in the image
 of that commit's ci/IMAGE_TAG, and runs the tests on raspi0 and raspi2b
-only. "both" puts the pins entries first, then the core-head entries.
+only. A sibling that lists neither board fails the plan, since GitHub
+rejects an empty matrix. "both" puts the pins entries first, then the
+core-head entries.
 check_pins.sh checks the pins side only, so it does not run when
 core-head is planned alone.
 
@@ -202,7 +204,8 @@ def resolve(work, environ=None, pins=True):
 
 
 def matrices(rows, work, pairing="pins"):
-    """The six matrices of one pairing: pins or core-head."""
+    """The six matrices of one pairing: pins or core-head. Raises
+    PlanError when a test matrix would be empty."""
     def entry(repo):
         row = rows[repo]
         out = {"pairing": pairing, "repo": repo, "sha": row["sha"], "core_sha": row["core"],
@@ -222,8 +225,14 @@ def matrices(rows, work, pairing="pins"):
         "card_terminal": [entry("UOS")],
         "card_pipboy": [entry("Deitrix")],
     }
+    errors = []
     for key, repo in (("agent", "MFBootAgent"), ("uos", "UOS"), ("pipboy", "Deitrix")):
         out[key] = [dict(entry(repo), board=b) for b in tested(repo)]
+        if not out[key]:
+            errors.append(f"{repo} lists no board that {pairing} tests on: "
+                          f"it needs {' or '.join(CORE_HEAD_BOARDS)}")
+    if errors:
+        raise PlanError("\n".join(errors))
     return {k: {"include": v} for k, v in out.items()}
 
 
