@@ -13,7 +13,7 @@ This page maps the repository and shows where new code and tests go. To use the 
 | `mk/host.mk` | Host unit test build. The top-level `Makefile` includes it for the library's tests, and a project includes it for its own with `HOST_TEST_DIR`. See [host tests in a project](../../tests/README.md#host-tests-in-a-project). |
 | `examples/` | Small images that use the library. Each one is also a target test. |
 | `tests/` | Host tests, QEMU harness, target tests, tool tests, canary suite. `tests/harness` is also the pytest plugin and the interactive runner projects use. `tests/fixtures/sample-project` is a minimal project the tool tests build. See [tests/README.md](../../tests/README.md). |
-| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `sfx_table.py` renders sound effect models into 8-bit tables, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory, `mksdimage.sh` builds an SD card image from a directory, `check_pins.sh` checks a project's workflow pins against its submodule, `check_doc_links.sh` checks a project's doc links to a pinned RobCo repository against its submodule |
+| `tools/` | Host tools: `rimg.py` seals and checks images, `check_docs.py` checks the docs, `sfx_table.py` renders sound effect models into 8-bit tables, `audio_preview.py` turns the audio trace of a serial log into a WAV file, `font2c.py` and `font_specimen.py` build and preview fonts, `fetch_firmware.sh` downloads the Pi firmware, `mkbootdir.sh` assembles an SD card boot directory, `mksdimage.sh` builds an SD card image from a directory, `check_pins.sh` checks a project's workflow pins against its submodule, `check_doc_links.sh` checks a project's doc links to a pinned RobCo repository against its submodule |
 | `docs/` | This guide, the [specifications](../spec/README.md), [FONTS.md](../FONTS.md) and [HARDWARE_VALIDATION.md](../HARDWARE_VALIDATION.md) |
 | `spikes/` | Three early proofs: UART hello, SD sector read, framebuffer and MMU. They have their own code in `spikes/common/` and do not use the library. |
 | `ci/` | The CI container. See [ci/README.md](../../ci/README.md). |
@@ -121,6 +121,8 @@ Create `tests/host/test_<name>.c`. It is linked with every `src/lib/*.c` and bui
 |---|---|
 | `test_rimg_tool.py` | `tools/rimg.py` on images built in memory, one case per error code, `pack`, the META options and the layout against `rimg.h`. `tests/host/test_rimg_pack.c` reads the images `mk/host.mk` packs, so C and Python agree on META images. |
 | `test_sfx_table.py` | `tools/sfx_table.py` on small made-up models: its arithmetic, the synthesis, every refusal, `--check`, and the generated C built with the host compiler |
+| `test_audio_preview.py` | `tools/audio_preview.py` on hand-written serial logs, and its square against `src/lib/audio_square.c` built with the host compiler |
+| `test_audio_engines.py` | `tools/voice_engine.py` and `tools/tone_square.py`: their constants and sine table against the C headers and sources |
 | `test_check_docs.py` | `tools/check_docs.py` on small trees in a temp directory |
 | `test_font_tools.py` | `tools/font2c.py` and `tools/font_specimen.py` |
 | `test_scheme_ids.py` | The console scheme ids in `console.h` match `con_scheme` in BOOT_PROTOCOL.md |
@@ -177,3 +179,17 @@ def test_my_example(board, example_image):
 | `test` | `make venv && make test-tools test-docs test-spikes test-examples test-target` |
 
 Projects built on the library call `.github/workflows/robco-ci.yml`. It runs `make CI=1` and then the test targets you name once per board, with `BOARD=<board>`. [GETTING_STARTED.md](./GETTING_STARTED.md#run-it-in-ci) shows the call.
+
+## Audio preview
+
+QEMU has no PWM model, so a kernel's audio runs on the trace backend there. The trace prints one `ev=audio` marker per change. `tools/audio_preview.py` reads those markers from a serial log and writes what the audio pin would play as a WAV file. Use it to hear a kernel's sounds without a board.
+
+```sh
+tools/audio_preview.py serial.log out.wav --pcm DIR [--pcm DIR ...] [--scale nearest|cut] [--tone-peak N]
+```
+
+A `--pcm` folder holds the sample data the log names by CRC-32 and length. A `.u8` file holds the raw 8-bit samples of one buffer, as `sfx_table.py --dump` writes them. A `.voice` file holds the packed 28-byte spans of one voice. An unknown buffer or voice plays as silence, with one warning.
+
+The tool reads markers of every stage. Each image counts time from 0, so when the `stage=` name changes, the tool cuts what plays, resets the rest level, and starts the new stage right after the last marker of the one before. The log does not hold the time of the handoff, so it adds no gap and warns once per change. Inside one stage, a time that goes back is an error, so cut the log of a reboot in two. `--scale nearest`, the default, rounds the volume as `audio_pcm_scale()` does. `--scale cut` rounds toward 128, for a log of an older library. It skips an `ev=audio` marker without `op=`, such as a program's own status line. It renders a play whose `op=pcm` line ends with `loop=1` until the trace ends it: a stop or a new sound. At the log's end, a tone or a loop stops at the last marker, and the tail is silence. A plain play or a voice plays to its own end. It parses only `ev=audio` and `ev=audio_drop` lines. After `ev=audio_drop n=`, it skips an end, a queued buffer or an overlay whose start the trace lost, warns once with the count, and goes on from the next start. A skipped marker still moves the time. A marker that fits the play active now is applied as usual. The tool cannot see a lost start that changed the play, so it trusts such a marker. It copies the driver's integer steps for the volume, the overlay, the rest ramp, the centred square and the voice, from `tools/tone_square.py` and `tools/voice_engine.py`. `tests/tools/test_audio_engines.py` ties their constants to the C.
+
+It does not model a late sample IRQ, a volume change during a play, or a `ROBCO_AUDIO_TONE_RATE` other than 37500. The trace does not print the tone peak, so `--tone-peak` gives it, 127 by default. The coupling capacitor is a 20 Hz high-pass, not a measured circuit. `tools/audio_preview.py --help` lists every rule and limit.

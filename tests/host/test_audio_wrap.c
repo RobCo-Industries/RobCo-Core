@@ -60,7 +60,7 @@ TEST(a_looped_play_past_the_wrap)
     CHECK_EQ(audio_pcm_mix(over, sizeof(over)), 0);
     audio_trace_flush();
     snprintf(want, sizeof(want),
-             "@RC stage=host ev=audio op=pcm rate=4000 len=4000 vol=100 crc=%08x t_ms=1010\n"
+             "@RC stage=host ev=audio op=pcm rate=4000 len=4000 vol=100 crc=%08x t_ms=1010 loop=1\n"
              "@RC stage=host ev=audio op=pcm_mix len=100 crc=%08x t_ms=%u\n",
              (unsigned)crc32(loop, sizeof(loop)), (unsigned)crc32(over, sizeof(over)),
              (unsigned)(1010 + join / 1000));
