@@ -90,6 +90,11 @@ void audio_pwm_out(uint32_t hz, unsigned vol)
     pwm_note(b);
 }
 void audio_pwm_pcm_mode(void) { pwm_note("pcm_mode;"); }
+void audio_pwm_pcm_mode_at(uint32_t dat)
+{
+    (void)dat;
+    pwm_note("pcm_mode_at;");
+}
 void audio_pwm_sample(uint32_t dat)
 {
     (void)dat;
