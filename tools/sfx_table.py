@@ -1122,27 +1122,35 @@ def wav_bytes(data, rate):
     return buf.getvalue()
 
 
-def _side(path, kind):
-    """A new side file next to path, such as .name.<pid>.tmp. Returns
-    (name, fd)."""
+def _side(path, kind, made):
+    """A new side file next to path, such as .name.<pid>.tmp. Its name goes
+    into made as soon as the file exists, before a byte is written. Returns
+    an open file."""
     folder, base = os.path.split(path)
     side = os.path.join(folder, f".{base}.{os.getpid()}.{kind}")
     fd = os.open(side, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-    return side, fd
+    made.append(side)
+    try:
+        return side, os.fdopen(fd, "wb")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
-def _backup(path):
+def _backup(path, made):
     """Keep the old content of path under .name.<pid>.bak: a hard link if
-    the file system allows it, else a copy."""
+    the file system allows it, else a copy. The name goes into made as soon
+    as the file exists."""
     folder, base = os.path.split(path)
     bak = os.path.join(folder, f".{base}.{os.getpid()}.bak")
     try:
         os.link(path, bak, follow_symlinks=False)
+        made.append(bak)
         return bak
     except OSError:
         pass
-    bak, fd = _side(path, "bak")
-    with os.fdopen(fd, "wb") as f, open(path, "rb") as old:
+    bak, f = _side(path, "bak", made)
+    with f, open(path, "rb") as old:
         f.write(old.read())
     return bak
 
@@ -1154,40 +1162,54 @@ def _quiet(f, *a):
         pass
 
 
-def publish(items, made_dirs=()):
-    """Publish every (path, bytes) of a run as one. Each goes to a temporary
-    file in its folder first. Then each existing path gets a backup, and
-    the temporary files are renamed in order, so the caller puts the
-    header last. On a failure, every path this call renamed gets its backup
-    back, or is removed if it had none, every temporary and backup file is
-    removed, each folder of made_dirs that is empty again is removed, and
-    the OSError is raised. On success the backups are removed. A path is
+def publish(items, new_dirs=()):
+    """Publish every (path, bytes) of a run as one. First each folder of
+    new_dirs is made, parents first; one that exists by then is used and
+    not made. Each item goes to a temporary file in its folder. Then each
+    existing path gets a backup, and the temporary files are renamed in
+    order, so the caller puts the header last.
+
+    Every side file and folder is recorded the moment it exists, before
+    anything goes into it. On any failure, every path this call renamed
+    gets its backup back, or is removed if it had none, every recorded side
+    file is removed, every folder this call made is removed if empty, and
+    the error is raised. On success the backups are removed. A path is
     never left half written."""
-    temps, backups, done = [], {}, []
+    dirs, sides, backups, done = [], [], {}, []
     try:
+        for d in new_dirs:
+            try:
+                os.mkdir(d)
+            except FileExistsError:
+                if not os.path.isdir(d):
+                    raise
+                continue
+            dirs.append(d)
+        temps = []
         for path, data in items:
-            tmp, fd = _side(path, "tmp")
+            tmp, f = _side(path, "tmp", sides)
             temps.append((tmp, path))
-            with os.fdopen(fd, "wb") as f:
+            with f:
                 f.write(data)
         for _, path in temps:
             if os.path.lexists(path):
-                backups[path] = _backup(path)
+                backups[path] = _backup(path, sides)
         for tmp, path in temps:
             os.replace(tmp, path)
             done.append(path)
-    except OSError:
+            sides.remove(tmp)
+    except BaseException:
         for path in reversed(done):
             if path in backups:
-                _quiet(os.replace, backups.pop(path), path)
+                # A backup that cannot go back stays: it holds the old content.
+                bak = backups[path]
+                sides.remove(bak)
+                _quiet(os.replace, bak, path)
             else:
                 _quiet(os.unlink, path)
-        for tmp, path in temps:
-            if path not in done:
-                _quiet(os.unlink, tmp)
-        for bak in backups.values():
-            _quiet(os.unlink, bak)
-        for d in reversed(made_dirs):
+        for side in sides:
+            _quiet(os.unlink, side)
+        for d in reversed(dirs):
             _quiet(os.rmdir, d)
         raise
     for bak in backups.values():
@@ -1288,7 +1310,7 @@ def plan_faults(reads, writes, new_dirs):
         folder = os.path.dirname(path) or "."
         if os.path.isdir(path):
             faults.append(f"{label} {path!r} is a directory")
-        elif not os.path.isdir(folder) and folder not in new_dirs:
+        elif not os.path.isdir(folder) and not any(_same_file(folder, d) for d in new_dirs):
             faults.append(f"{label} {path!r}: the folder {folder!r} does not exist")
     entries = list(reads) + list(writes)
     for i, (la, pa) in enumerate(entries):
@@ -1298,16 +1320,31 @@ def plan_faults(reads, writes, new_dirs):
     return faults
 
 
-def dir_faults(label, path):
+def dir_faults(label, path, new_dirs=()):
     """--dump or --wav DIR: an existing folder, or a new one in an existing
-    folder."""
+    folder or in a folder of new_dirs, a list of (label, path)."""
     if os.path.isdir(path):
         return []
     if os.path.lexists(path):
         return [f"{label} {path!r} is not a directory"]
     parent = os.path.dirname(os.path.normpath(path)) or "."
-    if not os.path.isdir(parent):
+    if not os.path.isdir(parent) and not any(_same_file(parent, d) for _, d in new_dirs):
         return [f"{label} {path!r}: the folder {parent!r} does not exist"]
+    return []
+
+
+def new_dir_faults(label, path, new_dirs):
+    """Add the new folder path to new_dirs, a list of (label, path), unless
+    an entry is the same folder by the plan's rule. Two spellings that
+    differ only by case are refused: on a file system that tells case apart
+    they are two folders, and the run must pass the same way on all."""
+    for lb, d in new_dirs:
+        if _same_file(path, d):
+            if os.path.realpath(path) != os.path.realpath(d):
+                return [f"{lb} {d!r} and {label} {path!r} differ only by case:"
+                        " write the folder the same way twice"]
+            return []
+    new_dirs.append((label, path))
     return []
 
 
@@ -1458,11 +1495,12 @@ def _main(p, args):
     # name matches NAME, so a file name is [a-z][a-z0-9_]* with .u8 or
     # .wav: no path separator, no dot file, ASCII. A test checks it.
     faults = []
-    for label, d in (("--dump", args.dump), ("--wav", args.wav)):
-        if d:
-            faults += dir_faults(label, d)
-            if not os.path.isdir(d) and d not in new_dirs:
-                new_dirs.append(d)
+    dirs = [(label, d) for label, d in (("--dump", args.dump), ("--wav", args.wav)) if d]
+    for label, d in dirs:
+        if not os.path.lexists(d):
+            faults += new_dir_faults(label, d, new_dirs)
+    for label, d in dirs:
+        faults += dir_faults(label, d, new_dirs)
     if args.dump:
         items += [("--dump", os.path.join(args.dump, t + ".u8"), bytes(part))
                   for name, data in built.items()
@@ -1476,8 +1514,7 @@ def _main(p, args):
         # The header last: it carries the hash that --check reads.
         items.append(("--h", args.h, h_text.encode("ascii")))
     writes = [(label, path) for label, path, _ in items]
-    faults += plan_faults([("MODEL", args.model)], writes,
-                          [os.path.dirname(os.path.join(d, "x")) for d in new_dirs])
+    faults += plan_faults([("MODEL", args.model)], writes, [d for _, d in new_dirs])
     if faults:
         p.print_usage(sys.stderr)
         for f in faults:
@@ -1487,15 +1524,12 @@ def _main(p, args):
         print(f"sfx_table.py: warning: --h {os.path.basename(args.h)!r} does not start"
               f" with --prefix {args.prefix!r}. A name of the project's own is safe from"
               " every library's headers.", file=sys.stderr)
-    made = []
+    # Made by the resolved path, which "out/../out" needs, parents first:
+    # a --dump folder may lie in a new --wav folder.
+    made = sorted((os.path.realpath(d) for _, d in new_dirs), key=len)
     try:
-        for d in new_dirs:
-            os.mkdir(d)
-            made.append(d)
         publish([(path, data) for _, path, data in items], made)
     except OSError as e:
-        for d in reversed(made):
-            _quiet(os.rmdir, d)
         print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
         return EX_STALE
     return 0
