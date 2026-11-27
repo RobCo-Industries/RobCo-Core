@@ -13,8 +13,9 @@ case. Every folder inside a package, the package folder included, gives
 its own licence files, or its PROVENANCE file when it has none.
 Each text comes under a line that names its repository and path.
 
-A missing LICENSE, a missing third_party folder or a package folder
-that gives no text fails, with an `::error::` line and exit code 1.
+A missing LICENSE, a missing third_party folder, a package folder that
+gives no text or a folder that cannot be read fails, with an
+`::error::` line and exit code 1.
 The output goes through a temporary file, so a failed write leaves no
 half-written file. The same inputs give the same bytes. Standard library only.
 """
@@ -74,13 +75,17 @@ def read_text(path):
     return text.replace("\r\n", "\n").rstrip() + "\n"
 
 
+def walk_error(e):
+    raise NoticesError(f"cannot read {e.filename}: {e.strerror}")
+
+
 def package_files(root):
     """Paths, relative to root, that a package folder contributes.
 
     Each folder gives its own licence files, or its PROVENANCE file when
     it has none."""
     found = []
-    for folder, dirs, files in os.walk(root):
+    for folder, dirs, files in os.walk(root, onerror=walk_error):
         dirs.sort()
         own = [n for n in files if n.lower().startswith(PREFIXES)]
         if not own and "PROVENANCE" in files:
@@ -96,7 +101,10 @@ def collect(work):
     third = os.path.join(work, CORE, "third_party")
     if not os.path.isdir(third):
         raise NoticesError(f"no folder {third}")
-    names = sorted(os.listdir(third))
+    try:
+        names = sorted(os.listdir(third))
+    except OSError as e:
+        raise NoticesError(f"cannot read {third}: {e.strerror}") from None
     paths = [n for n in names
              if os.path.isfile(os.path.join(third, n)) and n.lower().startswith(PREFIXES)]
     for name in names:

@@ -22,4 +22,4 @@ Joins the `LICENSE` of the six repositories and each licence file under `RobCo-C
 python3 -I tools/release/notices.py --work w --out NOTICES.txt
 ```
 
-Licence files directly in `third_party/` come first, then the folders. Other loose files there are ignored. Each folder inside a package under `third_party/`, the package folder included, gives its own licence files, or its `PROVENANCE` file when it has none, as the font in `third_party/fixedsys-excelsior/` does. A package that gives no text fails.
+Licence files directly in `third_party/` come first, then the folders. Other loose files there are ignored. Each folder inside a package under `third_party/`, the package folder included, gives its own licence files, or its `PROVENANCE` file when it has none, as the font in `third_party/fixedsys-excelsior/` does. A package that gives no text fails, and so does a folder the tool cannot read.

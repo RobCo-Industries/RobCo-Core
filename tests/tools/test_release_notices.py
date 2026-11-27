@@ -133,3 +133,21 @@ def test_failed_write_leaves_old_notices(work, tmp_path, monkeypatch, capsys):
     assert "::error::" in capsys.readouterr().out
     assert out.read_bytes() == b"old notices\n"
     assert os.listdir(folder) == ["NOTICES.txt"]
+
+
+def test_unreadable_folder_fails(work, tmp_path, monkeypatch, capsys):
+    mod = load_tool()
+    real = os.scandir
+    bad = str(work / "RobCo-Core" / "third_party" / "afs")
+
+    def scandir(path="."):
+        if os.fspath(path) == bad:
+            raise PermissionError(errno.EACCES, "Permission denied", bad)
+        return real(path)
+
+    monkeypatch.setattr(mod.os, "scandir", scandir)
+    out = tmp_path / "NOTICES.txt"
+    assert mod.run(["--work", str(work), "--out", str(out)]) == 1
+    text = capsys.readouterr().out
+    assert text.startswith("::error::notices: cannot read ") and bad in text
+    assert not out.exists()
