@@ -190,6 +190,6 @@ tools/audio_preview.py serial.log out.wav --pcm DIR [--pcm DIR ...] [--scale aut
 
 A `--pcm` folder holds the sample data the log names by CRC-32 and length. A `.u8` file holds the raw 8-bit samples of one buffer, as `sfx_table.py --dump` writes them. A `.voice` file holds the packed 28-byte spans of one voice. An unknown buffer or voice plays as silence, with one warning.
 
-The tool reads markers of every stage. It copies the driver's integer steps for the volume, the overlay, the rest ramp, the centred square and the voice, from `tools/tone_square.py` and `tools/voice_engine.py`. `tests/tools/test_audio_engines.py` ties their constants to the C.
+The tool reads markers of every stage. It skips an `ev=audio` marker without `op=`, such as a program's own status line. It renders a play whose `op=pcm` line ends with `loop=1` until the trace ends it: a stop or a new sound. A loop the log leaves playing stops at the last marker. It copies the driver's integer steps for the volume, the overlay, the rest ramp, the centred square and the voice, from `tools/tone_square.py` and `tools/voice_engine.py`. `tests/tools/test_audio_engines.py` ties their constants to the C.
 
 It does not model a late sample IRQ, a volume change during a play, or a `ROBCO_AUDIO_TONE_RATE` other than 37500. The trace does not print the tone peak, so `--tone-peak` gives it, 127 by default. The coupling capacitor is a 20 Hz high-pass, not a measured circuit. `tools/audio_preview.py --help` lists every rule and limit.

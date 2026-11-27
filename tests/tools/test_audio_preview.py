@@ -30,9 +30,9 @@ def crc(data):
     return "%08x" % zlib.crc32(data)
 
 
-def pcm(t, data, vol=100, rate=RATE):
-    return ("@RC stage=test ev=audio op=pcm rate=%d len=%d vol=%d crc=%s t_ms=%d"
-            % (rate, len(data), vol, crc(data), t))
+def pcm(t, data, vol=100, rate=RATE, loop=False):
+    return ("@RC stage=test ev=audio op=pcm rate=%d len=%d vol=%d crc=%s t_ms=%d%s"
+            % (rate, len(data), vol, crc(data), t, " loop=1" if loop else ""))
 
 
 def mix(t, data):
@@ -438,6 +438,75 @@ class Cut(Case):
         duty, _ = self.render([pcm(0, d)])
         self.assertEqual(duty[frame(19)], 200 / 256)
         self.assertEqual(len(duty), frame(20 + bs.TAIL_MS))
+
+
+class Loop(Case):
+    def test_a_loop_repeats_until_its_stop(self):
+        d = self.sound("a", bytes(range(28, 228)))     # 200 bytes, 25 ms at 8 kHz
+        duty, w = self.render([pcm(0, d, rate=8000, loop=True), stop(1000)])
+        self.assertEqual(w, [])
+        n = frame(1000)
+        self.assertEqual(n, 37500)
+        for f in range(n):
+            self.assertEqual(duty[f], d[(f * 8000 // FR) % 200] / 256)
+        self.assertEqual(duty[n], 0.0)
+        self.assertEqual(len(duty), frame(1000 + bs.TAIL_MS))
+
+    def test_a_new_play_cuts_the_loop(self):
+        a = self.sound("a", bytes([150]) * 200)
+        b = self.sound("b", bytes([170]) * 220)
+        duty, _ = self.render([pcm(0, a, rate=8000, loop=True), stop(300), pcm(300, b), end(310)])
+        self.assertEqual(duty[frame(300) - 1], 150 / 256)
+        self.assertEqual(duty[frame(300)], 170 / 256)
+        self.assertEqual(duty[frame(311)], 0.0)
+
+    def test_a_loop_left_playing_stops_at_the_last_marker(self):
+        a = self.sound("a", bytes([150]) * 200)
+        duty, _ = self.render([pcm(0, a, rate=8000, loop=True), "@RC stage=test ev=audio_drop n=0",
+                               mix(400, self.sound("o", bytes([140]) * 8))])
+        self.assertEqual(duty[frame(400) - 1], 150 / 256)
+        self.assertEqual(duty[frame(400)], 0.0)
+        self.assertEqual(len(duty), frame(400 + bs.TAIL_MS))
+
+    def test_an_overlay_over_a_loop_sounds_across_the_wrap(self):
+        a = self.sound("a", bytes([150]) * 200)
+        o = self.sound("o", bytes([140]) * 400)         # 50 ms: two passes of the loop
+        duty, _ = self.render([pcm(0, a, rate=8000, loop=True), mix(100, o), stop(300)])
+        self.assertEqual(duty[frame(100) - 1], 150 / 256)
+        self.assertEqual(duty[frame(100)], 162 / 256)
+        self.assertEqual(duty[frame(149)], 162 / 256)
+        self.assertEqual(duty[frame(151)], 150 / 256)
+
+    def test_the_volume_applies_to_a_loop(self):
+        a = self.sound("a", bytes([228]) * 200)
+        duty, _ = self.render([pcm(0, a, vol=50, rate=8000, loop=True), stop(100)])
+        self.assertEqual(duty[frame(60)], 178 / 256)
+
+    def test_a_queue_or_an_end_on_a_loop_is_a_bad_log(self):
+        a = self.sound("a", bytes([150]) * 200)
+        self.assertFails([pcm(0, a, rate=8000, loop=True), nxt(5, a)], "op=pcm_next on a loop")
+        self.assertFails([pcm(0, a, rate=8000, loop=True), end(5)], "op=pcm_end on a loop")
+
+    def test_loop_on_another_op_is_a_bad_log(self):
+        self.assertFails([stop(5) + " loop=1"], "only op=pcm takes loop=1")
+        a = self.sound("a", bytes([150]) * 200)
+        self.assertFails([pcm(0, a).replace("t_ms=0", "t_ms=0 loop=2")], "loop=2")
+
+    def test_the_ramp_bytes_with_loop_are_no_ramp(self):
+        self.assertFalse(bs.is_ramp("pcm", {"rate": bs.RAMP_RATE, "vol": 100, "len": bs.RAMP_LEN,
+                                            "crc": bs.RAMP_CRC, "loop": 1}))
+
+
+class StatusMarker(Case):
+    def test_an_audio_marker_without_op_is_skipped(self):
+        d = self.sound("a", bytes([200]) * 441)
+        lines = [pcm(100, d), end(120)]
+        plain, w0 = self.render(lines)
+        mixed, w1 = self.render(["@RC stage=hello ev=audio tick=5 rc=0"] + lines
+                                + ["@RC stage=hello ev=audio tick=900 rc=0"])
+        self.assertEqual((plain, w0), (mixed, w1))
+        rc, err, _ = self.main(["@RC stage=hello ev=audio tick=5 rc=0"] + lines)
+        self.assertEqual((rc, err), (0, ""))
 
 
 class BadLogs(Case):

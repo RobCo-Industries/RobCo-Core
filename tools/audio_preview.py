@@ -13,6 +13,8 @@ Lines it reads, each an "@RC ... ev=audio op=..." marker of any stage:
 
   printed by every version of the library's trace:
     op=pcm rate= len= vol= crc= t_ms=    a sample play starts
+    op=pcm ... loop=1                    a looped play starts, from
+                                         newer versions only
     op=pcm_next len= crc= t_ms=          a queued buffer takes over
     op=pcm_end n= last= t_ms=            the play ends by itself
     op=tone hz= vol= t_ms=               a tone starts
@@ -29,6 +31,8 @@ Lines it reads, each an "@RC ... ev=audio op=..." marker of any stage:
     line, by a stop or a new sound, drops to duty 0 at once and leaves
     the rest level at duty 0, even when its last sample had sounded.
   ev=audio_drop n=                       records lost: a warning
+  An ev=audio marker without op= is a program's own status line, not
+  trace: the tool skips it. An unknown op= is a bad log.
 
 Rules it applies, from the library's driver:
 
@@ -42,6 +46,13 @@ Rules it applies, from the library's driver:
   plays and prints no line, so such a line is a bad log. An overlay goes
   on across op=pcm_next and ends at its own end, or when its play ends
   or is cut.
+- Loop: a play whose op=pcm line ends with loop=1 repeats its buffer
+  until the trace ends it: op=stop, or a new op=pcm, op=voice or
+  op=tone, which the driver prints after its op=stop. An overlay over a
+  loop sounds on the play's grid across the wraps. The library refuses
+  a queue on a loop and a loop never ends by itself, so op=pcm_next or
+  op=pcm_end on a loop is a bad log. A loop the log leaves playing stops
+  at the t_ms of the log's last marker.
 - Voice spans come from the .voice files of the --pcm folders, each
   the packed spans of one voice, found by the CRC-32 of their bytes and
   their length, 28 bytes a span. A file must pass the library's span
@@ -194,7 +205,7 @@ RAMP_CRC = zlib.crc32(RAMP)
 
 def is_ramp(op, f):
     """The library's rest ramp: its rate, volume, length and bytes."""
-    return (op == "pcm" and f["rate"] == RAMP_RATE and f["vol"] == 100
+    return (op == "pcm" and not f.get("loop") and f["rate"] == RAMP_RATE and f["vol"] == 100
             and f["len"] == RAMP_LEN and f["crc"] == RAMP_CRC)
 
 
@@ -233,6 +244,9 @@ def parse_marker(text, where):
     if ev != "audio":
         return None
     op = kv.get("op")
+    if op is None:
+        # A program's own status marker, such as ev=audio tick= rc=.
+        return None
     if op not in FIELDS:
         raise LogError("%s: unknown audio op %r" % (where, op))
     out = {}
@@ -265,6 +279,11 @@ def parse_marker(text, where):
         raise LogError("%s: hz=%d is outside %d to %d" % (where, out["hz"], HZ_MIN, HZ_MAX))
     if op == "stop" and out["hz"] != 0:
         raise LogError("%s: op=stop with hz=%d, not 0" % (where, out["hz"]))
+    if "loop" in kv:
+        if op != "pcm" or kv["loop"] != "1":
+            raise LogError("%s: loop=%s on op=%s: only op=pcm takes loop=1"
+                           % (where, kv["loop"], op))
+        out["loop"] = 1
     if out["t_ms"] > MAX_SECONDS * 1000:
         raise LogError("%s: t_ms=%d is past the %d s limit" % (where, out["t_ms"], MAX_SECONDS))
     return (op, out)
@@ -357,8 +376,9 @@ def frame_of(ms):
 class Play:
     """A sample play: the chained buffers as one stream, and its overlay."""
 
-    def __init__(self, t0, rate, vol, data, ramp):
+    def __init__(self, t0, rate, vol, data, ramp, loop=False):
         self.t0 = t0
+        self.loop = loop
         self.rate = rate
         self.vol = 100 if ramp else vol
         self.data = bytearray(data)
@@ -515,9 +535,12 @@ class Renderer:
                 out.append(self.rest)
                 continue
             if i >= n:
-                out.append(after)
-                continue
-            s = p.data[i]
+                if not p.loop:
+                    out.append(after)
+                    continue
+                s = p.data[i % n]
+            else:
+                s = p.data[i]
             j = i - mix0
             while j >= len(mix) and m + 1 < len(mixes):
                 m += 1
@@ -580,7 +603,7 @@ class Renderer:
                     # earlier ramp that reached its end.
                     self.rest = 0.0
                 data = self.lookup(f["crc"], f["len"])
-                self.cur = Play(t, f["rate"], f["vol"], data, ramp)
+                self.cur = Play(t, f["rate"], f["vol"], data, ramp, bool(f.get("loop")))
             elif op == "voice":
                 self.close(t)
                 spans = self.lookup_voice(f["crc"], f["spans"], f["len"], where)
@@ -590,6 +613,9 @@ class Renderer:
                     raise LogError("%s: op=pcm_next with no sample play" % where)
                 if cur.ramp:
                     raise LogError("%s: op=pcm_next on the rest ramp" % where)
+                if cur.loop:
+                    raise LogError("%s: op=pcm_next on a loop: the library refuses a "
+                                   "queue while a loop plays" % where)
                 if isinstance(cur, VoicePlay):
                     raise LogError("%s: op=pcm_next on a voice: the library refuses a "
                                    "queue while a voice plays" % where)
@@ -615,6 +641,9 @@ class Renderer:
             elif op == "pcm_end":
                 if not isinstance(cur, Play) or cur.ended:
                     raise LogError("%s: op=pcm_end with no sample play or voice" % where)
+                if cur.loop:
+                    raise LogError("%s: op=pcm_end on a loop: a loop never ends by itself"
+                                   % where)
                 cur.ended = True
             elif op == "tone":
                 self.close(t)
@@ -624,7 +653,10 @@ class Renderer:
                 self.close(t)
         cur = self.cur
         stop = last
-        if isinstance(cur, Play):
+        if isinstance(cur, Play) and cur.loop:
+            # The log ends while the loop plays: it stops at the last marker.
+            self.close(last)
+        elif isinstance(cur, Play):
             stop = max(stop, cur.end_ms())
         self.close(stop + TAIL_MS)
 
