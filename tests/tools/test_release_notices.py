@@ -71,6 +71,34 @@ def test_nested_provenance_beside_licence(work, tmp_path):
     assert "Bundle terms." in text and "Addon terms." in text
 
 
+def test_package_folder_must_state_its_own_terms(work, tmp_path):
+    """A licence deeper down speaks for its own folder, not for the package."""
+    third = work / "RobCo-Core" / "third_party"
+    (third / "deep" / "inner").mkdir(parents=True)
+    (third / "deep" / "code.c").write_text("code\n")
+    (third / "deep" / "inner" / "LICENSE").write_text("Inner terms.\n")
+    out = tmp_path / "NOTICES.txt"
+    r = tool("--work", str(work), "--out", str(out))
+    assert r.returncode == 1
+    assert "third_party/deep" in r.stdout
+    assert not out.exists()
+
+
+def test_package_terms_come_before_nested_terms(work, tmp_path):
+    """A/COPYING sorts before LICENSE as a path, and still comes after it."""
+    third = work / "RobCo-Core" / "third_party"
+    (third / "bundle" / "A").mkdir(parents=True)
+    (third / "bundle" / "LICENSE").write_text("Bundle terms.\n")
+    (third / "bundle" / "A" / "COPYING").write_text("Inner terms.\n")
+    out = tmp_path / "NOTICES.txt"
+    r = tool("--work", str(work), "--out", str(out))
+    assert r.returncode == 0, r.stdout
+    heads = [l for l in out.read_text().splitlines()
+             if l.startswith("==== RobCo-Core: third_party/bundle")]
+    assert heads == ["==== RobCo-Core: third_party/bundle/LICENSE ====",
+                     "==== RobCo-Core: third_party/bundle/A/COPYING ===="]
+
+
 def test_same_bytes_each_run(work, tmp_path):
     a, b = tmp_path / "a.txt", tmp_path / "b.txt"
     assert tool("--work", str(work), "--out", str(a)).returncode == 0

@@ -13,8 +13,8 @@ case. Every folder inside a package, the package folder included, gives
 its own licence files, or its PROVENANCE file when it has none.
 Each text comes under a line that names its repository and path.
 
-A missing LICENSE, a missing third_party folder, a package folder that
-gives no text, a folder that cannot be read or a file that is not UTF-8
+A missing LICENSE, a missing third_party folder, a package folder with
+no licence file and no PROVENANCE of its own, a folder that cannot be read or a file that is not UTF-8
 fails, with an `::error::` line and exit code 1.
 The output goes through a temporary file, so a failed write leaves no
 half-written file. The same inputs give the same bytes. Standard library only.
@@ -85,13 +85,20 @@ def package_files(root):
     Each folder gives its own licence files, or its PROVENANCE file when
     it has none."""
     found = []
+    # The walk goes folder by folder, the package folder first, and each
+    # folder's names are sorted, so a package's own terms come before the
+    # terms of a folder inside it.
     for folder, dirs, files in os.walk(root, onerror=walk_error):
         dirs.sort()
-        own = [n for n in files if n.lower().startswith(PREFIXES)]
+        own = sorted(n for n in files if n.lower().startswith(PREFIXES))
         if not own and "PROVENANCE" in files:
             own = ["PROVENANCE"]
+        if folder == root and not own:
+            # The package folder itself must state its terms. A licence
+            # deeper down speaks for that folder only.
+            return []
         found += [os.path.relpath(os.path.join(folder, n), root) for n in own]
-    return sorted(p.replace(os.sep, "/") for p in found)
+    return [p.replace(os.sep, "/") for p in found]
 
 
 def collect(work):
@@ -113,7 +120,7 @@ def collect(work):
             continue
         found = package_files(folder)
         if not found:
-            raise NoticesError(f"third_party/{name} has no licence file and no PROVENANCE")
+            raise NoticesError(f"third_party/{name} has no licence file and no PROVENANCE of its own")
         paths += [f"{name}/{rel}" for rel in found]
     if not paths:
         raise NoticesError(f"no licence file under {third}")
