@@ -33,7 +33,8 @@ UNRELEASED = re.compile(r"^## (Unreleased|\[Unreleased\])\s*$")
 # X.Y.Z as semantic versioning writes it: no leading zero in a number.
 VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-LIST_ITEM = re.compile(r"^ *[-*] ")
+# A list item: -, * or +, or a number with a dot or a bracket.
+LIST_ITEM = re.compile(r"^ *([-*+]|\d+[.)]) ")
 
 
 class ChangelogError(Exception):
@@ -83,19 +84,23 @@ def read_lines(path):
     return text.split("\n")
 
 
-FENCE = re.compile(r"^\s*(```|~~~)")
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
 def fenced(lines):
-    """For each line, True when it is a code fence or inside one. A line
-    such as `## Example` in a fenced block is text, not a heading."""
+    """For each line, True when it is a code fence or inside one. A fence
+    opens with three or more backticks or tildes and closes with a line of
+    the same mark, at least as long, and nothing else. So a four-backtick
+    block may show a three-backtick one. A line such as `## Example` in a
+    fenced block is text, not a heading."""
     out, mark = [], None
     for line in lines:
         m = FENCE.match(line)
-        if m and mark is None:
+        if mark is None and m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
             mark = m.group(1)
             out.append(True)
-        elif m and m.group(1) == mark:
+        elif mark is not None and m and m.group(1)[0] == mark[0] \
+                and len(m.group(1)) >= len(mark) and not m.group(2).strip():
             mark = None
             out.append(True)
         else:

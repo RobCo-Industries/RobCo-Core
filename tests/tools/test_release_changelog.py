@@ -306,6 +306,27 @@ def test_headings_in_a_code_fence_are_text(tmp_path):
     assert "- Second part." in section and "- not an entry" in section
 
 
+def test_a_longer_fence_may_show_a_shorter_one(tmp_path):
+    """Four backticks stay open across a three-backtick example inside."""
+    log = ("# Changelog\n\n## [Unreleased]\n\n- An example:\n\n````markdown\n```\ncode\n```\n\n"
+           "## Not a section\n````\n\n- Last entry.\n\n## [0.1.0] - 2026-01-01\n\n- Old.\n")
+    path = write(tmp_path, log)
+    assert tool("cut", str(path), "--version", "0.2.0", "--date", "2026-02-03").returncode == 0
+    section = tool("section", str(path), "--version", "0.2.0").stdout
+    assert "## Not a section" in section and "- Last entry." in section
+    assert "- Old." not in section
+
+
+@pytest.mark.parametrize("first, second", [("1. One.", "2. Two."), ("+ One.", "+ Two."),
+                                           ("1) One.", "2) Two.")])
+def test_numbered_and_plus_lists_join_as_one_list(tmp_path, first, second):
+    log = (f"# Changelog\n\n## [Unreleased]\n\n### Added\n\n{first}\n\n### Fixed\n\n- F.\n\n"
+           f"### Added\n\n{second}\n\n## [0.1.0] - 2026-01-01\n\n- Old.\n")
+    path = write(tmp_path, log)
+    assert tool("cut", str(path), "--version", "0.2.0", "--date", "2026-02-03").returncode == 0
+    assert f"### Added\n\n{first}\n{second}\n\n### Fixed" in path.read_text()
+
+
 def load_tool():
     spec = importlib.util.spec_from_file_location("cut_changelog", TOOL)
     mod = importlib.util.module_from_spec(spec)
