@@ -1189,3 +1189,121 @@ class EndOfLog(Case):
                                staged(pcm(0, b), "next"), staged(end(20), "next")])
         self.assertEqual(duty[frame(150)], 0.0)
         self.assertEqual(duty[frame(210)], 60 / 256)
+
+
+def gain(t, g):
+    return "@RC stage=test ev=audio op=gain gain=%d t_ms=%d" % (g, t)
+
+
+def with_gain(line, g):
+    return line + " gain=%d" % g
+
+
+class Gain(Case):
+    """Logs with a gain, each checked against samples worked out by hand:
+    a sample is 128 + (s - 128) * gain / 10000, a half step away from
+    128, and a change moves the gain by (500000 + rate - 1) / rate per
+    sample, from the first sample at or after its time."""
+
+    def test_start_line_gain(self):
+        d = self.sound("a", bytes([255, 50, 200]) * 100)
+        line = with_gain(pcm(0, d, vol=12, rate=FR), 1234)
+        duty, w = self.render([line], scale="nearest")
+        self.assertEqual(w, [])
+        # 255: 127 * 1234 = 156718, + 5000 = 161718, / 10000 = 16, so 144.
+        #      vol=12 alone would give (127 * 12 + 50) / 100 = 15.
+        # 50:  -78 * 1234 = -96252, -(5000 + 96252) / 10000 = -10, so 118.
+        # 200: 72 * 1234 = 88848, + 5000 = 93848, / 10000 = 9, so 137.
+        self.assertEqual(as_bytes(duty[0:3]), [144, 118, 137])
+
+    def test_gain_of_vol_times_100_is_the_volume(self):
+        d = self.sound("a", bytes(range(256)))
+        for vol in (0, 1, 37, 50, 99, 100):
+            plain, _ = self.render([pcm(0, d, vol=vol, rate=FR)], scale="nearest")
+            g, _ = self.render([with_gain(pcm(0, d, vol=vol, rate=FR), vol * 100)],
+                               scale="nearest")
+            self.assertEqual(list(plain), list(g), vol)
+
+    def test_change_in_a_sample_play(self):
+        # 37500 Hz, one sample per frame. step = (500000 + 37499) / 37500 = 14.
+        d = self.sound("a", bytes([255]) * 1500)
+        duty, w = self.render([pcm(0, d, rate=FR), gain(4, 0)], scale="nearest")
+        self.assertEqual(w, [])
+        x = as_bytes(duty[0:1500])
+        # The change names sample 4 * 37500 / 1000 = 150.
+        self.assertEqual(x[149], 255)           # gain 10000
+        # Sample 150: 10000 - 14 = 9986, 127 * 9986 = 1268222, + 5000, / 10000 = 127.
+        self.assertEqual(x[150], 255)
+        # Sample 249: 10000 - 14 * 100 = 8600, 127 * 8600 + 5000 = 1097200, so 109.
+        self.assertEqual(x[249], 128 + 109)
+        # Sample 860: 10000 - 14 * 711 = 46, 127 * 46 + 5000 = 10842, so 1.
+        self.assertEqual(x[860], 129)
+        # Sample 864: 10000 - 14 * 715 = -10, held at the target 0.
+        self.assertEqual(x[864], 128)
+        self.assertEqual(set(x[864:]), {128})
+        # Never more than one step of gain per sample: the output moves by
+        # at most 1 here, 127 * 14 / 10000 rounded up.
+        self.assertTrue(all(abs(a - b) <= 1 for a, b in zip(x, x[1:])))
+
+    def test_change_in_a_tone(self):
+        # The tone grid is 37500 Hz, step 14. 1000 Hz: half = (37500 * 128
+        # + 500) / 1000 = 4800 units, 18.75 samples.
+        duty, w = self.render(RAMPED + [tone(50, 1000), gain(52, 5000), stop(70)])
+        self.assertEqual(w, [])
+        x = as_bytes(duty[frame(50):frame(70)])
+        # The change names grid sample frame(52) - frame(50) = 1950 - 1875 = 75.
+        # Sample 74 ends on an edge, 74 * 256 = 18944 to 19200: low, amp 127.
+        self.assertEqual(x[74], 128 - 127)
+        # Sample 75 starts the 5th period, high. Gain 9986:
+        # (127 * 9986 + 5000) / 10000 = 127.
+        self.assertEqual(x[75], 128 + 127)
+        # Sample 175: units 44800 to 45056, after 9 edges, low. Gain
+        # 10000 - 14 * 101 = 8586: (127 * 8586 + 5000) / 10000 = 109.
+        self.assertEqual(x[175], 128 - 109)
+        # Sample 450: units 115200, on the 24th edge, high. The gain reached
+        # 5000 at sample 75 + 357: (127 * 5000 + 5000) / 10000 = 64.
+        self.assertEqual(x[450], 128 + 64)
+        self.assertEqual((max(x[450:]), min(x[450:])), (128 + 64, 128 - 64))
+
+    def test_change_at_8000_hz(self):
+        # step = (500000 + 7999) / 8000 = 63, once per sample, not per frame.
+        d = self.sound("a", bytes([0]) * 800)      # 100 ms at 8000 Hz
+        duty, w = self.render([pcm(0, d, rate=8000), gain(10, 2000)], scale="nearest")
+        self.assertEqual(w, [])
+
+        def at(i):
+            """The byte of sample i, at its first frame, ceil(i * 37500 / 8000)."""
+            return as_bytes([duty[-(-i * FR // 8000)]])[0]
+
+        # The change names sample 10 * 8000 / 1000 = 80.
+        self.assertEqual(at(79), 0)              # -128 at gain 10000
+        # Sample 80: 9937, -128 * 9937 = -1271936, -(5000 + 1271936) / 10000 = -127.
+        self.assertEqual(at(80), 1)
+        # Frames 375 to 379 hold sample 80: one step of gain, not five.
+        self.assertEqual(set(as_bytes(duty[375:380])), {1})
+        # Sample 150: 10000 - 63 * 71 = 5527, -128 * 5527 = -707456, so -71.
+        self.assertEqual(at(150), 57)
+        # Sample 205: 10000 - 63 * 126 = 2062, -263936, -(268936) / 10000 = -26.
+        self.assertEqual(at(205), 102)
+        # Sample 206 would be 1999: held at 2000, -256000, -(261000) / 10000 = -26.
+        self.assertEqual(at(206), 102)
+        self.assertEqual(at(799), 102)
+
+    def test_pulse_keeps_its_width(self):
+        plain, _ = self.render([tone(0, 1000, vol=60), stop(100)])
+        g, _ = self.render([tone(0, 1000, vol=60), gain(10, 1000), stop(100)])
+        self.assertEqual(list(plain), list(g))
+
+    def test_gain_with_nothing_playing_is_a_bad_log(self):
+        self.assertFails([gain(10, 5000)], "op=gain with nothing playing")
+
+    def test_gain_past_10000_is_a_bad_log(self):
+        d = self.sound("a", bytes([200]) * 100)
+        self.assertFails([with_gain(pcm(0, d), 10001)], "gain=10001 is past 10000")
+        self.assertFails([pcm(0, d), gain(1, 10001)], "gain=10001 is past 10000")
+
+    def test_a_later_field_does_not_matter(self):
+        d = self.sound("a", bytes([255]) * 1500)
+        a, _ = self.render([pcm(0, d, rate=FR), gain(4, 0)])
+        b, _ = self.render([pcm(0, d, rate=FR), gain(4, 0) + " kind=1"])
+        self.assertEqual(list(a), list(b))
