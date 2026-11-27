@@ -51,10 +51,10 @@ python3 -I tools/release/manifest.py remote-tags --manifest F [--require] [--rem
 python3 -I tools/release/manifest.py tags --manifest F
 ```
 
-- `new` writes a manifest from the checkouts under `w/`: each one's `HEAD` commit and the version in code at that commit. RobCo-Core takes the newest version section of its changelog, or `0.1.0` when it has none.
+- `new` writes a manifest from the checkouts under `w/`: each one's `HEAD` commit and the version in code at that commit. RobCo-Core takes the newest version section of its changelog, or `0.1.0` when it has none. It writes `--out` whole or not at all.
 - `check` runs the rules above. With `--github-output` it writes `suite` and the six commits as `core_sha`, `retros_sha`, `mfboot_sha`, `uos_sha`, `pipos_sha` and `deitrix_sha`.
 - `verify-night` reads the `VERSIONS.txt` of a nightly run. Each repository's 12-digit commit must start the manifest's commit, and its Note column must be empty, which means no pin differed.
 - `remote-tags` asks each repository for its `v<version>` tag with `git ls-remote`. It is the only command that talks to a remote. A tag on another commit fails. A missing tag is printed and passes, unless `--require` is given. `--remote REPO=URL` replaces a repository's address, which is `https://github.com/RobCo-Industries/<name>.git` by default.
 - `tags` prints the commands that make the six `v` tags, push them, then make and push the suite tag in RobCo-Core. It runs nothing. The suite tag line holds `MANIFEST_COMMIT` in place of the commit that holds the manifest, since the tool cannot know it.
 
-Every command exits 0 on success and 1 with `::error::` lines on any failure.
+Every command exits 0 on success and 1 with `::error::` lines on any failure. An output file that cannot be written is such a failure, and its line names the path.

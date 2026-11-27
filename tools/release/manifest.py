@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 CORE = "RobCo-Core"
 # Repository, default branch, output name of its commit.
@@ -83,6 +84,35 @@ def read_text(path):
             return f.read()
     except OSError as e:
         raise ManifestError(f"cannot read {path}: {e.strerror}") from None
+
+
+def write_output(path, text, append=False):
+    """Write an output file, or raise the tool's error with the path.
+
+    A plain write goes to a temporary file in the same folder, then
+    replaces path, so the file is whole or not there at all. An append
+    stays an append, as GitHub expects of its output file.
+    """
+    tmp = None
+    try:
+        if append:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(text)
+            return
+        folder = os.path.dirname(os.path.abspath(path))
+        fd, tmp = tempfile.mkstemp(prefix=".manifest-", dir=folder)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        tmp = None
+    except OSError as e:
+        raise ManifestError(f"cannot write {path}: {e.strerror}") from None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 # Version in code.
@@ -395,9 +425,7 @@ def cmd_new(args):
     errors = shape_errors(data)
     if errors:
         raise ManifestError("\n".join(errors))
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
+    write_output(args.out, json.dumps(data, indent=2) + "\n")
     print(f"manifest: wrote {args.out}")
     return 0
 
@@ -408,10 +436,9 @@ def cmd_check(args):
     if errors:
         raise ManifestError("\n".join(errors))
     if args.github_output:
-        with open(args.github_output, "a", encoding="utf-8") as f:
-            f.write(f"suite={data['suite']}\n")
-            for name in NAMES:
-                f.write(f"{OUTPUT[name]}={data['repositories'][name]['commit']}\n")
+        lines = [f"suite={data['suite']}"]
+        lines += [f"{OUTPUT[name]}={data['repositories'][name]['commit']}" for name in NAMES]
+        write_output(args.github_output, "".join(f"{line}\n" for line in lines), append=True)
     skipped = " The changelog rule was skipped." if args.rehearsal else ""
     print(f"manifest: {data['suite']} passes every check.{skipped}")
     return 0

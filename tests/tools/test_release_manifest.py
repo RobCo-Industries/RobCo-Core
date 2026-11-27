@@ -156,6 +156,49 @@ def test_check_passes_and_writes_outputs(work, tmp_path):
     assert len(lines) == 7
 
 
+def test_out_in_a_missing_folder_is_an_error(work, tmp_path):
+    w, _, _ = work
+    out_file = tmp_path / "none" / "new.json"
+    proc = subprocess.run([sys.executable, "-I", TOOL, "new", "--suite", "suite-2026.12",
+                           "--work", str(w), "--out", str(out_file)],
+                          capture_output=True, text=True, env=GIT_ENV)
+    assert proc.returncode == 1
+    assert errors(proc.stdout) == [f"::error::manifest: cannot write {out_file}: "
+                                   "No such file or directory"]
+    assert "Traceback" not in proc.stderr
+    assert not (tmp_path / "none").exists()
+
+
+def test_new_leaves_no_temporary_file(work, tmp_path):
+    w, _, _ = work
+    folder = tmp_path / "out"
+    folder.mkdir()
+    assert tool("new", "--suite", "suite-2026.12", "--work", w,
+                "--out", folder / "new.json")[0] == 0
+    assert [p.name for p in folder.iterdir()] == ["new.json"]
+
+
+def test_github_output_in_a_missing_folder_is_an_error(work, tmp_path):
+    w, _, manifest = work
+    gh = tmp_path / "none" / "gh"
+    proc = subprocess.run([sys.executable, "-I", TOOL, "check", "--manifest", str(manifest),
+                           "--work", str(w), "--github-output", str(gh)],
+                          capture_output=True, text=True, env=GIT_ENV)
+    assert proc.returncode == 1
+    assert errors(proc.stdout) == [f"::error::manifest: cannot write {gh}: "
+                                   "No such file or directory"]
+    assert "Traceback" not in proc.stderr
+
+
+def test_github_output_appends(work, tmp_path):
+    w, _, manifest = work
+    gh = tmp_path / "gh"
+    gh.write_text("before=1\n")
+    assert check(w, manifest, "--github-output", gh)[0] == 0
+    lines = gh.read_text().splitlines()
+    assert lines[0] == "before=1" and len(lines) == 8
+
+
 # check: one test per row of the fail-closed table
 
 def test_unknown_key_short_commit_and_missing_repository(work):
