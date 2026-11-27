@@ -496,6 +496,8 @@ A project that includes `mk/robco.mk` gets `make check-workflows`, which checks 
 
 ### Nightly
 
+A suite release ships the `pins` cards of a night that the release workflow runs at the release commits. [RELEASING.md](../RELEASING.md) says how.
+
 `.github/workflows/nightly.yml` builds the five siblings at their default heads every night at 03:17 UTC and runs the whole-chain tests on the real images. Deitrix builds on the Pip-OS head. A run plans one or two pairings:
 
 | Pairing | Library under each stage | Boards |

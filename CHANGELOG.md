@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `.github/workflows/release.yml` runs a night at the commits of a suite manifest and builds the release files from its two `pins` cards with the new `tools/release/assemble.py`. A manual start is a dry run that uploads the artifact `release`. Only a pushed `suite-*` tag reaches the publish job, which creates a draft pre-release. `docs/RELEASING.md` says how a release is made.
 - Another workflow of RobCo-Core can call the nightly run with the same seven inputs. A called run has its own concurrency group. Both card builds pass `CARD_NOTE`, the path of `VERSIONS.txt`, to `make`.
 - Two release tools, documented in `tools/release/README.md`. `tools/release/cut_changelog.py` turns a changelog's unreleased section into a version section, joins repeated groups and checks the result. `tools/release/notices.py` joins the licence files of the six repositories and of `third_party/` into one `NOTICES.txt`. Neither makes a tag.
 - `tools/release/manifest.py` writes and checks a suite release manifest, `releases/suite-<YYYY.MM>.json`, which names one commit and one version for each of the six repositories. `check` lists every broken rule: the shape, a commit off its default branch, a library or Pip-OS pin that differs, a version in code that differs, a changelog not cut for the version, a tag that is not the suite. `verify-night` checks a night's `VERSIONS.txt` against it, `remote-tags` reads the `v` tags with `git ls-remote`, and `tags` prints the tag commands and runs none. `releases/README.md` explains the format.
