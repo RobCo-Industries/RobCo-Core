@@ -202,7 +202,7 @@ The tool writes each file to a temporary name in the same folder, then renames i
 
 The fast check proves that `OUT.h` and the opening comment of `OUT.c` both name the SHA-256 of `MODEL` and this tool revision. It reads lines, so it accepts a CRLF copy. It does not prove the table bytes: an edited table passes it.
 
-`--check --full` renders every sound again and compares both files byte for byte. The tool always writes LF line ends and ASCII text. A CRLF copy fails the full check. Exit codes: 0 success, 1 a table is out of date or a file cannot be read or written, 2 the model is refused, 64 a usage error.
+`--check --full` renders every sound again and compares both files byte for byte. The tool always writes LF line ends and ASCII text. A CRLF copy fails the full check. Git can make such a copy: with `core.autocrlf` on, a Windows checkout turns text files into CRLF. This repository's `.gitattributes` keeps line ends only for test vectors and fixtures, not for generated C. A repository that commits the generated files and runs `--check --full` on Windows should mark them `-text`, or the check fails there. That failure is honest: the bytes differ. Exit codes: 0 success, 1 a table is out of date or a file cannot be read or written, 2 the model is refused, 64 a usage error.
 
 The tool revision is 1. It goes up whenever a byte of any table can change.
 

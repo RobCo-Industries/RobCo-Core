@@ -646,6 +646,25 @@ def test_failed_dump_leaves_no_new_table(tmp_path, monkeypatch):
     assert list(d.iterdir()) == []
 
 
+def test_generated_files_are_ascii_with_lf(tmp_path):
+    _, c, h = _generate(tmp_path, _two_sounds())
+    for f in (c, h):
+        raw = f.read_bytes()
+        raw.decode("ascii")
+        assert b"\r" not in raw and raw.endswith(b"\n")
+
+
+@pytest.mark.parametrize("which", ["c", "h"])
+def test_crlf_copy_fails_the_full_check(tmp_path, which):
+    p, c, h = _generate(tmp_path, _two_sounds())
+    f = c if which == "c" else h
+    f.write_bytes(f.read_bytes().replace(b"\n", b"\r\n"))
+    args = ("--c", c, "--h", h, "--prefix", "demo_sfx_", "--check")
+    assert run(p, *args).returncode == 0          # the fast check reads lines only
+    r = run(p, *args, "--full")
+    assert r.returncode == 1 and f"{f}: differs from a new render" in r.stderr
+
+
 def test_equal_bytes_on_two_runs(tmp_path):
     m = _two_sounds()
     a, b = tmp_path / "a", tmp_path / "b"
