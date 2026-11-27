@@ -19,7 +19,7 @@ that already has a section.
 check passes when the unreleased section holds only blank lines and the
 next section is that version. section prints the version's section.
 cut writes a temporary file and then replaces FILE, so a failed write
-leaves FILE as it was. Errors are `::error::` lines and exit code 1. Standard library only.
+leaves FILE as it was. A FILE that is not UTF-8 is an error. Errors are `::error::` lines and exit code 1. Standard library only.
 """
 import argparse
 import os
@@ -68,10 +68,14 @@ def write_atomic(path, text):
 
 def read_lines(path):
     try:
-        with open(path, encoding="utf-8", newline="") as f:
-            text = f.read()
+        with open(path, "rb") as f:
+            data = f.read()
     except OSError as e:
         raise ChangelogError(f"cannot read {path}: {e.strerror}") from None
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ChangelogError(f"{path} is not UTF-8") from None
     if "\r" in text:
         raise ChangelogError(f"{path} has CR line ends")
     return text.split("\n")

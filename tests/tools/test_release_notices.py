@@ -151,3 +151,15 @@ def test_unreadable_folder_fails(work, tmp_path, monkeypatch, capsys):
     text = capsys.readouterr().out
     assert text.startswith("::error::notices: cannot read ") and bad in text
     assert not out.exists()
+
+
+def test_not_utf8_is_tool_error(work, tmp_path):
+    bad = work / "RobCo-Core" / "third_party" / "zfont" / "LICENSE"
+    bad.write_bytes(b"caf\xe9 terms\n")
+    out = tmp_path / "NOTICES.txt"
+    r = tool("--work", str(work), "--out", str(out))
+    assert r.returncode == 1
+    assert r.stdout.startswith("::error::notices:")
+    assert str(bad) in r.stdout and "UTF-8" in r.stdout
+    assert "Traceback" not in r.stderr
+    assert not out.exists()

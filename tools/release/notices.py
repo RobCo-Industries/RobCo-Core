@@ -14,8 +14,8 @@ its own licence files, or its PROVENANCE file when it has none.
 Each text comes under a line that names its repository and path.
 
 A missing LICENSE, a missing third_party folder, a package folder that
-gives no text or a folder that cannot be read fails, with an
-`::error::` line and exit code 1.
+gives no text, a folder that cannot be read or a file that is not UTF-8
+fails, with an `::error::` line and exit code 1.
 The output goes through a temporary file, so a failed write leaves no
 half-written file. The same inputs give the same bytes. Standard library only.
 """

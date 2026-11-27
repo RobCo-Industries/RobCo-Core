@@ -183,6 +183,19 @@ def test_bad_arguments_refused(tmp_path):
     assert tool("check", str(nohead), "--version", "1.0.0").returncode == 1
 
 
+@pytest.mark.parametrize("command", [
+    ["cut", "--date", "2026-01-02"], ["check"], ["section"]])
+def test_not_utf8_is_tool_error(tmp_path, command):
+    path = tmp_path / "CHANGELOG.md"
+    path.write_bytes(b"# Changelog\n\n## Unreleased\n\n- caf\xe9\n")
+    r = tool(command[0], str(path), "--version", "1.0.0", *command[1:])
+    assert r.returncode == 1
+    assert r.stdout.startswith("::error::cut_changelog:")
+    assert str(path) in r.stdout and "UTF-8" in r.stdout
+    assert "Traceback" not in r.stderr
+    assert path.read_bytes() == b"# Changelog\n\n## Unreleased\n\n- caf\xe9\n"
+
+
 def test_section_missing_version(tmp_path):
     path = write(tmp_path, OLD)
     r = tool("section", str(path), "--version", "2.0.0")
