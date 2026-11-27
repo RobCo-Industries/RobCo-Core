@@ -503,7 +503,7 @@ A project that includes `mk/robco.mk` gets `make check-workflows`, which checks 
 | `pins` | Each repository's own pin. Deitrix takes the pin of the Pip-OS head. | All the boards a sibling lists |
 | `core-head` | The planned RobCo-Core commit under all five siblings | `raspi0` and `raspi2b` only, when the sibling lists them |
 
-`pins` tells whether the heads chain today. `core-head` tells whether the next pin move breaks a sibling. The planned commit is the one the `plan` job checks out from `core_ref`, or `main`. In `core-head` every job checks the sibling out without its submodules, then checks that commit out into its `external/robco-core`, or `external/pip-os/external/robco-core` for Deitrix. The image tag is the `ci/IMAGE_TAG` of that commit. A red job in either pairing fails the run. Read the two together:
+`pins` tells whether the heads chain today. `core-head` tells whether the next pin move breaks a sibling. The planned commit is the one the `plan` job checks out from `core_ref`, or `main`. In `core-head` every job checks the sibling out without its submodules, then checks that commit out into its `external/robco-core`, or `external/pip-os/external/robco-core` for Deitrix. The image tag is the `ci/IMAGE_TAG` of that commit. A red job in either pairing fails the run. The two pairings do not block each other: the jobs after `stages` and the card jobs run whatever the earlier jobs gave, so a red `pins` still lets `core-head` run. An entry whose pairing broke earlier finds no artifact and fails at its download step. Read the two together:
 
 | `pins` | `core-head` | It tells |
 |---|---|---|

@@ -214,8 +214,12 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  # The matrix holds both pairings, so a failed entry of one pairing
+  # would skip this whole job. Run it anyway: an entry whose own
+  # pairing broke earlier fails at its download step.
   card-terminal:
     needs: [plan, stages]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -380,6 +384,7 @@ jobs:
 
   agent-chain:
     needs: [plan, stages]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -474,6 +479,7 @@ jobs:
 
   uos-chain:
     needs: [plan, stages, card-terminal]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -588,6 +594,7 @@ jobs:
 
   pipboy:
     needs: [plan, card-pipboy]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
