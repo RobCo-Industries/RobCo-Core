@@ -183,8 +183,10 @@ The tool checks file names as written, before it reads the model:
 
 - The file name of `OUT.c` is a letter, then letters, digits, `_`, `.` or `-`, and ends in `.c`.
 - The file name of `OUT.h` follows the same rule and ends in `.h`. It goes into `#include "..."` in `OUT.c`, so it needs no escape and is ASCII.
-- The file name of `OUT.h` is not the name of a standard C or POSIX header, in any case. In a folder on the include path such a file would take the place of the system header, and the generated `#include <stdint.h>` would find itself. The C list is the 31 headers of C23, ISO/IEC 9899:2024, 7.1.2. The POSIX list is the top-level headers of POSIX.1-2024, IEEE Std 1003.1-2024, Base Definitions, with `stropts.h` and `trace.h` of older issues.
+- The file name of `OUT.h` is not the name of a standard header, in any case. In a folder on the include path such a file would take the place of the system header, and the generated `#include <stdint.h>` would find itself. The tool holds one sorted list of 76 names: the 31 headers of C23, ISO/IEC 9899:2024, 7.1.2; every header of POSIX.1-2024, IEEE Std 1003.1-2024, that is a plain file name; `re_comp.h`, `regexp.h`, `stropts.h`, `trace.h`, `ucontext.h`, `ulimit.h`, `utime.h` and `varargs.h` of older POSIX and SUS issues; and `ar.h` of System V.
 - The file name of `MODEL` holds letters, digits, `_`, `.` and `-` only, and starts with a letter or a digit, because it goes into the opening comment as written.
+
+The tool cannot know every header of every toolchain or library. Give the generated header a name of the project's own: one that starts with the `--prefix` text, such as `demo_sfx_table.h` for `demo_sfx_`. When the file name of `OUT.h` does not start with that text, the tool prints a warning on standard error and goes on. A warning, not a refusal: the name is often fine, but a clash with a library header only shows later as a strange compile error, so one line now is worth it.
 
 A bad file name gets one line, exit 64. The include guard is the file name of `OUT.h` in capitals with every other character as `_`.
 
@@ -199,19 +201,38 @@ Each refused name gets one line that names it and the options and sound it comes
 
 `--dump` and `--wav` can join the first form. They name each file after a table or a sound, such as `beep_1.u8` or `beep.wav`. A sound name is already `a` to `z`, `0` to `9` and `_`, so these names need no other check.
 
+### The plan
+
+Before it writes anything, the tool lists every file of the run: `MODEL`, which it reads, and `OUT.c`, each `.u8` file, each `.wav` file and `OUT.h`, which it writes. It refuses the run, exit 64, with one line that names both paths, if two entries of the list are the same file. Two paths are the same file when:
+
+- both exist and are the same file to the system, such as through a hard link or a symbolic link;
+- they resolve to the same path, through relative and absolute spellings, `.`, `..` or a symbolic link;
+- their resolved paths differ only by case.
+
+The case rule is strict on every system, also where the file system tells case apart. A run that passes on one system then passes on all.
+
+The tool also refuses an output that is a directory, an output in a folder that does not exist, and a `--dump` or `--wav` folder that is a file or lies in a folder that does not exist. It makes a missing `--dump` or `--wav` folder itself. `--dump` and `--wav` may name the same folder: their files end in `.u8` and `.wav`, so the tool checks the files, not the folders. The only file a run reads is `MODEL`, and it reads it before it writes, so the check that no output is `MODEL` covers every read.
+
 ### How the files are written
 
-The tool writes each file to a temporary name in the same folder, then renames it over the target. A file is never left half written. It writes `OUT.c` first and `OUT.h` last, because `OUT.h` carries the hash that `--check` reads. On a failure it removes its temporary files and exits 1 with one message.
+A run publishes all its files as one. The tool writes each file to a temporary name `.<name>.<pid>.tmp` in the same folder. It then keeps the old content of each file that exists under `.<name>.<pid>.bak`, a hard link or else a copy. Then it renames each temporary file over its target: `OUT.c`, each `.u8` file, each `.wav` file, and `OUT.h` last, because `OUT.h` carries the hash that `--check` reads. A file is never left half written.
 
-| Failure | `OUT.c` | `OUT.h` | `--check` |
-|---|---|---|---|
-| A temporary file cannot be made | old | old | stale if the model changed |
-| A write fails | old | old | stale if the model changed |
-| The rename of `OUT.c` fails | old | old | stale if the model changed |
-| The rename of `OUT.h` fails | new | old | stale: the header names the old hash |
-| The tool is killed between the two renames | new | old | stale, and a `.OUT.h.<pid>.tmp` file stays |
+On a failure the tool rolls back. Roll back means: each file this run already renamed gets its old content back from its backup, or is removed if it did not exist before; every temporary and backup file is removed; and a `--dump` or `--wav` folder this run made is removed. The tool then exits 1 with one message. On success it removes the backups.
 
-`--dump` and `--wav` write their files the same way. On a failure the tool also removes every file it already renamed in that run. The folder then lacks the files of this run, so it does not look complete. Files from an older model under other names stay.
+The table below is for the full run, `--c --h --dump --wav` together. "Old" means the content from before the run, or no file if there was none. `--check` reads only `OUT.h` and `OUT.c`, which are always old after a failure, so it answers as it did before the run: stale if the model changed.
+
+| Failure | `OUT.c` | `.u8` files | `.wav` files | `OUT.h` | `--check` |
+|---|---|---|---|---|---|
+| A temporary file cannot be made or written | old | old | old | old | stale if the model changed |
+| A backup cannot be made as a hard link | the tool makes a copy and goes on | | | | |
+| A backup copy cannot be made | old | old | old | old | stale if the model changed |
+| The rename of `OUT.c` fails | old | old | old | old | stale if the model changed |
+| The rename of a `.u8` or `.wav` file fails | old | old | old | old | stale if the model changed |
+| The rename of `OUT.h` fails | old | old | old | old | stale if the model changed |
+| A restore fails during the roll back | new for that file | | | old | stale if the model changed: `OUT.h` is never renamed when a later step fails |
+| The tool is killed after some renames | new up to the kill | | | old | stale if the model changed; `.tmp` and `.bak` files stay, and the `.bak` files hold the old content |
+
+Files from an older model under other names stay in the `--dump` and `--wav` folders.
 
 ### What the checks prove
 
