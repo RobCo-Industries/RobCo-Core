@@ -287,6 +287,8 @@ For each sound it:
 4. Predicts the same two measurements from the model. It renders tone layers by the steps above. It takes a noise layer as its expected power: the filter's power in each band times the envelope and hit levels. It draws no random numbers. A loop wraps what runs past `len`, so a `fold` cross-fades a hit with itself in the prediction too.
 5. Scales the prediction by one gain that matches the total power of the table, and compares both in dB.
 
+The prediction includes the rounding of each sample to a whole step. It adds this rounding as white noise of power 1/12 step squared per sample, spread evenly from 0 to half the rate, and the gain matches the model part only. A quiet table needs it: its weak bands sit close to the rounding noise, so a prediction without it reads them too low.
+
 It checks the fields it needs and their types. It does not repeat every check of `tools/sfx_table.py`.
 
 A loop is a sound with `loop` set. A one-shot with noise has a noise layer and no `loop`.

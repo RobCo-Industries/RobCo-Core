@@ -171,3 +171,35 @@ def test_one_line_per_sound(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert len(r.stdout.strip().splitlines()) == 2
     assert math.isfinite(float(re.findall(r"worst (\d+\.\d\d)", r.stdout)[0]))
+
+
+def quiet_loop_model():
+    """A quiet noise loop whose bands fall about 28 dB across the kept range."""
+    n = RATE // 2  # samples in half a second
+    fold = 400
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"quiet": {
+        "len": n, "peak_steps": 10, "loop": True, "layers": [
+            {"kind": "noise", "seed": 3, "level_mdb": 0, "hits": [[0, 0]],
+             "fold": fold, "env": [[0, 0], [(n + fold) * 1000000 // RATE, 0]],
+             "bands": [[0, 0], [1000, 0], [9000, -28000], [10000, -28000]]}]}}}
+
+
+def _worst_band(line):
+    return float(re.search(r"band mean [\d.]+ median [\d.]+ worst ([\d.]+) dB", line).group(1))
+
+
+def test_quiet_loop_needs_the_rounding_floor(tmp_path, monkeypatch):
+    p, d = dump(tmp_path, quiet_loop_model())
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    try:
+        import sfx_check
+    finally:
+        sys.path.pop(0)
+    model = sfx_check.load_model(str(p))
+    with_floor, ok = sfx_check.check_sound(model, "quiet", str(d))
+    assert ok, with_floor
+    monkeypatch.setattr(sfx_check, "ROUND_POWER", 0.0)
+    without, _ = sfx_check.check_sound(model, "quiet", str(d))
+    assert _worst_band(without) > _worst_band(with_floor), (with_floor, without)

@@ -35,6 +35,9 @@ TOP_HZ = 15000.0
 FIR_TAPS = 511
 DESIGN_BINS = 1024
 FILTER_FFT = 8192
+# Rounding each sample to a whole step adds white noise of this power, in
+# steps squared, per sample: a uniform error over one step.
+ROUND_POWER = 1.0 / 12.0
 
 # Tolerances in dB, by kind of sound. Each rule names a statistic of the
 # absolute errors and its limit.
@@ -372,6 +375,23 @@ def predict(sound, rate, nbands):
     return bands, frames
 
 
+def rounding_floor(n, rate, nbands):
+    """Band and frame energy of the rounding noise of an n sample table.
+
+    The bands of band_energy() sum to the sum of the squared samples, so the
+    noise gives n * ROUND_POWER in all, spread by width from 0 to half the
+    rate. The last band reaches to half the rate, as in band_energy().
+    """
+    nyq = rate / 2.0
+    total = n * ROUND_POWER
+    bands = []
+    for b in range(nbands):
+        lo = min(b * BAND_HZ, nyq)
+        hi = nyq if b == nbands - 1 else min((b + 1) * BAND_HZ, nyq)
+        bands.append(total * (hi - lo) / nyq)
+    return bands, frame_energy([ROUND_POWER] * n, rate)
+
+
 # ---- the comparison ---------------------------------------------------------
 
 def kind_of(sound):
@@ -443,11 +463,16 @@ def check_sound(model, name, folder):
     mb = band_energy(x, rate, nbands + (1 if extra else 0))
     mf = frame_energy([v * v for v in x], rate)
     pb, pf = predict(sound, rate, nbands + (1 if extra else 0))
+    fb, ff = rounding_floor(len(data), rate, nbands + (1 if extra else 0))
     if extra:
-        mb, pb = mb[:-1], pb[:-1]
-    gain = sum(mb) / sum(pb) if sum(pb) > 0.0 else 0.0
-    be = stats(errors_db(mb, pb, gain))
-    fe = stats(errors_db(mf, pf, gain))
+        mb, pb, fb = mb[:-1], pb[:-1], fb[:-1]
+    if sum(pb) > 0.0 and sum(mb) > sum(fb):
+        gain = (sum(mb) - sum(fb)) / sum(pb)
+    else:
+        gain = sum(mb) / sum(pb) if sum(pb) > 0.0 else 0.0
+        fb, ff = [0.0] * len(fb), [0.0] * len(ff)
+    be = stats(errors_db(mb, [p * gain + f for p, f in zip(pb, fb)], 1.0))
+    fe = stats(errors_db(mf, [p * gain + f for p, f in zip(pf, ff)], 1.0))
     for what, st in (("band", be), ("frame", fe)):
         for stat, limit in RULES[kind][what]:
             if not st[stat] <= limit:
