@@ -83,3 +83,15 @@ uint32_t audio_gain_slew_n(uint32_t cur, uint32_t target, uint32_t step, uint32_
     }
     return cur < target ? cur + (uint32_t)move : cur - (uint32_t)move;
 }
+
+void audio_gain_follow(uint32_t *cur, uint32_t *n, uint32_t target, uint32_t step, uint32_t at)
+{
+    uint32_t d = at - *n;
+
+    /* at wraps with the grid: a point at or before *n moves nothing. */
+    if ((int32_t)d <= 0) {
+        return;
+    }
+    *cur = audio_gain_slew_n(*cur, target, step, d);
+    *n = at;
+}

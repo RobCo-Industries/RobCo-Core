@@ -490,3 +490,111 @@ TEST(a_late_irq_catches_up_the_gain)
     CHECK(pwm_count - a < 160);
     CHECK_EQ(pwm_samples[pwm_count - 1], audio_pcm_scale(255, 20));
 }
+
+/* Runs the clock until the play outputs its next sample. */
+static void run_to_next_output(void)
+{
+    uint32_t n = pcm.n;
+    unsigned i;
+
+    for (i = 0; i < 100000 && pcm.n == n; i++) {
+        run_us(1);
+    }
+}
+
+/*
+ * The driver: a late IRQ, then a change from full to 0. The grid samples
+ * that passed before the change do not count: the first output after it
+ * is within one step of full gain, and the change still takes 20 ms.
+ */
+static void check_change_after_a_late_irq(uint32_t rate)
+{
+    uint32_t step = audio_gain_step(rate);
+    /* The step rounds up, so 10 ms is near half, not on it. */
+    uint32_t half = rate / 100;
+    uint32_t full = rate / 50;
+    uint32_t at;
+    uint32_t k;
+
+    k_memset(buf, 255, sizeof(buf));
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), rate, AUDIO_LOOP), 0);
+    tick(10);
+    run_us(30000);
+    CHECK_EQ(gain_cur, 10000);
+    /* 10 ms with no sample IRQ, as when the caller masks IRQs. */
+    fake_step(10000);
+    audio_set_gain(0);
+    at = gain_n;
+    run_to_next_output();
+    if (gain_cur < 10000 - step) {
+        RC_FAIL("rate %u: first output at gain %u", (unsigned)rate, (unsigned)gain_cur);
+        return;
+    }
+    for (;;) {
+        k = pcm.last_n - at;
+        if (gain_cur == 0 || k > full) {
+            break;
+        }
+        if (k >= half && k < half + 2 &&
+            (dist(gain_cur, 5000) > 500 || dist(gain_cur, 10000 - step * k) > step)) {
+            RC_FAIL("rate %u: gain %u at grid sample %u of the change", (unsigned)rate,
+                    (unsigned)gain_cur, (unsigned)k);
+            return;
+        }
+        run_to_next_output();
+    }
+    /* At 0 by 20 ms, and not much before: the step rounds up. */
+    if (gain_cur != 0 || k > full || k < full * 19 / 20) {
+        RC_FAIL("rate %u: gain %u at grid sample %u", (unsigned)rate, (unsigned)gain_cur,
+                (unsigned)k);
+    }
+}
+
+TEST(a_change_after_a_late_irq_counts_from_the_change)
+{
+    check_change_after_a_late_irq(8000);
+    check_change_after_a_late_irq(37500);
+}
+
+/*
+ * A change while an earlier one is under way, with a late IRQ between:
+ * the gain only moves toward the newest target, and never by more than
+ * the steps since the last change or the last output.
+ */
+TEST(a_change_over_a_change_with_a_late_irq_moves_to_the_newest)
+{
+    uint32_t step = audio_gain_step(8000);
+    uint32_t prev;
+    uint32_t prev_n;
+    unsigned i;
+
+    k_memset(buf, 255, sizeof(buf));
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_play_pcm(buf, sizeof(buf), 8000, AUDIO_LOOP), 0);
+    tick(10);
+    run_us(30000);
+    audio_set_gain(0);
+    run_us(5000);
+    CHECK(gain_cur > 0);
+    CHECK(gain_cur < 10000);
+    fake_step(7000);
+    prev = gain_cur;
+    audio_set_gain(10000);
+    /* The first change took the steps it was owed up to the second. */
+    CHECK(gain_cur <= prev);
+    prev = gain_cur;
+    prev_n = gain_n;
+    for (i = 0; i < 400; i++) {
+        run_to_next_output();
+        if (gain_cur < prev ||
+            gain_cur - prev > step * (uint32_t)(pcm.last_n - prev_n)) {
+            RC_FAIL("output %u: gain %u after %u, %u grid samples", i, (unsigned)gain_cur,
+                    (unsigned)prev, (unsigned)(pcm.last_n - prev_n));
+            return;
+        }
+        prev = gain_cur;
+        prev_n = pcm.last_n;
+    }
+    CHECK_EQ(gain_cur, 10000);
+}

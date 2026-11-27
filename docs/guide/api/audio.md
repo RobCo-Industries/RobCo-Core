@@ -281,7 +281,7 @@ void audio_set_volume(unsigned percent);
 
 #### Gain
 
-The driver keeps a target gain and the gain of the play. `audio_set_gain()` writes the target. A play starts at the target, so nothing fades in. While a play runs, the sample IRQ moves the play's gain toward the target by `(500000 + rate - 1) / rate` units per grid sample, `AUDIO_GAIN_SLEW` over the rate: 63 at 8000 Hz, 14 at 37500 Hz. The gain follows the sample grid, so a late sample catches up: it moves by one step for each grid sample since the last output. A full swing takes 20 ms at any rate, and no sample moves the pin by a whole step. So a change inside a sample play, a voice or a centred tone never jumps. A centred tone follows a change within 20 ms, inside a note. It no longer waits for its next note. A pulse tone, before the rest ramp ends, has no sample IRQ: it takes the target at its next note, as its width. The rest ramp plays at full scale whatever the gain.
+The driver keeps a target gain and the gain of the play. `audio_set_gain()` writes the target. A play starts at the target, so nothing fades in. While a play runs, the sample IRQ moves the play's gain toward the target by `(500000 + rate - 1) / rate` units per grid sample, `AUDIO_GAIN_SLEW` over the rate: 63 at 8000 Hz, 14 at 37500 Hz. A change starts at the grid sample of the call. The gain follows the sample grid, so a late sample catches up: it moves by one step for each grid sample since the last output or the change. Grid samples that passed before the change do not count. A full swing takes 20 ms at any rate, and no sample moves the pin by a whole step. So a change inside a sample play, a voice or a centred tone never jumps. A centred tone follows a change within 20 ms, inside a note. It no longer waits for its next note. A pulse tone, before the rest ramp ends, has no sample IRQ: it takes the target at its next note, as its width. The rest ramp plays at full scale whatever the gain.
 
 | Play | Rule at gain `g` |
 |---|---|
@@ -412,9 +412,10 @@ unsigned audio_gain_pulse(uint32_t gain);
 uint32_t audio_gain_step(uint32_t rate);
 uint32_t audio_gain_slew(uint32_t cur, uint32_t target, uint32_t step);
 uint32_t audio_gain_slew_n(uint32_t cur, uint32_t target, uint32_t step, uint32_t n);
+void audio_gain_follow(uint32_t *cur, uint32_t *n, uint32_t target, uint32_t step, uint32_t at);
 ```
 
-The gain rules the IRQ uses, in `src/lib/audio_gain.c`, with the rules of [Gain](#gain). `audio_pcm_scale_g()`, `audio_voice_out_g()` and `audio_square_amp_g()` are the sample, voice and tone rules at a gain in 1/10000, capped at `AUDIO_GAIN_FULL`. At `gain = vol * 100` they give the bytes of `audio_pcm_scale()`, `audio_voice_out()` and `audio_square_amp()`. `audio_gain_pulse()` gives the volume of a pulse tone. `audio_gain_step()` gives the slew step per sample at a rate, and `audio_gain_slew()` moves a gain toward a target by at most that step, never past it. `audio_gain_slew_n()` moves it by `n` such steps, never past it, and never overflows.
+The gain rules the IRQ uses, in `src/lib/audio_gain.c`, with the rules of [Gain](#gain). `audio_pcm_scale_g()`, `audio_voice_out_g()` and `audio_square_amp_g()` are the sample, voice and tone rules at a gain in 1/10000, capped at `AUDIO_GAIN_FULL`. At `gain = vol * 100` they give the bytes of `audio_pcm_scale()`, `audio_voice_out()` and `audio_square_amp()`. `audio_gain_pulse()` gives the volume of a pulse tone. `audio_gain_step()` gives the slew step per sample at a rate, and `audio_gain_slew()` moves a gain toward a target by at most that step, never past it. `audio_gain_slew_n()` moves it by `n` such steps, never past it, and never overflows. `audio_gain_follow()` moves `*cur` by one step per grid sample from `*n` to `at` and sets `*n` to `at`. When `at` is not after `*n`, it changes nothing.
 
 ```c
 int audio_pwm_calc(uint32_t src_hz, uint32_t hz, unsigned vol, audio_pwm_cfg_t *out);

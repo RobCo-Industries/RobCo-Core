@@ -168,8 +168,10 @@ static unsigned fn0, fn1;
  * play's level is gain_cur: a play starts at the target, and the sample
  * IRQ moves it toward the target by gain_step per grid sample. The gain
  * follows the sample grid, so a late sample catches up. gain_n is the
- * grid sample of the last output, kept even while the gain rests. IRQ
- * context only for gain_cur, gain_step and gain_n.
+ * grid sample up to which gain_cur has moved, kept even while the gain
+ * rests. It never goes back. The IRQ context writes gain_cur, gain_step
+ * and gain_n. audio_set_gain() writes gain_cur and gain_n too, with IRQs
+ * masked: a change starts at the grid sample of the call.
  */
 static volatile uint32_t gain_target = ROBCO_AUDIO_VOLUME * 100u;
 static uint32_t gain_cur = ROBCO_AUDIO_VOLUME * 100u;
@@ -381,8 +383,8 @@ static uint8_t mix_add(uint8_t a, uint8_t b)
 
 /*
  * IRQ context. One sample, with the overlay, at the play's gain. The gain
- * first moves toward its target by one step per grid sample since the
- * last output, so a late sample catches up. A sample play adds two bytes,
+ * first moves toward its target by one step per grid sample since its
+ * last move, an output or a change, so a late sample catches up. A sample play adds two bytes,
  * clamps and scales. A voice adds the overlay to its value on 1/256 of a
  * step and rounds once, after the gain. A tone takes its height from the
  * gain at each sample. The ramp plays at full scale. The voice runs on
@@ -394,11 +396,10 @@ static void pcm_out(uint32_t pos)
     uint32_t g = gain_target;
     uint8_t s;
 
-    if (pcm_kind != KIND_RAMP && gain_cur != g) {
-        gain_cur = audio_gain_slew_n(gain_cur, g, gain_step, pcm.last_n - gain_n);
+    if (pcm_kind != KIND_RAMP) {
+        /* Kept at rest too: a change counts only the samples after it. */
+        audio_gain_follow(&gain_cur, &gain_n, g, gain_step, pcm.last_n);
     }
-    /* Kept at rest too: a change counts only the samples after it. */
-    gain_n = pcm.last_n;
     if (pcm_kind == KIND_TONE) {
         /* No overlay. */
         s = audio_square_out(audio_square_acc(&square, pcm.last_n),
@@ -1030,11 +1031,20 @@ void audio_set_gain(uint32_t gain)
     }
     s = irq_save();
     if (gain != gain_target) {
+        uint64_t now = timer_now_us();
+
+        if (backend >= 0 && pcm.active && pcm_kind != KIND_RAMP) {
+            /*
+             * The change starts after the grid sample due now: the one
+             * before the join sample, where the op=gain line puts it.
+             * A change under way first takes the steps it is owed.
+             */
+            audio_gain_follow(&gain_cur, &gain_n, gain_target, gain_step,
+                              audio_pcm_join(&pcm, (uint32_t)now) - 1u);
+        }
         gain_target = gain;
         if (backend >= 0 && backend != AUDIO_BACKEND_PWM && playing && !req.valid) {
             if (pcm.active && (pcm_kind == KIND_SAMPLE || pcm_kind == KIND_VOICE)) {
-                uint64_t now = timer_now_us();
-
                 audio_trace_gain(gain, pcm_t0_ms,
                                  (now - pcm_t0_us) +
                                  (uint32_t)(audio_pcm_join_us(&pcm, (uint32_t)now) -
