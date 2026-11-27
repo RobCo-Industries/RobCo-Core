@@ -195,4 +195,11 @@ sdimage: $(SDIMAGE_DEPS) $(ROBCO_SD_SRCS)
 # The hook. Empty here: each project rule adds a recipe.
 sdimage-stage::
 
+# `make check-workflows` runs tools/check_workflow_exprs.py on the
+# project's workflows. It fails on a ${{ }} that could reach a script and
+# on a uses: not pinned by a full commit. With no workflow file, it fails.
+.PHONY: check-workflows
+check-workflows:
+	$(PYTHON) -I $(ROBCO_CORE)/tools/check_workflow_exprs.py $(wildcard .github/workflows/*.yml .github/workflows/*.yaml)
+
 -include $(ROBCO_OBJS:.o=.d) $(PROJ_OBJS:.o=.d)

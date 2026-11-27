@@ -1,0 +1,592 @@
+# The nightly integration run: builds the five sibling repositories at
+# their default heads, each on its own RobCo-Core pin, packs the two
+# cards and runs the whole-chain tests on the real images. See the
+# section "Nightly" in docs/spec/TESTING.md.
+#
+# Only the pins pairing exists. The plan job resolves every ref to a
+# commit once, and every later job checks out those commits. Each run:
+# step calls a script or a make target. Values reach scripts through env:.
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      pairing:
+        type: choice
+        options: [both, pins, core-head]
+        default: both
+      core_ref:
+        type: string
+        default: ""
+      retros_ref:
+        type: string
+        default: ""
+      mfboot_ref:
+        type: string
+        default: ""
+      uos_ref:
+        type: string
+        default: ""
+      pipos_ref:
+        type: string
+        default: ""
+      deitrix_ref:
+        type: string
+        default: ""
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      stages: ${{ steps.plan.outputs.stages }}
+      card_terminal: ${{ steps.plan.outputs.card_terminal }}
+      card_pipboy: ${{ steps.plan.outputs.card_pipboy }}
+      agent: ${{ steps.plan.outputs.agent }}
+      uos: ${{ steps.plan.outputs.uos }}
+      pipboy: ${{ steps.plan.outputs.pipboy }}
+    steps:
+      - name: Check out the nightly tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      # Full history in RobCo-Core and Pip-OS: the table counts commits
+      # between each pin and main, and between Deitrix's Pip-OS pin and
+      # the Pip-OS head.
+      - name: Check out RobCo-Core
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          # An empty ref would mean the branch the run was started from,
+          # since this is the workflow's own repository. The plan compares
+          # against the default branch, so name it.
+          ref: ${{ inputs.core_ref || github.event.repository.default_branch }}
+          path: w/RobCo-Core
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out RETROS-BIOS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RETROS-BIOS
+          ref: ${{ inputs.retros_ref }}
+          path: w/RETROS-BIOS
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out MFBootAgent
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/MFBootAgent
+          ref: ${{ inputs.mfboot_ref }}
+          path: w/MFBootAgent
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out UOS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/UOS
+          ref: ${{ inputs.uos_ref }}
+          path: w/UOS
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out Pip-OS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/Pip-OS
+          ref: ${{ inputs.pipos_ref }}
+          path: w/Pip-OS
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out Deitrix
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/Deitrix
+          ref: ${{ inputs.deitrix_ref }}
+          path: w/Deitrix
+          submodules: recursive
+          persist-credentials: false
+      - name: Plan
+        id: plan
+        env:
+          PAIRING: ${{ inputs.pairing || 'both' }}
+          NIGHTLY_REF_CORE: ${{ inputs.core_ref }}
+          NIGHTLY_REF_RETROS: ${{ inputs.retros_ref }}
+          NIGHTLY_REF_MFBOOT: ${{ inputs.mfboot_ref }}
+          NIGHTLY_REF_UOS: ${{ inputs.uos_ref }}
+          NIGHTLY_REF_PIPOS: ${{ inputs.pipos_ref }}
+          NIGHTLY_REF_DEITRIX: ${{ inputs.deitrix_ref }}
+        run: >-
+          python3 -I lib/tools/nightly/plan.py --work w --pairing "$PAIRING"
+          --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+          --versions VERSIONS.txt
+      - name: Upload the version table
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: versions
+          path: VERSIONS.txt
+          if-no-files-found: error
+          retention-days: 3
+
+  stages:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.stages) }}
+    container:
+      image: ghcr.io/robco-industries/robco-ci:${{ matrix.tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the nightly tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      - name: Check out ${{ matrix.repo }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/${{ matrix.repo }}
+          ref: ${{ matrix.sha }}
+          path: w/${{ matrix.repo }}
+          submodules: recursive
+          persist-credentials: false
+      # The container runs as root on a checkout the runner user owns, so
+      # git refuses it. Mark the folder of every .git entry as safe, then
+      # check that git works in each.
+      - name: Mark the checkout safe for git
+        shell: bash
+        run: |
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git config --global --add safe.directory "$(dirname "$dotgit")"
+          done
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git -C "$(dirname "$dotgit")" rev-parse HEAD
+          done
+      - name: Build
+        env:
+          REPO: ${{ matrix.repo }}
+        run: make -C "w/$REPO" CI=1 all
+      - name: Upload RETROS-BIOS
+        if: matrix.repo == 'RETROS-BIOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage-${{ matrix.pairing }}-RETROS-BIOS
+          path: |
+            w/RETROS-BIOS/build/retros.img
+            w/RETROS-BIOS/boot/BOOT.CFG
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload MFBootAgent
+        if: matrix.repo == 'MFBootAgent'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage-${{ matrix.pairing }}-MFBootAgent
+          path: |
+            w/MFBootAgent/build/mfboot.img
+            w/MFBootAgent/build/diag.sys
+            w/MFBootAgent/build/maint.sys
+          if-no-files-found: error
+          retention-days: 3
+
+  card-terminal:
+    needs: [plan, stages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.card_terminal) }}
+    container:
+      image: ghcr.io/robco-industries/robco-ci:${{ matrix.tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the nightly tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      - name: Check out UOS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/UOS
+          ref: ${{ matrix.sha }}
+          path: w/UOS
+          submodules: recursive
+          persist-credentials: false
+      - name: Mark the checkout safe for git
+        shell: bash
+        run: |
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git config --global --add safe.directory "$(dirname "$dotgit")"
+          done
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git -C "$(dirname "$dotgit")" rev-parse HEAD
+          done
+      - name: Download RETROS-BIOS
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage-${{ matrix.pairing }}-RETROS-BIOS
+          path: stage/RETROS-BIOS
+      - name: Download MFBootAgent
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage-${{ matrix.pairing }}-MFBootAgent
+          path: stage/MFBootAgent
+      - name: Download the version table
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: versions
+          path: versions
+      # UOS ignores MAINT_SYS, DIAG_SYS and BOOT_CFG until its chain card
+      # lands. They are passed from the first night all the same.
+      - name: Build the card
+        run: >-
+          make -C w/UOS CI=1 all sdimage CHAIN=1
+          RETROS_IMG="$GITHUB_WORKSPACE/stage/RETROS-BIOS/build/retros.img"
+          MFBOOT_SYS="$GITHUB_WORKSPACE/stage/MFBootAgent/mfboot.img"
+          MAINT_SYS="$GITHUB_WORKSPACE/stage/MFBootAgent/maint.sys"
+          DIAG_SYS="$GITHUB_WORKSPACE/stage/MFBootAgent/diag.sys"
+          BOOT_CFG="$GITHUB_WORKSPACE/stage/RETROS-BIOS/boot/BOOT.CFG"
+      - name: Pack the card
+        run: >-
+          python3 -I lib/tools/nightly/pack_card.py --card w/UOS/build/sd.img
+          --name robco-terminal.img --versions versions/VERSIONS.txt --out card
+      # Nothing is kept that was not booted: boot a copy of the packed bytes,
+      # snapshot on, through every stage up to the UOS login screen. The
+      # upload below runs only when this passed.
+      - name: Boot the packed card
+        run: >-
+          python3 -I lib/tools/nightly/boot_card.py --chain terminal --board raspi2b
+          --first stage/RETROS-BIOS/build/retros.img --card card/robco-terminal.img
+          --sums card/SHA256SUMS --timeout 120
+      - name: Upload the card
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: card-terminal-${{ matrix.pairing }}
+          path: card
+          if-no-files-found: error
+          retention-days: 14
+
+  card-pipboy:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.card_pipboy) }}
+    container:
+      image: ghcr.io/robco-industries/robco-ci:${{ matrix.tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the nightly tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      - name: Check out Deitrix
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/Deitrix
+          ref: ${{ matrix.sha }}
+          path: w/Deitrix
+          submodules: false
+          persist-credentials: false
+      - name: Check out the Pip-OS head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/Pip-OS
+          ref: ${{ matrix.pipos_sha }}
+          path: w/Deitrix/external/pip-os
+          submodules: recursive
+          persist-credentials: false
+      - name: Mark the checkout safe for git
+        shell: bash
+        run: |
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git config --global --add safe.directory "$(dirname "$dotgit")"
+          done
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git -C "$(dirname "$dotgit")" rev-parse HEAD
+          done
+      - name: Download the version table
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: versions
+          path: versions
+      - name: Build the card
+        run: make -C w/Deitrix CI=1 all sdimage kernel
+      - name: Pack the card
+        run: >-
+          python3 -I lib/tools/nightly/pack_card.py --card w/Deitrix/build/pipos/sd.img
+          --name robco-pipboy.img --extra w/Deitrix/build/pipos/pipos.img
+          --versions versions/VERSIONS.txt --out card
+      # The packed Pip-OS kernel boots the packed card up to the ROM's ready line.
+      - name: Boot the packed card
+        run: >-
+          python3 -I lib/tools/nightly/boot_card.py --chain pipboy --board raspi0
+          --first card/pipos.img --card card/robco-pipboy.img
+          --sums card/SHA256SUMS --timeout 120
+      - name: Upload the card
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: card-pipboy-${{ matrix.pairing }}
+          path: card
+          if-no-files-found: error
+          retention-days: 14
+
+  agent-chain:
+    needs: [plan, stages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.agent) }}
+    container:
+      image: ghcr.io/robco-industries/robco-ci:${{ matrix.tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the nightly tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      - name: Check out MFBootAgent
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/MFBootAgent
+          ref: ${{ matrix.sha }}
+          path: w/MFBootAgent
+          submodules: recursive
+          persist-credentials: false
+      - name: Mark the checkout safe for git
+        shell: bash
+        run: |
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git config --global --add safe.directory "$(dirname "$dotgit")"
+          done
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git -C "$(dirname "$dotgit")" rev-parse HEAD
+          done
+      - name: Download RETROS-BIOS
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage-${{ matrix.pairing }}-RETROS-BIOS
+          path: stage/RETROS-BIOS
+      - name: Set up the test environment
+        run: make -C w/MFBootAgent CI=1 all venv
+      - name: Whole-chain tests on ${{ matrix.board }}
+        env:
+          BOARD: ${{ matrix.board }}
+        working-directory: w/MFBootAgent
+        run: >-
+          mkdir -p "$GITHUB_WORKSPACE/results" &&
+          .venv/bin/pytest tests -k whole_chain -v -rs --board "$BOARD"
+          --retros-img "$GITHUB_WORKSPACE/stage/RETROS-BIOS/build/retros.img"
+          --junitxml "$GITHUB_WORKSPACE/results/junit.xml"
+          --basetemp "$GITHUB_WORKSPACE/results/tmp"
+      - name: Gate
+        if: always()
+        env:
+          JOB: agent-chain ${{ matrix.pairing }} ${{ matrix.board }}
+        run: >-
+          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB"
+          results/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload the failure folder
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: failure-agent-chain-${{ matrix.pairing }}-${{ matrix.board }}
+          path: results
+          if-no-files-found: warn
+          retention-days: 7
+
+  uos-chain:
+    needs: [plan, stages, card-terminal]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.uos) }}
+    container:
+      image: ghcr.io/robco-industries/robco-ci:${{ matrix.tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the nightly tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      - name: Check out UOS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/UOS
+          ref: ${{ matrix.sha }}
+          path: w/UOS
+          submodules: recursive
+          persist-credentials: false
+      - name: Mark the checkout safe for git
+        shell: bash
+        run: |
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git config --global --add safe.directory "$(dirname "$dotgit")"
+          done
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git -C "$(dirname "$dotgit")" rev-parse HEAD
+          done
+      - name: Download RETROS-BIOS
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage-${{ matrix.pairing }}-RETROS-BIOS
+          path: stage/RETROS-BIOS
+      - name: Download MFBootAgent
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage-${{ matrix.pairing }}-MFBootAgent
+          path: stage/MFBootAgent
+      - name: Download the card
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: card-terminal-${{ matrix.pairing }}
+          path: card
+      - name: Check the card
+        working-directory: card
+        run: sha256sum -c SHA256SUMS
+      - name: Set up the test environment
+        run: make -C w/UOS CI=1 all venv
+      # UOS reads ROBCO_CHAIN_CARD once its chain card lands. pytest
+      # refuses an option it does not know, so the card goes through env.
+      - name: Whole-chain tests on ${{ matrix.board }}
+        env:
+          BOARD: ${{ matrix.board }}
+        working-directory: w/UOS
+        run: >-
+          mkdir -p "$GITHUB_WORKSPACE/results" &&
+          ROBCO_CHAIN_CARD="$GITHUB_WORKSPACE/card/robco-terminal.img"
+          .venv/bin/pytest tests -k whole_chain -v -rs
+          --ignore=tests/tools --ignore=tests/host --board "$BOARD"
+          --retros-img "$GITHUB_WORKSPACE/stage/RETROS-BIOS/build/retros.img"
+          --mfboot-sys "$GITHUB_WORKSPACE/stage/MFBootAgent/mfboot.img"
+          --junitxml "$GITHUB_WORKSPACE/results/junit.xml"
+          --basetemp "$GITHUB_WORKSPACE/results/tmp"
+      - name: Gate
+        if: always()
+        env:
+          JOB: uos-chain ${{ matrix.pairing }} ${{ matrix.board }}
+        run: >-
+          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB"
+          results/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload the failure folder
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: failure-uos-chain-${{ matrix.pairing }}-${{ matrix.board }}
+          path: results
+          if-no-files-found: warn
+          retention-days: 7
+
+  pipboy:
+    needs: [plan, card-pipboy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.pipboy) }}
+    container:
+      image: ghcr.io/robco-industries/robco-ci:${{ matrix.tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the nightly tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      - name: Check out Deitrix
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/Deitrix
+          ref: ${{ matrix.sha }}
+          path: w/Deitrix
+          submodules: false
+          persist-credentials: false
+      - name: Check out the Pip-OS head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/Pip-OS
+          ref: ${{ matrix.pipos_sha }}
+          path: w/Deitrix/external/pip-os
+          submodules: recursive
+          persist-credentials: false
+      - name: Mark the checkout safe for git
+        shell: bash
+        run: |
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git config --global --add safe.directory "$(dirname "$dotgit")"
+          done
+          find "$GITHUB_WORKSPACE" -name .git -prune | while IFS= read -r dotgit; do
+            git -C "$(dirname "$dotgit")" rev-parse HEAD
+          done
+      - name: Download the card
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: card-pipboy-${{ matrix.pairing }}
+          path: card
+      - name: Check the card
+        working-directory: card
+        run: sha256sum -c SHA256SUMS
+      # The tests boot the uploaded card and kernel from build/pipos/.
+      - name: Put the card and the kernel in place
+        run: >-
+          mkdir -p w/Deitrix/build/pipos &&
+          cp card/robco-pipboy.img w/Deitrix/build/pipos/sd.img &&
+          cp card/pipos.img w/Deitrix/build/pipos/pipos.img
+      - name: Set up the test environment
+        run: make -C w/Deitrix CI=1 venv
+      - name: Whole-chain tests on ${{ matrix.board }}
+        env:
+          BOARD: ${{ matrix.board }}
+        working-directory: w/Deitrix
+        run: >-
+          mkdir -p "$GITHUB_WORKSPACE/results" &&
+          .venv/bin/pytest tests -v -rs --board "$BOARD"
+          -k "whole_chain or first_screen or navigation or setting_survives_a_reboot"
+          --junitxml "$GITHUB_WORKSPACE/results/junit.xml"
+          --basetemp "$GITHUB_WORKSPACE/results/tmp"
+      - name: Gate
+        if: always()
+        env:
+          JOB: pipboy ${{ matrix.pairing }} ${{ matrix.board }}
+        run: >-
+          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB"
+          results/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload the failure folder
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: failure-pipboy-${{ matrix.pairing }}-${{ matrix.board }}
+          path: results
+          if-no-files-found: warn
+          retention-days: 7

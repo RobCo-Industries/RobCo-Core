@@ -8,6 +8,8 @@
 #include <robco/timer.h>
 #include <robco/uart.h>
 
+#include "voice_demo.h"
+
 #define TICK_HZ     100
 
 /* A rising C major arpeggio. */
@@ -147,6 +149,18 @@ static void play_pcm_fast(void)
     audio_wait();
     audio_set_volume(100);
     case_end("pcm_fast", ret);
+}
+
+/* 3750 samples at 37500 Hz, the top rate: 100 ms. */
+static void play_pcm_top(void)
+{
+    int ret;
+
+    case_begin("pcm_top");
+    pcm_fill(3750);
+    ret = audio_play_pcm(pcm_buf, 3750, AUDIO_PCM_RATE_MAX, 0);
+    audio_wait();
+    case_end("pcm_top", ret);
 }
 
 /* One second, stopped after 200 ms. */
@@ -424,6 +438,61 @@ static void play_pcm_under(void)
     case_end("pcm_under", ret);
 }
 
+/*
+ * An overlay over a play: one on a play that waits for its tick, one on a
+ * running play that is longer than what is left of it. Prints the codes.
+ */
+static void play_pcm_mix(void)
+{
+    int idle, ret, mix0, busy0, again, null, ret2, mix1, live, done;
+
+    case_begin("pcm_mix");
+    pcm_fill(PCM_BUF);
+    idle = audio_pcm_mix(pcm_buf + 2000, 200);
+    ret = audio_play_pcm(pcm_buf, 800, 8000, 0);
+    mix0 = audio_pcm_mix(pcm_buf + 2000, 200);
+    busy0 = audio_pcm_mix_busy();
+    again = audio_pcm_mix(pcm_buf + 2000, 200);
+    null = audio_pcm_mix(0, 200);
+    audio_wait();
+    ret2 = audio_play_pcm(pcm_buf, 800, 8000, 0);
+    sleep_ms(50);
+    mix1 = audio_pcm_mix(pcm_buf + 4000, 2000);
+    live = audio_pcm_mix_busy();
+    audio_wait();
+    done = audio_pcm_mix_busy();
+    k_printf("@RC stage=audio ev=pcm_mix idle=%d mix0=%d busy0=%d again=%d null=%d ret2=%d "
+             "mix1=%d live=%d done=%d\n",
+             idle, mix0, busy0, again, null, ret2, mix1, live, done);
+    case_end("pcm_mix", ret);
+}
+
+/*
+ * The voice of voice_demo.h with its overlay, given while the voice waits
+ * for its tick, so both start on its first sample. The overlay's burst
+ * starts 80 ms in. Prints the codes of the calls around it.
+ */
+static void play_pcm_voice(void)
+{
+    static audio_voice_span_t spans[VOICE_SPANS];
+    int loop, none, ret, mix, queue, can, busy;
+
+    case_begin("pcm_voice");
+    voice_demo_spans(spans);
+    voice_demo_mix(pcm_buf);
+    loop = audio_play_voice(spans, VOICE_SPANS, VOICE_RATE, AUDIO_LOOP);
+    none = audio_play_voice(spans, 0, VOICE_RATE, 0);
+    ret = audio_play_voice(spans, VOICE_SPANS, VOICE_RATE, 0);
+    mix = audio_pcm_mix(pcm_buf, VOICE_MIX_LEN);
+    queue = audio_pcm_queue(pcm_buf, VOICE_MIX_LEN);
+    can = audio_pcm_can_queue();
+    busy = audio_play_voice(spans, VOICE_SPANS, VOICE_RATE, 0);
+    audio_wait();
+    k_printf("@RC stage=audio ev=pcm_voice loop=%d none=%d mix=%d queue=%d can=%d busy=%d\n",
+             loop, none, mix, queue, can, busy);
+    case_end("pcm_voice", ret);
+}
+
 /* Bad arguments return their codes and play nothing. */
 static void play_pcm_args(void)
 {
@@ -441,6 +510,7 @@ static void play_pcm_all(void)
 {
     play_pcm();
     play_pcm_fast();
+    play_pcm_top();
     play_pcm_stop();
     play_pcm_swap();
     play_pcm_cut();
@@ -451,6 +521,8 @@ static void play_pcm_all(void)
     play_pcm_qerr();
     play_pcm_qcut();
     play_pcm_under();
+    play_pcm_mix();
+    play_pcm_voice();
 }
 
 /* A stop, then PCM before the tick runs: IRQs stay masked across both calls. */
@@ -494,6 +566,32 @@ static void play_rule(void)
     }
 }
 
+/*
+ * The rest level moves to the midpoint with a ramp; a second call does
+ * nothing. A tone then still sounds, now as a centred square on the
+ * sample path, so the sample count grows while it plays. Last, as the
+ * level stays there.
+ */
+static void play_rest(void)
+{
+    int ret, again, tone;
+    uint32_t s0, s1;
+
+    case_begin("rest");
+    audio_set_volume(50);
+    ret = audio_rest_mid();
+    audio_wait();
+    again = audio_rest_mid();
+    s0 = audio_pcm_samples(0);
+    tone = audio_tone(440, 50);
+    audio_wait();
+    s1 = audio_pcm_samples(0);
+    audio_set_volume(100);
+    k_printf("@RC stage=audio ev=rest again=%d tone=%d grew=%u\n", again, tone,
+             (unsigned)(s1 - s0));
+    case_end("rest", ret);
+}
+
 static void play_all(void)
 {
     play_beep();
@@ -503,6 +601,7 @@ static void play_all(void)
     play_interrupt();
     play_pcm_all();
     play_rule();
+    play_rest();
 }
 
 void robco_main(void)
@@ -539,7 +638,7 @@ void robco_main(void)
     k_printf("@RC stage=audio ev=done\n");
 
     /* Replay on request, for listening tests on real hardware. */
-    k_printf("@RC stage=audio ev=ready keys=b,s,t,l,i,p,c,a\n");
+    k_printf("@RC stage=audio ev=ready keys=b,s,t,l,i,p,c,v,a\n");
     for (;;) {
         audio_poll();
         c = uart_poll();
@@ -551,6 +650,7 @@ void robco_main(void)
         case 'i': play_interrupt(); break;
         case 'p': play_pcm(); break;
         case 'c': play_pcm_chain(); break;
+        case 'v': play_pcm_voice(); break;
         case 'a': play_all(); break;
         default: break;
         }
