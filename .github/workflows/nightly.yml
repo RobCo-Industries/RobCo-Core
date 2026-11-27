@@ -40,8 +40,37 @@ on:
         type: string
         default: ""
 
+  # The same inputs for a call from another workflow of this repository.
+  # A called workflow has no choice type, so pairing is a string here and
+  # plan.py refuses any value but both, pins or core-head.
+  workflow_call:
+    inputs:
+      pairing:
+        type: string
+        default: both
+      core_ref:
+        type: string
+        default: ""
+      retros_ref:
+        type: string
+        default: ""
+      mfboot_ref:
+        type: string
+        default: ""
+      uos_ref:
+        type: string
+        default: ""
+      pipos_ref:
+        type: string
+        default: ""
+      deitrix_ref:
+        type: string
+        default: ""
+
+# A called run takes the caller's workflow name, so it gets its own group
+# and never waits behind, nor replaces a pending, scheduled night.
 concurrency:
-  group: nightly
+  group: nightly-${{ github.workflow }}
   cancel-in-progress: false
 
 permissions:
@@ -277,6 +306,7 @@ jobs:
           name: versions
           path: versions
       # UOS packs MAINT_SYS, DIAG_SYS and BOOT_CFG onto its chain card.
+      # CARD_NOTE names the version table. UOS ignores it today.
       - name: Build the card
         run: >-
           make -C w/UOS CI=1 all sdimage CHAIN=1
@@ -285,6 +315,7 @@ jobs:
           MAINT_SYS="$GITHUB_WORKSPACE/stage/MFBootAgent/maint.sys"
           DIAG_SYS="$GITHUB_WORKSPACE/stage/MFBootAgent/diag.sys"
           BOOT_CFG="$GITHUB_WORKSPACE/stage/RETROS-BIOS/boot/BOOT.CFG"
+          CARD_NOTE="$GITHUB_WORKSPACE/versions/VERSIONS.txt"
       - name: Pack the card
         run: >-
           python3 -I lib/tools/nightly/pack_card.py --card w/UOS/build/sd.img
@@ -361,8 +392,10 @@ jobs:
         with:
           name: versions
           path: versions
+      # CARD_NOTE names the version table. Deitrix ignores it today.
       - name: Build the card
-        run: make -C w/Deitrix CI=1 all sdimage kernel
+        run: >-
+          make -C w/Deitrix CI=1 all sdimage kernel CARD_NOTE="$GITHUB_WORKSPACE/versions/VERSIONS.txt"
       - name: Pack the card
         run: >-
           python3 -I lib/tools/nightly/pack_card.py --card w/Deitrix/build/pipos/sd.img
