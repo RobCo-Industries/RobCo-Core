@@ -67,10 +67,12 @@ on:
         type: string
         default: ""
 
-# A called run takes the caller's workflow name, so it gets its own group
-# and never waits behind, nor replaces a pending, scheduled night.
+# A called run takes the caller's workflow name and ref, so it gets its
+# own group and never waits behind, nor replaces a pending, scheduled
+# night. GitHub keeps one pending run per group and drops an older one,
+# so two callers on two refs must not share a group either.
 concurrency:
-  group: nightly-${{ github.workflow }}
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -306,7 +308,7 @@ jobs:
           name: versions
           path: versions
       # UOS packs MAINT_SYS, DIAG_SYS and BOOT_CFG onto its chain card.
-      # CARD_NOTE names the version table. UOS ignores it today.
+      # CARD_NOTE names the version table. UOS puts it on the card.
       - name: Build the card
         run: >-
           make -C w/UOS CI=1 all sdimage CHAIN=1
@@ -392,7 +394,7 @@ jobs:
         with:
           name: versions
           path: versions
-      # CARD_NOTE names the version table. Deitrix ignores it today.
+      # CARD_NOTE names the version table. Deitrix puts it on the card.
       - name: Build the card
         run: >-
           make -C w/Deitrix CI=1 all sdimage kernel CARD_NOTE="$GITHUB_WORKSPACE/versions/VERSIONS.txt"

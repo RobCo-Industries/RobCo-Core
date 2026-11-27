@@ -29,6 +29,7 @@
 | File | Content |
 |---|---|
 | [FONTS.md](./FONTS.md) | Console fonts and how to build a font table |
+| [RELEASING.md](./RELEASING.md) | How a suite release is made, the release workflow and its dry run |
 | [HARDWARE_VALIDATION.md](./HARDWARE_VALIDATION.md) | What QEMU cannot prove, per component, and how to check it on a real board |
 | [../tests/README.md](../tests/README.md) | Running and writing host, target and canary tests |
 | [../ci/README.md](../ci/README.md) | The CI container and its tag |

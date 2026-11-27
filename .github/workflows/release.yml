@@ -1,0 +1,293 @@
+# The suite release: one night at the release commits, then the files of
+# the release from that night's two pins cards. See docs/RELEASING.md.
+#
+# A manual start is always a dry run. It builds, tests and uploads the
+# artifact release, and nothing else. Only a pushed suite-* tag reaches
+# the publish job, which creates a draft pre-release that only people
+# with write access see. Making it public is a person's step.
+#
+# The workflow never pushes a tag and cannot tag a sibling: its token
+# has no access to the five other repositories.
+
+name: release
+
+on:
+  push:
+    tags: ["suite-*"]
+  workflow_dispatch:
+    inputs:
+      # A manifest path in this repository, such as
+      # releases/suite-2026.12.json, read at the ref the run starts from.
+      # Empty: a rehearsal from the six default heads.
+      manifest:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  packages: read
+
+# One group per ref. GitHub keeps one pending run per group and drops an
+# older pending one, so a shared group could lose a suite tag's run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      suite: ${{ steps.check.outputs.suite }}
+      core_sha: ${{ steps.check.outputs.core_sha }}
+      retros_sha: ${{ steps.check.outputs.retros_sha }}
+      mfboot_sha: ${{ steps.check.outputs.mfboot_sha }}
+      uos_sha: ${{ steps.check.outputs.uos_sha }}
+      pipos_sha: ${{ steps.check.outputs.pipos_sha }}
+      deitrix_sha: ${{ steps.check.outputs.deitrix_sha }}
+    steps:
+      - name: Check out the release tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      # Each checkout holds its default branch with full history, so
+      # manifest.py check finds the manifest's commit on it. The commit
+      # is checked out after the check, for the notices.
+      - name: Check out RobCo-Core
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          # An empty ref would mean the ref the run started from.
+          ref: ${{ github.event.repository.default_branch }}
+          path: w/RobCo-Core
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out RETROS-BIOS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RETROS-BIOS
+          path: w/RETROS-BIOS
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out MFBootAgent
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/MFBootAgent
+          path: w/MFBootAgent
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out UOS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/UOS
+          path: w/UOS
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out Pip-OS
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/Pip-OS
+          path: w/Pip-OS
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out Deitrix
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/Deitrix
+          path: w/Deitrix
+          fetch-depth: 0
+          persist-credentials: false
+      # A tag push reads releases/<tag>.json at the tag. A manual start
+      # reads its input, or writes a manifest from the six default heads
+      # when the input is empty.
+      - name: Find the manifest
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+          INPUT: ${{ inputs.manifest }}
+        run: |
+          mkdir out
+          if [ "$EVENT" = push ]; then
+            case "$TAG" in
+              *..*|*/*) echo "::error::tag $TAG is not a suite name"; exit 1 ;;
+            esac
+            cp "lib/releases/$TAG.json" out/manifest.json
+          elif [ -n "$INPUT" ]; then
+            case "$INPUT" in
+              *..*|*/*/*) echo "::error::manifest input $INPUT is not releases/suite-*.json"; exit 1 ;;
+              releases/suite-*.json) cp "lib/$INPUT" out/manifest.json ;;
+              *) echo "::error::manifest input $INPUT is not releases/suite-*.json"; exit 1 ;;
+            esac
+          else
+            python3 -I lib/tools/release/manifest.py new --suite "suite-$(date -u +%Y.%m)" \
+              --work w --out out/manifest.json
+          fi
+          cat out/manifest.json
+      # On a tag push the changelog rule holds and the tag must be the
+      # manifest's suite. A manifest from the default heads skips only
+      # the changelog rule.
+      - name: Check the manifest
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.ref_name }}
+          INPUT: ${{ inputs.manifest }}
+        run: |
+          args=(check --manifest out/manifest.json --work w --github-output "$GITHUB_OUTPUT")
+          if [ "$EVENT" = push ]; then
+            args+=(--tag "$TAG")
+          elif [ -z "$INPUT" ]; then
+            args+=(--rehearsal)
+          fi
+          python3 -I lib/tools/release/manifest.py "${args[@]}"
+      # A v tag on another commit fails every run. A missing v tag fails
+      # only a tag push, since the v tags are pushed before the suite tag.
+      - name: Check the v tags
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          args=(remote-tags --manifest out/manifest.json)
+          if [ "$EVENT" = push ]; then args+=(--require); fi
+          python3 -I lib/tools/release/manifest.py "${args[@]}"
+      - name: Check out the manifest's commits
+        env:
+          CORE_SHA: ${{ steps.check.outputs.core_sha }}
+          RETROS_SHA: ${{ steps.check.outputs.retros_sha }}
+          MFBOOT_SHA: ${{ steps.check.outputs.mfboot_sha }}
+          UOS_SHA: ${{ steps.check.outputs.uos_sha }}
+          PIPOS_SHA: ${{ steps.check.outputs.pipos_sha }}
+          DEITRIX_SHA: ${{ steps.check.outputs.deitrix_sha }}
+        run: |
+          git -C w/RobCo-Core checkout --quiet --detach "$CORE_SHA"
+          git -C w/RETROS-BIOS checkout --quiet --detach "$RETROS_SHA"
+          git -C w/MFBootAgent checkout --quiet --detach "$MFBOOT_SHA"
+          git -C w/UOS checkout --quiet --detach "$UOS_SHA"
+          git -C w/Pip-OS checkout --quiet --detach "$PIPOS_SHA"
+          git -C w/Deitrix checkout --quiet --detach "$DEITRIX_SHA"
+      # The licence texts and the firmware script come from the manifest's
+      # commits, the same trees the night builds.
+      - name: Write the notices
+        run: |
+          python3 -I lib/tools/release/notices.py --work w --out out/NOTICES.txt
+          cp w/RobCo-Core/tools/fetch_firmware.sh out/fetch_firmware.sh
+      - name: Upload the manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: manifest
+          path: out
+          if-no-files-found: error
+          retention-days: 14
+
+  # The nightly run at the manifest's commits, pins pairing only. Its
+  # plan job checks out each commit, so every input is a full commit.
+  night:
+    needs: manifest
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/nightly.yml
+    with:
+      pairing: pins
+      core_ref: ${{ needs.manifest.outputs.core_sha }}
+      retros_ref: ${{ needs.manifest.outputs.retros_sha }}
+      mfboot_ref: ${{ needs.manifest.outputs.mfboot_sha }}
+      uos_ref: ${{ needs.manifest.outputs.uos_sha }}
+      pipos_ref: ${{ needs.manifest.outputs.pipos_sha }}
+      deitrix_ref: ${{ needs.manifest.outputs.deitrix_sha }}
+
+  # Runs only when every job of the night passed.
+  assemble:
+    needs: [manifest, night]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the release tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: lib
+          persist-credentials: false
+      - name: Download the manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: manifest
+          path: in
+      - name: Download the terminal card
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: card-terminal-pins
+          path: card-terminal
+      - name: Download the Pip-Boy card
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: card-pipboy-pins
+          path: card-pipboy
+      - name: Check the cards
+        run: |
+          (cd card-terminal && sha256sum -c SHA256SUMS)
+          (cd card-pipboy && sha256sum -c SHA256SUMS)
+      - name: Check that the night built the manifest's commits
+        run: |
+          python3 -I lib/tools/release/manifest.py verify-night \
+            --manifest in/manifest.json --versions card-terminal/VERSIONS.txt
+          python3 -I lib/tools/release/manifest.py verify-night \
+            --manifest in/manifest.json --versions card-pipboy/VERSIONS.txt
+      - name: Build the release files
+        run: >-
+          python3 -I lib/tools/release/assemble.py --manifest in/manifest.json
+          --terminal card-terminal --pipboy card-pipboy --notices in/NOTICES.txt
+          --fetch-firmware in/fetch_firmware.sh --out dist
+      - name: Show the release files
+        run: |
+          ls -l dist/assets
+          (cd dist/assets && sha256sum -c SHA256SUMS)
+          cat dist/NOTES.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
+
+  # A manual start can never reach this job: the if below needs the push
+  # event, and on: lists push for suite-* tags only. A manual start on a
+  # tag ref is still a workflow_dispatch event, so it is skipped too. The
+  # job checks out no code, so no repository code runs with the write
+  # token, and it creates a draft pre-release, never a public one.
+  publish:
+    needs: [manifest, assemble]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/suite-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+          path: dist
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          TAG: ${{ github.ref_name }}
+          SUITE: ${{ needs.manifest.outputs.suite }}
+        run: |
+          test "$EVENT" = push
+          case "$REF" in refs/tags/suite-*) ;; *) exit 1 ;; esac
+          test "$TAG" = "$SUITE"
+          test -f "dist/assets/$TAG.json"
+          (cd dist/assets && sha256sum -c SHA256SUMS)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::a release named $TAG exists already"
+            exit 1
+          fi
+          gh release create "$TAG" dist/assets/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --draft --prerelease --title "$TAG" --notes-file dist/NOTES.md
