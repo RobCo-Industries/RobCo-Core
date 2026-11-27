@@ -1,11 +1,14 @@
 # The nightly integration run: builds the five sibling repositories at
-# their default heads, each on its own RobCo-Core pin, packs the two
-# cards and runs the whole-chain tests on the real images. See the
-# section "Nightly" in docs/spec/TESTING.md.
+# their default heads, packs the two cards and runs the whole-chain tests
+# on the real images. See the section "Nightly" in docs/spec/TESTING.md.
 #
-# Only the pins pairing exists. The plan job resolves every ref to a
-# commit once, and every later job checks out those commits. Each run:
-# step calls a script or a make target. Values reach scripts through env:.
+# Two pairings exist. In pins each sibling builds on its own RobCo-Core
+# pin. In core-head every sibling builds on the planned RobCo-Core commit,
+# checked out into its external/robco-core in place of the submodule,
+# and the tests run on raspi0 and raspi2b only. The plan job resolves
+# every ref to a commit once, and every later job checks out those
+# commits. Each run: step calls a script or a make target. Values reach
+# scripts through env:.
 
 name: nightly
 
@@ -163,7 +166,15 @@ jobs:
           repository: RobCo-Industries/${{ matrix.repo }}
           ref: ${{ matrix.sha }}
           path: w/${{ matrix.repo }}
-          submodules: recursive
+          submodules: ${{ matrix.pairing == 'core-head' && 'false' || 'recursive' }}
+          persist-credentials: false
+      - name: Check out the planned RobCo-Core
+        if: matrix.pairing == 'core-head'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ matrix.core_sha }}
+          path: w/${{ matrix.repo }}/external/robco-core
           persist-credentials: false
       # The container runs as root on a checkout the runner user owns, so
       # git refuses it. Mark the folder of every .git entry as safe, then
@@ -203,8 +214,12 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  # The matrix holds both pairings, so a failed entry of one pairing
+  # would skip this whole job. Run it anyway: an entry whose own
+  # pairing broke earlier fails at its download step.
   card-terminal:
     needs: [plan, stages]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -227,7 +242,15 @@ jobs:
           repository: RobCo-Industries/UOS
           ref: ${{ matrix.sha }}
           path: w/UOS
-          submodules: recursive
+          submodules: ${{ matrix.pairing == 'core-head' && 'false' || 'recursive' }}
+          persist-credentials: false
+      - name: Check out the planned RobCo-Core
+        if: matrix.pairing == 'core-head'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ matrix.core_sha }}
+          path: w/UOS/external/robco-core
           persist-credentials: false
       - name: Mark the checkout safe for git
         shell: bash
@@ -253,8 +276,7 @@ jobs:
         with:
           name: versions
           path: versions
-      # UOS ignores MAINT_SYS, DIAG_SYS and BOOT_CFG until its chain card
-      # lands. They are passed from the first night all the same.
+      # UOS packs MAINT_SYS, DIAG_SYS and BOOT_CFG onto its chain card.
       - name: Build the card
         run: >-
           make -C w/UOS CI=1 all sdimage CHAIN=1
@@ -281,7 +303,7 @@ jobs:
           name: card-terminal-${{ matrix.pairing }}
           path: card
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ matrix.pairing == 'core-head' && 3 || 14 }}
 
   card-pipboy:
     needs: plan
@@ -315,7 +337,15 @@ jobs:
           repository: RobCo-Industries/Pip-OS
           ref: ${{ matrix.pipos_sha }}
           path: w/Deitrix/external/pip-os
-          submodules: recursive
+          submodules: ${{ matrix.pairing == 'core-head' && 'false' || 'recursive' }}
+          persist-credentials: false
+      - name: Check out the planned RobCo-Core
+        if: matrix.pairing == 'core-head'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ matrix.core_sha }}
+          path: w/Deitrix/external/pip-os/external/robco-core
           persist-credentials: false
       - name: Mark the checkout safe for git
         shell: bash
@@ -350,10 +380,11 @@ jobs:
           name: card-pipboy-${{ matrix.pairing }}
           path: card
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ matrix.pairing == 'core-head' && 3 || 14 }}
 
   agent-chain:
     needs: [plan, stages]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -376,7 +407,15 @@ jobs:
           repository: RobCo-Industries/MFBootAgent
           ref: ${{ matrix.sha }}
           path: w/MFBootAgent
-          submodules: recursive
+          submodules: ${{ matrix.pairing == 'core-head' && 'false' || 'recursive' }}
+          persist-credentials: false
+      - name: Check out the planned RobCo-Core
+        if: matrix.pairing == 'core-head'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ matrix.core_sha }}
+          path: w/MFBootAgent/external/robco-core
           persist-credentials: false
       - name: Mark the checkout safe for git
         shell: bash
@@ -440,6 +479,7 @@ jobs:
 
   uos-chain:
     needs: [plan, stages, card-terminal]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -462,7 +502,15 @@ jobs:
           repository: RobCo-Industries/UOS
           ref: ${{ matrix.sha }}
           path: w/UOS
-          submodules: recursive
+          submodules: ${{ matrix.pairing == 'core-head' && 'false' || 'recursive' }}
+          persist-credentials: false
+      - name: Check out the planned RobCo-Core
+        if: matrix.pairing == 'core-head'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ matrix.core_sha }}
+          path: w/UOS/external/robco-core
           persist-credentials: false
       - name: Mark the checkout safe for git
         shell: bash
@@ -493,8 +541,7 @@ jobs:
         run: sha256sum -c SHA256SUMS
       - name: Set up the test environment
         run: make -C w/UOS CI=1 all venv
-      # UOS reads ROBCO_CHAIN_CARD once its chain card lands. pytest
-      # refuses an option it does not know, so the card goes through env.
+      # The UOS tests read the packed card from ROBCO_CHAIN_CARD.
       - name: Whole-chain tests on ${{ matrix.board }}
         id: tests
         env:
@@ -547,6 +594,7 @@ jobs:
 
   pipboy:
     needs: [plan, card-pipboy]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -577,7 +625,15 @@ jobs:
           repository: RobCo-Industries/Pip-OS
           ref: ${{ matrix.pipos_sha }}
           path: w/Deitrix/external/pip-os
-          submodules: recursive
+          submodules: ${{ matrix.pairing == 'core-head' && 'false' || 'recursive' }}
+          persist-credentials: false
+      - name: Check out the planned RobCo-Core
+        if: matrix.pairing == 'core-head'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: RobCo-Industries/RobCo-Core
+          ref: ${{ matrix.core_sha }}
+          path: w/Deitrix/external/pip-os/external/robco-core
           persist-credentials: false
       - name: Mark the checkout safe for git
         shell: bash
