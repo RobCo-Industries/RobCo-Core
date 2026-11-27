@@ -54,6 +54,29 @@ def git(repo, *args):
     return proc.stdout.strip()
 
 
+def at_commit(repo, name, commit, path):
+    """The text of path in commit, never the working tree."""
+    proc = subprocess.run(["git", "-C", repo, "show", f"{commit}:{path}"],
+                          capture_output=True)
+    if proc.returncode != 0:
+        raise ManifestError(f"{name}: {commit[:12]} has no {path}")
+    try:
+        return proc.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ManifestError(f"{name}: {commit[:12]}: {path} is not UTF-8") from None
+
+
+def gitlink(repo, name, commit, path):
+    """The commit a gitlink in commit pins."""
+    out = git(repo, "ls-tree", commit, "--", path)
+    mode, _, rest = out.partition(" ")
+    kind, _, rest = rest.partition(" ")
+    sha, _, found = rest.partition("\t")
+    if mode != "160000" or kind != "commit" or found != path:
+        raise ManifestError(f"{name}: {commit[:12]} has no {path} gitlink")
+    return sha
+
+
 def read_text(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -71,33 +94,39 @@ def c_define(text, name):
     return m.group(1)
 
 
-def code_version(work, name):
-    """The version the repository's code holds, or None for RobCo-Core."""
+def code_version(work, name, commit):
+    """The version the code of commit holds, or None for RobCo-Core."""
     repo = os.path.join(work, name)
+
+    def read_text(path):
+        return at_commit(repo, name, commit, path)
     try:
         if name == "RETROS-BIOS":
-            value = c_define(read_text(os.path.join(repo, "src/robco_config.h")),
+            value = c_define(read_text("src/robco_config.h"),
                              "RETROS_VERSION_STR")
         elif name == "MFBootAgent":
-            value = c_define(read_text(os.path.join(repo, "src/robco_config.h")),
+            value = c_define(read_text("src/robco_config.h"),
                              "MFB_VERSION_STR")
         elif name == "UOS":
-            value = c_define(read_text(os.path.join(repo, "src/kernel/robco_config.h")),
+            value = c_define(read_text("src/kernel/robco_config.h"),
                              "UOS_VERSION_STR")
         elif name == "Pip-OS":
-            text = read_text(os.path.join(repo, "kernel/robco_config.h"))
+            text = read_text("kernel/robco_config.h")
             return ".".join(c_define(text, f"PIPOS_VERSION_{p}")
                             for p in ("MAJOR", "MINOR", "PATCH"))
         elif name == "Deitrix":
             m = re.search(r"^VERSION\s*:=\s*(\S+)\s*$",
-                          read_text(os.path.join(repo, "Makefile")), re.M)
+                          read_text("Makefile"), re.M)
             if not m:
                 raise ManifestError("no VERSION := line in Makefile")
             return m.group(1)
         else:
             return None
     except ManifestError as e:
-        raise ManifestError(f"{name}: version in code: {e}") from None
+        msg = str(e)
+        if msg.startswith(f"{name}: "):
+            msg = msg[len(name) + 2:]
+        raise ManifestError(f"{name}: version in code: {msg}") from None
     if not (value.startswith('"') and value.endswith('"')):
         raise ManifestError(f"{name}: version in code is not a string: {value}")
     return value[1:-1]
@@ -232,15 +261,19 @@ def check_errors(data, work, rehearsal=False, tag=None):
         good = COMMIT_RE if key == "commit" else VERSION_RE
         return value if isinstance(value, str) and good.fullmatch(value) else None
 
+    missing = set()
     for name in NAMES:
         repo = os.path.join(work, name)
         commit, version = field(name, "commit"), field(name, "version")
         if commit:
             try:
-                head = git(repo, "rev-parse", "HEAD")
-                if head != commit:
-                    errors.append(f"{name}: the checkout is at {head[:12]}, "
-                                  f"the manifest names {commit[:12]}")
+                git(repo, "cat-file", "-e", f"{commit}^{{commit}}")
+            except ManifestError:
+                errors.append(f"{name}: the checkout has no commit {commit[:12]}")
+                missing.add(name)
+                commit = None
+        if commit:
+            try:
                 branch = DEFAULT_BRANCH[name]
                 ref = default_ref(repo, branch)
                 if ref is None:
@@ -249,31 +282,33 @@ def check_errors(data, work, rehearsal=False, tag=None):
                     errors.append(f"{name}: {commit[:12]} is not on {branch}")
             except ManifestError as e:
                 errors.append(f"{name}: {e}")
-        if version:
+        if version and commit:
             try:
-                found = code_version(work, name)
+                found = code_version(work, name, commit)
                 if found is not None and found != version:
                     errors.append(f"{name}: the code says {found}, the manifest {version}")
             except ManifestError as e:
                 errors.append(str(e))
             if not rehearsal:
                 try:
-                    text = read_text(os.path.join(repo, "CHANGELOG.md"))
+                    text = at_commit(repo, name, commit, "CHANGELOG.md")
                     errors += [f"{name}: CHANGELOG.md: {p}"
                                for p in changelog_problems(text, version)]
                 except ManifestError as e:
-                    errors.append(f"{name}: {e}")
+                    errors.append(str(e))
 
     core, pipos = field(CORE, "commit"), field("Pip-OS", "commit")
     pins = [(n, "external/robco-core", CORE, core) for n in LIBRARY_PINNERS]
     pins.append(("Deitrix", "external/pip-os", "Pip-OS", pipos))
     for name, path, what, want in pins:
-        if not want:
+        at = field(name, "commit")
+        if not want or not at or name in missing:
             continue
         try:
-            got = git(os.path.join(work, name), "rev-parse", f"HEAD:{path}")
+            got = gitlink(os.path.join(work, name), name, at, path)
         except ManifestError as e:
-            errors.append(f"{name}: {e}")
+            msg = str(e)
+            errors.append(msg if msg.startswith(f"{name}: ") else f"{name}: {msg}")
             continue
         if got != want:
             errors.append(f"{name}: pins {what} {got[:12]}, the manifest names {want[:12]}")
@@ -347,10 +382,10 @@ def cmd_new(args):
         repo = os.path.join(args.work, name)
         try:
             commit = git(repo, "rev-parse", "HEAD")
-            version = code_version(args.work, name)
+            version = code_version(args.work, name, commit)
             if version is None:
-                path = os.path.join(repo, "CHANGELOG.md")
-                version = latest_changelog_version(read_text(path)) or "0.1.0"
+                text = at_commit(repo, name, commit, "CHANGELOG.md")
+                version = latest_changelog_version(text) or "0.1.0"
             repos[name] = {"version": version, "commit": commit}
         except ManifestError as e:
             errors.append(f"{name}: {e}" if not str(e).startswith(name) else str(e))

@@ -28,10 +28,10 @@ A suite release names one commit and one version for each of the six repositorie
 
 ## The rules
 
-`check` reads the six checkouts under a work folder, one folder per repository, named as the repository. It checks every rule, prints one `::error::` line per broken rule and only then exits with 1.
+`check` reads the six checkouts under a work folder, one folder per repository, named as the repository. It reads every file at the manifest's commit with git, never from the working tree, so an edit that is not committed changes nothing. A file missing at that commit is an error that names the repository, the commit and the path. It checks every rule, prints one `::error::` line per broken rule and only then exits with 1.
 
 - The manifest has the shape above.
-- Each checkout is at the manifest's commit.
+- Each checkout holds the manifest's commit. It does not have to be checked out.
 - Each commit is on its repository's default branch: `main` for RobCo-Core and RETROS-BIOS, `master` for the others.
 - RETROS-BIOS, MFBootAgent, UOS and Pip-OS pin the manifest's RobCo-Core commit.
 - Deitrix pins the manifest's Pip-OS commit.
@@ -51,7 +51,7 @@ python3 -I tools/release/manifest.py remote-tags --manifest F [--require] [--rem
 python3 -I tools/release/manifest.py tags --manifest F
 ```
 
-- `new` writes a manifest from the checkouts under `w/`: each one's commit and its version in code. RobCo-Core takes the newest version section of its changelog, or `0.1.0` when it has none.
+- `new` writes a manifest from the checkouts under `w/`: each one's `HEAD` commit and the version in code at that commit. RobCo-Core takes the newest version section of its changelog, or `0.1.0` when it has none.
 - `check` runs the rules above. With `--github-output` it writes `suite` and the six commits as `core_sha`, `retros_sha`, `mfboot_sha`, `uos_sha`, `pipos_sha` and `deitrix_sha`.
 - `verify-night` reads the `VERSIONS.txt` of a nightly run. Each repository's 12-digit commit must start the manifest's commit, and its Note column must be empty, which means no pin differed.
 - `remote-tags` asks each repository for its `v<version>` tag with `git ls-remote`. It is the only command that talks to a remote. A tag on another commit fails. A missing tag is printed and passes, unless `--require` is given. `--remote REPO=URL` replaces a repository's address, which is `https://github.com/RobCo-Industries/<name>.git` by default.

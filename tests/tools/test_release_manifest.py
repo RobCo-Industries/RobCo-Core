@@ -263,12 +263,106 @@ def test_check_lists_every_problem(work):
     assert "Deitrix: CHANGELOG.md" in text
 
 
-def test_checkout_at_another_commit(work):
+def test_checkout_at_another_commit_reads_the_named_one(work):
     w, _, manifest = work
-    commit(w / "RETROS-BIOS", branch="main")
+    commit(w / "RETROS-BIOS", {"src/robco_config.h": header("RETROS", "0.9.0")}, branch="main")
+    code, out = check(w, manifest)
+    assert code == 0, out
+
+
+def test_commit_missing_from_the_checkout(work):
+    w, _, manifest = work
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(commit="0" * 40))
     code, out = check(w, manifest)
     assert code == 1
-    assert any("RETROS-BIOS: the checkout is at" in e for e in errors(out))
+    assert errors(out) == ["::error::manifest: UOS: the checkout has no commit 000000000000"]
+
+
+def test_file_missing_at_the_commit(work):
+    w, _, manifest = work
+    repo = w / "UOS"
+    git(repo, "rm", "-q", "CHANGELOG.md")
+    sha = commit(repo, branch="master")
+    (repo / "CHANGELOG.md").write_text(CHANGELOG.format(v="0.1.0"))
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(commit=sha))
+    code, out = check(w, manifest)
+    assert code == 1
+    assert errors(out) == [f"::error::manifest: UOS: {sha[:12]} has no CHANGELOG.md"]
+
+
+# check and new read the commit, never the working tree
+
+BAD_LOG = "# Changelog\n\n## [Unreleased]\n\n- Pending.\n\n## [0.1.0] - 2026-12-01\n"
+
+
+def test_uncommitted_version_edit_is_ignored(work, tmp_path):
+    w, _, manifest = work
+    path = w / "UOS" / "src" / "kernel" / "robco_config.h"
+    path.write_text(header("UOS", "0.3.0"))
+    assert check(w, manifest, "--rehearsal")[0] == 0
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(version="0.3.0"))
+    code, out = check(w, manifest, "--rehearsal")
+    assert code == 1
+    assert errors(out) == ["::error::manifest: UOS: the code says 0.1.0, the manifest 0.3.0"]
+    out_file = tmp_path / "new.json"
+    assert tool("new", "--suite", "suite-2026.12", "--work", w, "--out", out_file)[0] == 0
+    assert json.loads(out_file.read_text())["repositories"]["UOS"]["version"] == "0.1.0"
+
+
+def test_uncommitted_revert_of_a_version_is_ignored(work, tmp_path):
+    w, _, manifest = work
+    repo = w / "UOS"
+    sha = commit(repo, {"src/kernel/robco_config.h": header("UOS", "0.2.0")}, branch="master")
+    (repo / "src" / "kernel" / "robco_config.h").write_text(header("UOS", "0.1.0"))
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(commit=sha))
+    code, out = check(w, manifest, "--rehearsal")
+    assert code == 1
+    assert errors(out) == ["::error::manifest: UOS: the code says 0.2.0, the manifest 0.1.0"]
+    out_file = tmp_path / "new.json"
+    assert tool("new", "--suite", "suite-2026.12", "--work", w, "--out", out_file)[0] == 0
+    assert json.loads(out_file.read_text())["repositories"]["UOS"] == {
+        "version": "0.2.0", "commit": sha}
+
+
+def test_uncommitted_changelog_edit_is_ignored(work, tmp_path):
+    w, _, manifest = work
+    (w / "UOS" / "CHANGELOG.md").write_text(BAD_LOG)
+    assert check(w, manifest)[0] == 0
+    repo = w / "UOS"
+    sha = commit(repo, {"CHANGELOG.md": BAD_LOG}, branch="master")
+    (repo / "CHANGELOG.md").write_text(CHANGELOG.format(v="0.1.0"))
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(commit=sha))
+    code, out = check(w, manifest)
+    assert code == 1
+    assert errors(out) == ["::error::manifest: UOS: CHANGELOG.md: the Unreleased section "
+                           "is not empty"]
+
+
+def test_uncommitted_core_changelog_edit_is_ignored_by_new(work, tmp_path):
+    w, _, _ = work
+    (w / "RobCo-Core" / "CHANGELOG.md").write_text(CHANGELOG.format(v="0.4.0"))
+    out_file = tmp_path / "new.json"
+    assert tool("new", "--suite", "suite-2026.12", "--work", w, "--out", out_file)[0] == 0
+    assert json.loads(out_file.read_text())["repositories"]["RobCo-Core"]["version"] == "0.1.0"
+
+
+def test_uncommitted_pin_edit_is_ignored(work):
+    w, shas, manifest = work
+    newer = commit(w / "RobCo-Core")
+    repo = w / "UOS"
+    git(repo, "update-index", "--cacheinfo", f"160000,{newer},external/robco-core")
+    assert check(w, manifest)[0] == 0
+    edit(manifest, lambda d: d["repositories"]["RobCo-Core"].update(commit=newer))
+    code, out = check(w, manifest)
+    assert code == 1
+    assert any(e.startswith("::error::manifest: UOS: pins RobCo-Core") for e in errors(out))
+    git(repo, "update-index", "--cacheinfo", f"160000,{shas['RobCo-Core']},external/robco-core")
+    sha = commit(repo, links={"external/robco-core": newer}, branch="master")
+    git(repo, "update-index", "--cacheinfo", f"160000,{shas['RobCo-Core']},external/robco-core")
+    edit(manifest, lambda d: d["repositories"]["UOS"].update(commit=sha))
+    code, out = check(w, manifest)
+    assert code == 1
+    assert not any("UOS: pins" in e for e in errors(out))
 
 
 # v tags on the remotes
