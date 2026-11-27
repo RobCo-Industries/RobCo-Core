@@ -36,7 +36,9 @@ A nightly run builds the five siblings and boots both chains in QEMU. [Nightly](
 - For projects that use the library as a submodule: host tests through `mk/host.mk`, a pytest plugin and an interactive runner in `tests/harness`, `tools/check_pins.sh` to check the CI pins against the submodule, `tools/check_doc_links.sh` to check doc links to a pinned repository and `tools/check_workflow_exprs.py` for safe, pinned workflows. [Getting started](./docs/guide/GETTING_STARTED.md) shows the host tests, the harness and the two pin checks.
 - [PROJECT_LAYOUT.md](./docs/guide/PROJECT_LAYOUT.md) lists the other tools under `tools/`.
 
-The [specification index](./docs/spec/README.md) lists what is specified but not implemented yet. That includes the `BOOT.CFG` boot menu, the board name from the revision code and the Pip-OS ABI. ## Hardware
+The [specification index](./docs/spec/README.md) says, part by part, what the code in this repository implements and what a spec only defines. Some defined parts live in the siblings: MFBootAgent implements the `BOOT.CFG` boot menu and Pip-OS implements the Pip-OS ABI. Others have no code yet, such as the board name from the revision code.
+
+## Hardware
 
 Three examples ran on a Pi Zero W 1.1: `hello`, `sdraw` and `umode`. No other board has run the library yet. [HARDWARE_VALIDATION.md](./docs/HARDWARE_VALIDATION.md) holds the results and lists what QEMU cannot prove, such as sound and cache behaviour.
 
