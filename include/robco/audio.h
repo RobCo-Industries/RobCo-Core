@@ -176,9 +176,12 @@ int audio_busy(void);
  * the sample IRQ moves its level toward the new gain by a step per grid
  * sample. A change starts at the grid sample of the call. The gain
  * follows the sample grid, so a late sample catches up. A change reaches
- * every kind of play within 20 ms with no jump. A pulse tone, before the rest ramp ends, takes the gain at its next note.
- * The rest ramp ignores it. On the trace backend a change while something
- * plays prints one op=gain line.
+ * every kind of play within 20 ms with no jump. A pulse tone, before the
+ * rest ramp ends, takes the gain at its next note. In a centred tone, the
+ * next note of a sequence keeps the gain and its move. A note after a
+ * rest starts at the gain set last. The rest ramp ignores it. On the
+ * trace backend a change while something sounds prints one op=gain line.
+ * In a rest of a sequence it prints none: the next note's line carries it.
  */
 void audio_set_gain(uint32_t gain);
 
