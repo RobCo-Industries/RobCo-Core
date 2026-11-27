@@ -395,6 +395,7 @@ jobs:
       - name: Set up the test environment
         run: make -C w/MFBootAgent CI=1 all venv
       - name: Whole-chain tests on ${{ matrix.board }}
+        id: tests
         env:
           BOARD: ${{ matrix.board }}
         working-directory: w/MFBootAgent
@@ -404,13 +405,30 @@ jobs:
           --retros-img "$GITHUB_WORKSPACE/stage/RETROS-BIOS/build/retros.img"
           --junitxml "$GITHUB_WORKSPACE/results/junit.xml"
           --basetemp "$GITHUB_WORKSPACE/results/tmp"
+      # A rerun never turns the job green. The gate labels each failed
+      # test FLAKY or BROKEN from its file.
+      - name: Rerun failed tests
+        id: rerun
+        if: failure() && steps.tests.outcome == 'failure'
+        env:
+          BOARD: ${{ matrix.board }}
+        working-directory: w/MFBootAgent
+        run: >-
+          .venv/bin/pytest --lf tests -k whole_chain -v -rs --board "$BOARD"
+          --retros-img "$GITHUB_WORKSPACE/stage/RETROS-BIOS/build/retros.img"
+          --junitxml "$GITHUB_WORKSPACE/results/rerun.xml"
+          --basetemp "$GITHUB_WORKSPACE/results/tmp-rerun"
       - name: Gate
         if: always()
         env:
           JOB: agent-chain ${{ matrix.pairing }} ${{ matrix.board }}
-        run: >-
-          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB"
-          results/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+          RERUN: ${{ steps.rerun.outcome }}
+        shell: bash
+        run: |
+          files=(results/junit.xml)
+          if [ "$RERUN" != skipped ]; then files+=(results/rerun.xml); fi
+          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB" \
+            "${files[@]}" --summary "$GITHUB_STEP_SUMMARY"
       - name: Upload the failure folder
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -478,6 +496,7 @@ jobs:
       # UOS reads ROBCO_CHAIN_CARD once its chain card lands. pytest
       # refuses an option it does not know, so the card goes through env.
       - name: Whole-chain tests on ${{ matrix.board }}
+        id: tests
         env:
           BOARD: ${{ matrix.board }}
         working-directory: w/UOS
@@ -490,13 +509,33 @@ jobs:
           --mfboot-sys "$GITHUB_WORKSPACE/stage/MFBootAgent/mfboot.img"
           --junitxml "$GITHUB_WORKSPACE/results/junit.xml"
           --basetemp "$GITHUB_WORKSPACE/results/tmp"
+      # A rerun never turns the job green. The gate labels each failed
+      # test FLAKY or BROKEN from its file.
+      - name: Rerun failed tests
+        id: rerun
+        if: failure() && steps.tests.outcome == 'failure'
+        env:
+          BOARD: ${{ matrix.board }}
+        working-directory: w/UOS
+        run: >-
+          ROBCO_CHAIN_CARD="$GITHUB_WORKSPACE/card/robco-terminal.img"
+          .venv/bin/pytest --lf tests -k whole_chain -v -rs
+          --ignore=tests/tools --ignore=tests/host --board "$BOARD"
+          --retros-img "$GITHUB_WORKSPACE/stage/RETROS-BIOS/build/retros.img"
+          --mfboot-sys "$GITHUB_WORKSPACE/stage/MFBootAgent/mfboot.img"
+          --junitxml "$GITHUB_WORKSPACE/results/rerun.xml"
+          --basetemp "$GITHUB_WORKSPACE/results/tmp-rerun"
       - name: Gate
         if: always()
         env:
           JOB: uos-chain ${{ matrix.pairing }} ${{ matrix.board }}
-        run: >-
-          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB"
-          results/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+          RERUN: ${{ steps.rerun.outcome }}
+        shell: bash
+        run: |
+          files=(results/junit.xml)
+          if [ "$RERUN" != skipped ]; then files+=(results/rerun.xml); fi
+          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB" \
+            "${files[@]}" --summary "$GITHUB_STEP_SUMMARY"
       - name: Upload the failure folder
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -566,6 +605,7 @@ jobs:
       - name: Set up the test environment
         run: make -C w/Deitrix CI=1 venv
       - name: Whole-chain tests on ${{ matrix.board }}
+        id: tests
         env:
           BOARD: ${{ matrix.board }}
         working-directory: w/Deitrix
@@ -575,13 +615,30 @@ jobs:
           -k "whole_chain or first_screen or navigation or setting_survives_a_reboot"
           --junitxml "$GITHUB_WORKSPACE/results/junit.xml"
           --basetemp "$GITHUB_WORKSPACE/results/tmp"
+      # A rerun never turns the job green. The gate labels each failed
+      # test FLAKY or BROKEN from its file.
+      - name: Rerun failed tests
+        id: rerun
+        if: failure() && steps.tests.outcome == 'failure'
+        env:
+          BOARD: ${{ matrix.board }}
+        working-directory: w/Deitrix
+        run: >-
+          .venv/bin/pytest --lf tests -v -rs --board "$BOARD"
+          -k "whole_chain or first_screen or navigation or setting_survives_a_reboot"
+          --junitxml "$GITHUB_WORKSPACE/results/rerun.xml"
+          --basetemp "$GITHUB_WORKSPACE/results/tmp-rerun"
       - name: Gate
         if: always()
         env:
           JOB: pipboy ${{ matrix.pairing }} ${{ matrix.board }}
-        run: >-
-          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB"
-          results/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+          RERUN: ${{ steps.rerun.outcome }}
+        shell: bash
+        run: |
+          files=(results/junit.xml)
+          if [ "$RERUN" != skipped ]; then files+=(results/rerun.xml); fi
+          python3 -I lib/tools/nightly/junit_gate.py --job "$JOB" \
+            "${files[@]}" --summary "$GITHUB_STEP_SUMMARY"
       - name: Upload the failure folder
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

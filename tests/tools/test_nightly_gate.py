@@ -105,8 +105,89 @@ def test_unreadable_file_is_red(tmp_path, xml, reason):
     assert reason in summary and reason in proc.stdout
 
 
-def test_a_rerun_file_is_refused(tmp_path):
-    proc, _ = gate(tmp_path, junit(PASS), extra=(str(tmp_path / "rerun.xml"),))
+def rerun_gate(tmp_path, first, rerun):
+    path = tmp_path / "rerun.xml"
+    if rerun is not None:
+        path.write_text(rerun)
+    return gate(tmp_path, first, extra=(str(path),))
+
+
+FAIL_PASSED = FAIL.replace('<failure message="AssertionError: no jump">tb</failure>', "")
+ERROR_AGAIN = ERROR.replace("failed on setup", "failed on setup again")
+
+
+def test_a_flaky_test_stays_red(tmp_path):
+    proc, summary = rerun_gate(tmp_path, junit(PASS, FAIL), junit(FAIL_PASSED))
+    assert proc.returncode == 1
+    assert "red" in summary.splitlines()[0]
+    assert ("::error title=agent-chain raspi0::FLAKY: tests.test_chain::"
+            "test_whole_chain[raspi1ap] failed, passed on the rerun") in proc.stdout
+    assert "AssertionError: no jump, FLAKY" in summary
+    assert proc.stdout.count("::error") == 1
+
+
+def test_a_broken_test_stays_red(tmp_path):
+    proc, summary = rerun_gate(tmp_path, junit(PASS, ERROR), junit(ERROR_AGAIN))
+    assert proc.returncode == 1
+    assert ("::error title=agent-chain raspi0::BROKEN: tests.test_chain::"
+            "test_whole_chain[raspi2b] errored, did not pass on the rerun") in proc.stdout
+    assert "failed on setup, BROKEN" in summary
+    assert proc.stdout.count("::error") == 1
+
+
+def test_flaky_and_broken_in_one_job(tmp_path):
+    proc, summary = rerun_gate(tmp_path, junit(PASS, FAIL, ERROR),
+                               junit(FAIL_PASSED, ERROR_AGAIN))
+    assert proc.returncode == 1
+    assert "FLAKY: tests.test_chain::test_whole_chain[raspi1ap]" in proc.stdout
+    assert "BROKEN: tests.test_chain::test_whole_chain[raspi2b]" in proc.stdout
+    assert proc.stdout.count("::error") == 2
+    assert ", FLAKY" in summary and ", BROKEN" in summary
+
+
+def test_a_failed_test_missing_from_the_rerun_is_broken(tmp_path):
+    proc, _ = rerun_gate(tmp_path, junit(PASS, FAIL, ERROR), junit(FAIL_PASSED))
+    assert proc.returncode == 1
+    assert "FLAKY: tests.test_chain::test_whole_chain[raspi1ap]" in proc.stdout
+    assert "BROKEN: tests.test_chain::test_whole_chain[raspi2b]" in proc.stdout
+
+
+def test_a_rerun_of_other_tests_is_red(tmp_path):
+    proc, _ = rerun_gate(tmp_path, junit(PASS, FAIL), junit(FAIL_PASSED, PASS2))
+    assert proc.returncode == 1
+    assert "FLAKY: tests.test_chain::test_whole_chain[raspi1ap]" in proc.stdout
+    assert ("test_whole_chain_keeps_bios_text[raspi0] ran in the rerun but did not "
+            "fail in the first file") in proc.stdout
+
+
+@pytest.mark.parametrize("rerun, reason", [
+    (None, "is missing"),
+    ("", "is not valid XML"),
+    ("<html/>", "is not a JUnit file"),
+])
+def test_an_unreadable_rerun_file_is_red(tmp_path, rerun, reason):
+    proc, summary = rerun_gate(tmp_path, junit(PASS, FAIL), rerun)
+    assert proc.returncode == 1
+    assert f"rerun: {tmp_path / 'rerun.xml'} {reason}" in proc.stdout
+    assert "FLAKY" not in summary and "BROKEN" not in summary
+    assert "test_whole_chain[raspi1ap] failed" in summary
+
+
+def test_a_rerun_file_with_a_green_first_file_is_red(tmp_path):
+    proc, summary = rerun_gate(tmp_path, junit(PASS, PASS2), junit(PASS))
+    assert proc.returncode == 1
+    assert "red" in summary.splitlines()[0]
+    assert "no test failed in the first file" in proc.stdout
+
+
+def test_a_rerun_file_with_a_missing_first_file_is_red(tmp_path):
+    proc, _ = rerun_gate(tmp_path, None, junit(PASS))
+    assert proc.returncode == 1
+    assert "is missing" in proc.stdout
+
+
+def test_a_third_file_is_refused(tmp_path):
+    proc, _ = gate(tmp_path, junit(PASS), extra=("a.xml", "b.xml"))
     assert proc.returncode == 2
     assert "rerun" in proc.stderr
 
