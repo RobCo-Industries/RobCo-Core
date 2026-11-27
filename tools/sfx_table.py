@@ -245,7 +245,12 @@ def sqrt(x):
 
 
 def db_gain(db):
-    """The amplitude of a level in dB: e^(db * ln 10 / 20)."""
+    """The amplitude of a level in dB: e^(db * ln 10 / 20).
+
+    Every level the tool passes is a sum of at most two checked levels, or a
+    point between two checked env levels, so db is in -240 to 40 and the
+    argument of exp() in -28 to 5.
+    """
     return exp(db * LN10 / 20.0)
 
 
@@ -310,6 +315,7 @@ def fir_design(bands, rate):
     for k in range(half + 1):
         d = curve_db(bands, k * rate / DESIGN_BINS)
         amp.append(0.0 if d is None else db_gain(d))
+    # cos() below sees 0 to 2 pi, then 0 to pi: inside its limit.
     cs = [cos(2 * PI * i / DESIGN_BINS) for i in range(DESIGN_BINS)]
     mid = FIR_TAPS // 2
     h = [0.0] * FIR_TAPS
@@ -324,7 +330,7 @@ def fir_design(bands, rate):
         e += v * v
     if e == 0.0:
         return None
-    e = sqrt(e)
+    e = sqrt(e)                     # e > 0 here
     return [v / e for v in h]
 
 
@@ -402,6 +408,8 @@ def render_tone(layer, sound, out, rate, where):
     n = layer["len"]
     f0 = layer["pitch_mhz"][0] / 1000.0
     f1 = layer["pitch_mhz"][1] / 1000.0
+    # f0 and f1 are 0.001 to 24000 Hz, so ln() sees a positive value and
+    # exp() an argument under 24 either way.
     ratio = exp(ln(f1 / f0) / n)
     if loop and n == sound["len"]:
         c = tone_cycles(f0, ratio, n, rate)
@@ -435,6 +443,7 @@ def render_tone(layer, sound, out, rate, where):
         if g:
             for mult, amp in parts:
                 if f * mult < nyquist:
+                    # Bounded by validation: see sine_bound().
                     v += amp * sin(phase * mult)
         one[i] = v * g
         phase += TWO_PI * f / rate
@@ -453,7 +462,7 @@ def noise_gain(layer, rate):
     gain = env_gain(layer["env"], n, rate)
     fold = layer.get("fold", 0)
     for i in range(fold):
-        u = (i + 0.5) / fold
+        u = (i + 0.5) / fold        # 0 < u < 1: sin() and cos() see under pi/2
         gain[i] *= sin(HALF_PI * u)
         gain[n - fold + i] *= cos(HALF_PI * u)
     return gain
@@ -660,6 +669,28 @@ class _Checker:
         return ok
 
 
+def sine_bound(n, from_mhz, to_mhz, multiple, rate):
+    """An upper bound of every sine argument of a tone partial, phase * mult.
+
+    A partial calls sin() only while f * mult < rate / 2. With a pitch that
+    rises or holds, every earlier f is no higher, so the argument stays under
+    pi * n. With a falling pitch the phase after n samples is at most
+    2 pi / rate * (f0 + n * (f0 - f1) / ln(f0 / f1)): the sum of a falling
+    geometric series is at most its first term plus its integral. A partial
+    that is above half the rate even at f1 never calls sin(). The 1 % margin
+    covers the loop move of 0.05 % and the rounding of the phase sum.
+    Validation only: no output byte depends on it.
+    """
+    mult = multiple / 10000.0
+    if to_mhz >= from_mhz:
+        return PI * n
+    f0, f1 = from_mhz / 1000.0, to_mhz / 1000.0
+    if f1 * mult * 0.99 >= rate / 2:
+        return 0.0
+    cycles = f0 + n * (f0 - f1) / ln(f0 / f1)
+    return 1.01 * mult * TWO_PI * cycles / rate
+
+
 def _check_layer(c, layer, li, sound, rate, where):
     w = f"{where}.layers[{li}]"
     if not isinstance(layer, dict):
@@ -703,10 +734,21 @@ def _check_layer(c, layer, li, sound, rate, where):
         else:
             for i, v in enumerate(p):
                 c.int(v, f"{w}.pitch_mhz[{i}]", 1, rate * 500)
+        pitch_ok = (isinstance(p, list) and len(p) == 2
+                    and all(not isinstance(v, bool) and isinstance(v, int)
+                            and 1 <= v <= rate * 500 for v in p))
+        top = 0
         if c.pairs(layer["partials"], f"{w}.partials", 1, MAX_PARTIALS):
             for i, (mult, m) in enumerate(layer["partials"]):
-                c.int(mult, f"{w}.partials[{i}][0]", 1, 1000000)
+                if c.int(mult, f"{w}.partials[{i}][0]", 1, 1000000) and mult > top:
+                    top = mult
                 c.int(m, f"{w}.partials[{i}][1]", MDB_MIN, MDB_MAX)
+        if n_ok and pitch_ok and top:
+            bound = sine_bound(n, p[0], p[1], top, rate)
+            if bound > SINE_LIMIT:
+                c.fault(f"{w}.partials", f"the sine of multiple {top} can reach"
+                        f" {bound:.0f} radians, past the limit {SINE_LIMIT:.0f}."
+                        " Shorten the glide or lower the multiple.")
         for key in ("attack_us", "release_us"):
             if key in layer and c.int(layer[key], f"{w}.{key}", 0, MAX_US) and n_ok:
                 if layer[key] * rate > n * 1000000:

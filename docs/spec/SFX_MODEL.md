@@ -145,6 +145,13 @@ The tool refuses a sound, with one message per fault, when:
 - a loop tone needs a move over 0.05 % to reach whole cycles;
 - a one-shot's first sample sits more than 2 steps from 128, or its last more than 8.
 
+The tool also refuses a tone whose sine can pass its limit of 1600000. It takes the largest partial multiple `mult` and bounds the argument `phase * mult` from the model alone, with `n` the hit's `len`, `f0 = from / 1000` and `f1 = to / 1000`:
+
+- With a pitch that rises or holds, a partial only sounds below `rate_hz / 2`, and so did every earlier step. The bound is `pi * n`, always under the limit.
+- With a falling pitch, a partial with `f1 * mult * 0.99` at or above `rate_hz / 2` never sounds. Else the bound is `1.01 * mult * 2 pi * (f0 + n * (f0 - f1) / ln(f0 / f1)) / rate_hz`. The sum of a falling geometric series is at most its first term plus its integral. The 1 % covers the loop move and rounding.
+
+Every other function call stays in range for any model the file rules allow: `exp` sees -28 to 5, `ln` a positive pitch ratio, `sqrt` a positive sum.
+
 Each fault in the file gets its own line too: an unknown field, a missing field, a wrong type, a number out of range, a list too long or too short. Each line names the sound and the field. The exit code is 2.
 
 ## The commands

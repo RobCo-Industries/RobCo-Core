@@ -566,3 +566,76 @@ def test_pinned_bytes():
         for name, data in T.build(m).items():
             got[name] = zlib.crc32(data)
     assert got == PINNED
+
+
+# ---------------------------------------------------------------------------
+# Extreme models: they render or are refused, never a traceback
+# ---------------------------------------------------------------------------
+
+def _tone(n, pitch, mult, level=0, part=0, hit=0, **extra):
+    layer = {"kind": "tone", "hits": [[0, hit]], "len": n, "pitch_mhz": pitch,
+             "level_mdb": level, "partials": [[mult, part]]}
+    layer.update(extra)
+    return layer
+
+
+def test_long_falling_glide_with_a_high_partial_is_refused(tmp_path):
+    # 20 kHz down to 100 Hz over 100000 samples at 48 kHz with a 100x partial.
+    m = {"format": 1, "rate_hz": 48000, "ceiling_steps": 127, "sounds": {"dive": {
+        "len": 100000, "peak_steps": 100,
+        "layers": [_tone(100000, [20000000, 100000], 1000000)]}}}
+    assert T.sine_bound(100000, 20000000, 100000, 1000000, 48000) > T.SINE_LIMIT
+    r = run(write_model(tmp_path, m), "--dump", tmp_path / "d")
+    assert r.returncode == 2 and "Traceback" not in r.stderr
+    assert r.stderr.count("\n") == 1
+    assert "sound 'dive'.layers[0].partials: the sine of multiple 1000000" in r.stderr
+
+
+def test_sine_bound_holds():
+    # The bound is above the largest argument the renderer really reaches.
+    for n, a, b, mult, rate in ((5000, 9000000, 120000, 70000, 22050),
+                                (3000, 3000000, 2000, 10000, 8000),
+                                (1, 4000000, 1, 10000, 8000),
+                                (4000, 440000, 3520000, 30000, 16000)):
+        f0, f1 = a / 1000.0, b / 1000.0
+        ratio = T.exp(T.ln(f1 / f0) / n)
+        f, phase, worst = f0, 0.0, 0.0
+        for _ in range(n):
+            if f * mult / 10000.0 < rate / 2:
+                worst = max(worst, phase * mult / 10000.0)
+            phase += T.TWO_PI * f / rate
+            f *= ratio
+        assert worst <= T.sine_bound(n, a, b, mult, rate)
+
+
+EXTREMES = [
+    # Longest tone at the highest rate, rising to the top with the highest partial.
+    {"len": 262144, "peak_steps": 32, "loop": True,
+     "layers": [_tone(262144, [1, 24000000], 1000000)]},
+    # The same falling: refused by the sine bound.
+    {"len": 262144, "peak_steps": 40,
+     "layers": [_tone(262144, [24000000, 1], 1000000)]},
+    # Lowest and highest levels everywhere.
+    {"len": 2000, "peak_steps": 127,
+     "layers": [_tone(2000, [1000000, 1000000], 10000, -120000, -120000, -120000,
+                      attack_us=41666, release_us=41666),
+                _tone(2000, [1000000, 1000000], 10000, 20000, 20000, 20000)]},
+    # The longest envelope, 64 points, and a tone env held to the end.
+    {"len": 3000, "peak_steps": 60,
+     "layers": [_tone(3000, [24000000, 24000000], 10000,
+                      env=[[i * 1000, -120000 if i % 2 else 20000] for i in range(64)]),
+                {"kind": "noise", "seed": 4294967295, "level_mdb": 20000, "hits": [[0, 20000]],
+                 "fold": 900, "repeat": True,
+                 "env": [[i * 650, -120000 if i % 2 else 20000] for i in range(64)],
+                 "bands": [[0, 20000], [24000, -120000]]}]},
+]
+
+
+@pytest.mark.parametrize("sound", EXTREMES, ids=range(len(EXTREMES)))
+def test_extreme_models_render_or_are_refused(tmp_path, sound):
+    m = {"format": 1, "rate_hz": 48000, "ceiling_steps": 127, "sounds": {"x": sound}}
+    r = run(write_model(tmp_path, m), "--dump", tmp_path / "d")
+    assert r.returncode in (0, 2) and "Traceback" not in r.stderr
+    if r.returncode == 2:
+        lines = r.stderr.strip().splitlines()
+        assert lines and all(line.startswith("sfx_table.py: ") for line in lines)
