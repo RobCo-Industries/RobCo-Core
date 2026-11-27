@@ -26,7 +26,7 @@ Two boot chains will use it:
 - Hardware-independent code: klibc, `k_printf`, CRC-32, a heap, `rimg` image validation and the boot info block.
 - `tools/rimg.py` to seal, pack and check images, META title and icon included. Every build seals its image. `tools/mksdimage.sh` builds an SD card image, also through the optional `make sdimage` target of `mk/robco.mk`, which a project extends with its own files.
 - Examples in `examples/`, a QEMU test harness, host unit tests, target tests on four QEMU boards, a canary suite and a pinned CI container.
-- For projects that use the library as a submodule: host tests through `mk/host.mk`, a pytest plugin and an interactive runner in `tests/harness`, project commands on the script channel and `tools/check_pins.sh` for the CI pins. [Getting started](./docs/guide/GETTING_STARTED.md) shows each one.
+- For projects that use the library as a submodule: host tests through `mk/host.mk`, a pytest plugin and an interactive runner in `tests/harness`, project commands on the script channel `tools/check_pins.sh` for the CI pins and `tools/check_workflow_exprs.py` for safe, pinned workflows. [Getting started](./docs/guide/GETTING_STARTED.md) shows each one.
 
 The [specification index](./docs/spec/README.md) lists what is specified but not implemented yet. That includes the `BOOT.CFG` boot menu, the board name from the revision code and the Pip-OS ABI. What QEMU cannot prove, such as sound and cache behaviour, is listed in [HARDWARE_VALIDATION.md](./docs/HARDWARE_VALIDATION.md).
 
@@ -42,6 +42,7 @@ make venv && make test
 |---|---|---|
 | Host | `make test-host` | C unit tests for `src/lib/` and the file system, with ASan and UBSan |
 | Tools | `make test-tools` | pytest for `tools/`, the Makefile and the file system against mtools |
+| Workflows | `make check-workflows` | No unsafe `${{ }}` in the workflows, and every action pinned by commit |
 | Docs | `make test-docs` | Links, API coverage, checked commands and banned words |
 | Canary | `make test-canary` | The QEMU behaviour the tests rely on |
 | Spikes | `make test-spikes` | The three hardware spikes on every QEMU board |

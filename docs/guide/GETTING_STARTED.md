@@ -439,6 +439,8 @@ The container runs as root on a checkout owned by the runner user, so git refuse
 
 The inputs are documented at the top of [robco-ci.yml](../../.github/workflows/robco-ci.yml).
 
+`make check-workflows` from `mk/robco.mk` checks your workflows for unsafe `${{ }}` expressions and for actions not pinned by commit. Add it to `make-targets`. The [workflow guard](../spec/TESTING.md#workflow-guard) lists its rules.
+
 ## Build a card image for QEMU
 
 `make sdimage` writes `build/sd.img`, a card image with an MBR and one FAT partition. It stages the card in `$(SDIMAGE_STAGE)`, which is `build/sdstage`. It copies `SDIMAGE_DIR`, then each `SDIMAGE_FILES` pair, then runs the double-colon target `sdimage-stage`, then packs the stage with `tools/mksdimage.sh`. Set the variables before the `include`. Add your own steps with `sdimage-stage::` rules anywhere in the Makefile:
