@@ -151,7 +151,7 @@ Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG` (`data` `NUL
 
 How it plays: the start arms compare channel 3. Channels 0 and 2 belong to the GPU and channel 1 to the tick. Each IRQ reads the clock and outputs sample `elapsed_us * rate / 1000000`, then arms the compare for the next sample. The position comes from the clock, not from a count of IRQs, so nothing drifts and a late IRQ skips samples instead of slowing the sound. When the compare value is already in the past, the handler polls again, and after 4 misses it arms with `timer_oneshot_arm()`. A non-looped play ends at the first IRQ after `len / rate` seconds. The `audio_rest_mid()` ramp is the one exception: it skips samples only while the pin moves no more than one ramp step, see [Rest level](#rest-level).
 
-Each sample is scaled by the volume around the midpoint: `128 + (s - 128) * vol / 100`, rounded to the nearest step. A half step rounds away from 128, so both sides of a wave scale alike. A quiet sine keeps its shape at any volume. A volume change applies from the next sample. On the PWM backend the PWM runs at a fixed range of `AUDIO_PCM_PWM_RANGE`, a 37.5 kHz carrier from the 9.6 MHz PWM clock, and each IRQ writes the duty. A PCM start switches the PWM to that range. A tone sets its own range again. A stop, a replacement or the end of a play sets the duty to `0`, the same silence as tones. After `audio_rest_mid()`, that silence is the PCM range at duty `128` instead, see [Rest level](#rest-level).
+Each sample is scaled by the gain around the midpoint: `128 + (s - 128) * gain / 10000`, rounded to the nearest step. A half step rounds away from 128, so both sides of a wave scale alike. A quiet sine keeps its shape at any gain. A gain change moves the level smoothly, see [Gain](#gain). On the PWM backend the PWM runs at a fixed range of `AUDIO_PCM_PWM_RANGE`, a 37.5 kHz carrier from the 9.6 MHz PWM clock, and each IRQ writes the duty. A PCM start switches the PWM to that range. A tone sets its own range again. A stop, a replacement or the end of a play sets the duty to `0`, the same silence as tones. After `audio_rest_mid()`, that silence is the PCM range at duty `128` instead, see [Rest level](#rest-level).
 
 CPU cost: one IRQ per sample, up to 37500 a second at the top rate, one every 26.7 us. The handler does 64-bit multiplies but no 64-bit divide. A looped buffer adds a 32-bit modulo per sample after its first pass. On the trace backend the call also computes the CRC-32 of `data` in the caller's context. The handler cost on a real ARM1176 is not measured.
 
@@ -273,10 +273,27 @@ Parses an RTTTL tune into an internal buffer of `ROBCO_AUDIO_TUNE_MAX` notes and
 ```c
 void audio_stop(void);
 int audio_busy(void);
+void audio_set_gain(uint32_t gain);
 void audio_set_volume(unsigned percent);
 ```
 
-`audio_stop()` stops PCM output before it returns. A tone or sequence stops at the next tick. Before `audio_init()` it does nothing. `audio_busy()` is non-zero while a tone, rest, sequence or PCM buffer plays, or a request (a stop included) waits for the tick. After `audio_stop()` it turns `0` at the next tick, even for PCM. `audio_set_volume()` sets the PWM duty cycle from `0` (silent) to `100` (50%, the loudest square wave). It applies from the next step change, or from the next PCM sample. Values above 100 count as 100. The trace backend records it in `vol=`.
+`audio_stop()` stops PCM output before it returns. A tone or sequence stops at the next tick. Before `audio_init()` it does nothing. `audio_busy()` is non-zero while a tone, rest, sequence or PCM buffer plays, or a request (a stop included) waits for the tick. After `audio_stop()` it turns `0` at the next tick, even for PCM. `audio_set_gain()` sets the level in units of 1/10000, from `0` (silent) to `AUDIO_GAIN_FULL`, `10000`, where every play sounds at its own level. Values above count as `10000`. `audio_set_volume(v)` is `audio_set_gain(v * 100)`, with `v` above 100 counted as 100. See [Gain](#gain).
+
+#### Gain
+
+The driver keeps a target gain and the gain of the play. `audio_set_gain()` writes the target. A play starts at the target, so nothing fades in. While a play runs, the sample IRQ moves the play's gain toward the target by `(500000 + rate - 1) / rate` units per sample, `AUDIO_GAIN_SLEW` over the rate: 63 at 8000 Hz, 14 at 37500 Hz. A full swing takes 20 ms at any rate, and no sample moves the pin by a whole step. So a change inside a sample play, a voice or a centred tone never jumps. A centred tone follows a change within 20 ms, inside a note. It no longer waits for its next note. A pulse tone, before the rest ramp ends, has no sample IRQ: it takes the target at its next note, as its width. The rest ramp plays at full scale whatever the gain.
+
+| Play | Rule at gain `g` |
+|---|---|
+| Sample, with its overlay added and clamped | `128 + r((s - 128) * g / 10000)` |
+| Voice | `128 + r((q + (mix - 128) * 256) * g / 2560000)`, clamped |
+| Centred tone or sequence | height `(ROBCO_AUDIO_TONE_PEAK * g + 5000) / 10000`, taken every sample |
+| Pulse tone | the volume of the pulse is `(g + 50) / 100` percent, taken per note |
+| Rest ramp | full scale |
+
+`r()` rounds to the nearest step, a half step away from 128. At `g = v * 100` each rule gives the byte of volume `v`. The gain is never above 1, so no play leaves `0` to `255`.
+
+On the trace backend, a start line prints `vol=` as the gain in whole percent, rounded down. A gain that is not a whole percent adds ` gain=<0..10000>` at the end of the line. A change of target while a play sounds prints `op=gain`. A change with nothing playing, or while a start waits for its tick, prints nothing: the next start line carries it.
 
 Every busy rule starts from one question: does something play? The answer is yes from the moment a sound, a stop or the rest ramp is accepted until the pin is back at rest. The calls then answer as follows. "Start" means `audio_play()`, `audio_play_pcm()`, `audio_play_voice()` and `audio_play_rtttl()` without `AUDIO_PRIORITY`. With it, every start returns `0`.
 
@@ -388,6 +405,17 @@ uint8_t audio_square_at(audio_square_t *q, uint32_t pos);
 The centred square engine the IRQ uses after the ramp, in `src/lib/audio_square.c`, with the rule of [Rest level](#rest-level). Treat the `audio_square_t` fields as private. `audio_square_amp()` gives the height, with the volume capped at `100`. `audio_square_start()` takes `half` once and makes the next sample asked for, whatever its grid number, start the note. `audio_square_acc()` gives the signed area of grid sample `pos`, `-256` to `256`, and applies the skip rule. `audio_square_out()` rounds it to the output byte, and `audio_square_at()` does both.
 
 ```c
+uint8_t audio_pcm_scale_g(uint8_t s, uint32_t gain);
+uint8_t audio_voice_out_g(int32_t q, uint8_t mix, uint32_t gain);
+unsigned audio_square_amp_g(unsigned peak, uint32_t gain);
+unsigned audio_gain_pulse(uint32_t gain);
+uint32_t audio_gain_step(uint32_t rate);
+uint32_t audio_gain_slew(uint32_t cur, uint32_t target, uint32_t step);
+```
+
+The gain rules the IRQ uses, in `src/lib/audio_gain.c`, with the rules of [Gain](#gain). `audio_pcm_scale_g()`, `audio_voice_out_g()` and `audio_square_amp_g()` are the sample, voice and tone rules at a gain in 1/10000, capped at `AUDIO_GAIN_FULL`. At `gain = vol * 100` they give the bytes of `audio_pcm_scale()`, `audio_voice_out()` and `audio_square_amp()`. `audio_gain_pulse()` gives the volume of a pulse tone. `audio_gain_step()` gives the slew step per sample at a rate, and `audio_gain_slew()` moves a gain toward a target by at most that step, never past it.
+
+```c
 int audio_pwm_calc(uint32_t src_hz, uint32_t hz, unsigned vol, audio_pwm_cfg_t *out);
 ```
 
@@ -408,7 +436,7 @@ Once the ramp reaches its last sample, every silence the driver writes is range 
 
 How a tone plays. Before the ramp ends, a tone is the PWM's own pulse: the range sets the pitch and the duty, up to half the range, sets the volume. Its mean level is half the volume, so at the midpoint rest a quiet tone would jump the mean at its start and its end. Once the ramp has ended, a tone is a square centred on `128`, made in the sample IRQ on the PCM engine. This covers `audio_tone()`, `audio_beep()`, `audio_play()` and `audio_play_rtttl()`. The tick starts the play when a sequence first sounds and halts it in the tick where the sequence ends. Each note starts the square again on the same grid, and a rest inside a sequence writes `128`. Pitch and height change at the tick, as before. The trace lines are those of a tone, on the same ticks: no `op=pcm` and no `op=pcm_end`. The sample count of `audio_pcm_samples()` grows while the tone sounds, on both backends, and its `play` value counts the tone's samples. A ramp that was cancelled leaves the rest level at duty `0`, so tones stay pulses.
 
-Height. `amp = (ROBCO_AUDIO_TONE_PEAK * vol + 50) / 100` steps, read when a note starts. At volume `100` and the default peak that is a swing of `127` steps each side, the swing a tone has at the pulse. Under `100` the level follows the volume as samples do, and the tone keeps its colour. A volume change applies from the next note.
+Height. `amp = (ROBCO_AUDIO_TONE_PEAK * gain + 5000) / 10000` steps, taken at every sample from the play's gain. At full gain and the default peak that is a swing of `127` steps each side, the swing a tone has at the pulse. Under full gain the level follows the gain as samples do, and the tone keeps its colour. A gain change moves the height within 20 ms, inside a note, see [Gain](#gain).
 
 The per-sample rule, in integers, so another tool can render the same bytes:
 
@@ -441,7 +469,7 @@ Sharp edges of the rest mode:
 | Function | Context |
 |---|---|
 | `audio_select()`, `audio_set_pins()`, `audio_get_pins()`, `audio_init()` | Main context. `audio_init()` busy-waits for the tick. |
-| `audio_tone()`, `audio_beep()`, `audio_play()`, `audio_stop()`, `audio_busy()`, `audio_set_volume()`, `audio_pcm_samples()` | Main or IRQ context. They mask IRQs for a few instructions. |
+| `audio_tone()`, `audio_beep()`, `audio_play()`, `audio_stop()`, `audio_busy()`, `audio_set_gain()`, `audio_set_volume()`, `audio_pcm_samples()` | Main or IRQ context. They mask IRQs for a few instructions. |
 | `audio_play_rtttl()` | Main context: it parses with a buffer on the stack |
 | `audio_play_pcm()`, `audio_pcm_mix()` | Main context, or a tick callback for a short buffer, see below |
 | `audio_pcm_queue()`, `audio_rest_mid()` | Main context: on the trace backend they compute a CRC over the whole buffer |
@@ -460,8 +488,11 @@ The trace backend never prints from an IRQ. The UART driver and `k_printf()` hav
 Trace marker, one per change:
 
 ```
-@RC stage=<ROBCO_STAGE_NAME> ev=audio op=<tone|stop> hz=<n> vol=<n> t_ms=<ms>
+@RC stage=<ROBCO_STAGE_NAME> ev=audio op=<tone|stop> hz=<n> vol=<n> t_ms=<ms> [gain=<n>]
+@RC stage=<ROBCO_STAGE_NAME> ev=audio op=gain gain=<0..10000> t_ms=<ms>
 ```
+
+`vol` is the gain in whole percent, rounded down. `gain=` ends an `op=tone` line only when the gain is not a whole percent. A stop line never carries it. `op=gain` is a change of target while a play sounds, with the audio clock of the call.
 
 `op=stop` means `hz=0`: the end of a sound, a rest or `audio_stop()`. A natural change from silence to silence prints nothing.
 
@@ -470,18 +501,18 @@ Stop rule. When a play that was started ends early, the trace prints `op=stop` e
 PCM prints three markers. The trace backend runs the same engine with the same timer IRQ, so QEMU tests exercise the real IRQ path:
 
 ```
-@RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm rate=<hz> len=<bytes> vol=<n> crc=<8 hex> t_ms=<ms> [loop=1]
+@RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm rate=<hz> len=<bytes> vol=<n> crc=<8 hex> t_ms=<ms> [loop=1] [gain=<n>]
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_next len=<bytes> crc=<8 hex> t_ms=<ms>
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_end n=<count> last=<index> t_ms=<ms>
 @RC stage=<ROBCO_STAGE_NAME> ev=audio op=pcm_mix len=<bytes> crc=<8 hex> t_ms=<ms>
-@RC stage=<ROBCO_STAGE_NAME> ev=audio op=voice rate=<hz> spans=<count> len=<samples> vol=<n> crc=<8 hex> t_ms=<ms>
+@RC stage=<ROBCO_STAGE_NAME> ev=audio op=voice rate=<hz> spans=<count> len=<samples> vol=<n> crc=<8 hex> t_ms=<ms> [gain=<n>]
 ```
 
 `op=voice` is the start of a voice in place of `op=pcm`. `spans` is the span count, `len` the sum of their `n`, and `crc` the CRC-32 of the span bytes, `count * 28` of them. A voice ends with `op=pcm_end`, with `last` its last sample index, or with `op=stop` on a cut. An overlay over it prints `op=pcm_mix` as over a sample play. `op=pcm_next` never follows a voice.
 
 `op=pcm_mix` marks the start of an overlay, with its length and CRC. Its `t_ms` is the start time of the play plus the time to the overlay's first sample. An overlay given to a play that waits for its tick prints right after that play's `op=pcm`, with the same `t_ms`. The end or the drop of an overlay prints nothing.
 
-`op=pcm` is the start. `crc` is the CRC-32 of the data, as `crc32()` computes it. A play started with `AUDIO_LOOP` adds `loop=1` as the last field. A play that does not loop prints no `loop` field. A looped play never prints `op=pcm_next` or `op=pcm_end`: only a stop or a new sound ends it, with `op=stop`. `op=pcm_next` means a queued buffer took over, with its length and CRC. Its `t_ms` is the start time plus the system timer time until the IRQ that switched. `op=pcm_end` is the natural end, printed once, when the last buffer ends: `n` counts the IRQs that output a sample over the whole play, queued buffers included, and `last` is the last index output, in the last buffer. Its `t_ms` is the start time plus the system timer time the play took. A stop or a replacement prints the `op=stop` line instead, at the next tick. The PCM output itself stops when the call returns.
+`op=pcm` is the start. `crc` is the CRC-32 of the data, as `crc32()` computes it. A play started with `AUDIO_LOOP` adds `loop=1` after `t_ms`, before any `gain=`. A play that does not loop prints no `loop` field. A looped play never prints `op=pcm_next` or `op=pcm_end`: only a stop or a new sound ends it, with `op=stop`. `op=pcm_next` means a queued buffer took over, with its length and CRC. Its `t_ms` is the start time plus the system timer time until the IRQ that switched. `op=pcm_end` is the natural end, printed once, when the last buffer ends: `n` counts the IRQs that output a sample over the whole play, queued buffers included, and `last` is the last index output, in the last buffer. Its `t_ms` is the start time plus the system timer time the play took. A stop or a replacement prints the `op=stop` line instead, at the next tick. The PCM output itself stops when the call returns.
 
 Sharp edges:
 

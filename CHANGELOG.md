@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The audio driver takes a gain in units of 1/10000 with `audio_set_gain()`. `audio_set_volume(v)` sets gain `v * 100`. A change moves the level within 20 ms with no jump in a sample play, a voice or a centred tone, so a centred tone no longer waits for its next note. The trace prints `op=gain` for a change while a play sounds, and `gain=` at the end of a start line off a whole percent. At full gain every byte and trace line stays as before.
 - Another workflow of RobCo-Core can call the nightly run with the same seven inputs. A called run has its own concurrency group. Both card builds pass `CARD_NOTE`, the path of `VERSIONS.txt`, to `make`.
 - The nightly run gains the `core-head` pairing: every sibling builds on the planned RobCo-Core commit, in its image, and the tests run on `raspi0` and `raspi2b`. `both`, the default, plans `pins` then `core-head`, and either one fails the run. A red pairing does not skip the other one. The version table names the library commit and image of `core-head`. A stale sibling pin fails `pins` and `both` but not `core-head` alone. A sibling that lists neither `raspi0` nor `raspi2b` fails the plan of `core-head` with a clear error.
 - The README and the doc indexes match the tree: the panel, the expander, the second volume, user mode, the audio paths, the sound tools, the nightly run, the hardware results and every spec file.
