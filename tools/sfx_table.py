@@ -1250,52 +1250,71 @@ def _same_file(a, b):
     return ra == rb or ra.casefold() == rb.casefold()
 
 
-def plan_faults(reads, writes, new_dirs):
-    """Check a run's whole plan before it writes anything. reads and writes
-    are lists of (label, path); new_dirs the folders the run makes. One
-    line per fault: two entries that are the same file, an output that is
-    a directory, or an output in a folder that does not exist."""
-    faults = []
-    for label, path in writes:
-        folder = os.path.dirname(path) or "."
-        if os.path.isdir(path):
-            faults.append(f"{label} {path!r} is a directory")
-        elif not os.path.isdir(folder) and not any(_same_file(folder, d) for d in new_dirs):
-            faults.append(f"{label} {path!r}: the folder {folder!r} does not exist")
-    entries = list(reads) + list(writes)
-    for i, (la, pa) in enumerate(entries):
-        for lb, pb in entries[i + 1:]:
+def _under(path, top):
+    """True if path lies below the folder or file top, by the same file rule."""
+    here = os.path.dirname(os.path.realpath(path))
+    while True:
+        if _same_file(here, top):
+            return True
+        up = os.path.dirname(here)
+        if up == here:
+            return False
+        here = up
+
+
+def plan_faults(model, writes, folders):
+    """Check a run's whole plan before it writes anything. The plan is one
+    set of nodes, each a path with a kind. Files: the model and every
+    output of writes, a list of (label, path). Folders: each of folders, a
+    list of (label, path) for --dump and --wav, and the folder of each file.
+    Paths compare by _same_file.
+
+    Returns (fault, new) where fault is one line, or None if the plan is
+    good, and new the resolved folders to make, parents first. Refused: two
+    files at one path, which covers an output equal to the model; one path
+    as a file and a folder; a node under a file; a file that is a folder on
+    disk; a folder that is a file on disk; a missing folder that is neither
+    made by the run nor in a folder that is; one new folder written two
+    ways that differ only by case."""
+    files = [("MODEL", model)] + list(writes)
+    dirs, seen = [], set()
+    for label, path in list(folders) + [(f"the folder of {lb}", os.path.dirname(p) or ".")
+                                        for lb, p in files]:
+        real = os.path.realpath(path)
+        if real not in seen:
+            seen.add(real)
+            dirs.append((label, path))
+    for i, (la, pa) in enumerate(files):
+        for lb, pb in files[i + 1:]:
             if _same_file(pa, pb):
-                faults.append(f"{la} {pa!r} and {lb} {pb!r} are the same file")
-    return faults
-
-
-def dir_faults(label, path, new_dirs=()):
-    """--dump or --wav DIR: an existing folder, or a new one in an existing
-    folder or in a folder of new_dirs, a list of (label, path)."""
-    if os.path.isdir(path):
-        return []
-    if os.path.lexists(path):
-        return [f"{label} {path!r} is not a directory"]
-    parent = os.path.dirname(os.path.normpath(path)) or "."
-    if not os.path.isdir(parent) and not any(_same_file(parent, d) for _, d in new_dirs):
-        return [f"{label} {path!r}: the folder {parent!r} does not exist"]
-    return []
-
-
-def new_dir_faults(label, path, new_dirs):
-    """Add the new folder path to new_dirs, a list of (label, path), unless
-    an entry is the same folder by the plan's rule. Two spellings that
-    differ only by case are refused: on a file system that tells case apart
-    they are two folders, and the run must pass the same way on all."""
-    for lb, d in new_dirs:
-        if _same_file(path, d):
-            if os.path.realpath(path) != os.path.realpath(d):
-                return [f"{lb} {d!r} and {label} {path!r} differ only by case:"
-                        " write the folder the same way twice"]
-            return []
-    new_dirs.append((label, path))
-    return []
+                return f"{la} {pa!r} and {lb} {pb!r} are the same file", []
+    for lf, pf in files:
+        for ld, pd in dirs:
+            if _same_file(pf, pd):
+                return f"{lf} {pf!r} and {ld} {pd!r} are one path, a file and a folder", []
+        for ln, pn in files + dirs:
+            if _under(pn, pf):
+                return f"{ln} {pn!r} lies under {lf} {pf!r}, a file", []
+        if os.path.isdir(pf):
+            return f"{lf} {pf!r} is a directory", []
+    new = [(ld, pd) for ld, pd in folders if not os.path.isdir(pd)]
+    for i, (la, pa) in enumerate(new):
+        for lb, pb in new[i + 1:]:
+            if _same_file(pa, pb) and os.path.realpath(pa) != os.path.realpath(pb):
+                return (f"{la} {pa!r} and {lb} {pb!r} differ only by case:"
+                        " write the folder the same way twice"), []
+    for ld, pd in dirs:
+        if os.path.lexists(pd) and not os.path.isdir(pd):
+            return f"{ld} {pd!r} is not a directory", []
+        # A folder the run makes needs its parent; any other must exist.
+        if not any(_same_file(pd, d) for _, d in new):
+            if not os.path.isdir(pd):
+                return f"{ld} {pd!r} does not exist", []
+            continue
+        parent = os.path.dirname(os.path.realpath(pd))
+        if not os.path.isdir(parent) and not any(_same_file(parent, d) for _, d in new):
+            return f"{ld} {pd!r}: the folder {parent!r} does not exist", []
+    return None, sorted({os.path.realpath(d) for _, d in new}, key=len)
 
 
 class Parser(argparse.ArgumentParser):
@@ -1428,7 +1447,7 @@ def _main(p, args):
         print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
         return EX_STALE
 
-    items, writes, new_dirs = [], [], []
+    items = []
     if args.c is not None:
         h_name = os.path.basename(args.h)
         source = os.path.basename(args.model)
@@ -1444,13 +1463,6 @@ def _main(p, args):
     # --dump and --wav name each file after a table or a sound. A sound
     # name matches NAME, so a file name is [a-z][a-z0-9_]* with .u8 or
     # .wav: no path separator, no dot file, ASCII. A test checks it.
-    faults = []
-    dirs = [(label, d) for label, d in (("--dump", args.dump), ("--wav", args.wav)) if d]
-    for label, d in dirs:
-        if not os.path.lexists(d):
-            faults += new_dir_faults(label, d, new_dirs)
-    for label, d in dirs:
-        faults += dir_faults(label, d, new_dirs)
     if args.dump:
         items += [("--dump", os.path.join(args.dump, t + ".u8"), bytes(part))
                   for name, data in built.items()
@@ -1463,16 +1475,12 @@ def _main(p, args):
     if args.c is not None:
         # The header last: it carries the hash that --check reads.
         items.append(("--h", args.h, h_text.encode("ascii")))
-    writes = [(label, path) for label, path, _ in items]
-    faults += plan_faults([("MODEL", args.model)], writes, [d for _, d in new_dirs])
-    if faults:
+    folders = [(label, d) for label, d in (("--dump", args.dump), ("--wav", args.wav)) if d]
+    fault, made = plan_faults(args.model, [(label, path) for label, path, _ in items], folders)
+    if fault:
         p.print_usage(sys.stderr)
-        for f in faults:
-            print(f"sfx_table.py: error: {f}", file=sys.stderr)
+        print(f"sfx_table.py: error: {fault}", file=sys.stderr)
         return EX_USAGE
-    # Made by the resolved path, which "out/../out" needs, parents first:
-    # a --dump folder may lie in a new --wav folder.
-    made = sorted((os.path.realpath(d) for _, d in new_dirs), key=len)
     try:
         publish([(path, data) for _, path, data in items], made)
     except OSError as e:
