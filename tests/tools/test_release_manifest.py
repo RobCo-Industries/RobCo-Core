@@ -254,6 +254,7 @@ def test_library_pin_and_deitrix_pin_differ(work):
     "# Changelog\n\n## [Unreleased]\n\n## [0.0.9] - 2026-11-01\n",
     "# Changelog\n\n## [0.1.0]\n",
     "# Changelog\n\n## [Unreleased]\n\n## [0.1.0]\n\n- x\n\n## [Unreleased]\n\n- late\n",
+    "# Changelog\n\n## [0.2.0]\n\n- newer\n\n## [Unreleased]\n\n## [0.1.0]\n\n- x\n",
 ])
 def test_changelog_rule_and_rehearsal(work, log):
     w, _, manifest = work

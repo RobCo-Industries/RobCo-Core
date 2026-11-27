@@ -222,6 +222,10 @@ def changelog_problems(text, version):
     for i, (heading, body) in enumerate(sections):
         if is_unreleased(heading):
             problems = []
+            # Unreleased comes first. A release section above it would be
+            # newer than the version this manifest names.
+            if i > 0:
+                problems.append("a section comes before Unreleased")
             if any(line.strip() for line in body):
                 problems.append("the Unreleased section is not empty")
             nxt = sections[i + 1][0] if i + 1 < len(sections) else None
