@@ -41,8 +41,17 @@ ROUND_POWER = 1.0 / 12.0
 # A sound with noise shorter than this holds too few values per band to
 # judge its bands.
 SHORT_MS = 20
-# Bands are not judged when they hold less than this share of the energy.
+# Bands are not judged when the table and the model both hold less than
+# this share of the energy under 15 kHz.
 LOW_SHARE = 0.01
+# Bounds of the level of a sound with noise: how far its peak sits above
+# the strongest expected rms of one sample, in dB.
+LEVEL_MIN_DB = -6.0
+LEVEL_MAX_DB = 14.0
+# The generator's ranges for the fields this tool reads.
+MAX_LEN = 262144
+MAX_US = MAX_LEN * 1000000 // 8000
+MDB = (-120000, 20000)
 
 # Tolerances in dB, by kind of sound. Each rule names a statistic of the
 # absolute errors and its limit.
@@ -96,7 +105,7 @@ def _need_int(obj, key, where, lo, hi, optional=False):
         raise ModelError("%s: %s must be an integer from %d to %d" % (where, key, lo, hi))
 
 
-def _need_pairs(obj, key, where, lo, hi, optional=False):
+def _need_pairs(obj, key, where, lo, hi, items, optional=False):
     if key not in obj:
         if optional:
             return
@@ -106,6 +115,10 @@ def _need_pairs(obj, key, where, lo, hi, optional=False):
             or not all(isinstance(p, list) and len(p) == 2
                        and _is_int(p[0]) and _is_int(p[1]) for p in v)):
         raise ModelError("%s: %s must be %d to %d integer pairs" % (where, key, lo, hi))
+    for p in v:
+        for x, (a, b) in zip(p, items):
+            if not a <= x <= b:
+                raise ModelError("%s: %s holds %d, outside %d to %d" % (where, key, x, a, b))
 
 
 def load_model(path):
@@ -134,7 +147,7 @@ def load_model(path):
         where = "sound %s" % name
         if not isinstance(s, dict):
             raise ModelError("%s: not an object" % where)
-        _need_int(s, "len", where, 1, 262144)
+        _need_int(s, "len", where, 1, MAX_LEN)
         _need_int(s, "peak_steps", where, 1, model["ceiling_steps"])
         _need_int(s, "split", where, 1, s["len"] - 1, optional=True)
         if "loop" in s and not isinstance(s["loop"], bool):
@@ -146,26 +159,25 @@ def load_model(path):
             lw = "%s layers[%d]" % (where, j)
             if not isinstance(layer, dict) or layer.get("kind") not in ("tone", "noise"):
                 raise ModelError("%s: kind must be tone or noise" % lw)
-            _need_pairs(layer, "hits", lw, 1, 64)
-            _need_int(layer, "level_mdb", lw, -120000, 20000)
-            for start, _ in layer["hits"]:
-                if not 0 <= start < s["len"]:
-                    raise ModelError("%s: a hit starts outside the sound" % lw)
+            _need_pairs(layer, "hits", lw, 1, 64, ((0, s["len"] - 1), MDB))
+            _need_int(layer, "level_mdb", lw, *MDB)
             if layer["kind"] == "tone":
-                _need_int(layer, "len", lw, 1, 262144)
+                _need_int(layer, "len", lw, 1, MAX_LEN)
                 pm = layer.get("pitch_mhz")
                 top = model["rate_hz"] * 500
                 if (not isinstance(pm, list) or len(pm) != 2
                         or not all(_is_int(p) and 1 <= p <= top for p in pm)):
                     raise ModelError("%s: pitch_mhz must be two integers from 1 to %d" % (lw, top))
-                _need_pairs(layer, "partials", lw, 1, 16)
-                _need_int(layer, "attack_us", lw, 0, 32768000, optional=True)
-                _need_int(layer, "release_us", lw, 0, 32768000, optional=True)
-                _need_pairs(layer, "env", lw, 1, 64, optional=True)
+                _need_pairs(layer, "partials", lw, 1, 16, ((1, 1000000), MDB))
+                for key in ("attack_us", "release_us"):
+                    _need_int(layer, key, lw, 0, MAX_US, optional=True)
+                    if layer.get(key, 0) * model["rate_hz"] > layer["len"] * 1000000:
+                        raise ModelError("%s: %s must fit inside the tone's len" % (lw, key))
+                _need_pairs(layer, "env", lw, 1, 64, ((0, MAX_US), MDB), optional=True)
             else:
-                _need_pairs(layer, "env", lw, 2, 64)
-                _need_pairs(layer, "bands", lw, 2, 24)
-                _need_int(layer, "fold", lw, 0, 262144, optional=True)
+                _need_pairs(layer, "env", lw, 2, 64, ((0, MAX_US), MDB))
+                _need_pairs(layer, "bands", lw, 2, 24, ((0, model["rate_hz"] // 2), MDB))
+                _need_int(layer, "fold", lw, 0, MAX_LEN // 2, optional=True)
                 if "repeat" in layer and not isinstance(layer["repeat"], bool):
                     raise ModelError("%s: repeat must be true or false" % lw)
                 pts = layer["bands"]
@@ -177,8 +189,8 @@ def load_model(path):
                 raise ModelError("%s: env times must start at 0 or later and not go down" % lw)
             if layer["kind"] == "noise":
                 n = ceil_div(env[-1][0] * model["rate_hz"], 1000000)
-                if n < 1:
-                    raise ModelError("%s: env must span at least one sample" % lw)
+                if not 1 <= n <= MAX_LEN:
+                    raise ModelError("%s: env must span 1 to %d samples" % (lw, MAX_LEN))
                 if layer.get("fold", 0) > n // 2:
                     raise ModelError("%s: fold must be %d or less, half the env" % (lw, n // 2))
     return model
@@ -356,9 +368,15 @@ def noise_power(layer, sound, rate):
         gain[n - fold + i] *= math.cos(math.pi / 2 * u)
     sq = [g * g for g in gain]
     power = [0.0] * sound["len"]
-    for start, level in layer["hits"]:
-        _add(power, start, sq, db_gain((layer["level_mdb"] + level) / 500.0),
-             sound.get("loop", False))
+    # With repeat every hit plays the same noise, so hits at one start add
+    # as amplitudes. Hits at other starts count as unrelated.
+    amps = {}
+    for k, (start, level) in enumerate(layer["hits"]):
+        key = start if layer.get("repeat") else (start, k)
+        amps[key] = amps.get(key, 0.0) + db_gain((layer["level_mdb"] + level) / 1000.0)
+    for key, amp in amps.items():
+        start = key if layer.get("repeat") else key[0]
+        _add(power, start, sq, amp * amp, sound.get("loop", False))
     return power
 
 
@@ -391,7 +409,8 @@ def rounded_tones(sound, rate):
 
 
 def predict(sound, rate, nbands):
-    """Band and frame energy of a sound, from its model, before scaling."""
+    """Band energy, frame energy and the power of each sample of a sound,
+    from its model, before scaling."""
     tone = render_tones(sound, rate)
     has_tone = any(layer["kind"] == "tone" for layer in sound["layers"])
     noise_bands = [0.0] * nbands
@@ -407,8 +426,8 @@ def predict(sound, rate, nbands):
                 noise_pow[i] += p
     bands = band_energy(tone, rate, nbands) if has_tone else [0.0] * nbands
     bands = [a + b for a, b in zip(bands, noise_bands)]
-    frames = frame_energy([t * t + p for t, p in zip(tone, noise_pow)], rate)
-    return bands, frames
+    sample = [t * t + p for t, p in zip(tone, noise_pow)]
+    return bands, frame_energy(sample, rate), sample
 
 
 def rounding_floor(n, rate, nbands):
@@ -509,7 +528,7 @@ def check_sound(model, name, folder):
     mf = frame_energy([v * v for v in x], rate)
     has_noise = any(layer["kind"] == "noise" for layer in sound["layers"])
     if has_noise:
-        pb, pf = predict(sound, rate, nb)
+        pb, pf, ps = predict(sound, rate, nb)
         fb, ff = rounding_floor(len(data), rate, nb)
     else:
         # Tones only: predict the rounded table itself, so no gain and no
@@ -518,6 +537,7 @@ def check_sound(model, name, folder):
         pb = band_energy(r, rate, nb)
         pf = frame_energy([v * v for v in r], rate)
         fb, ff = [0.0] * nb, [0.0] * len(pf)
+    pb_all, fb_all = sum(pb), sum(fb)
     if extra:
         mb, pb, fb = mb[:-1], pb[:-1], fb[:-1]
     band_gain = _gain(sum(mb), sum(fb), sum(pb)) if has_noise else 1.0
@@ -530,8 +550,29 @@ def check_sound(model, name, folder):
         ff = [0.0] * len(ff)
     be = stats(errors_db(mb, [p * band_gain + f for p, f in zip(pb, fb)], 1.0))
     fe = stats(errors_db(mf, [p * frame_gain + f for p, f in zip(pf, ff)], 1.0))
+    # Share of the energy under 15 kHz, measured and predicted. The model
+    # part takes the frame gain, the floor counts only where it applies.
+    floor_on = sum(ff) > 0.0
+    m_share = sum(mb) / sum(mf) if sum(mf) > 0.0 else 0.0
+    p_low = sum(pb) * frame_gain + (sum(fb) if floor_on else 0.0)
+    p_all = pb_all * frame_gain + (fb_all if floor_on else 0.0)
+    p_share = p_low / p_all if p_all > 0.0 else 0.0
+    level = None
+    if has_noise:
+        pmax = max(ps)
+        if frame_gain > 0.0 and pmax > 0.0:
+            level = 10.0 * math.log10(sound["peak_steps"] ** 2 / (frame_gain * pmax))
+        else:
+            level = float("inf")
+        if not LEVEL_MIN_DB <= level <= LEVEL_MAX_DB:
+            faults.append("level %.2f dB outside %.2f to %.2f"
+                          % (level, LEVEL_MIN_DB, LEVEL_MAX_DB))
     note = None
-    if sum(mb) < LOW_SHARE * sum(mf):
+    if (m_share < LOW_SHARE) != (p_share < LOW_SHARE):
+        faults.append("power under 15 kHz is %.1f %% of the table, the model predicts %.1f %%"
+                      % (100.0 * m_share, 100.0 * p_share))
+        note = "bands not judged"
+    elif m_share < LOW_SHARE:
         note = "bands not judged, no power under 15 kHz"
     elif has_noise and len(data) * 1000 < SHORT_MS * rate:
         note = "bands not judged, under %d ms" % SHORT_MS
@@ -541,9 +582,10 @@ def check_sound(model, name, folder):
             if not st[stat] <= limit:
                 faults.append("%s %s error %.2f dB over %.2f" % (what, stat, st[stat], limit))
     line = ("%s %s band mean %.2f median %.2f worst %.2f dB, "
-            "frame mean %.2f median %.2f worst %.2f dB%s: %s"
+            "frame mean %.2f median %.2f worst %.2f dB%s%s: %s"
             % (name, kind, be["mean"], be["median"], be["worst"],
                fe["mean"], fe["median"], fe["worst"],
+               ", level %.2f dB" % level if level is not None else "",
                ", " + note if note else "",
                "ok" if not faults else "FAIL " + "; ".join(faults)))
     return line, not faults

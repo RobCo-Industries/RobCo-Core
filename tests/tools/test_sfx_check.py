@@ -307,3 +307,178 @@ def test_invalid_model_gives_2(tmp_path, case):
     r = run(CHECK, p, tmp_path)
     assert r.returncode == 2, r.stdout + r.stderr
     assert "burst" in r.stderr, r.stderr
+
+
+def _import_check():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    try:
+        import sfx_check
+    finally:
+        sys.path.pop(0)
+    return sfx_check
+
+
+def test_high_sine_in_place_of_a_tone_fails(tmp_path):
+    rate = 48000
+    m = {"format": 1, "rate_hz": rate, "ceiling_steps": 90, "sounds": {"beep": {
+        "len": 4800, "peak_steps": 60, "layers": [
+            {"kind": "tone", "hits": [[0, 0]], "len": 4800,
+             "pitch_mhz": [1000000, 1000000], "level_mdb": 0,
+             "partials": [[10000, 0]], "attack_us": 2000, "release_us": 2000}]}}}
+    p, d = dump(tmp_path, m)
+    _rewrite(os.path.join(d, "beep.u8"), lambda data: data.__setitem__(
+        slice(None), bytes(128 + round(60 * math.sin(2 * math.pi * 18000 * i / rate))
+                           for i in range(len(data)))))
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert re.search(r"power under 15 kHz is \d+\.\d % of the table, the model predicts"
+                     r" \d+\.\d %", r.stdout), r.stdout
+
+
+def test_loop_with_coincident_repeated_hits_passes(tmp_path):
+    m = loop_model()
+    noise = next(iter(m["sounds"].values()))["layers"][0]
+    noise.update(repeat=True, level_mdb=-18000, hits=[[0, 0], [0, -2000], [0, 0], [0, -6000]])
+    p, d = dump(tmp_path, m)
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def tick_model():
+    """A 5 ms noise tick: one frame."""
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"tick": {
+        "len": 100, "peak_steps": 40, "layers": [
+            {"kind": "noise", "seed": 2, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -60000], [500, 0], [4500, 0], [5000, -60000]],
+             "bands": [[500, 0], [6000, 0]]}]}}}
+
+
+def test_one_frame_tick_checks_its_level(tmp_path):
+    p, d = dump(tmp_path, tick_model())
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert re.search(r"worst \d+\.\d\d dB, level -?\d+\.\d\d dB, bands not judged", r.stdout)
+
+    def spike(data):
+        data[:] = bytes([128] * len(data))
+        data[50] = 128 + 40
+    _rewrite(os.path.join(d, "tick.u8"), spike)
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert re.search(r"level \d+\.\d\d dB outside -6\.00 to 14\.00", r.stdout), r.stdout
+
+
+def test_tones_print_no_level(tmp_path):
+    p, d = dump(tmp_path, tone_model(40))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0 and "level" not in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize("change,field", [
+    (lambda s: s["layers"][0].update(hits=[[0, 10000000]]), "hits"),
+    (lambda s: s["layers"][0].update(env=[[0, 0], [10 ** 12, 0]]), "env"),
+])
+def test_huge_values_give_2(tmp_path, change, field):
+    p = tmp_path / "model.json"
+    p.write_text(json.dumps(_bad(change)))
+    r = run(CHECK, p, tmp_path)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "burst" in r.stderr and field in r.stderr, r.stderr
+
+
+SWEEP_RATE = 8000
+MAX_LEN = 262144
+MAX_US = MAX_LEN * 1000000 // 8000
+MDB = (-120000, 20000)
+
+
+def sweep_model():
+    """A small sound with one tone and one noise layer."""
+    return {"format": 1, "rate_hz": SWEEP_RATE, "ceiling_steps": 90, "sounds": {"s": {
+        "len": 400, "peak_steps": 40, "layers": [
+            {"kind": "tone", "hits": [[0, 0]], "len": 200, "pitch_mhz": [440000, 440000],
+             "level_mdb": 0, "partials": [[10000, 0]], "attack_us": 1000,
+             "release_us": 1000, "env": [[0, 0], [10000, -6000]]},
+            {"kind": "noise", "seed": 1, "level_mdb": 0, "hits": [[0, 0]], "fold": 10,
+             "env": [[0, 0], [25000, 0]], "bands": [[100, 0], [3000, 0]]}]}}}
+
+
+def _set(path, value):
+    def fn(m):
+        obj = m
+        for k in path[:-1]:
+            obj = obj[k]
+        obj[path[-1]] = value
+    return fn
+
+
+def _sweep_cases():
+    s = ("sounds", "s")
+    tone, noise = s + ("layers", 0), s + ("layers", 1)
+    cases = {}
+    for name, path, lo, hi in [
+            ("rate_hz", ("rate_hz",), 8000, 48000),
+            ("ceiling_steps", ("ceiling_steps",), 40, 127),
+            ("len", s + ("len",), 1, MAX_LEN),
+            ("peak_steps", s + ("peak_steps",), 1, 90),
+            ("split", s + ("split",), 1, 399),
+            ("tone level_mdb", tone + ("level_mdb",), *MDB),
+            ("tone len", tone + ("len",), 1, MAX_LEN),
+            ("pitch_mhz from", tone + ("pitch_mhz", 0), 1, SWEEP_RATE * 500),
+            ("pitch_mhz to", tone + ("pitch_mhz", 1), 1, SWEEP_RATE * 500),
+            ("partial multiple", tone + ("partials", 0, 0), 1, 1000000),
+            ("partial level", tone + ("partials", 0, 1), *MDB),
+            ("attack_us", tone + ("attack_us",), 0, 25000),
+            ("release_us", tone + ("release_us",), 0, 25000),
+            ("tone env time", tone + ("env", 1, 0), 0, MAX_US),
+            ("tone env level", tone + ("env", 1, 1), *MDB),
+            ("tone hit start", tone + ("hits", 0, 0), 0, 399),
+            ("tone hit level", tone + ("hits", 0, 1), *MDB),
+            ("noise hit start", noise + ("hits", 0, 0), 0, 399),
+            ("noise hit level", noise + ("hits", 0, 1), *MDB),
+            ("noise level_mdb", noise + ("level_mdb",), *MDB),
+            ("noise env time", noise + ("env", 1, 0), 125, MAX_US),
+            ("noise env level", noise + ("env", 0, 1), *MDB),
+            ("band frequency low", noise + ("bands", 0, 0), 0, 2999),
+            ("band frequency high", noise + ("bands", 1, 0), 101, 4000),
+            ("band level", noise + ("bands", 0, 1), *MDB),
+            ("fold", noise + ("fold",), 0, 100)]:
+        cases[name + " low"] = _set(path, lo)
+        cases[name + " high"] = _set(path, hi)
+    return cases
+
+
+SWEEP = _sweep_cases()
+
+
+@pytest.mark.parametrize("case", sorted(SWEEP))
+def test_boundary_values_never_crash(tmp_path, case):
+    """Each bound the generator's validator accepts, one at a time. The
+    tool may pass, fail or refuse, but never raise."""
+    sfx_check = _import_check()
+    m = sweep_model()
+    SWEEP[case](m)
+    s = m["sounds"]["s"]
+    s["peak_steps"] = min(s["peak_steps"], m["ceiling_steps"])
+    # Keep the bounds that depend on another field inside the validator's.
+    tone, noise = s["layers"]
+    for key in ("attack_us", "release_us"):
+        tone[key] = min(tone[key], tone["len"] * 1000000 // m["rate_hz"])
+    span = -(-noise["env"][-1][0] * m["rate_hz"] // 1000000)
+    noise["fold"] = min(noise["fold"], span // 2)
+    if s["len"] < 400:
+        for layer in s["layers"]:
+            layer["hits"] = [[0, layer["hits"][0][1]]]
+        s.pop("split", None) if s["len"] < 2 else None
+    p = tmp_path / "model.json"
+    p.write_text(json.dumps(m))
+    assert sfx_check.load_model(str(p)) is not None
+    d = tmp_path / "t"
+    d.mkdir()
+    table = bytes(128 + (i % 7) - 3 for i in range(s["len"]))
+    if "split" in s:
+        (d / "s_1.u8").write_bytes(table[:s["split"]])
+        (d / "s_2.u8").write_bytes(table[s["split"]:])
+    else:
+        (d / "s.u8").write_bytes(table)
+    assert sfx_check.main([str(p), str(d)]) in (0, 1, 2)
