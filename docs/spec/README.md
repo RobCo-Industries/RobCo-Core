@@ -104,6 +104,11 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | Everything | Specified |
 | Hiding calls newer than `PIPOS_ABI_TARGET` in the SDK headers | Specified |
 | The `ABI` variable of `pipos-app.mk` | Specified |
+| ABI 1.6: the four sound kinds, their levels and the calls `sound_kind`, `sound_level` and `sound_store` | Specified |
+| ABI 1.6: `volume` as the master for a ROM and as a trim for a holotape | Specified |
+| ABI 1.6: one gain per play, the square law of the four levels and a level change with no click | Specified |
+| ABI 1.6: the stored levels in `/PIPBOY/PIPOS.SET` and the `ev=levels` marker | Specified |
+| ABI 1.6: the `gain` field of a start line and the `op=gain` line of the audio trace | Specified |
 
 ### TESTING.md
 
