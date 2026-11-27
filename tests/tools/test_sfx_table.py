@@ -2304,6 +2304,33 @@ def test_a_long_bed_under_many_one_shots_stays_small(tmp_path):
     assert peak < 300 * 1024 * 1024, peak
 
 
+def test_dumping_many_rests_stays_small(tmp_path):
+    # Each rest file is made only while it is written. 400 rests of a
+    # 262144-byte bed are 100 MB on disk. Kept in memory they would add
+    # that much to the peak, which stays near 50 MB.
+    bed = {"len": 262144, "peak_steps": 10, "loop": True, "layers": [
+        {"kind": "tone", "hits": [[0, 0]], "len": 262144, "pitch_mhz": [2000000, 2000000],
+         "level_mdb": 0, "partials": [[10000, 0]]}]}
+    sounds = {"drone": bed}
+    for i in range(400):
+        sounds[f"s{i}"] = _shot(9, 8)
+    p = write_model(tmp_path, {"format": 1, "rate_hz": 8000, "ceiling_steps": 127,
+                               "sounds": sounds})
+    probe = ("import resource, subprocess, sys\n"
+             "r = subprocess.run(sys.argv[1:])\n"
+             "print(r.returncode, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)\n")
+    out = tmp_path / "dump"
+    r = subprocess.run([sys.executable, "-I", "-c", probe, sys.executable, "-I", TOOL, str(p),
+                        "--dump", str(out), "--bed", "drone"],
+                       capture_output=True, text=True, env=minimal_env(), timeout=120)
+    code, rss = map(int, r.stdout.split())
+    assert code == 0, r.stderr
+    rests = sorted(out.glob("*_rest.u8"))
+    assert len(rests) == 400 and rests[0].stat().st_size == 262144 - 9
+    peak = rss if sys.platform == "darwin" else rss * 1024
+    assert peak < 110 * 1024 * 1024, peak
+
+
 @pytest.mark.parametrize("bed,words", [
     ("nope", "--bed 'nope': the model has no such sound"),
     ("beep", "--bed 'beep': the sound is not a loop")])
