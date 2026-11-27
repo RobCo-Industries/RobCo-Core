@@ -406,16 +406,20 @@ def test_cli_refuses_a_failed_check(tmp_path):
 
 def test_usage_errors(tmp_path):
     p = write_model(tmp_path, tone_model())
-    for args in ((p,), (p, "--c", "a.c"), (p, "--full"), (p, "--check", "--dump", "x"),
-                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "Bad"),
-                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "_x"),
-                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "__x"),
-                 (p, "--c", "a.c", "--h", "a.h", "--prefix", "1x"),
-                 (p, "--c", "a.c", "--h", "1.h", "--prefix", "x_"),
-                 (p, "--c", "a.c", "--h", "_x.h", "--prefix", "x_"),
-                 (p, "--c", "a.c", "--h", tmp_path / "x_rate_hz", "--prefix", "x_")):
+    c, h, x = tmp_path / "a.c", tmp_path / "a.h", tmp_path / "x"
+    for args in ((p,), (p, "--c", c), (p, "--full"), (p, "--check", "--dump", x),
+                 (p, "--c", c, "--h", h, "--prefix", "Bad"),
+                 (p, "--c", c, "--h", h, "--prefix", "_x"),
+                 (p, "--c", c, "--h", h, "--prefix", "__x"),
+                 (p, "--c", c, "--h", h, "--prefix", "1x"),
+                 (p, "--c", c, "--h", tmp_path / "1.h", "--prefix", "x_"),
+                 (p, "--c", c, "--h", tmp_path / "_x.h", "--prefix", "x_"),
+                 (p, "--c", c, "--h", tmp_path / "x_rate_hz", "--prefix", "x_"),
+                 (tmp_path / "s\u00f6nd.json", "--c", c, "--h", h, "--prefix", "x_"),
+                 (tmp_path / "a\nb.json", "--c", c, "--h", h, "--prefix", "x_")):
         r = run(*args)
         assert r.returncode == 64, args
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +476,136 @@ def test_check_catches_a_changed_model_and_table(tmp_path):
     h.write_text(h.read_text().replace(f"TOOL_REVISION {T.REVISION}", "TOOL_REVISION 0"))
     r = run(p, *args)
     assert r.returncode == 1 and "made by revision 0" in r.stderr
+
+
+def _no_temp_left(*folders):
+    for d in folders:
+        assert not [f.name for f in d.iterdir() if f.name.endswith(".tmp")], d
+
+
+def _refusing_writes(tmp_path):
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    probe.chmod(0o555)
+    try:
+        (probe / "x").write_bytes(b"")
+    except OSError:
+        return True
+    finally:
+        probe.chmod(0o755)
+    return False
+
+
+def test_unwritable_source_leaves_both_old_files(tmp_path):
+    if not _refusing_writes(tmp_path):
+        pytest.skip("this user can write to a read-only folder, so the failure cannot be made")
+    m = _two_sounds()
+    p = write_model(tmp_path, m)
+    cdir, hdir = tmp_path / "c", tmp_path / "h"
+    cdir.mkdir()
+    hdir.mkdir()
+    c, h = cdir / "t.c", hdir / "t.h"
+    args = ("--c", c, "--h", h, "--prefix", "demo_sfx_")
+    assert run(p, *args).returncode == 0
+    old_c, old_h = c.read_bytes(), h.read_bytes()
+    m["sounds"]["beep"]["len"] = 10
+    p = write_model(tmp_path, m)
+    cdir.chmod(0o555)
+    try:
+        r = run(p, *args)
+    finally:
+        cdir.chmod(0o755)
+    assert r.returncode == 1 and "Permission denied" in r.stderr
+    assert len(r.stderr.strip().splitlines()) == 1
+    assert c.read_bytes() == old_c and h.read_bytes() == old_h
+    _no_temp_left(cdir, hdir)
+    r = run(p, *args, "--check")
+    assert r.returncode == 1 and "the model changed" in r.stderr
+
+
+def test_unwritable_header_leaves_both_old_files(tmp_path):
+    if not _refusing_writes(tmp_path):
+        pytest.skip("this user can write to a read-only folder, so the failure cannot be made")
+    m = _two_sounds()
+    p = write_model(tmp_path, m)
+    cdir, hdir = tmp_path / "c", tmp_path / "h"
+    cdir.mkdir()
+    hdir.mkdir()
+    c, h = cdir / "t.c", hdir / "t.h"
+    args = ("--c", c, "--h", h, "--prefix", "demo_sfx_")
+    assert run(p, *args).returncode == 0
+    old_c = c.read_bytes()
+    m["sounds"]["beep"]["len"] = 10
+    p = write_model(tmp_path, m)
+    hdir.chmod(0o555)
+    try:
+        r = run(p, *args)
+    finally:
+        hdir.chmod(0o755)
+    assert r.returncode == 1
+    assert c.read_bytes() == old_c
+    _no_temp_left(cdir, hdir)
+    assert run(p, *args, "--check").returncode == 1
+
+
+@pytest.mark.parametrize("fail_at", [1, 2])
+def test_failed_rename_is_seen_as_stale(tmp_path, monkeypatch, capsys, fail_at):
+    """A failed first or second rename, or a kill between the two."""
+    m = _two_sounds()
+    p, c, h = _generate(tmp_path, m)
+    old_c, old_h = c.read_bytes(), h.read_bytes()
+    m["sounds"]["beep"]["len"] = 10
+    p = write_model(tmp_path, m)
+    calls = []
+    real = os.replace
+
+    def replace(a, b):
+        calls.append(b)
+        if len(calls) == fail_at:
+            raise OSError(5, "Input/output error", str(b))
+        real(a, b)
+
+    monkeypatch.setattr(T.os, "replace", replace)
+    args = ["--c", str(c), "--h", str(h), "--prefix", "demo_sfx_"]
+    assert T.main([str(p), *args]) == 1
+    monkeypatch.setattr(T.os, "replace", real)
+    assert [os.path.basename(x) for x in calls] == ["sfx_table.c", "sfx_table.h"][:fail_at]
+    assert h.read_bytes() == old_h
+    assert (c.read_bytes() == old_c) == (fail_at == 1)
+    _no_temp_left(tmp_path)
+    capsys.readouterr()
+    assert T.main([str(p), *args, "--check"]) == 1
+    assert "the model changed" in capsys.readouterr().err
+
+
+def test_fast_check_reads_the_source_comment(tmp_path):
+    p, c, h = _generate(tmp_path, _two_sounds())
+    args = ("--c", c, "--h", h, "--prefix", "demo_sfx_", "--check")
+    ct = c.read_text()
+    sha = T.commented(ct)[0]
+    c.write_text(ct.replace(sha, "0" * 64))
+    r = run(p, *args)
+    assert r.returncode == 1 and "does not name the same model" in r.stderr
+    c.unlink()
+    assert run(p, *args).returncode == 1
+
+
+def test_failed_dump_leaves_no_new_table(tmp_path, monkeypatch):
+    m = _two_sounds()
+    p = write_model(tmp_path, m)
+    d = tmp_path / "d"
+    calls = []
+    real = os.replace
+
+    def replace(a, b):
+        calls.append(b)
+        if len(calls) == 2:
+            raise OSError(5, "Input/output error", str(b))
+        real(a, b)
+
+    monkeypatch.setattr(T.os, "replace", replace)
+    assert T.main([str(p), "--dump", str(d)]) == 1
+    assert list(d.iterdir()) == []
 
 
 def test_equal_bytes_on_two_runs(tmp_path):

@@ -18,6 +18,7 @@ Stdlib only. Runs with python3 -I.
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -916,8 +917,10 @@ def c_source(model, built, prefix, source, sha, h_name):
     return "\n".join(lines[:-1]) + "\n"
 
 
-def write_wav(path, data, rate):
-    w = wave.open(path, "wb")
+def wav_bytes(data, rate):
+    """An 8-bit mono WAV file of the samples, as bytes."""
+    buf = io.BytesIO()
+    w = wave.open(buf, "wb")
     try:
         w.setnchannels(1)
         w.setsampwidth(1)
@@ -925,6 +928,45 @@ def write_wav(path, data, rate):
         w.writeframes(bytes(data))
     finally:
         w.close()
+    return buf.getvalue()
+
+
+def _temp_for(path):
+    """Open a new temporary file next to path. Returns (name, fd)."""
+    folder, base = os.path.split(path)
+    tmp = os.path.join(folder, f".{base}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    return tmp, fd
+
+
+def publish(items, undo):
+    """Write each (path, bytes) to a temporary file in the same folder, then
+    rename each over its path in order. On a failure, remove the temporary
+    files and, with undo, the paths this call already renamed, then raise
+    the OSError. A path is never left half written."""
+    temps, done = [], []
+    try:
+        for path, data in items:
+            tmp, fd = _temp_for(path)
+            temps.append((tmp, path))
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        for tmp, path in temps:
+            os.replace(tmp, path)
+            done.append(path)
+    except OSError:
+        for tmp, _ in temps:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if undo:
+            for path in done:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        raise
 
 
 def recorded(h_text, prefix):
@@ -948,21 +990,37 @@ class Parser(argparse.ArgumentParser):
         sys.exit(EX_USAGE)
 
 
-def _read(path):
-    with open(path, encoding="utf-8") as f:
+def _read_bytes(path):
+    with open(path, "rb") as f:
         return f.read()
+
+
+def _text(raw):
+    """Generated text for the fast check: UTF-8, any line end read as LF.
+    None if it is not UTF-8."""
+    try:
+        return raw.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        return None
+
+
+def commented(text):
+    """(SHA-256, revision) in the comment that opens a generated file, or None."""
+    m = re.match(r"/\*\n(?: \*[^\n]*\n)*? \* SHA-256: ([0-9a-f]{64})\n"
+                 r" \* Generator: tools/sfx_table\.py revision (\d+)\n \*/\n", text)
+    return (m.group(1), int(m.group(2))) if m else None
 
 
 def _check(args, model_path):
     try:
-        h_text = _read(args.h)
-        c_text = _read(args.c)
-        with open(model_path, "rb") as f:
-            sha = hashlib.sha256(f.read()).hexdigest()
+        h_raw = _read_bytes(args.h)
+        c_raw = _read_bytes(args.c)
+        sha = hashlib.sha256(_read_bytes(model_path)).hexdigest()
     except OSError as e:
         print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
         return EX_STALE
-    rec = recorded(h_text, args.prefix)
+    h_text, c_text = _text(h_raw), _text(c_raw)
+    rec = recorded(h_text, args.prefix) if h_text is not None else None
     if rec is None:
         print(f"sfx_table.py: {args.h}: no {args.prefix.upper()}MODEL_SHA256 or"
               " TOOL_REVISION line", file=sys.stderr)
@@ -975,15 +1033,22 @@ def _check(args, model_path):
         print(f"sfx_table.py: {args.h}: made by revision {rec[1]}, this tool is"
               f" revision {REVISION}. Run sfx_table.py again.", file=sys.stderr)
         return EX_STALE
+    if (c_text is None or commented(c_text) != rec
+            or commented(h_text) != rec):
+        print(f"sfx_table.py: {args.c}: its comment does not name the same model"
+              " SHA-256 and revision as the header. Run sfx_table.py again.",
+              file=sys.stderr)
+        return EX_STALE
     if args.full:
         model, _ = load_model(model_path)
         built = build(model)
         source = os.path.basename(model_path)
         h_name = os.path.basename(args.h)
-        if c_header(model, built, args.prefix, source, sha, h_name) != h_text:
+        h_new = c_header(model, built, args.prefix, source, sha, h_name)
+        if h_new.encode("ascii") != h_raw:
             print(f"sfx_table.py: {args.h}: differs from a new render", file=sys.stderr)
             return EX_STALE
-        if c_source(model, built, args.prefix, source, sha, h_name) != c_text:
+        if c_source(model, built, args.prefix, source, sha, h_name).encode("ascii") != c_raw:
             print(f"sfx_table.py: {args.c}: differs from a new render", file=sys.stderr)
             return EX_STALE
     return 0
@@ -1011,6 +1076,9 @@ def main(argv=None):
     if args.h is not None and header_guard(os.path.basename(args.h)) is None:
         p.error("--h must have a file name that starts with a letter, so its"
                 " include guard is a valid C name")
+    if args.c is not None and not re.fullmatch(r"[ -~]+", os.path.basename(args.model)):
+        p.error("MODEL must have a file name of printable ASCII: it goes into the"
+                " comment of each generated file")
     if args.full and not args.check:
         p.error("--full needs --check")
     if args.check and (args.c is None or args.dump or args.wav):
@@ -1041,22 +1109,23 @@ def main(argv=None):
     try:
         if args.c is not None:
             source = os.path.basename(args.model)
-            with open(args.h, "w", encoding="utf-8", newline="\n") as f:
-                f.write(h_text)
-            with open(args.c, "w", encoding="utf-8", newline="\n") as f:
-                f.write(c_source(model, built, args.prefix, source, sha, h_name))
+            # The source first, the header last: the header carries the hash.
+            publish([(args.c, c_source(model, built, args.prefix, source, sha,
+                                       h_name).encode("ascii")),
+                     (args.h, h_text.encode("ascii"))], undo=False)
         if args.dump:
             os.makedirs(args.dump, exist_ok=True)
-            for name, data in built.items():
-                for t, part in tables(model, name, data):
-                    with open(os.path.join(args.dump, t + ".u8"), "wb") as f:
-                        f.write(bytes(part))
+            publish([(os.path.join(args.dump, t + ".u8"), bytes(part))
+                     for name, data in built.items()
+                     for t, part in tables(model, name, data)], undo=True)
         if args.wav:
             os.makedirs(args.wav, exist_ok=True)
+            items = []
             for name, data in built.items():
                 times = 3 if model["sounds"][name].get("loop") else 1
-                write_wav(os.path.join(args.wav, name + ".wav"), data * times,
-                          model["rate_hz"])
+                items.append((os.path.join(args.wav, name + ".wav"),
+                              wav_bytes(data * times, model["rate_hz"])))
+            publish(items, undo=True)
     except OSError as e:
         print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
         return EX_STALE

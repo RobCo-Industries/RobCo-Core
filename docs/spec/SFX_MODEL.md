@@ -166,14 +166,34 @@ tools/sfx_table.py MODEL --wav DIR
 | Option | Does |
 |---|---|
 | `--c`, `--h`, `--prefix` | Writes the tables in C. The header defines `NAME_MODEL_SHA256`, `NAME_TOOL_REVISION`, `NAME_RATE_HZ`, and for each sound `_PEAK` and `_LOOP`. For each table it defines `_LEN` and `_CRC32` and declares `const uint8_t name_<table>[]`. Both files start with a comment that says they are generated and names the model file. |
-| `--check` | Compares the SHA-256 of `MODEL` and the tool revision with the lines in `OUT.h`. Fast: it renders nothing. |
+| `--check` | Compares the SHA-256 of `MODEL` and the tool revision with the lines in `OUT.h`, and with the opening comment of both files. Fast: it renders nothing. |
 | `--check --full` | Also renders every sound again and compares both files byte for byte |
 | `--dump DIR` | Writes each table as a raw `<table>.u8` file |
 | `--wav DIR` | Writes each sound as an 8-bit mono WAV at `rate_hz`, whole, not split. A loop plays three times so its join is heard. |
 
-`NAME_` is `a` to `z`, `0` to `9` and `_`, starts with a letter, at most 32 characters. A leading `_` would make reserved C names. The include guard is the file name of `OUT.h` in capitals with every other character as `_`. The tool refuses a file name whose guard does not start with a letter, or a guard that is also the name of a table macro.
+`NAME_` is `a` to `z`, `0` to `9` and `_`, starts with a letter, at most 32 characters. A leading `_` would make reserved C names. The include guard is the file name of `OUT.h` in capitals with every other character as `_`. The tool refuses a file name whose guard does not start with a letter, or a guard that is also the name of a table macro. The file name of `MODEL` must be printable ASCII, because it goes into the opening comment.
 
-`--dump` and `--wav` can join the first form. Exit codes: 0 success, 1 a table is out of date or a file cannot be read or written, 2 the model is refused, 64 a usage error.
+`--dump` and `--wav` can join the first form.
+
+### How the files are written
+
+The tool writes each file to a temporary name in the same folder, then renames it over the target. A file is never left half written. It writes `OUT.c` first and `OUT.h` last, because `OUT.h` carries the hash that `--check` reads. On a failure it removes its temporary files and exits 1 with one message.
+
+| Failure | `OUT.c` | `OUT.h` | `--check` |
+|---|---|---|---|
+| A temporary file cannot be made | old | old | stale if the model changed |
+| A write fails | old | old | stale if the model changed |
+| The rename of `OUT.c` fails | old | old | stale if the model changed |
+| The rename of `OUT.h` fails | new | old | stale: the header names the old hash |
+| The tool is killed between the two renames | new | old | stale, and a `.OUT.h.<pid>.tmp` file stays |
+
+`--dump` and `--wav` write their files the same way. On a failure the tool also removes every file it already renamed in that run. The folder then lacks the files of this run, so it does not look complete. Files from an older model under other names stay.
+
+### What the checks prove
+
+The fast check proves that `OUT.h` and the opening comment of `OUT.c` both name the SHA-256 of `MODEL` and this tool revision. It reads lines, so it accepts a CRLF copy. It does not prove the table bytes: an edited table passes it.
+
+`--check --full` renders every sound again and compares both files byte for byte. The tool always writes LF line ends and ASCII text. A CRLF copy fails the full check. Exit codes: 0 success, 1 a table is out of date or a file cannot be read or written, 2 the model is refused, 64 a usage error.
 
 The tool revision is 1. It goes up whenever a byte of any table can change.
 
