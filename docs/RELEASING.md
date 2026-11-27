@@ -46,7 +46,9 @@ What the manifest job reads:
 
 - On a tag push, `releases/<tag>.json` at the tag. The tag must equal the manifest's `suite`, every rule of `check` holds, and every `v` tag must exist on its manifest commit.
 - On a manual start with the `manifest` input, that file, such as `releases/suite-2026.12.json`, at the ref the run starts from. Every rule holds. A missing `v` tag is printed and passes. A `v` tag on another commit fails.
-- On a manual start with no input, a rehearsal: `manifest.py new` writes a manifest from the six default heads, and `check --rehearsal` skips the changelog rule only. The library pin rule still holds, so a rehearsal fails while a sibling pins an older RobCo-Core than the head of `main`.
+- On a manual start with no input, a rehearsal: `manifest.py new` writes a manifest from the five stages' default heads and the library commit they pin, and `check --rehearsal` skips the changelog rule only. `new` fails at once when the four library pins differ or Deitrix does not pin the Pip-OS head.
+
+The manifest's RobCo-Core commit is the library commit the stages pin, not the head of `main`. A release ships the stages with the library they were built and tested on, and the library's `v` tag sits on that commit. The commit that holds the manifest is a later one. The night builds on this pinned commit, while its own tools come from the run's commit.
 
 ## Steps
 
