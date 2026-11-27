@@ -881,6 +881,58 @@ def header_guard(h_name):
     return guard if GUARD.match(guard) else None
 
 
+# Keywords of C89 to C23 (ISO/IEC 9899:2024, 6.4.1), with the C23 spellings of
+# the older _Alignas and the like, and the GNU and common extensions asm,
+# fortran and typeof that -std=gnu11 accepts.
+C_KEYWORDS = frozenset("""
+    auto break case char const continue default do double else enum extern
+    float for goto if inline int long register restrict return short signed
+    sizeof static struct switch typedef union unsigned void volatile while
+    _Alignas _Alignof _Atomic _BitInt _Bool _Complex _Decimal128 _Decimal32
+    _Decimal64 _Generic _Imaginary _Noreturn _Static_assert _Thread_local
+    alignas alignof bool constexpr false nullptr static_assert thread_local
+    true typeof typeof_unqual asm fortran
+""".split())
+
+# Names that <stdint.h> defines, and the patterns C reserves for it (7.31.10).
+STDINT = re.compile(r"(?:u?int\w*_t|U?INT\w*_(?:MAX|MIN|C|WIDTH)"
+                    r"|(?:PTRDIFF|SIG_ATOMIC|SIZE|WCHAR|WINT)_(?:MAX|MIN|WIDTH))\Z")
+
+
+def c_names(model, built, prefix, h_name):
+    """[(identifier, where it comes from)] for every name the C files define."""
+    up = prefix.upper()
+    out = [(header_guard(h_name), f"the include guard of --h {h_name!r}")]
+    for s in ("MODEL_SHA256", "TOOL_REVISION", "RATE_HZ"):
+        out.append((up + s, f"--prefix {prefix!r}"))
+    for name, data in built.items():
+        where = f"--prefix {prefix!r} and sound {name!r}"
+        out.append((up + name.upper() + "_PEAK", where))
+        out.append((up + name.upper() + "_LOOP", where))
+        for t, _ in tables(model, name, data):
+            out.append((prefix + t, where))
+            out.append((up + t.upper() + "_LEN", where))
+            out.append((up + t.upper() + "_CRC32", where))
+    return out
+
+
+def c_name_faults(names):
+    """One line for each identifier that is a keyword, reserved, a <stdint.h>
+    name, or written twice."""
+    faults, seen = [], {}
+    for ident, where in names:
+        if ident in C_KEYWORDS:
+            faults.append(f"{where} give {ident}, a C keyword")
+        elif ident.startswith("_"):
+            faults.append(f"{where} give {ident}, a reserved C name")
+        elif STDINT.match(ident):
+            faults.append(f"{where} give {ident}, a name of <stdint.h>")
+        elif ident in seen:
+            faults.append(f"{where} give {ident}, already given by {seen[ident]}")
+        seen.setdefault(ident, where)
+    return faults
+
+
 def c_header(model, built, prefix, source, sha, h_name):
     up = prefix.upper()
     guard = header_guard(h_name)
@@ -1103,9 +1155,12 @@ def main(argv=None):
         h_name = os.path.basename(args.h)
         h_text = c_header(model, built, args.prefix, source=os.path.basename(args.model),
                           sha=sha, h_name=h_name)
-        guard = header_guard(h_name)
-        if len(re.findall(rf"^#define {guard}\b", h_text, re.M)) != 1:
-            p.error(f"--h: the include guard {guard} is also the name of a table macro")
+        faults = c_name_faults(c_names(model, built, args.prefix, h_name))
+        if faults:
+            p.print_usage(sys.stderr)
+            for f in faults:
+                print(f"sfx_table.py: error: {f}", file=sys.stderr)
+            return EX_USAGE
     try:
         if args.c is not None:
             source = os.path.basename(args.model)

@@ -422,6 +422,44 @@ def test_usage_errors(tmp_path):
     assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
 
 
+@pytest.mark.parametrize("prefix,sound,h_name,bad", [
+    ("f", "loat", "t.h", "float, a C keyword"),
+    ("b", "ool", "t.h", "bool, a C keyword"),
+    ("static_", "assert", "t.h", "static_assert, a C keyword"),
+    ("thread_", "local", "t.h", "thread_local, a C keyword"),
+    ("nullpt", "r", "t.h", "nullptr, a C keyword"),
+    ("typ", "eof", "t.h", "typeof, a C keyword"),
+    ("a", "sm", "t.h", "asm, a C keyword"),
+    ("uint8_", "t", "t.h", "uint8_t, a name of <stdint.h>"),
+    ("in", "t32_t", "t.h", "int32_t, a name of <stdint.h>"),
+    ("x_", "beep", "uint8_max", "UINT8_MAX, a name of <stdint.h>"),
+    ("x_", "beep", "size_max", "SIZE_MAX, a name of <stdint.h>"),
+    ("x_", "beep", "x_beep_peak", "X_BEEP_PEAK, already given by"),
+    ("x_", "beep", "x_model_sha256", "X_MODEL_SHA256, already given by"),
+])
+def test_bad_c_names_are_refused(tmp_path, prefix, sound, h_name, bad):
+    m = tone_model()
+    m["sounds"] = {sound: m["sounds"]["beep"]}
+    p = write_model(tmp_path, m)
+    c, h = tmp_path / "t.c", tmp_path / h_name
+    r = run(p, "--c", c, "--h", h, "--prefix", prefix)
+    assert r.returncode == 64, r.stderr
+    assert bad in r.stderr and "Traceback" not in r.stderr
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
+
+
+def test_bad_c_names_split_and_reserved():
+    m = tone_model(split=4)
+    m["sounds"] = {"loat_1": m["sounds"]["beep"]}
+    faults = T.c_name_faults(T.c_names(m, {"loat_1": bytes(8)}, "f", "t.h"))
+    assert faults == []
+    m["sounds"] = {"ool": tone_model()["sounds"]["beep"]}
+    assert T.c_name_faults(T.c_names(m, {"ool": bytes(8)}, "b", "t.h")) == [
+        "--prefix 'b' and sound 'ool' give bool, a C keyword"]
+    assert T.c_name_faults([("_X", "here")]) == ["here give _X, a reserved C name"]
+    assert T.c_name_faults([("A", "one"), ("A", "two")]) == ["two give A, already given by one"]
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------

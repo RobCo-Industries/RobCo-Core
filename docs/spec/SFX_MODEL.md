@@ -171,7 +171,16 @@ tools/sfx_table.py MODEL --wav DIR
 | `--dump DIR` | Writes each table as a raw `<table>.u8` file |
 | `--wav DIR` | Writes each sound as an 8-bit mono WAV at `rate_hz`, whole, not split. A loop plays three times so its join is heard. |
 
-`NAME_` is `a` to `z`, `0` to `9` and `_`, starts with a letter, at most 32 characters. A leading `_` would make reserved C names. The include guard is the file name of `OUT.h` in capitals with every other character as `_`. The tool refuses a file name whose guard does not start with a letter, or a guard that is also the name of a table macro. The file name of `MODEL` must be printable ASCII, because it goes into the opening comment.
+`NAME_` is `a` to `z`, `0` to `9` and `_`, starts with a letter, at most 32 characters. A leading `_` would make reserved C names. The include guard is the file name of `OUT.h` in capitals with every other character as `_`. The tool refuses a file name whose guard does not start with a letter.
+
+The tool then checks every name it would write, after it joins the parts: each table name, each macro and the include guard. It refuses a name that is:
+
+- a C keyword of any standard through C23, with the C23 spellings such as `bool`, `static_assert`, `thread_local`, `constexpr`, `nullptr` and `typeof`, and the extensions `asm` and `fortran`;
+- a reserved name, one that starts with `_`;
+- a name of `<stdint.h>` or a pattern C reserves for it, such as `uint8_t`, `int32_t` or `UINT8_MAX`;
+- a name the same run writes twice, such as a guard equal to a table macro.
+
+Each refused name gets one line that names it and the options and sound it comes from. The exit code is 64: a change of `--prefix` or `--h` fixes it. Two sounds whose table names clash are a model fault, exit 2. The file name of `MODEL` must be printable ASCII, because it goes into the opening comment.
 
 `--dump` and `--wav` can join the first form.
 
