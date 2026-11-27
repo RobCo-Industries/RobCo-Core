@@ -271,6 +271,36 @@ The tool revision is 1. It goes up whenever a byte of any table can change.
 
 A script can import the tool. `load_model(path)` returns the checked model and its SHA-256. `render_sound(model, name)` returns the bytes of one sound before the checks. `render_steps(model, name)` returns the scaled values before rounding. `check_sound(model, name, data)` returns the faults.
 
+## Checking a table
+
+```
+tools/sfx_check.py MODEL DIR
+```
+
+`tools/sfx_check.py` checks that the `.u8` tables in `DIR`, as `--dump` writes them, sound like `MODEL`. It reads the model and the table files, nothing else. It shares no code with `tools/sfx_table.py` and uses Python's `math` module: it judges by tolerance, not by bytes.
+
+For each sound it:
+
+1. Joins the `_1` and `_2` tables of a split sound.
+2. Checks the length equals `len` and the loudest sample sits exactly `peak_steps` from 128.
+3. Measures the table: the power in 250 Hz bands over the whole table, and the rms level in 5 ms frames. It keeps only the bands and frames within 30 dB of the strongest one and ignores everything above 15 kHz.
+4. Predicts the same two measurements from the model. It renders tone layers by the steps above. It takes a noise layer as its expected power: the filter's power in each band times the envelope and hit levels. It draws no random numbers. A loop wraps what runs past `len`, so a `fold` cross-fades a hit with itself in the prediction too.
+5. Scales the prediction by one gain that matches the total power of the table, and compares both in dB.
+
+It checks the fields it needs and their types. It does not repeat every check of `tools/sfx_table.py`.
+
+A loop is a sound with `loop` set. A one-shot with noise has a noise layer and no `loop`.
+
+| Kind | Band tolerance | Frame tolerance |
+|---|---|---|
+| Tones only | 0.5 dB each | 0.5 dB each |
+| One-shot with noise | Mean 3 dB, worst 10 dB | Mean 2 dB, worst 6 dB |
+| Loop | 1.5 dB each | Median 1.5 dB, worst 7 dB |
+
+It prints one line per sound: its name and kind, the mean, median and worst band error and frame error in dB, then `ok` or `FAIL` with the reason.
+
+Exit codes: 0 every sound passes, 1 a sound fails, 2 the model is not valid or a table file is missing or has the wrong length, 64 a usage error, 70 an internal error.
+
 ## A worked example
 
 A 2000 Hz tone at 8000 Hz turns a quarter turn per sample:
