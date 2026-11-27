@@ -24,6 +24,7 @@ Stdlib only. Runs with python3 -I.
 """
 
 import argparse
+import collections
 import hashlib
 import io
 import json
@@ -1126,6 +1127,7 @@ def _side(path, kind, made):
     into made as soon as the file exists, before a byte is written. Returns
     an open file."""
     folder, base = os.path.split(path)
+    # path is a resolved path from the Plan, not an argument.
     side = os.path.join(folder, f".{base}.{os.getpid()}.{kind}")
     fd = os.open(side, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     made.append(side)
@@ -1141,6 +1143,7 @@ def _backup(path, made):
     the file system allows it, else a copy. The name goes into made as soon
     as the file exists."""
     folder, base = os.path.split(path)
+    # path is a resolved path from the Plan, not an argument.
     bak = os.path.join(folder, f".{base}.{os.getpid()}.bak")
     try:
         os.link(path, bak, follow_symlinks=False)
@@ -1253,22 +1256,22 @@ def file_name_faults(c_path, h_path):
 
 
 def _same_file(a, b):
-    """True if paths a and b name the same file: the same inode where both
-    exist, else the same resolved path, compared with case folded too. The
-    case rule is strict on every system, so a run that works on one file
-    system works on all."""
+    """True if resolved paths a and b name the same file: the same inode
+    where both exist, else the same path, compared with case folded too.
+    The case rule is strict on every system, so a run that works on one
+    file system works on all."""
     try:
         if os.path.samefile(a, b):
             return True
     except OSError:
         pass
-    ra, rb = os.path.realpath(a), os.path.realpath(b)
-    return ra == rb or ra.casefold() == rb.casefold()
+    return a == b or a.casefold() == b.casefold()
 
 
-def _under(path, top):
-    """True if path lies below the folder or file top, by the same file rule."""
-    here = os.path.dirname(os.path.realpath(path))
+def _under(real, top):
+    """True if the resolved path real lies below the folder or file top, by
+    the same file rule."""
+    here = os.path.dirname(real)
     while True:
         if _same_file(here, top):
             return True
@@ -1278,64 +1281,102 @@ def _under(path, top):
         here = up
 
 
-def plan_faults(model, writes, folders):
-    """Check a run's whole plan before it writes anything. The plan is one
-    set of nodes, each a path with a kind. Files: the model and every
-    output of writes, a list of (label, path). Folders: each of folders, a
-    list of (label, path) for --dump and --wav, and the folder of each file.
-    Each path is resolved once with os.path.realpath, and every check reads
-    the resolved path: the caller writes there too. Paths compare by
-    _same_file.
+# One path of a run: its label, its spelling as written, and where it
+# resolved. Messages show the spelling; everything else uses real.
+Node = collections.namedtuple("Node", "label path real")
 
-    Returns (fault, new) where fault is one line, or None if the plan is
-    good, and new the resolved folders to make, parents first. Refused: two
-    files at one path, which covers an output equal to the model; one path
-    as a file and a folder; a node under a file; a file that is a folder on
-    disk; a folder that is a file on disk; a missing folder that is neither
-    made by the run nor in a folder that is; one new folder written two
-    ways that differ only by case."""
-    R = os.path.realpath
-    # Each node is (label, spelling, resolved path). Every check reads the
-    # resolved path only, the one publish writes; messages show the spelling.
-    files = [(lb, p, R(p)) for lb, p in [("MODEL", model)] + list(writes)]
-    dirs, seen = [], set()
-    for label, path, real in ([(lb, d, R(d)) for lb, d in folders]
-                              + [(f"the folder of {lb}", os.path.dirname(p) or ".",
-                                  os.path.dirname(r)) for lb, p, r in files]):
-        if real not in seen:
-            seen.add(real)
-            dirs.append((label, path, real))
-    for i, (la, pa, ra) in enumerate(files):
-        for lb, pb, rb in files[i + 1:]:
-            if _same_file(ra, rb):
-                return f"{la} {pa!r} and {lb} {pb!r} are the same file", []
-    for lf, pf, rf in files:
+
+class Plan:
+    """Every file and folder of one run, each resolved exactly once.
+
+    This class is the only place that resolves a path or joins one to an
+    argument; a test holds the tool to it. Loading the model, making
+    folders, temporary and backup names, renames, both checks and messages
+    all take their path from here, so no later step can follow a symbolic
+    link the plan did not see. The plan is a set of nodes, files and
+    folders. Files: the model and each output. Folders: --dump, --wav and
+    the folder of each file. Paths compare by _same_file.
+    """
+
+    def __init__(self, model, folders=()):
+        self._shown = {}
+        self.model = self._resolve("MODEL", model)
+        self.files = [self.model]
+        self.folders = {lb: self._resolve(lb, d) for lb, d in folders if d}
+        self.new = []
+
+    def _resolve(self, label, path, real=None):
+        node = Node(label, path, os.path.realpath(path if real is None else real))
+        self._shown[node.real] = path
+        return node
+
+    def file(self, label, path):
+        """Add an output file given as written."""
+        node = self._resolve(label, path)
+        self.files.append(node)
+        return node
+
+    def file_in(self, label, name):
+        """Add the output file name in the folder of label. name has no
+        separator. The file is resolved in the folder's resolved path."""
+        d = self.folders[label]
+        node = self._resolve(label, os.path.join(d.path, name),
+                             os.path.join(d.real, name))
+        self.files.append(node)
+        return node
+
+    def shown(self, real):
+        """The spelling of a resolved path, for a message."""
+        return self._shown.get(real, real)
+
+    def fault(self):
+        """Check the whole plan before anything is written. One line, or
+        None if the plan is good; then self.new holds the resolved folders
+        to make, parents first. Refused: two files at one path, which covers
+        an output equal to the model; one path as a file and a folder; a
+        node under a file; a file that is a folder on disk; a folder that is
+        a file on disk; a missing folder that is neither made by the run nor
+        in a folder that is; one new folder written two ways that differ
+        only by case."""
+        files, folders = self.files, list(self.folders.values())
+        dirs, seen = [], set()
+        for node in folders + [Node(f"the folder of {lb}", os.path.dirname(p) or ".",
+                                    os.path.dirname(r)) for lb, p, r in files]:
+            if node.real not in seen:
+                seen.add(node.real)
+                dirs.append(node)
+        for i, (la, pa, ra) in enumerate(files):
+            for lb, pb, rb in files[i + 1:]:
+                if _same_file(ra, rb):
+                    return f"{la} {pa!r} and {lb} {pb!r} are the same file"
+        for lf, pf, rf in files:
+            for ld, pd, rd in dirs:
+                if _same_file(rf, rd):
+                    return f"{lf} {pf!r} and {ld} {pd!r} are one path, a file and a folder"
+            for ln, pn, rn in files + dirs:
+                if _under(rn, rf):
+                    return f"{ln} {pn!r} lies under {lf} {pf!r}, a file"
+            if os.path.isdir(rf):
+                return f"{lf} {pf!r} is a directory"
+        new = [d for d in folders if not os.path.isdir(d.real)]
+        for i, (la, pa, ra) in enumerate(new):
+            for lb, pb, rb in new[i + 1:]:
+                if _same_file(ra, rb) and ra != rb:
+                    return (f"{la} {pa!r} and {lb} {pb!r} differ only by case:"
+                            " write the folder the same way twice")
         for ld, pd, rd in dirs:
-            if _same_file(rf, rd):
-                return f"{lf} {pf!r} and {ld} {pd!r} are one path, a file and a folder", []
-        for ln, pn, rn in files + dirs:
-            if _under(rn, rf):
-                return f"{ln} {pn!r} lies under {lf} {pf!r}, a file", []
-        if os.path.isdir(rf):
-            return f"{lf} {pf!r} is a directory", []
-    new = [(ld, pd, R(pd)) for ld, pd in folders if not os.path.isdir(R(pd))]
-    for i, (la, pa, ra) in enumerate(new):
-        for lb, pb, rb in new[i + 1:]:
-            if _same_file(ra, rb) and ra != rb:
-                return (f"{la} {pa!r} and {lb} {pb!r} differ only by case:"
-                        " write the folder the same way twice"), []
-    for ld, pd, rd in dirs:
-        if os.path.lexists(rd) and not os.path.isdir(rd):
-            return f"{ld} {pd!r} is not a directory", []
-        # A folder the run makes needs its parent; any other must exist.
-        if not any(_same_file(rd, d) for _, _, d in new):
-            if not os.path.isdir(rd):
-                return f"{ld} {pd!r} does not exist", []
-            continue
-        parent = os.path.dirname(rd)
-        if not os.path.isdir(parent) and not any(_same_file(parent, d) for _, _, d in new):
-            return f"{ld} {pd!r}: the folder {parent!r} does not exist", []
-    return None, sorted({r for _, _, r in new}, key=len)
+            if os.path.lexists(rd) and not os.path.isdir(rd):
+                return f"{ld} {pd!r} is not a directory"
+            # A folder the run makes needs its parent; any other must exist.
+            if not any(_same_file(rd, d.real) for d in new):
+                if not os.path.isdir(rd):
+                    return f"{ld} {pd!r} does not exist"
+                continue
+            parent = os.path.dirname(rd)
+            if not os.path.isdir(parent) and not any(_same_file(parent, d.real) for d in new):
+                return f"{ld} {pd!r}: the folder {parent!r} does not exist"
+        self.new = sorted({d.real for d in new}, key=len)
+        return None
 
 
 class Parser(argparse.ArgumentParser):
@@ -1366,17 +1407,15 @@ def commented(text):
     return (m.group(1), int(m.group(2))) if m else None
 
 
-def _check(args, model_path):
-    # The same resolved paths as a write of this command line.
-    real = {os.path.realpath(p): p for p in (args.h, args.c, model_path)}
-    h_real, c_real, model_real = (os.path.realpath(p) for p in (args.h, args.c, model_path))
+def _check(args, plan):
+    # The paths of a write of this command line, from the plan.
+    h, c = plan.file("--h", args.h), plan.file("--c", args.c)
     try:
-        h_raw = _read_bytes(h_real)
-        c_raw = _read_bytes(c_real)
-        sha = hashlib.sha256(_read_bytes(model_real)).hexdigest()
+        h_raw = _read_bytes(h.real)
+        c_raw = _read_bytes(c.real)
+        sha = hashlib.sha256(_read_bytes(plan.model.real)).hexdigest()
     except OSError as e:
-        print(f"sfx_table.py: {real.get(e.filename, e.filename)}: {e.strerror}",
-              file=sys.stderr)
+        print(f"sfx_table.py: {plan.shown(e.filename)}: {e.strerror}", file=sys.stderr)
         return EX_STALE
     h_text, c_text = _text(h_raw), _text(c_raw)
     rec = recorded(h_text, args.prefix) if h_text is not None else None
@@ -1399,9 +1438,9 @@ def _check(args, model_path):
               file=sys.stderr)
         return EX_STALE
     if args.full:
-        model, _ = load_model(model_real)
+        model, _ = load_model(plan.model.real)
         built = build(model)
-        source = os.path.basename(model_path)
+        source = os.path.basename(args.model)
         h_name = os.path.basename(args.h)
         h_new = c_header(model, built, args.prefix, source, sha, h_name)
         if h_new.encode("ascii") != h_raw:
@@ -1459,10 +1498,11 @@ def _main(p, args):
     if args.c is None and not args.dump and not args.wav:
         p.error("nothing to do: give --c, --h and --prefix, --dump or --wav")
 
+    plan = Plan(args.model, [("--dump", args.dump), ("--wav", args.wav)])
     try:
         if args.check:
-            return _check(args, args.model)
-        model, sha = load_model(os.path.realpath(args.model))
+            return _check(args, plan)
+        model, sha = load_model(plan.model.real)
         built = build(model)
     except ModelError as e:
         for f in e.faults:
@@ -1483,38 +1523,33 @@ def _main(p, args):
             for f in faults:
                 print(f"sfx_table.py: error: {f}", file=sys.stderr)
             return EX_USAGE
-        items.append(("--c", args.c, c_source(model, built, args.prefix, source, sha,
-                                              h_name).encode("ascii")))
+        items.append((plan.file("--c", args.c), c_source(model, built, args.prefix, source,
+                                                         sha, h_name).encode("ascii")))
     # --dump and --wav name each file after a table or a sound. A sound
     # name matches NAME, so a file name is [a-z][a-z0-9_]* with .u8 or
     # .wav: no path separator, no dot file, ASCII. A test checks it.
     if args.dump:
-        items += [("--dump", os.path.join(args.dump, t + ".u8"), bytes(part))
+        items += [(plan.file_in("--dump", t + ".u8"), bytes(part))
                   for name, data in built.items()
                   for t, part in tables(model, name, data)]
     if args.wav:
         for name, data in built.items():
             times = 3 if model["sounds"][name].get("loop") else 1
-            items.append(("--wav", os.path.join(args.wav, name + ".wav"),
+            items.append((plan.file_in("--wav", name + ".wav"),
                           wav_bytes(data * times, model["rate_hz"])))
     if args.c is not None:
         # The header last: it carries the hash that --check reads.
-        items.append(("--h", args.h, h_text.encode("ascii")))
-    folders = [(label, d) for label, d in (("--dump", args.dump), ("--wav", args.wav)) if d]
-    fault, made = plan_faults(args.model, [(label, path) for label, path, _ in items], folders)
+        items.append((plan.file("--h", args.h), h_text.encode("ascii")))
+    fault = plan.fault()
     if fault:
         p.print_usage(sys.stderr)
         print(f"sfx_table.py: error: {fault}", file=sys.stderr)
         return EX_USAGE
-    # The plan resolved every path once; publish writes only there, so the
-    # plan and the publish never disagree. Messages show the spelling.
-    shown = {os.path.realpath(path): path for _, path, _ in items}
-    shown.update((os.path.realpath(d), d) for _, d in folders)
+    # Publish writes the paths the plan resolved, never resolving again.
     try:
-        publish([(os.path.realpath(path), data) for _, path, data in items], made)
+        publish([(node.real, data) for node, data in items], plan.new)
     except OSError as e:
-        print(f"sfx_table.py: {shown.get(e.filename, e.filename)}: {e.strerror}",
-              file=sys.stderr)
+        print(f"sfx_table.py: {plan.shown(e.filename)}: {e.strerror}", file=sys.stderr)
         return EX_STALE
     return 0
 
