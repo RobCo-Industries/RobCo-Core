@@ -950,13 +950,22 @@ def test_format_must_be_a_json_integer(tmp_path, value):
     ('{"format": -Infinity}', "-Infinity is not a number"),
     ('{"format": 1, "rate_hz": 1' + "0" * 30 + "}", "too large for any field"),
     ('{"format": 1, "rate_hz": 8000.5}', "8000.5 is not a whole number"),
-    ("[" * 100000 + "]" * 100000, "model: must be an object"),
-], ids=["inf", "-inf", "long", "decimal", "deep"])
+], ids=["inf", "-inf", "long", "decimal"])
 def test_refusal_of_bad_numbers(tmp_path, text, message):
     p = tmp_path / "m.json"
     p.write_text(text)
     r = run(p, "--dump", tmp_path / "d")
     assert r.returncode == 2 and message in r.stderr and "Traceback" not in r.stderr
+
+
+def test_refusal_of_deep_nesting(tmp_path):
+    """Some Python versions parse 100000 nested arrays and some give up in
+    the parser. Either way the tool refuses the model in one line."""
+    p = tmp_path / "m.json"
+    p.write_text("[" * 100000 + "]" * 100000)
+    r = run(p, "--dump", tmp_path / "d")
+    assert r.returncode == 2 and r.stderr.count("\n") == 1 and "Traceback" not in r.stderr
+    assert "model: must be an object" in r.stderr or "not valid JSON" in r.stderr
 
 
 def _spec_fields():

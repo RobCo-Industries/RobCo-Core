@@ -6,7 +6,9 @@
  * Cost: one IRQ calls audio_pcm_poll() and audio_pcm_next_us(). Both use
  * 32x32 to 64-bit multiplies. A looped buffer adds a 32-bit modulo per
  * sample after its first pass, and a rebase adds a 32-bit divide every
- * 2^26 us at most. A switch to a chained buffer is a few subtractions. The 64-bit divides run in audio_pcm_start() only.
+ * 2^26 us at most. A switch to a chained buffer is a few subtractions. The
+ * 64-bit divides run in audio_pcm_start() only. No loop runs a number of
+ * turns that grows with the buffer length or the elapsed time.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -14,6 +16,14 @@
 #include <robco/audio.h>
 
 #define US_PER_S        1000000u
+
+/*
+ * Bounds at the top rate, AUDIO_PCM_RATE_MAX = 37500. mul is 161061273,
+ * under 2^32. elapsed * rate is under 2^32 * 37500, under 2^48. A sample
+ * count over 2^32 us is under 1.62 * 10^8, under 2^28, so join_q() and a
+ * rebase stay far under 2^31. time_of() compares t * rate with m * 10^6,
+ * under 2^52 for any m under 2^32. At 37500 a unit is 80 us and 3 samples.
+ */
 
 /* Rebase the origin once this much time has passed: keeps products in 64 bits. */
 #define REBASE_US       (1u << 26)
@@ -45,18 +55,23 @@ void audio_pcm_start(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t r
                      unsigned flags, uint32_t now_us)
 {
     uint32_t g = gcd(rate_hz, US_PER_S);
+    uint64_t inv;
 
     p->data = data;
     p->len = (uint32_t)len;
     p->rate = rate_hz;
     p->flags = flags & AUDIO_LOOP;
     p->mul = (uint32_t)(((uint64_t)rate_hz << 32) / US_PER_S);
-    p->inv = (uint32_t)((((uint64_t)US_PER_S << 24) + rate_hz - 1) / rate_hz);
+    inv = (((uint64_t)US_PER_S << 32) + rate_hz - 1) / rate_hz;
+    p->inv_hi = (uint32_t)(inv >> 32);
+    p->inv_lo = (uint32_t)inv;
     p->unit_us = US_PER_S / g;
     p->unit_n = rate_hz / g;
     p->origin_us = now_us;
     p->origin_pos = 0;
+    p->origin_n = 0;
     p->next_q = 0;
+    p->last_n = 0;
     p->last = 0;
     p->n = 0;
     p->next = 0;
@@ -76,16 +91,21 @@ static uint32_t samples_at(const audio_pcm_t *p, uint32_t elapsed)
     return q;
 }
 
-/* Smallest t with t * rate >= m * 10^6: when sample m after the origin starts. */
-static uint32_t time_of(const audio_pcm_t *p, uint32_t m)
+/*
+ * Smallest t with t * rate >= m * 10^6: when sample m after the origin
+ * starts, in 64 bits so it never wraps. The estimate m * inv / 2^32 is
+ * within 1 of the exact quotient, since inv is ceil(10^6 * 2^32 / rate)
+ * and m is under 2^32. So each loop below runs at most twice.
+ */
+static uint64_t time_of(const audio_pcm_t *p, uint32_t m)
 {
     uint64_t want = (uint64_t)m * US_PER_S;
-    uint32_t t = (uint32_t)(((uint64_t)m * p->inv) >> 24);
+    uint64_t t = (uint64_t)m * p->inv_hi + (((uint64_t)m * p->inv_lo) >> 32);
 
-    while ((uint64_t)t * p->rate < want) {
+    while (t * p->rate < want) {
         t++;
     }
-    while (t && (uint64_t)(t - 1) * p->rate >= want) {
+    while (t && (t - 1) * p->rate >= want) {
         t--;
     }
     return t;
@@ -119,6 +139,7 @@ static void rebase(audio_pcm_t *p, uint32_t elapsed)
     uint32_t dn = k * p->unit_n;
 
     p->origin_us += k * p->unit_us;
+    p->origin_n += dn;
     p->next_q = p->next_q > dn ? p->next_q - dn : 0;
     if (p->flags & AUDIO_LOOP) {
         p->origin_pos = (p->origin_pos + dn) % p->len;
@@ -184,6 +205,7 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
         abs %= p->len;
     }
     p->next_q = q + 1;
+    p->last_n = p->origin_n + q;
     p->last = abs;
     p->n++;
     if (pos) {
@@ -194,15 +216,102 @@ int audio_pcm_poll(audio_pcm_t *p, uint32_t now_us, uint32_t *pos)
 
 uint32_t audio_pcm_next_us(const audio_pcm_t *p)
 {
-    return p->origin_us + time_of(p, p->next_q);
+    return p->origin_us + (uint32_t)time_of(p, p->next_q);
+}
+
+/*
+ * Samples after the origin of the first grid point at or after now_us
+ * that is not before the next sample due. The origin never lies ahead of
+ * a real time: nothing moves it forward but a rebase, and only past time.
+ * elapsed is under 2^32 us, so q stays under 2^31 at any rate.
+ */
+static uint32_t join_q(const audio_pcm_t *p, uint32_t now_us)
+{
+    uint32_t elapsed = now_us - p->origin_us;
+    uint32_t q;
+
+    q = samples_at(p, elapsed);
+    if (time_of(p, q) < elapsed) {
+        q++;
+    }
+    if (q < p->next_q) {
+        q = p->next_q;
+    }
+    return q;
+}
+
+uint32_t audio_pcm_join(const audio_pcm_t *p, uint32_t now_us)
+{
+    return p->origin_n + join_q(p, now_us);
+}
+
+uint32_t audio_pcm_join_us(const audio_pcm_t *p, uint32_t now_us)
+{
+    return p->origin_us + (uint32_t)time_of(p, join_q(p, now_us));
+}
+
+/*
+ * The join sample's position, counted on 64 bits from the current buffer's
+ * start, lies in the current buffer or the waiting one. A looped play has
+ * no end.
+ */
+int audio_pcm_join_plays(const audio_pcm_t *p, uint32_t now_us)
+{
+    int64_t at;
+    int64_t end = p->len;
+
+    if (!p->active) {
+        return 0;
+    }
+    if (p->flags & AUDIO_LOOP) {
+        return 1;
+    }
+    if (p->next) {
+        end += p->next_len;
+    }
+    at = (int64_t)(int32_t)p->origin_pos + join_q(p, now_us);
+    return at < end;
+}
+
+int audio_pcm_chain_at(audio_pcm_t *p, const uint8_t *data, size_t len, uint32_t now_us)
+{
+    uint32_t q;
+    int r = audio_pcm_chain(p, data, len);
+
+    if (r) {
+        return r;
+    }
+    /*
+     * The current buffer ends at sample len. When the join point lies past
+     * it and no poll has switched yet, the new buffer's byte 0 becomes grid
+     * sample q instead, so its first sample is not skipped. Only the
+     * position moves: origin_pos + q is len, the first index of the new
+     * buffer. The origin time stays, so byte k sounds at grid sample q + k
+     * on the play's one grid, and no late queue can shift it. next_q keeps
+     * the old buffer's last positions, now before q, from sounding again.
+     * The test counts samples on 64 bits: a long buffer can end more than
+     * 2^31 us away. q is under 2^31, so origin_pos stays a signed 32-bit
+     * value, as after a switch.
+     */
+    q = join_q(p, now_us);
+    if ((int64_t)(int32_t)p->origin_pos + q > (int64_t)p->len) {
+        p->origin_pos = p->len - q;
+        p->next_q = q;
+    }
+    return 0;
 }
 
 uint8_t audio_pcm_scale(uint8_t s, unsigned vol)
 {
+    int d;
+
     if (vol > 100) {
         vol = 100;
     }
-    return (uint8_t)(128 + ((int)s - 128) * (int)vol / 100);
+    d = ((int)s - 128) * (int)vol;
+    /* Nearest step, a half step away from the midpoint: the same on both sides. */
+    d = d >= 0 ? (d + 50) / 100 : -((50 - d) / 100);
+    return (uint8_t)(128 + d);
 }
 
 uint32_t audio_pcm_duty(uint8_t s, uint32_t rng)

@@ -460,16 +460,17 @@ CI runs in the `robco-ci` container, built from `ci/Dockerfile` in RobCo-Core. I
 
 The image tag is a content tag. It is the first 12 hex characters of the SHA-256 of `ci/Dockerfile`. `ci/IMAGE_TAG` stores it. CI fails if `ci/image-tag.sh` gives a different value. The image is `ghcr.io/robco-industries/robco-ci:<tag>`. A new Dockerfile gives a new tag, so a repo never runs on a container it did not pin.
 
-RobCo-Core's own `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It has four jobs:
+RobCo-Core's own `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It has five jobs:
 
 | Job | What it runs |
 |---|---|
+| `workflows` | `make check-workflows`, the workflow guard below |
 | `image` | Checks that `ci/IMAGE_TAG` equals `ci/image-tag.sh`, then builds and pushes the container if that tag does not exist yet |
 | `host` | `make test-host HOST_SANITIZE=require` |
 | `canary` | `make venv && make test-canary` |
 | `test` | `make venv && make test-tools test-docs test-spikes test-examples test-target` |
 
-`host`, `canary` and `test` run inside the container and need `image`. Together they run every target `make test` runs. The container runs as root, and socket paths stay under the system temporary directory.
+`image` needs `workflows`: the job that can write packages starts only after the guard passed. `host`, `canary` and `test` run inside the container and need `image`. With `workflows`, they run every target `make test` runs. The container runs as root, and socket paths stay under the system temporary directory.
 
 Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` from RobCo-Core with the tag from `ci/IMAGE_TAG` in its RobCo-Core submodule. It checks out with `submodules: recursive` and runs two jobs in the container:
 
@@ -477,6 +478,57 @@ Each sibling repo calls the reusable workflow `.github/workflows/robco-ci.yml` f
 |---|---|
 | `build` | `make CI=1 <make-targets>`, default `all`. Uploads `artifact-path` as the `build` artifact when it is set. |
 | `test` | `make CI=1 <test-targets> BOARD=<board>` once per board in `boards`, default `raspi0` and `raspi2b`. Skipped when `test-targets` is empty. |
+
+### Workflow guard
+
+`tools/check_workflow_exprs.py` reads workflow files line by line and fails closed. It needs Python 3 and no YAML library. It has two rules.
+
+- A `${{ }}` expression passes only on a plain `KEY: value` line, closed on that line, under a bare `KEY:` line. The key must not be `run`, `script`, `shell`, `args` or `entrypoint`. The value holds no quote outside the expression and is not a flow value. An expression in block text fails, and so does an anchor or an alias. A script reads the value from `env:`, so a branch or tag name cannot run as shell code.
+- Each `uses:` names a full 40 hex digit commit. An action adds its tag in a comment, as in `uses: actions/checkout@<commit> # v4.4.0`. A reusable workflow called by path needs the commit and no comment. A `docker://` image needs a `sha256` digest. A local `./` action passes.
+
+The second rule fails closed too. Any line that holds the word `uses` outside a comment and outside block text must take one plain form: spaces as indent, an optional `- `, the bare key `uses`, a colon, one space, the unquoted reference, and for an action ` # <tag>`. The line sits under a bare `KEY:` line, and no deeper line continues the value. Every other spelling fails as a form the guard cannot check. That covers a space before the colon, a quoted key or value, a flow mapping or sequence, a tab, a block scalar, a value over two lines, an explicit `?` key, a `!` tag, `uses` after other content and the word in any other key or value. A file that holds the word fails once on an anchor, an alias, a merge key, a second YAML document, a byte order mark or a carriage return.
+
+The rule covers `jobs.<id>.uses` and `docker://` actions. It does not check `container:`, `services:` or any `image:` key. Their tags can move.
+
+It prints one line per finding and exits 1, or exits 0 when clean. `--no-pins` skips the second rule.
+
+A project that includes `mk/robco.mk` gets `make check-workflows`, which checks every file in `.github/workflows`. Add it to the `make-targets` of the reusable workflow, or to `make test`, so CI runs it.
+
+### Nightly
+
+`.github/workflows/nightly.yml` builds the five siblings at their default heads every night at 03:17 UTC and runs the whole-chain tests on the real images. Each sibling builds on its own RobCo-Core pin, and Deitrix builds on the Pip-OS head. This is the `pins` pairing, the one release tags would build. A second pairing with RobCo-Core `main` under every stage is not built yet.
+
+| Job | What it runs |
+|---|---|
+| `plan` | Checks out the six repositories, runs `tools/nightly/plan.py`. It resolves every ref to a commit once, runs each sibling's `check_pins.sh`, reads each image tag from `ci/IMAGE_TAG` in the library the sibling builds on, and writes the version table to the run summary. The matrices and the table read one record per built repository: its commit, the library and Pip-OS commits it builds with and its image tag. Deitrix takes the library and tag of the Pip-OS head, and its row says where each differs from its own pin. |
+| `stages` | `make CI=1 all` in RETROS-BIOS and in MFBootAgent. Uploads their images for the later jobs. |
+| `card-terminal` | `make CI=1 all sdimage CHAIN=1` in UOS with the two stage images. Packs the card, boots the packed bytes on `raspi2b` and uploads `card-terminal-pins` only when the boot passed. |
+| `card-pipboy` | `make CI=1 all sdimage kernel` in Deitrix. Packs the card and the kernel, boots them on `raspi0` and uploads `card-pipboy-pins` only when the boot passed. |
+| `agent-chain` | `pytest tests -k whole_chain` in MFBootAgent with `--retros-img`, once per board |
+| `uos-chain` | The same in UOS with `--retros-img` and `--mfboot-sys`, and the card in `ROBCO_CHAIN_CARD`, once per board |
+| `pipboy` | `pytest tests -k "whole_chain or first_screen or navigation or setting_survives_a_reboot"` in Deitrix on the uploaded card and kernel, once per board |
+
+Every job runs in the `robco-ci` image of the tree it builds or tests. A nightly test is a function whose name starts with `test_whole_chain` in the repository of the last stage it reaches. A new one needs no change here.
+
+`tools/nightly/junit_gate.py` judges each test job from its JUnit file. The job is red when the file is missing, holds no test, has a failure or an error, or has a skip. One skip per job whose reason starts with `host timing:` passes. A job where no test passed is red, so a night where every whole-chain test skips is red. The gate writes one line per test to the run summary.
+
+`tools/nightly/pack_card.py` refuses a card that holds `bootcode.bin`, `start.elf` or `fixup.dat`, the names in the `FILES` line of `tools/fetch_firmware.sh`. It reads the FAT directory entries of every partition itself, so a hidden or system file, a long or short name in any case and a file at any folder depth all count. It fails closed: a folder with starting cluster 0, a cluster out of range, a chain shorter or longer than its file, a size past the partition, a long name with no short entry, a volume label bit outside the root label, an invalid short name, a FAT32 root cluster of 0 and FAT copies that differ all fail the job. It skips only what a healthy card holds: deleted entries, the volume label in the root and the `.` and `..` entries. Then it writes the card, `SHA256SUMS` and `VERSIONS.txt`, the version table.
+
+Nothing is kept that was not booted. `tools/nightly/boot_card.py` checks the packed card against `SHA256SUMS`, copies it and boots the first-stage image with the copy as the SD card, `snapshot=on`, through the harness in `tests/harness`. It passes when the markers show every step in order and no stage prints `error`, `panic`, `exception`, `shell`, `halt` or `rom_kill`. The terminal steps are the BIOS `boot`, `load` of `/ROBCO/MFBOOT.SYS` and `jump`, the agent's `boot`, `handoff trusted=1`, `load` and `jump`, and UOS's `boot`, `handoff trusted=1` and `ready screen=login`. The Pip-Boy steps are Pip-OS's `boot`, `load` and `jump`, then the ROM's `deitrix: ready` line. BOOT_PROTOCOL.md names a `deitrix` `ready` marker, which Deitrix does not print yet, so either form counts. Last, it checks that neither the card nor the copy changed. The `uos-chain` tests still build their own card: UOS ignores `ROBCO_CHAIN_CARD` until it takes a chain card. The cards are kept 14 days, the stage images 3 days, the failure folders 7 days. A failure folder holds the JUnit file and the temp folders of the failed tests.
+
+A red night is a failed run. GitHub emails the person who last changed the `cron` line, and the badge in the README turns red. The red job names the repository to look at:
+
+| Red job | First look |
+|---|---|
+| `plan` | The sibling the message names: its pin and its workflow tag disagree |
+| `stages`, `card-*` | The repository that failed to build |
+| `agent-chain` | The last `stage=` marker in the log: `bios` is RETROS-BIOS, `bootagent` or `diag` is MFBootAgent |
+| `uos-chain` | The same rule: `bios`, `bootagent`, `maint`, then `uos` |
+| `pipboy` | `stage=pipos` lines are Pip-OS, `deitrix:` lines are Deitrix |
+
+To start a run by hand, open Actions, pick `nightly` and use "Run workflow". The inputs `core_ref`, `retros_ref`, `mfboot_ref`, `uos_ref`, `pipos_ref` and `deitrix_ref` take a branch, a tag or a commit. Empty means the default branch. Set one to prove a branch before its merge. `pairing` takes `both`, `pins` or `core-head`. `both` runs `pins` alone for now, and `core-head` fails the plan.
+
+GitHub switches a schedule off after 60 days with no activity in RobCo-Core. Before a release, check that the last scheduled run is under two days old.
 
 ### Catch CI failures before a push
 

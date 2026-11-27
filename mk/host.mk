@@ -187,8 +187,16 @@ $(HOST_BUILD)/test_rimg_pack: $(HOST_RIMG_IMGS)
 
 # test_video builds the framebuffer and console drivers in with #include.
 $(HOST_BUILD)/test_video: src/drv/fb.c src/gfx/console.c src/gfx/schemes.c src/gfx/font8x16_fixedsys.c
-# test_audio_stop builds the audio driver and its trace backend in the same way.
-$(HOST_BUILD)/test_audio_stop: src/drv/audio.c src/drv/audio_trace.c
+# test_audio_stop, _rest, _mix, _state, _wrap, _voice and _tone build the audio driver and its trace backend in the same way.
+$(HOST_BUILD)/test_audio_stop $(HOST_BUILD)/test_audio_rest $(HOST_BUILD)/test_audio_mix \
+    $(HOST_BUILD)/test_audio_state $(HOST_BUILD)/test_audio_wrap \
+    $(HOST_BUILD)/test_audio_voice $(HOST_BUILD)/test_audio_tone: src/drv/audio.c src/drv/audio_trace.c
+$(HOST_BUILD)/test_audio_rest $(HOST_BUILD)/test_audio_mix $(HOST_BUILD)/test_audio_state \
+    $(HOST_BUILD)/test_audio_wrap $(HOST_BUILD)/test_audio_voice \
+    $(HOST_BUILD)/test_audio_tone: tests/host/audio_fake.h
+# The demo's spans and overlay are shared with the example: a change of
+# the header must rebuild the test.
+$(HOST_BUILD)/test_audio_voice_demo: examples/audio/voice_demo.h
 
 # These include the ILI9341 driver through tests/host/tft_fake.h.
 $(HOST_BUILD)/test_tft_bus $(HOST_BUILD)/test_tft_panel: src/drv/tft_ili9341.c
