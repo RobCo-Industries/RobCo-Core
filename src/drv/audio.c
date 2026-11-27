@@ -251,6 +251,13 @@ static uint32_t clock_ms;
 static uint32_t last_us;
 static uint32_t acc_us;
 static uint32_t sounding;
+/*
+ * The t_ms of the last op=gain of the tone that plays, and 1 in
+ * tone_mark_set while it holds one. The tone's own lines never print a
+ * time before it. Written with IRQs masked or in the tick.
+ */
+static uint32_t tone_mark_ms;
+static int tone_mark_set;
 
 /*
  * IRQ context only: the tick starts and halts, the channel 3 IRQ runs.
@@ -328,6 +335,20 @@ static void pwm_silence(void)
 
 static void tone_note(uint32_t hz, uint32_t was);
 
+/*
+ * Tick context. The time a tone line prints: never before the last
+ * op=gain of the tone. A gain line takes the timer at the call, a tick
+ * line the time of its tick or its event, so the two can cross by up to
+ * a millisecond, or by the lateness of a late tick.
+ */
+static uint32_t tone_t(uint32_t t_ms)
+{
+    if (tone_mark_set && (int32_t)(t_ms - tone_mark_ms) < 0) {
+        return tone_mark_ms;
+    }
+    return t_ms;
+}
+
 static void output(uint32_t t_ms)
 {
     uint32_t hz = seq.hz;
@@ -338,6 +359,7 @@ static void output(uint32_t t_ms)
         return;
     }
     sounding = hz;
+    t_ms = tone_t(t_ms);
     if (rest_mid) {
         tone_note(hz, was);
         if (backend != AUDIO_BACKEND_PWM) {
@@ -710,10 +732,11 @@ static void audio_tick(void)
             pcm_halt();
         }
         if (cut && backend != AUDIO_BACKEND_PWM) {
-            audio_trace_out(0, gain_target, clock_ms);
+            audio_trace_out(0, gain_target, tone_t(clock_ms));
             /* Traced already: output() prints only a new tone. PWM keeps its writes. */
             sounding = 0;
         }
+        tone_mark_set = 0;
         if (req.stop) {
             audio_seq_stop(&seq);
         } else if (req.pcm) {
@@ -741,6 +764,9 @@ static void audio_tick(void)
     if (pcm.active && pcm_kind == KIND_TONE && !seq.active) {
         /* The sequence has ended: the pin goes back to 128 from the last sample. */
         pcm_halt();
+    }
+    if (!seq.active && !pcm.active) {
+        tone_mark_set = 0;
     }
     playing = seq.active || pcm.active;
 }
@@ -1026,10 +1052,11 @@ int audio_busy(void)
  * A change of target while a play sounds prints one op=gain line. With
  * nothing playing, in a rest of a sequence, or with a start that waits
  * for its tick, the next start line carries the gain instead. In a sample
- * play or a voice the time is that of op=pcm_mix: the play's next grid
- * sample that has not passed, where the sample IRQ first slews. A tone,
- * with or without the rest ramp, takes the audio clock, as its own lines
- * do.
+ * play, a voice or a centred tone the time is that of op=pcm_mix: the
+ * play's next grid sample that has not passed, where the sample IRQ first
+ * slews. A centred tone reads that time on the audio clock, the clock of
+ * its own lines, so the line and the tick lines share one base. A pulse
+ * tone and the rest ramp take the audio clock of the last tick.
  */
 void audio_set_gain(uint32_t gain)
 {
@@ -1060,7 +1087,21 @@ void audio_set_gain(uint32_t gain)
                                             (uint32_t)now));
             } else if (seq.active && !sounding) {
                 /* A rest: the next note's line carries the gain. */
+            } else if (pcm.active && pcm_kind == KIND_TONE) {
+                /*
+                 * The audio clock at the join sample, as the next tick
+                 * would count it from the last: clock_ms and acc_us
+                 * hold the time of last_us. The join lies after the
+                 * last tick, so the time never goes back.
+                 */
+                uint32_t join = audio_pcm_join_us(&pcm, (uint32_t)now);
+
+                tone_mark_ms = clock_ms + (acc_us + (join - last_us)) / 1000u;
+                tone_mark_set = 1;
+                audio_trace_gain(gain, tone_mark_ms, 0);
             } else {
+                tone_mark_ms = clock_ms;
+                tone_mark_set = 1;
                 audio_trace_gain(gain, clock_ms, 0);
             }
         }

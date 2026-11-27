@@ -14,6 +14,8 @@
 
 #include "audio_fake.h"
 
+#include <stdlib.h>
+
 static uint8_t buf[800];
 static uint8_t over[100];
 static const audio_note_t seq_rest[] = { { 440, 30 }, { 0, 30 }, { 880, 30 } };
@@ -591,4 +593,117 @@ TEST(trace_a_change_in_a_rest_rides_on_the_next_note)
                    "@RC stage=host ev=audio op=stop hz=0 vol=100 t_ms=1030\n"
                    "@RC stage=host ev=audio op=tone hz=880 vol=20 t_ms=1040\n"
                    "@RC stage=host ev=audio op=stop hz=0 vol=20 t_ms=1060\n");
+}
+
+/* Every t_ms of the trace, in line order, never below the one before. */
+static int t_ms_in_order(const char *s)
+{
+    unsigned long prev = 0;
+    const char *p = s;
+
+    while ((p = strstr(p, "t_ms=")) != 0) {
+        unsigned long t = strtoul(p + 5, 0, 10);
+
+        if (t < prev) {
+            RC_FAIL("t_ms %lu after %lu in:\n%s", t, prev, s);
+            return 0;
+        }
+        prev = t;
+        p += 5;
+    }
+    return 1;
+}
+
+/* The t_ms of the first line that holds `what`, or ~0. */
+static unsigned long t_ms_of(const char *s, const char *what)
+{
+    const char *p = strstr(s, what);
+
+    p = p ? strstr(p, "t_ms=") : 0;
+    return p ? strtoul(p + 5, 0, 10) : ~0ul;
+}
+
+/*
+ * The op=gain line of a centred tone prints the audio clock at the grid
+ * sample where the move starts, to the millisecond. Grid sample n sounds
+ * n / 37.5 ms after the tick at 1010 ms that started the tone.
+ */
+TEST(trace_gain_in_a_centred_tone_takes_its_grid_sample)
+{
+    static const audio_note_t one[] = { { 440, 1000 } };
+    uint32_t lead;
+
+    for (lead = 4900; lead <= 5100; lead += 3) {
+        uint32_t join;
+        unsigned long t;
+
+        enter_rest(AUDIO_BACKEND_TRACE);
+        CHECK_EQ(audio_play(one, 1, 0), 0);
+        tick(10);
+        run_us(lead);
+        audio_set_gain(4321);
+        join = gain_n + 1;
+        audio_trace_flush();
+        t = t_ms_of(out, "op=gain");
+        if (t != 1010ul + join * 1000ul / ROBCO_AUDIO_TONE_RATE) {
+            RC_FAIL("lead %u: t_ms %lu, grid sample %u", (unsigned)lead, t, (unsigned)join);
+            return;
+        }
+        /* The join is the first grid sample, on whole microseconds, not before the call. */
+        CHECK((join * 1000000ull + ROBCO_AUDIO_TONE_RATE - 1) / ROBCO_AUDIO_TONE_RATE >= lead);
+        CHECK(((join - 1) * 1000000ull + ROBCO_AUDIO_TONE_RATE - 1) / ROBCO_AUDIO_TONE_RATE < lead);
+    }
+}
+
+/*
+ * A stop between the call and its grid sample, across a millisecond: the
+ * stop's tick reads 1028 ms, the gain line 1029 ms. The stop line takes
+ * the gain line's time, so the log never goes back.
+ */
+TEST(trace_a_tick_line_never_precedes_the_gain_line)
+{
+    static const audio_note_t one[] = { { 440, 1000 } };
+
+    enter_rest(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_play(one, 1, 0), 0);
+    tick(10);
+    run_us(18995);
+    audio_set_gain(4321);
+    fake_step(2);
+    audio_stop();
+    fake_step(2);
+    tick(0);
+    CHECK_EQ(clock_ms, 1028);
+    audio_trace_flush();
+    CHECK(t_ms_in_order(out));
+    CHECK_STR(out, "@RC stage=host ev=audio op=tone hz=440 vol=100 t_ms=1010\n"
+                   "@RC stage=host ev=audio op=gain gain=4321 t_ms=1029\n"
+                   "@RC stage=host ev=audio op=stop hz=0 vol=43 t_ms=1029\n");
+}
+
+/*
+ * A late tick: the note due at 1030 ms runs at 1037 ms, after a call at
+ * 1035 ms. The note's line takes the gain line's time. A call right after
+ * an on-time tick prints no time before that tick's line.
+ */
+TEST(trace_a_late_tick_never_precedes_the_gain_line)
+{
+    static const audio_note_t pair[] = { { 440, 20 }, { 880, 100 } };
+
+    enter_rest(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_play(pair, 2, 0), 0);
+    tick(10);
+    run_us(25000);
+    audio_set_gain(4321);
+    run_us(2000);
+    tick(0);
+    CHECK_EQ(clock_ms, 1037);
+    audio_set_gain(10000);
+    tick(10);
+    audio_trace_flush();
+    CHECK(t_ms_in_order(out));
+    CHECK_STR(out, "@RC stage=host ev=audio op=tone hz=440 vol=100 t_ms=1010\n"
+                   "@RC stage=host ev=audio op=gain gain=4321 t_ms=1035\n"
+                   "@RC stage=host ev=audio op=tone hz=880 vol=43 t_ms=1035 gain=4321\n"
+                   "@RC stage=host ev=audio op=gain gain=10000 t_ms=1037\n");
 }
