@@ -508,7 +508,7 @@ The play took its kind when it started, so the image can set the old kind back r
 | A holotape | Always gets `-PIP_EPERM` |
 | What it writes | The file of [Stored levels](#stored-levels) |
 | Sound | It starts no sound and cuts none. The disk click, which Pip-OS plays for card work when `PIPOS.CFG` sets `[audio] system_sound = yes`, treats this write as it treats the write of `write_save`. |
-| A refused or failed call | Changes no level. The levels in force stay in force, and the card keeps the file it had. |
+| A refused or failed call | Changes no level. The levels in force stay in force. A refused call leaves the card as it was. After a write that failed, the card holds one whole file, the one from before or the new one, never a part of one. So a ROM that gets an error stores again later and relies on neither. |
 
 #### Volume, master and trim
 
@@ -597,7 +597,7 @@ Three things can change the gain of a sound that plays. `sound_level` does it wh
 |---|---|
 | Nothing plays | The change applies to the next play that starts |
 | A sample plays, or a tone with `PIP_HW_AUDIO_MID` set | The gain moves from its old value to the new one in equal steps, one per sample of the play. It reaches the new value within 20 ms and never passes it. |
-| No click | Between two samples, the change of the gain alone moves the output by less than one step of the 0 to 255 scale. A level change makes no jump, at 8000 Hz and at 37500 Hz. |
+| No click | Between two samples, the change of the gain alone moves the output by at most one step of the 0 to 255 scale. Before the output is rounded to a whole step it is less than one. A level change makes no jump, at 8000 Hz and at 37500 Hz. |
 | A second change before the first is done | The gain moves on from where it is toward the newest value |
 | A tone plays with `PIP_HW_AUDIO_MID` clear | The pulse takes its new width at its next note, as before 1.6 |
 | The order inside Pip-OS | Pip-OS sets a play's gain after it stops the sound that played and before the new play's first sample. So no play sounds at the gain of another kind. |
