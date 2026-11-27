@@ -6,12 +6,13 @@
 --work holds one checkout per repository, named as the repository:
 w/RobCo-Core and the five siblings. The file gets the LICENSE of each of
 the six repositories, in a fixed order, then every licence file under
-w/RobCo-Core/third_party/, sorted by path. A licence file is one whose
-name starts with LICENSE, LICENCE or COPYING, in any case. Each text
-comes under a line that names its repository and path.
+w/RobCo-Core/third_party/, folder by folder in sorted order. A licence
+file is one whose name starts with LICENSE, LICENCE or COPYING, in any
+case. A folder with no licence file gives its PROVENANCE file instead.
+Each text comes under a line that names its repository and path.
 
 A missing LICENSE, a missing third_party folder or a third_party folder
-with no licence file fails, with an `::error::` line and exit code 1.
+with neither a licence file nor a PROVENANCE file fails, with an `::error::` line and exit code 1.
 The same inputs give the same bytes. Standard library only.
 """
 import argparse
@@ -57,7 +58,17 @@ def collect(work):
     third = os.path.join(work, CORE, "third_party")
     if not os.path.isdir(third):
         raise NoticesError(f"no folder {third}")
-    paths = licence_files(third)
+    paths = []
+    for name in sorted(os.listdir(third)):
+        folder = os.path.join(third, name)
+        if not os.path.isdir(folder):
+            continue
+        found = licence_files(folder)
+        if not found and os.path.isfile(os.path.join(folder, "PROVENANCE")):
+            found = ["PROVENANCE"]
+        if not found:
+            raise NoticesError(f"third_party/{name} has no licence file and no PROVENANCE")
+        paths += [f"{name}/{rel}" for rel in found]
     if not paths:
         raise NoticesError(f"no licence file under {third}")
     for rel in paths:

@@ -22,4 +22,4 @@ Joins the `LICENSE` of the six repositories and each licence file under `RobCo-C
 python3 -I tools/release/notices.py --work w --out NOTICES.txt
 ```
 
-The font in `third_party/fixedsys-excelsior/` has no licence file, only `PROVENANCE`, so its terms are not in the output.
+A folder under `third_party/` with no licence file gives its `PROVENANCE` file instead, as the font in `third_party/fixedsys-excelsior/` does. A folder with neither fails.
