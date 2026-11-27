@@ -575,7 +575,7 @@ def test_unwritable_source_leaves_both_old_files(tmp_path):
     finally:
         cdir.chmod(0o755)
     assert r.returncode == 1 and "Permission denied" in r.stderr
-    assert len(r.stderr.strip().splitlines()) == 1
+    assert len([x for x in r.stderr.splitlines() if "warning:" not in x]) == 1
     assert c.read_bytes() == old_c and h.read_bytes() == old_h
     _no_temp_left(cdir, hdir)
     r = run(p, *args, "--check")
@@ -628,10 +628,12 @@ def test_failed_rename_is_seen_as_stale(tmp_path, monkeypatch, capsys, fail_at):
     args = ["--c", str(c), "--h", str(h), "--prefix", "demo_sfx_"]
     assert T.main([str(p), *args]) == 1
     monkeypatch.setattr(T.os, "replace", real)
-    assert [os.path.basename(x) for x in calls] == ["sfx_table.c", "sfx_table.h"][:fail_at]
-    assert h.read_bytes() == old_h
-    assert (c.read_bytes() == old_c) == (fail_at == 1)
+    # The renames, then the restore of the source after a failed header.
+    assert [os.path.basename(x) for x in calls] == [
+        ["sfx_table.c"], ["sfx_table.c", "sfx_table.h", "sfx_table.c"]][fail_at - 1]
+    assert h.read_bytes() == old_h and c.read_bytes() == old_c
     _no_temp_left(tmp_path)
+    assert not [f for f in os.listdir(tmp_path) if f.endswith(".bak")]
     capsys.readouterr()
     assert T.main([str(p), *args, "--check"]) == 1
     assert "the model changed" in capsys.readouterr().err
@@ -664,7 +666,7 @@ def test_failed_dump_leaves_no_new_table(tmp_path, monkeypatch):
 
     monkeypatch.setattr(T.os, "replace", replace)
     assert T.main([str(p), "--dump", str(d)]) == 1
-    assert list(d.iterdir()) == []
+    assert not d.exists()           # the run made the folder, so it removes it
 
 
 def test_generated_files_are_ascii_with_lf(tmp_path):
@@ -1173,11 +1175,46 @@ def test_bad_file_names_are_refused(tmp_path, option, name, message, check):
     assert sorted(f.name for f in tmp_path.iterdir()) == ["model.json"]
 
 
-def test_header_lists():
-    # The 31 headers of C23 and the top-level headers of POSIX.1-2024.
-    assert len(T.C_HEADERS) == 31 and "stdint.h" in T.C_HEADERS
-    assert {"stdbit.h", "stdckdint.h", "threads.h"} <= T.C_HEADERS
-    assert {"unistd.h", "endian.h", "devctl.h"} <= T.POSIX_HEADERS
+# The test's own copy of the standard header names, written apart from the
+# tool's table: C23 (ISO/IEC 9899:2024, 7.1.2), the plain file names of the
+# POSIX.1-2024 headers index, older POSIX and SUS issues, and System V ar.h.
+C23_NAMES = """assert complex ctype errno fenv float inttypes iso646 limits locale
+    math setjmp signal stdalign stdarg stdatomic stdbit stdbool stdckdint
+    stddef stdint stdio stdlib stdnoreturn string tgmath threads time uchar
+    wchar wctype"""
+POSIX_NAMES = """aio assert complex cpio ctype devctl dirent dlfcn endian errno
+    fcntl fenv float fmtmsg fnmatch ftw glob grp iconv inttypes iso646
+    langinfo libintl libgen limits locale math monetary mqueue ndbm netdb
+    nl_types poll pthread pwd regex sched search semaphore setjmp signal
+    spawn stdalign stdarg stdatomic stdbool stddef stdint stdio stdlib
+    stdnoreturn string strings syslog tar termios tgmath threads time uchar
+    unistd utmpx wchar wctype wordexp"""
+OLDER_NAMES = "re_comp regexp stropts trace ucontext ulimit utime varargs ar"
+
+
+def test_header_table_is_sorted_and_whole():
+    table = T.STANDARD_HEADERS
+    assert list(table) == sorted(table), "not sorted"
+    assert len(set(table)) == len(table), "a duplicate"
+    c23 = {n + ".h" for n in C23_NAMES.split()}
+    assert len(c23) == 31
+    mine = c23 | {n + ".h" for n in (POSIX_NAMES + " " + OLDER_NAMES).split()}
+    assert mine == set(table), (sorted(mine - set(table)), sorted(set(table) - mine))
+
+
+@pytest.mark.parametrize("name", ["ar.h", "AR.h", "ucontext.h", "stdbit.h", "wordexp.h"])
+def test_listed_header_names_are_refused(tmp_path, name):
+    p = write_model(tmp_path, tone_model())
+    r = run(p, "--c", tmp_path / "t.c", "--h", tmp_path / name, "--prefix", "x_")
+    assert r.returncode == 64 and "a standard C or POSIX header" in r.stderr
+
+
+def test_header_without_the_prefix_warns(tmp_path):
+    p = write_model(tmp_path, tone_model())
+    r = run(p, "--c", tmp_path / "t.c", "--h", tmp_path / "t.h", "--prefix", "x_")
+    assert r.returncode == 0 and "warning: --h 't.h' does not start with" in r.stderr
+    r = run(p, "--c", tmp_path / "t.c", "--h", tmp_path / "x_t.h", "--prefix", "x_")
+    assert r.returncode == 0 and r.stderr == ""
 
 
 def test_dump_and_wav_names_are_safe(tmp_path):
@@ -1191,3 +1228,192 @@ def test_dump_and_wav_names_are_safe(tmp_path):
     assert "a_1.u8" in names and "z9_.wav" in names
     for n in names:
         assert re.fullmatch(r"[a-z][a-z0-9_]*\.(u8|wav)", n), n
+
+
+# ---------------------------------------------------------------------------
+# The plan: every file a run reads and writes, checked whole first
+# ---------------------------------------------------------------------------
+
+def _alias(tmp_path, how):
+    """(args, files the run must leave as they are) for one spelling of
+    the same file twice."""
+    p = write_model(tmp_path, tone_model(), name="model.c")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    c, h = tmp_path / "t.c", tmp_path / "t.h"
+    if how == "model as --c":
+        return [p, "--c", p, "--h", h, "--prefix", "x_"]
+    if how == "relative and absolute":
+        return [p, "--c", os.path.relpath(p), "--h", h, "--prefix", "x_"]
+    if how == "dot and dot-dot":
+        return [p, "--c", sub / ".." / "." / "model.c", "--h", h, "--prefix", "x_"]
+    if how == "symbolic link":
+        (sub / "link.c").symlink_to(p)
+        return [p, "--c", sub / "link.c", "--h", h, "--prefix", "x_"]
+    if how == "hard link":
+        try:
+            os.link(p, sub / "hard.c")
+        except OSError as e:
+            pytest.skip(f"this file system makes no hard link: {e}")
+        return [p, "--c", sub / "hard.c", "--h", h, "--prefix", "x_"]
+    if how == "case":
+        return [p, "--c", tmp_path / "MODEL.c", "--h", h, "--prefix", "x_"]
+    if how == "header link to source":
+        (sub / "x_t.h").symlink_to(c)
+        c.write_text("old\n")
+        return [p, "--c", c, "--h", sub / "x_t.h", "--prefix", "x_"]
+    if how == "--c is a directory":
+        (sub / "d.c").mkdir()
+        return [p, "--c", sub / "d.c", "--h", h, "--prefix", "x_"]
+    if how == "missing folder":
+        return [p, "--c", tmp_path / "none" / "t.c", "--h", h, "--prefix", "x_"]
+    if how == "--dump is a file":
+        (tmp_path / "f").write_text("x")
+        return [p, "--dump", tmp_path / "f"]
+    if how == "--dump in a missing folder":
+        return [p, "--dump", tmp_path / "none" / "d"]
+    if how == "--wav file is the model":
+        q = write_model(sub, tone_model(), name="beep.wav")
+        return [q, "--wav", sub]
+    raise AssertionError(how)
+
+
+ALIASES = ["model as --c", "relative and absolute", "dot and dot-dot", "symbolic link",
+           "hard link", "case", "header link to source", "--c is a directory",
+           "missing folder", "--dump is a file", "--dump in a missing folder",
+           "--wav file is the model"]
+
+
+@pytest.mark.parametrize("how", ALIASES)
+def test_plan_refuses_the_same_file_twice(tmp_path, how, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    args = _alias(tmp_path, how)
+    before = {f: f.read_bytes() for f in tmp_path.rglob("*") if f.is_file()}
+    r = subprocess.run([sys.executable, "-I", TOOL, *map(str, args)], capture_output=True,
+                       text=True, env=minimal_env(), cwd=tmp_path)
+    assert r.returncode == 64, r.stderr
+    errors = [x for x in r.stderr.splitlines() if "error:" in x]
+    assert errors and "Traceback" not in r.stderr
+    after = {f: f.read_bytes() for f in tmp_path.rglob("*") if f.is_file()}
+    assert after == before
+
+
+def test_dump_and_wav_may_share_a_folder(tmp_path):
+    p = write_model(tmp_path, _two_sounds())
+    r = run(p, "--dump", tmp_path / "o", "--wav", tmp_path / "o")
+    assert r.returncode == 0, r.stderr
+    assert {"beep.u8", "beep.wav", "hiss.wav"} <= set(os.listdir(tmp_path / "o"))
+
+
+# ---------------------------------------------------------------------------
+# One publish for the whole run
+# ---------------------------------------------------------------------------
+
+def _combined(tmp_path):
+    m = _two_sounds()
+    p = write_model(tmp_path, m)
+    c, h = tmp_path / "x_t.c", tmp_path / "x_t.h"
+    d, w = tmp_path / "d", tmp_path / "w"
+    args = [str(p), "--c", str(c), "--h", str(h), "--prefix", "x_",
+            "--dump", str(d), "--wav", str(w)]
+    assert T.main(args) == 0
+    m["sounds"]["beep"]["len"] = 10
+    write_model(tmp_path, m)
+    return args, [c, h, *sorted(d.iterdir()), *sorted(w.iterdir())]
+
+
+def _snapshot(files):
+    return {f: f.read_bytes() for f in files}
+
+
+# The order of the renames: OUT.c, each .u8, each .wav, OUT.h.
+@pytest.mark.parametrize("fail_at", ["temp", "backup", "rename 1", "rename dump",
+                                     "rename wav", "rename header"])
+def test_combined_run_rolls_back(tmp_path, monkeypatch, capsys, fail_at):
+    args, files = _combined(tmp_path)
+    old = _snapshot(files)
+    real_replace, real_open, real_link = os.replace, os.open, os.link
+    renames = []
+    stop = {"rename 1": 1, "rename dump": 2, "rename wav": len(files) - 1,
+            "rename header": len(files)}.get(fail_at)
+
+    def replace(a, b):
+        if not str(a).endswith(".bak"):
+            renames.append(b)
+            if len(renames) == stop:
+                raise OSError(5, "Input/output error", str(b))
+        real_replace(a, b)
+
+    def opener(path, *a, **k):
+        if fail_at == "temp" and str(path).endswith(".wav.%d.tmp" % os.getpid()):
+            raise OSError(28, "No space left on device", str(path))
+        return real_open(path, *a, **k)
+
+    def link(a, b, **k):
+        if fail_at == "backup" and str(b).endswith(".wav.%d.bak" % os.getpid()):
+            raise OSError(1, "Operation not permitted", str(b))
+        return real_link(a, b, **k)
+
+    monkeypatch.setattr(T.os, "replace", replace)
+    monkeypatch.setattr(T.os, "open", opener)
+    monkeypatch.setattr(T.os, "link", link)
+    code = T.main(args)
+    monkeypatch.setattr(T.os, "replace", real_replace)
+    monkeypatch.setattr(T.os, "open", real_open)
+    monkeypatch.setattr(T.os, "link", real_link)
+    if fail_at == "backup":
+        assert code == 0      # a backup falls back to a copy
+        return
+    assert code == 1
+    assert _snapshot(files) == old, "every old file is back"
+    for folder in (tmp_path, tmp_path / "d", tmp_path / "w"):
+        assert not [f for f in os.listdir(folder) if f.endswith((".tmp", ".bak"))]
+    capsys.readouterr()
+    assert T.main(args[:7] + ["--check"]) == 1
+    assert "the model changed" in capsys.readouterr().err
+
+
+def test_combined_run_removes_new_files_and_folders(tmp_path, monkeypatch):
+    m = _two_sounds()
+    p = write_model(tmp_path, m)
+    args = [str(p), "--c", str(tmp_path / "x_t.c"), "--h", str(tmp_path / "x_t.h"),
+            "--prefix", "x_", "--dump", str(tmp_path / "d"), "--wav", str(tmp_path / "w")]
+    real = os.replace
+    n = []
+
+    def replace(a, b):
+        n.append(b)
+        if str(b).endswith(".h"):
+            raise OSError(5, "Input/output error", str(b))
+        real(a, b)
+
+    monkeypatch.setattr(T.os, "replace", replace)
+    assert T.main(args) == 1
+    assert sorted(os.listdir(tmp_path)) == ["model.json"]
+
+
+def test_finding_dump_rolled_back_when_wav_fails(tmp_path, monkeypatch):
+    m = _two_sounds()
+    p = write_model(tmp_path, m)
+    d, w = tmp_path / "d", tmp_path / "w"
+    real = os.replace
+
+    def replace(a, b):
+        if str(b).endswith(".wav"):
+            raise OSError(5, "Input/output error", str(b))
+        real(a, b)
+
+    monkeypatch.setattr(T.os, "replace", replace)
+    assert T.main([str(p), "--dump", str(d), "--wav", str(w)]) == 1
+    assert not d.exists() and not w.exists()
+
+
+def test_finding_model_named_like_the_source(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    p = write_model(tmp_path, tone_model(), name="model.c")
+    old = p.read_bytes()
+    r = subprocess.run([sys.executable, "-I", TOOL, "model.c", "--c", "model.c", "--h",
+                        "x_t.h", "--prefix", "x_"], capture_output=True, text=True,
+                       env=minimal_env(), cwd=tmp_path)
+    assert r.returncode == 64 and "MODEL 'model.c' and --c 'model.c'" in r.stderr
+    assert p.read_bytes() == old and sorted(os.listdir(tmp_path)) == ["model.c"]

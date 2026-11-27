@@ -9,8 +9,10 @@
 --dump and --wav may go with the first form. --check writes nothing: it
 compares the model's SHA-256 and the tool revision recorded in OUT.h and in
 the comment of OUT.c. With --full it renders every sound again and compares
-both files byte for byte. Files are written to a temporary name and renamed,
-OUT.h last.
+both files byte for byte. A run checks its whole plan first: no two paths
+are the same file and none is MODEL. Then every file is written to a
+temporary name and all are renamed, OUT.h last. A failure restores the old
+files.
 
 Exit codes: 0 success, 1 a file is out of date or cannot be read or written,
 2 the model is refused, 64 usage error, 70 internal error. An internal error
@@ -1072,42 +1074,76 @@ def wav_bytes(data, rate):
     return buf.getvalue()
 
 
-def _temp_for(path):
-    """Open a new temporary file next to path. Returns (name, fd)."""
+def _side(path, kind):
+    """A new side file next to path, such as .name.<pid>.tmp. Returns
+    (name, fd)."""
     folder, base = os.path.split(path)
-    tmp = os.path.join(folder, f".{base}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-    return tmp, fd
+    side = os.path.join(folder, f".{base}.{os.getpid()}.{kind}")
+    fd = os.open(side, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    return side, fd
 
 
-def publish(items, undo):
-    """Write each (path, bytes) to a temporary file in the same folder, then
-    rename each over its path in order. On a failure, remove the temporary
-    files and, with undo, the paths this call already renamed, then raise
-    the OSError. A path is never left half written."""
-    temps, done = [], []
+def _backup(path):
+    """Keep the old content of path under .name.<pid>.bak: a hard link if
+    the file system allows it, else a copy."""
+    folder, base = os.path.split(path)
+    bak = os.path.join(folder, f".{base}.{os.getpid()}.bak")
+    try:
+        os.link(path, bak, follow_symlinks=False)
+        return bak
+    except OSError:
+        pass
+    bak, fd = _side(path, "bak")
+    with os.fdopen(fd, "wb") as f, open(path, "rb") as old:
+        f.write(old.read())
+    return bak
+
+
+def _quiet(f, *a):
+    try:
+        f(*a)
+    except OSError:
+        pass
+
+
+def publish(items, made_dirs=()):
+    """Publish every (path, bytes) of a run as one. Each goes to a temporary
+    file in its folder first. Then each existing path gets a backup, and
+    the temporary files are renamed in order, so the caller puts the
+    header last. On a failure, every path this call renamed gets its backup
+    back, or is removed if it had none, every temporary and backup file is
+    removed, each folder of made_dirs that is empty again is removed, and
+    the OSError is raised. On success the backups are removed. A path is
+    never left half written."""
+    temps, backups, done = [], {}, []
     try:
         for path, data in items:
-            tmp, fd = _temp_for(path)
+            tmp, fd = _side(path, "tmp")
             temps.append((tmp, path))
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
+        for _, path in temps:
+            if os.path.lexists(path):
+                backups[path] = _backup(path)
         for tmp, path in temps:
             os.replace(tmp, path)
             done.append(path)
     except OSError:
-        for tmp, _ in temps:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        if undo:
-            for path in done:
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+        for path in reversed(done):
+            if path in backups:
+                _quiet(os.replace, backups.pop(path), path)
+            else:
+                _quiet(os.unlink, path)
+        for tmp, path in temps:
+            if path not in done:
+                _quiet(os.unlink, tmp)
+        for bak in backups.values():
+            _quiet(os.unlink, bak)
+        for d in reversed(made_dirs):
+            _quiet(os.rmdir, d)
         raise
+    for bak in backups.values():
+        _quiet(os.unlink, bak)
 
 
 def recorded(h_text, prefix):
@@ -1133,27 +1169,35 @@ H_FILE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\.h")
 
 # Headers a generated header must not be named after: in a folder on the
 # include path it would take the place of the system one, and the
-# generated #include <stdint.h> would find itself. The C list is every
-# standard header of C23, ISO/IEC 9899:2024, 7.1.2. The POSIX list is every
-# header at the top level of POSIX.1-2024, IEEE Std 1003.1-2024, Base
-# Definitions, Headers chapter, with stropts.h and trace.h of older issues.
-# Headers in a folder, such as <sys/types.h>, cannot clash with a plain
-# file name. The match ignores case, for file systems that do.
-C_HEADERS = frozenset("""
-    assert.h complex.h ctype.h errno.h fenv.h float.h inttypes.h iso646.h
-    limits.h locale.h math.h setjmp.h signal.h stdalign.h stdarg.h
-    stdatomic.h stdbit.h stdbool.h stdckdint.h stddef.h stdint.h stdio.h
-    stdlib.h stdnoreturn.h string.h tgmath.h threads.h time.h uchar.h
-    wchar.h wctype.h
-""".split())
-POSIX_HEADERS = frozenset("""
-    aio.h cpio.h devctl.h dirent.h dlfcn.h endian.h fcntl.h fmtmsg.h
-    fnmatch.h ftw.h glob.h grp.h iconv.h langinfo.h libgen.h libintl.h
-    monetary.h mqueue.h ndbm.h netdb.h nl_types.h poll.h pthread.h pwd.h
-    regex.h sched.h search.h semaphore.h spawn.h strings.h stropts.h
-    syslog.h tar.h termios.h trace.h ulimit.h unistd.h utime.h utmpx.h
-    wordexp.h
-""".split())
+# generated #include <stdint.h> would find itself. One sorted table, from
+# these sources:
+#   C23, ISO/IEC 9899:2024, 7.1.2: its 31 standard headers.
+#   POSIX.1-2024, IEEE Std 1003.1-2024, Base Definitions, chapter 14, the
+#   headers index: every header that is a plain file name. Headers in a
+#   folder, such as <sys/types.h>, cannot clash with a plain file name.
+#   Older issues of POSIX and the Single UNIX Specification: re_comp.h,
+#   regexp.h, stropts.h, trace.h, ucontext.h, ulimit.h, utime.h,
+#   varargs.h.
+#   System V: ar.h, the archive format header that Unix systems ship.
+# A test holds its own copy of this list and compares the two.
+STANDARD_HEADERS = (
+    "aio.h", "ar.h", "assert.h", "complex.h", "cpio.h", "ctype.h",
+    "devctl.h", "dirent.h", "dlfcn.h", "endian.h", "errno.h", "fcntl.h",
+    "fenv.h", "float.h", "fmtmsg.h", "fnmatch.h", "ftw.h", "glob.h",
+    "grp.h", "iconv.h", "inttypes.h", "iso646.h", "langinfo.h",
+    "libgen.h", "libintl.h", "limits.h", "locale.h", "math.h",
+    "monetary.h", "mqueue.h", "ndbm.h", "netdb.h", "nl_types.h",
+    "poll.h", "pthread.h", "pwd.h", "re_comp.h", "regex.h", "regexp.h",
+    "sched.h", "search.h", "semaphore.h", "setjmp.h", "signal.h",
+    "spawn.h", "stdalign.h", "stdarg.h", "stdatomic.h", "stdbit.h",
+    "stdbool.h", "stdckdint.h", "stddef.h", "stdint.h", "stdio.h",
+    "stdlib.h", "stdnoreturn.h", "string.h", "strings.h", "stropts.h",
+    "syslog.h", "tar.h", "termios.h", "tgmath.h", "threads.h", "time.h",
+    "trace.h", "uchar.h", "ucontext.h", "ulimit.h", "unistd.h",
+    "utime.h", "utmpx.h", "varargs.h", "wchar.h", "wctype.h",
+    "wordexp.h",
+)
+STANDARD_HEADER_SET = frozenset(STANDARD_HEADERS)
 
 
 def file_name_faults(c_path, h_path):
@@ -1167,9 +1211,56 @@ def file_name_faults(c_path, h_path):
     if not H_FILE.fullmatch(h_name):
         faults.append(f"--h {h_name!r}: the file name must be a letter, then letters,"
                       " digits, _, . or -, and end in .h")
-    elif h_name.lower() in C_HEADERS | POSIX_HEADERS:
+    elif h_name.lower() in STANDARD_HEADER_SET:
         faults.append(f"--h {h_name!r}: the name of a standard C or POSIX header")
     return faults
+
+
+def _same_file(a, b):
+    """True if paths a and b name the same file: the same inode where both
+    exist, else the same resolved path, compared with case folded too. The
+    case rule is strict on every system, so a run that works on one file
+    system works on all."""
+    try:
+        if os.path.samefile(a, b):
+            return True
+    except OSError:
+        pass
+    ra, rb = os.path.realpath(a), os.path.realpath(b)
+    return ra == rb or ra.casefold() == rb.casefold()
+
+
+def plan_faults(reads, writes, new_dirs):
+    """Check a run's whole plan before it writes anything. reads and writes
+    are lists of (label, path); new_dirs the folders the run makes. One
+    line per fault: two entries that are the same file, an output that is
+    a directory, or an output in a folder that does not exist."""
+    faults = []
+    for label, path in writes:
+        folder = os.path.dirname(path) or "."
+        if os.path.isdir(path):
+            faults.append(f"{label} {path!r} is a directory")
+        elif not os.path.isdir(folder) and folder not in new_dirs:
+            faults.append(f"{label} {path!r}: the folder {folder!r} does not exist")
+    entries = list(reads) + list(writes)
+    for i, (la, pa) in enumerate(entries):
+        for lb, pb in entries[i + 1:]:
+            if _same_file(pa, pb):
+                faults.append(f"{la} {pa!r} and {lb} {pb!r} are the same file")
+    return faults
+
+
+def dir_faults(label, path):
+    """--dump or --wav DIR: an existing folder, or a new one in an existing
+    folder."""
+    if os.path.isdir(path):
+        return []
+    if os.path.lexists(path):
+        return [f"{label} {path!r} is not a directory"]
+    parent = os.path.dirname(os.path.normpath(path)) or "."
+    if not os.path.isdir(parent):
+        return [f"{label} {path!r}: the folder {parent!r} does not exist"]
+    return []
 
 
 class Parser(argparse.ArgumentParser):
@@ -1302,40 +1393,61 @@ def _main(p, args):
         print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
         return EX_STALE
 
+    items, writes, new_dirs = [], [], []
     if args.c is not None:
         h_name = os.path.basename(args.h)
-        h_text = c_header(model, built, args.prefix, source=os.path.basename(args.model),
-                          sha=sha, h_name=h_name)
+        source = os.path.basename(args.model)
+        h_text = c_header(model, built, args.prefix, source=source, sha=sha, h_name=h_name)
         faults = c_name_faults(c_names(model, built, args.prefix, h_name))
         if faults:
             p.print_usage(sys.stderr)
             for f in faults:
                 print(f"sfx_table.py: error: {f}", file=sys.stderr)
             return EX_USAGE
+        items.append(("--c", args.c, c_source(model, built, args.prefix, source, sha,
+                                              h_name).encode("ascii")))
+    # --dump and --wav name each file after a table or a sound. A sound
+    # name matches NAME, so a file name is [a-z][a-z0-9_]* with .u8 or
+    # .wav: no path separator, no dot file, ASCII. A test checks it.
+    faults = []
+    for label, d in (("--dump", args.dump), ("--wav", args.wav)):
+        if d:
+            faults += dir_faults(label, d)
+            if not os.path.isdir(d) and d not in new_dirs:
+                new_dirs.append(d)
+    if args.dump:
+        items += [("--dump", os.path.join(args.dump, t + ".u8"), bytes(part))
+                  for name, data in built.items()
+                  for t, part in tables(model, name, data)]
+    if args.wav:
+        for name, data in built.items():
+            times = 3 if model["sounds"][name].get("loop") else 1
+            items.append(("--wav", os.path.join(args.wav, name + ".wav"),
+                          wav_bytes(data * times, model["rate_hz"])))
+    if args.c is not None:
+        # The header last: it carries the hash that --check reads.
+        items.append(("--h", args.h, h_text.encode("ascii")))
+    writes = [(label, path) for label, path, _ in items]
+    faults += plan_faults([("MODEL", args.model)], writes,
+                          [os.path.dirname(os.path.join(d, "x")) for d in new_dirs])
+    if faults:
+        p.print_usage(sys.stderr)
+        for f in faults:
+            print(f"sfx_table.py: error: {f}", file=sys.stderr)
+        return EX_USAGE
+    if args.c is not None and not os.path.basename(args.h).startswith(args.prefix):
+        print(f"sfx_table.py: warning: --h {os.path.basename(args.h)!r} does not start"
+              f" with --prefix {args.prefix!r}. A name of the project's own is safe from"
+              " every library's headers.", file=sys.stderr)
+    made = []
     try:
-        if args.c is not None:
-            source = os.path.basename(args.model)
-            # The source first, the header last: the header carries the hash.
-            publish([(args.c, c_source(model, built, args.prefix, source, sha,
-                                       h_name).encode("ascii")),
-                     (args.h, h_text.encode("ascii"))], undo=False)
-        # --dump and --wav name each file after a table or a sound. A sound
-        # name matches NAME, so a file name is [a-z][a-z0-9_]* with .u8 or
-        # .wav: no path separator, no dot file, ASCII. A test checks it.
-        if args.dump:
-            os.makedirs(args.dump, exist_ok=True)
-            publish([(os.path.join(args.dump, t + ".u8"), bytes(part))
-                     for name, data in built.items()
-                     for t, part in tables(model, name, data)], undo=True)
-        if args.wav:
-            os.makedirs(args.wav, exist_ok=True)
-            items = []
-            for name, data in built.items():
-                times = 3 if model["sounds"][name].get("loop") else 1
-                items.append((os.path.join(args.wav, name + ".wav"),
-                              wav_bytes(data * times, model["rate_hz"])))
-            publish(items, undo=True)
+        for d in new_dirs:
+            os.mkdir(d)
+            made.append(d)
+        publish([(path, data) for _, path, data in items], made)
     except OSError as e:
+        for d in reversed(made):
+            _quiet(os.rmdir, d)
         print(f"sfx_table.py: {e.filename}: {e.strerror}", file=sys.stderr)
         return EX_STALE
     return 0
