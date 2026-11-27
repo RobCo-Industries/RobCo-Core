@@ -722,3 +722,28 @@ def test_too_costly_sound_gives_2(tmp_path):
     assert r.returncode == 2, r.stdout + r.stderr
     assert re.search(r"sounds\.big: too costly to check, \d+ steps, the limit is 200000000",
                      r.stderr), r.stderr
+
+
+def seam_loop_model(seed, level=0):
+    """A 2049-sample loop with no fold: its hit runs one sample past the loop."""
+    n = 2049
+    return {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"seam": {
+        "len": n, "peak_steps": 30, "loop": True, "layers": [
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[1000, 0]],
+             "env": [[0, 0], [n * 1000000 // RATE + 1, 0]],
+             "bands": [[500, 0], [3000, 0], [3001, level], [6000, level]]}]}}}
+
+
+@pytest.mark.parametrize("seed", range(1, 13))
+def test_seam_loop_passes_for_every_seed(tmp_path, seed):
+    p, d = dump(tmp_path, seam_loop_model(seed))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_floor_rule_keeps_a_passband_fault(tmp_path):
+    p, _ = dump(tmp_path, seam_loop_model(9), "a.json", "a")
+    _, d = dump(tmp_path, seam_loop_model(9, level=-6000), "b.json", "b")
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "band" in r.stdout, r.stdout

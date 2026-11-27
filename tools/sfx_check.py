@@ -54,6 +54,10 @@ CHANCE = 1e-6
 # Bands are not judged when the table and the model both hold less than
 # this share of the energy under 15 kHz.
 LOW_SHARE = 0.01
+# A band or frame whose rounding floor is more than this share of its whole
+# prediction is not judged: at a low level the rounding follows the
+# waveform, so it is not the white noise the floor assumes.
+FLOOR_SHARE_MAX = 0.5
 # Bounds of the level of a sound with noise: how far its peak sits above
 # the strongest expected rms of one sample, in dB.
 LEVEL_MIN_DB = -6.0
@@ -788,17 +792,19 @@ def read_table(name, sound, folder):
     return data
 
 
-def judge(meas, pred, neff, need):
-    """Split the entries within FLOOR_DB of the strongest measured into
-    tight and thin ones. Return the dB errors of the tight ones, the count
+def judge(meas, pred, neff, need, floor):
+    """Split the entries within FLOOR_DB of the strongest measured, and not
+    mostly rounding floor, into tight and thin ones. Return the dB errors of the tight ones, the count
     of thin ones, and the index and signed dB error of the worst thin one
     beyond chance, or None."""
     top = max(meas) if meas else 0.0
     errs, thin, worst = [], 0, None
     if top <= 0.0:
         return errs, thin, worst
-    for i, (m, p, n) in enumerate(zip(meas, pred, neff)):
+    for i, (m, p, n, f) in enumerate(zip(meas, pred, neff, floor)):
         if m <= 0.0 or 10.0 * math.log10(top / m) > FLOOR_DB:
+            continue
+        if p > 0.0 and f > FLOOR_SHARE_MAX * p:
             continue
         e = float("inf") if p <= 0.0 else 10.0 * math.log10(m / p)
         # A flat band of a loop holds the count exactly; rounding in the
@@ -922,9 +928,9 @@ def check_sound(model, name, folder):
         neff_b, neff_f = [float("inf")] * len(mb), [float("inf")] * len(mf)
         need_b = need_f = 0.0
     b_errs, b_thin, b_bad = judge(mb, [p * band_gain + f for p, f in zip(pb, fb)],
-                                  neff_b, need_b)
+                                  neff_b, need_b, fb)
     f_errs, f_thin, f_bad = judge(mf, [p * frame_gain + f for p, f in zip(pf, ff)],
-                                  neff_f, need_f)
+                                  neff_f, need_f, ff)
     be, fe = stats(b_errs), stats(f_errs)
     # Share of the energy under 15 kHz, measured and predicted.
     m_share = m_low / m_all if m_all > 0.0 else 0.0

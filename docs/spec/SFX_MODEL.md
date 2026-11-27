@@ -327,7 +327,7 @@ The tool models a thin value as a gamma variable. Its mean is the whole predicti
 
 Bands run from 0 in steps of `W` up to 15 kHz, and the tool drops a last partial band. Frames run from sample 0 in steps of `F`, rounded to whole samples. A last frame shorter than half of `F` joins the frame before it. The line prints the widths after the kind, as `bands 250 Hz, frames 5.0 ms`.
 
-The prediction of a sound with a noise layer includes the rounding of each sample to a whole step. It adds this rounding as white noise of power 1/12 step squared per sample, spread evenly from 0 to half the rate, and each gain matches the model part only. A quiet table needs it: its weak bands sit close to the rounding noise, so a prediction without it reads them too low.
+The prediction of a sound with a noise layer includes the rounding of each sample to a whole step. It adds this rounding as white noise of power 1/12 step squared per sample, spread evenly from 0 to half the rate, and each gain matches the model part only. A quiet table needs it: its weak bands sit close to the rounding noise, so a prediction without it reads them too low. The white floor is only an average, since at a low level the rounding error follows the waveform. So the tool does not judge a band or frame whose floor is more than half of its whole prediction, as it skips a value more than 30 dB down.
 
 A sound of tones only rounds along its waveform, so its rounding is not white noise. For such a sound the tool predicts the rounded table itself. It scales the render so its loudest sample sits at `peak_steps`, rounds each sample to a whole step with a half away from zero, and measures that. It adds no white floor and applies no gain.
 
