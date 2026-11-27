@@ -9,7 +9,8 @@
 
 A manifest names one commit and one version for each of the six
 repositories. --work holds one checkout per repository, named as the
-repository, as for tools/nightly/plan.py. check runs every rule and
+repository, as for tools/nightly/plan.py. new takes each stage's HEAD
+and, for RobCo-Core, the library commit the four stages pin. check runs every rule and
 prints one ::error:: line per broken rule before it exits. remote-tags
 is the only command that talks to a remote. tags prints the tag and
 push commands and runs nothing. Standard library only.
@@ -465,19 +466,60 @@ def cmd_new(args):
         raise ManifestError(f"suite {args.suite!r} is not suite-YYYY.MM or suite-YYYY.MM.N")
     repos = {}
     errors = []
-    for name in NAMES:
+
+    def named(name, e):
+        return str(e) if str(e).startswith(f"{name}: ") else f"{name}: {e}"
+
+    # The five stages: each checkout's HEAD and its version in code.
+    for name in NAMES[1:]:
         repo = os.path.join(args.work, name)
         try:
             commit = git(repo, "rev-parse", "HEAD")
-            version = code_version(args.work, name, commit)
-            if version is None:
-                text = at_commit(repo, name, commit, "CHANGELOG.md")
-                version = latest_changelog_version(text) or "0.1.0"
-            repos[name] = {"version": version, "commit": commit}
+            repos[name] = {"version": code_version(args.work, name, commit), "commit": commit}
         except ManifestError as e:
-            errors.append(f"{name}: {e}" if not str(e).startswith(name) else str(e))
+            errors.append(named(name, e))
     if errors:
         raise ManifestError("\n".join(errors))
+
+    # The library is the commit the four stages pin, not the head of main:
+    # a release ships the stages with the library they were built on.
+    pins = {}
+    for name in LIBRARY_PINNERS:
+        try:
+            pins[name] = gitlink(os.path.join(args.work, name), name,
+                                 repos[name]["commit"], "external/robco-core")
+        except ManifestError as e:
+            errors.append(named(name, e))
+    pipos = repos["Pip-OS"]["commit"]
+    try:
+        deitrix_pin = gitlink(os.path.join(args.work, "Deitrix"), "Deitrix",
+                              repos["Deitrix"]["commit"], "external/pip-os")
+        if deitrix_pin != pipos:
+            errors.append(f"Deitrix: pins Pip-OS {deitrix_pin[:12]}, the Pip-OS HEAD is "
+                          f"{pipos[:12]}; move the pin first")
+    except ManifestError as e:
+        errors.append(named("Deitrix", e))
+    if errors:
+        raise ManifestError("\n".join(errors))
+    if len(set(pins.values())) != 1:
+        listed = ", ".join(f"{n} pins {s[:12]}" for n, s in pins.items())
+        raise ManifestError(f"the stages pin different {CORE} commits: {listed}")
+    core = next(iter(pins.values()))
+    repo = os.path.join(args.work, CORE)
+    branch = DEFAULT_BRANCH[CORE]
+    try:
+        git(repo, "cat-file", "-e", f"{core}^{{commit}}")
+    except ManifestError:
+        raise ManifestError(f"{CORE}: the checkout has no commit {core[:12]}, "
+                            "the library commit the stages pin") from None
+    refs = default_refs(repo, branch)
+    if not refs:
+        raise ManifestError(f"{CORE}: no {branch} branch in the checkout")
+    if not any(on_branch(repo, core, ref) for ref in refs):
+        raise ManifestError(f"{CORE}: {core[:12]}, the commit the stages pin, is not on {branch}")
+    text = at_commit(repo, CORE, core, "CHANGELOG.md")
+    repos = {CORE: {"version": latest_changelog_version(text) or "0.1.0", "commit": core},
+             **repos}
     data = {"suite": args.suite, "repositories": repos}
     errors = shape_errors(data)
     if errors:
