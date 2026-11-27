@@ -258,7 +258,7 @@ class Mix(Case):
         play = self.sound("p", bytes([128]) * RATE)
         a = self.sound("a", bytes([200]) * 441)
         b = self.sound("b", bytes([100]) * 441)
-        duty, _ = self.render([pcm(0, play), mix(100, a), mix(119, b)])
+        duty, _ = self.render([pcm(0, play), mix(100, a), mix(119, b), stop(200)])
         self.assertEqual(duty[frame(119) + 10], 200 / 256)
         self.assertEqual(duty[frame(121)], 100 / 256)
         self.assertEqual(duty[frame(139)], 100 / 256)
@@ -779,9 +779,11 @@ class Limits(Case):
     def test_time_past_limit(self):
         self.assertFails([stop(bs.MAX_SECONDS * 1000 + 1)], "past the 300 s limit")
 
-    def test_play_past_limit(self):
+    def test_play_past_limit_stops_at_the_last_marker(self):
+        # 500 s of samples: the log ends at t_ms=0, so the file holds the tail.
         d = self.sound("a", bytes([128]) * 2000000)
-        self.assertFails([pcm(0, d, rate=4000)], "the output would pass 300 s")
+        duty, _ = self.render([pcm(0, d, rate=4000)])
+        self.assertEqual(len(duty), frame(bs.TAIL_MS))
 
     def test_too_many_lines(self):
         old = bs.MAX_LINES
@@ -1134,3 +1136,64 @@ class Stages(Case):
         self.assertIn("serial.log:4: t_ms=100 comes before t_ms=500", err)
         # A reboot of the same image repeats its name with a lower time.
         self.assertFails([stop(1000), stop(10)], "serial.log:2: t_ms=10 comes before t_ms=1000")
+
+
+class EndOfLog(Case):
+    """What the log leaves playing stops at its last marker."""
+
+    DROP = "@RC stage=test ev=audio_drop n=2"
+    LONG = (37500, 0, 0x10000000, 0, 20 << 16, 0, 0)    # 1 s at 37500 Hz
+
+    def spans(self, name, spans):
+        with open(os.path.join(self.pcm_dir, name + ".voice"), "wb") as f:
+            f.write(V.pack(spans))
+        return spans
+
+    def assertRestsFrom(self, duty, ms, total_ms):
+        self.assertEqual(set(duty[frame(ms):]), {0.0})
+        self.assertEqual(len(duty), frame(total_ms))
+
+    def test_a_tone_stops_at_the_last_marker(self):
+        duty, _ = self.render([tone(0, 1000), tone(200, 1000)])
+        self.assertNotEqual(set(duty[:frame(200)]), {0.0})
+        self.assertRestsFrom(duty, 200, 200 + bs.TAIL_MS)
+
+    def test_a_loop_stops_at_the_last_marker(self):
+        a = self.sound("a", bytes([150]) * 200)
+        duty, _ = self.render([pcm(0, a, rate=8000, loop=True),
+                               pcm(200, a, rate=8000, loop=True)])
+        self.assertEqual(duty[frame(200) - 1], 150 / 256)
+        self.assertRestsFrom(duty, 200, 200 + bs.TAIL_MS)
+
+    def test_a_voice_past_the_tail_stops_at_the_last_marker(self):
+        sp = self.spans("v", [self.LONG])
+        o = self.sound("o", bytes([140]) * 8)
+        duty, _ = self.render([voice_line(0, sp), mix(100, o)])
+        self.assertRestsFrom(duty, 100, 100 + bs.TAIL_MS)
+
+    def test_a_play_past_the_tail_stops_at_the_last_marker(self):
+        a = self.sound("a", bytes([200]) * 22050)     # 1 s
+        o = self.sound("o", bytes([128]) * 8)
+        duty, _ = self.render([pcm(0, a), mix(100, o)])
+        self.assertEqual(duty[frame(100) - 1], 200 / 256)
+        self.assertRestsFrom(duty, 100, 100 + bs.TAIL_MS)
+
+    def test_a_play_that_ends_within_the_tail_finishes(self):
+        a = self.sound("a", bytes([200]) * 4410)      # 200 ms
+        o = self.sound("o", bytes([128]) * 8)
+        duty, _ = self.render([pcm(0, a), mix(100, o)])
+        self.assertEqual(duty[frame(199)], 200 / 256)
+        self.assertRestsFrom(duty, 201, 200 + bs.TAIL_MS)
+
+    def test_a_skipped_marker_moves_the_time(self):
+        duty, w = self.render([self.DROP, end(200)])
+        self.assertEqual(len(w), 1, w)
+        self.assertRestsFrom(duty, 0, 200 + bs.TAIL_MS)
+
+    def test_a_skipped_marker_moves_the_next_stage(self):
+        a = self.sound("a", bytes([200]) * 441)
+        b = self.sound("b", bytes([60]) * 441)
+        duty, _ = self.render([pcm(0, a), end(20), self.DROP, end(200),
+                               staged(pcm(0, b), "next"), staged(end(20), "next")])
+        self.assertEqual(duty[frame(150)], 0.0)
+        self.assertEqual(duty[frame(210)], 60 / 256)

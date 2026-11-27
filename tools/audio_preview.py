@@ -44,7 +44,7 @@ Lines it reads, each an "@RC ... ev=audio op=..." marker of any stage:
   The driver prints ev=audio_drop after the records it drained, so it
   stands where the loss happened. After it, a marker whose start was lost
   is skipped: an end, a queued buffer or an overlay. A stop with nothing
-  playing is counted too, but its time still sets the file's end. One
+  playing is counted too. A skipped marker still moves the time. One
   warning counts them. The next op=pcm, op=voice or op=tone
   ends the loss. Without a loss before it, such a marker is a bad log.
   A marker that fits the play active now is applied as usual, even after
@@ -72,8 +72,11 @@ Rules it applies, from the library's driver:
   op=tone, which the driver prints after its op=stop. An overlay over a
   loop sounds on the play's grid across the wraps. The library refuses
   a queue on a loop and a loop never ends by itself, so op=pcm_next or
-  op=pcm_end on a loop is a bad log. A loop the log leaves playing stops
-  at the t_ms of the log's last marker.
+  op=pcm_end on a loop is a bad log.
+- End of log: a tone, a loop, or a play or voice that would sound past
+  the 0.3 s tail stops at the t_ms of the log's last marker, and the
+  tail is silence at the rest level. A play or voice that ends within
+  the tail plays to its end.
 - Voice spans come from the .voice files of the --pcm folders, each
   the packed spans of one voice, found by the CRC-32 of their bytes and
   their length, 28 bytes a span. A file must pass the library's span
@@ -671,16 +674,7 @@ class Renderer:
                 self.lost = (where, 0)
                 continue
             cur = self.cur
-            if self.lost is not None:
-                if op in ("pcm", "voice", "tone"):
-                    self.lost_end()
-                elif (cur is None if op == "stop"
-                      else self.misplaced(op, cur, where) is not None):
-                    self.lost = (self.lost[0], self.lost[1] + 1)
-                    if op != "stop":
-                        continue
-                    # A stop with nothing playing changes no sound, but its
-                    # time still counts toward the end of the file.
+            # Every marker moves the time, a skipped one too.
             if rebase:
                 shift = last - f["t_ms"]
                 rebase = False
@@ -690,6 +684,16 @@ class Renderer:
                                % (where, f["t_ms"], last - shift))
             t = max(t, last)
             last = t
+            if self.lost is not None:
+                if op in ("pcm", "voice", "tone"):
+                    self.lost_end()
+                elif (cur is None if op == "stop"
+                      else self.misplaced(op, cur, where) is not None):
+                    # A marker whose start was lost changes no sound, but
+                    # its time still counts.
+                    self.lost = (self.lost[0], self.lost[1] + 1)
+                    if op != "stop":
+                        continue
             bad = self.misplaced(op, cur, where)
             if bad is not None:
                 raise LogError(bad)
@@ -734,11 +738,15 @@ class Renderer:
         self.lost_end()
         cur = self.cur
         stop = last
-        if isinstance(cur, Play) and cur.loop:
-            # The log ends while the loop plays: it stops at the last marker.
-            self.close(last)
-        elif isinstance(cur, Play):
+        if (isinstance(cur, Play) and not cur.loop and not cur.ended
+                and cur.end_ms() <= last + TAIL_MS):
+            # The driver ends a plain play or a voice by itself, so one
+            # that ends within the tail may finish.
             stop = max(stop, cur.end_ms())
+        else:
+            # A tone, a loop, or a play that would outlast the tail stops
+            # at the last marker.
+            self.close(last)
         self.close(stop + TAIL_MS)
 
 
