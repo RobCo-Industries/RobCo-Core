@@ -496,14 +496,28 @@ A project that includes `mk/robco.mk` gets `make check-workflows`, which checks 
 
 ### Nightly
 
-`.github/workflows/nightly.yml` builds the five siblings at their default heads every night at 03:17 UTC and runs the whole-chain tests on the real images. Each sibling builds on its own RobCo-Core pin, and Deitrix builds on the Pip-OS head. This is the `pins` pairing, the one release tags would build. A second pairing with RobCo-Core `main` under every stage is not built yet.
+`.github/workflows/nightly.yml` builds the five siblings at their default heads every night at 03:17 UTC and runs the whole-chain tests on the real images. Deitrix builds on the Pip-OS head. A run plans one or two pairings:
+
+| Pairing | Library under each stage | Boards |
+|---|---|---|
+| `pins` | Each repository's own pin. Deitrix takes the pin of the Pip-OS head. | All the boards a sibling lists |
+| `core-head` | The planned RobCo-Core commit under all five siblings | `raspi0` and `raspi2b` only, when the sibling lists them |
+
+A sibling that lists neither `raspi0` nor `raspi2b` fails the `plan` job when `core-head` is planned, since GitHub rejects an empty matrix. `pins` tells whether the heads chain today. `core-head` tells whether the next pin move breaks a sibling. The planned commit is the one the `plan` job checks out from `core_ref`, or `main`. In `core-head` every job checks the sibling out without its submodules, then checks that commit out into its `external/robco-core`, or `external/pip-os/external/robco-core` for Deitrix. The image tag is the `ci/IMAGE_TAG` of that commit. A red job in either pairing fails the run. The two pairings do not block each other: the jobs after `stages` and the card jobs run whatever the earlier jobs gave, so a red `pins` still lets `core-head` run. An entry whose pairing broke earlier finds no artifact and fails at its download step. Read the two together:
+
+| `pins` | `core-head` | It tells |
+|---|---|---|
+| Green | Green | The heads chain today and will after the pin moves |
+| Red | Green | Two pins disagree on a contract. Moving the pins fixes it. |
+| Green | Red | A library change breaks a sibling. Fix it before the pin move, or in it. |
+| Red | Red | A stage's own code, or a contract both sides broke |
 
 | Job | What it runs |
 |---|---|
-| `plan` | Checks out the six repositories, runs `tools/nightly/plan.py`. It resolves every ref to a commit once, runs each sibling's `check_pins.sh`, reads each image tag from `ci/IMAGE_TAG` in the library the sibling builds on, and writes the version table to the run summary. The matrices and the table read one record per built repository: its commit, the library and Pip-OS commits it builds with and its image tag. Deitrix takes the library and tag of the Pip-OS head, and its row says where each differs from its own pin. |
+| `plan` | Checks out the six repositories, runs `tools/nightly/plan.py`. It resolves every ref to a commit once, runs each sibling's `check_pins.sh` once when `pins` is planned, and not for `core-head` alone, which does not use the sibling's CI pin, reads each image tag from `ci/IMAGE_TAG` in the library the sibling builds on, and writes the version table to the run summary. The matrices and the table read one record per built repository: its commit, the library and Pip-OS commits it builds with and its image tag. Deitrix takes the library and tag of the Pip-OS head, and its row says where each differs from its own pin. When `core-head` is planned, a line under the table names the RobCo-Core commit and the image tag it builds on, since the Library and Image tag columns show the `pins` side. |
 | `stages` | `make CI=1 all` in RETROS-BIOS and in MFBootAgent. Uploads their images for the later jobs. |
-| `card-terminal` | `make CI=1 all sdimage CHAIN=1` in UOS with the two stage images. Packs the card, boots the packed bytes on `raspi2b` and uploads `card-terminal-pins` only when the boot passed. |
-| `card-pipboy` | `make CI=1 all sdimage kernel` in Deitrix. Packs the card and the kernel, boots them on `raspi0` and uploads `card-pipboy-pins` only when the boot passed. |
+| `card-terminal` | `make CI=1 all sdimage CHAIN=1` in UOS with the two stage images. Packs the card, boots the packed bytes on `raspi2b` and uploads `card-terminal-<pairing>` only when the boot passed. |
+| `card-pipboy` | `make CI=1 all sdimage kernel` in Deitrix. Packs the card and the kernel, boots them on `raspi0` and uploads `card-pipboy-<pairing>` only when the boot passed. |
 | `agent-chain` | `pytest tests -k whole_chain` in MFBootAgent with `--retros-img`, once per board |
 | `uos-chain` | The same in UOS with `--retros-img` and `--mfboot-sys`, and the card in `ROBCO_CHAIN_CARD`, once per board |
 | `pipboy` | `pytest tests -k "whole_chain or first_screen or navigation or setting_survives_a_reboot"` in Deitrix on the uploaded card and kernel, once per board |
@@ -516,7 +530,7 @@ When the test step fails, the step "Rerun failed tests" runs `pytest --lf` once 
 
 `tools/nightly/pack_card.py` refuses a card that holds `bootcode.bin`, `start.elf` or `fixup.dat`, the names in the `FILES` line of `tools/fetch_firmware.sh`. It reads the FAT directory entries of every partition itself, so a hidden or system file, a long or short name in any case and a file at any folder depth all count. It fails closed: a folder with starting cluster 0, a cluster out of range, a chain shorter or longer than its file, a size past the partition, a long name with no short entry, a volume label bit outside the root label, an invalid short name, a FAT32 root cluster of 0 and FAT copies that differ all fail the job. It skips only what a healthy card holds: deleted entries, the volume label in the root and the `.` and `..` entries. Then it writes the card, `SHA256SUMS` and `VERSIONS.txt`, the version table.
 
-Nothing is kept that was not booted. `tools/nightly/boot_card.py` checks the packed card against `SHA256SUMS`, copies it and boots the first-stage image with the copy as the SD card, `snapshot=on`, through the harness in `tests/harness`. It passes when the markers show every step in order and no stage prints `error`, `panic`, `exception`, `shell`, `halt` or `rom_kill`. The terminal steps are the BIOS `boot`, `load` of `/ROBCO/MFBOOT.SYS` and `jump`, the agent's `boot`, `handoff trusted=1`, `load` and `jump`, and UOS's `boot`, `handoff trusted=1` and `ready screen=login`. The Pip-Boy steps are Pip-OS's `boot`, `load` and `jump`, then the ROM's `deitrix: ready` line. BOOT_PROTOCOL.md names a `deitrix` `ready` marker, which Deitrix does not print yet, so either form counts. Last, it checks that neither the card nor the copy changed. The `uos-chain` tests still build their own card: UOS ignores `ROBCO_CHAIN_CARD` until it takes a chain card. The cards are kept 14 days, the stage images 3 days, the failure folders 7 days. A failure folder holds the JUnit file and the temp folders of the failed tests.
+Nothing is kept that was not booted. `tools/nightly/boot_card.py` checks the packed card against `SHA256SUMS`, copies it and boots the first-stage image with the copy as the SD card, `snapshot=on`, through the harness in `tests/harness`. It passes when the markers show every step in order and no stage prints `error`, `panic`, `exception`, `shell`, `halt` or `rom_kill`. The terminal steps are the BIOS `boot`, `load` of `/ROBCO/MFBOOT.SYS` and `jump`, the agent's `boot`, `handoff trusted=1`, `load` and `jump`, and UOS's `boot`, `handoff trusted=1` and `ready screen=login`. The Pip-Boy steps are Pip-OS's `boot`, `load` and `jump`, then the ROM's `deitrix: ready` line. BOOT_PROTOCOL.md names a `deitrix` `ready` marker, which Deitrix does not print yet, so either form counts. Last, it checks that neither the card nor the copy changed. The `uos-chain` tests boot the packed card from `ROBCO_CHAIN_CARD`. The `pins` cards are kept 14 days, the `core-head` cards 3 days, the stage images 3 days, the failure folders 7 days. A failure folder holds the JUnit file and the temp folders of the failed tests.
 
 A red night is a failed run. GitHub emails the person who last changed the `cron` line, and the badge in the README turns red. The red job names the repository to look at:
 
@@ -528,7 +542,7 @@ A red night is a failed run. GitHub emails the person who last changed the `cron
 | `uos-chain` | The same rule: `bios`, `bootagent`, `maint`, then `uos` |
 | `pipboy` | `stage=pipos` lines are Pip-OS, `deitrix:` lines are Deitrix |
 
-To start a run by hand, open Actions, pick `nightly` and use "Run workflow". The inputs `core_ref`, `retros_ref`, `mfboot_ref`, `uos_ref`, `pipos_ref` and `deitrix_ref` take a branch, a tag or a commit. Empty means the default branch. Set one to prove a branch before its merge. `pairing` takes `both`, `pins` or `core-head`. `both` runs `pins` alone for now, and `core-head` fails the plan.
+To start a run by hand, open Actions, pick `nightly` and use "Run workflow". The inputs `core_ref`, `retros_ref`, `mfboot_ref`, `uos_ref`, `pipos_ref` and `deitrix_ref` take a branch, a tag or a commit. Empty means the default branch. Set one to prove a branch before its merge. `pairing` takes `both`, `pins` or `core-head`. `both`, the default and the schedule's value, plans `pins` then `core-head`. The summary heading names the pairings planned.
 
 GitHub switches a schedule off after 60 days with no activity in RobCo-Core. Before a release, check that the last scheduled run is under two days old.
 
