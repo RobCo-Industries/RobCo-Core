@@ -194,13 +194,15 @@ Every name the tool writes carries the marker `sfx`. No C or POSIX keyword, type
 
 The tool checks file names as written, before it reads the model:
 
-- The file name of `OUT.c` is a letter, then letters, digits, `_`, `.` or `-`, holds `sfx` in lower case, and ends in `.c`, such as `sfx_table.c`.
+- The file name of `OUT.c` is a lower-case letter, then lower-case letters, digits or `_`, holds `sfx`, and ends in `.c`, such as `sfx_table.c`. It has no capital, no `-` and only the one `.` before `c`.
 - The file name of `OUT.h` follows the same rule and ends in `.h`, such as `uos_sfx_table.h`. It goes into `#include "..."` in `OUT.c`, so it needs no escape and is ASCII.
 - The file name of `MODEL` holds letters, digits, `_`, `.` and `-` only, and starts with a letter or a digit, because it goes into the opening comment as written.
 
 No standard or system header has a name that holds `sfx`. So a generated header never takes the place of one on the include path, and the tool keeps no list of header names.
 
-A bad prefix or file name gets one line, exit 64. The include guard is `SFX_GUARD_` followed by the file name of `OUT.h` in capitals with every other character as `_`, so it is never a name C reserves.
+A bad prefix or file name gets one line, exit 64. The include guard is `SFX_GUARD_` followed by the file name of `OUT.h` in capitals with the `.` as `_`, such as `SFX_GUARD_UOS_SFX_TABLE_H`, so it is never a name C reserves.
+
+Two different file names give two different guards. The name rule leaves no capital and one `.` only, so the guard is the name, and a project can include any two generated headers. Two generated headers with the same file name in two folders share a guard, as with any C header: start the file name with the prefix, such as `uos_sfx_table.h`.
 
 The tool then checks that the names it writes do not clash with each other: two sounds that give one table name, or the `_1` and `_2` tables of a split against another sound. The guard cannot clash: no other name starts with `SFX_GUARD_` and ends with `_H`. Each clash gets one line that names it and the options and sound it comes from, exit 64. Two sounds whose table names clash are a model fault, exit 2.
 
@@ -220,6 +222,8 @@ It compares two paths by one rule. Two paths are the same when:
 - their resolved paths differ only by case.
 
 The case rule is strict on every system, also where the file system tells case apart. A run that passes on one system then passes on all.
+
+The tool takes a path by where it resolves. It resolves each path once in the plan, and the plan, the folders it makes, the temporary and backup files, the renames and `--check` all use that resolved path. A missing folder in the middle, as in `missing/../out`, resolves past it as text, so that run writes in `out`. A symbolic link output keeps its link and the tool writes its target. Messages show each path as written.
 
 It refuses the run, exit 64, with one line that names the paths and the rule, when:
 
