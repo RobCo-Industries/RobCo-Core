@@ -3,7 +3,7 @@ VENV := .venv
 SPIKES := s1-uart-hello s2-sd-read s3-fb-mmu
 MACHINES := raspi0 raspi1ap raspi2b raspi3b
 
-.PHONY: venv test test-host test-tools test-canary test-spikes test-examples test-target boot-json
+.PHONY: venv check-workflows test test-host test-tools test-canary test-spikes test-examples test-target boot-json
 
 venv: $(VENV)/.installed
 
@@ -15,7 +15,7 @@ $(VENV)/.installed: tests/requirements.txt
 # test-target rebuilds the spike and example dirs; keep top-level targets serial.
 .NOTPARALLEL:
 
-test: test-host test-tools test-docs test-canary test-spikes test-examples test-target
+test: check-workflows test-host test-tools test-docs test-canary test-spikes test-examples test-target
 
 # Unit tests for the Python tools in tools/.
 test-tools: venv
@@ -32,6 +32,10 @@ boot-json:
 	@case "$$BOOT_JSON" in /*) ;; *) echo "boot-json: BOOT_JSON must be an absolute path, got '$$BOOT_JSON'" >&2; exit 1 ;; esac
 	mkdir -p "$$(dirname "$$BOOT_JSON")"
 	PYTHONPATH=tests $(PYTHON) -m harness.bootjson -o "$$BOOT_JSON"
+
+# Unsafe ${{ }} expressions and actions not pinned by commit in the workflows.
+check-workflows:
+	$(PYTHON) -I tools/check_workflow_exprs.py $(wildcard .github/workflows/*.yml .github/workflows/*.yaml)
 
 # Links, API coverage, checked commands and banned words in the Markdown files.
 test-docs:
