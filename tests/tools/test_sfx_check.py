@@ -247,10 +247,9 @@ def test_short_noise_passes(tmp_path):
     p, d = dump(tmp_path, short_model())
     r = run(CHECK, p, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    # Its bands hold too few independent values; its frames are judged.
-    assert re.search(r"bands \d+ Hz, frames 5\.0 ms, .*, bands not judged, too short: ok$",
+    # Its bands hold too few independent values and are judged by chance.
+    assert re.search(r"bands \d+ Hz, frames 5\.0 ms, .*, thin \d+ bands, 0 frames, .*: ok$",
                      r.stdout.strip()), r.stdout
-    assert "frames not judged" not in r.stdout, r.stdout
 
 
 def test_short_noise_frame_8db_off_fails(tmp_path):
@@ -361,8 +360,8 @@ def test_one_frame_tick_checks_its_level(tmp_path):
     p, d = dump(tmp_path, tick_model())
     r = run(CHECK, p, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert re.search(r"worst \d+\.\d\d dB, level -?\d+\.\d\d dB, bands not judged, too short, frames not judged, too narrow",
-                     r.stdout)
+    assert re.search(r"worst \d+\.\d\d dB, thin \d+ bands, \d+ frames, "
+                     r"level -?\d+\.\d\d dB: ok", r.stdout), r.stdout
 
     def spike(data):
         data[:] = bytes([128] * len(data))
@@ -568,7 +567,7 @@ def test_short_noise_loop_gets_wide_bands(tmp_path, seed):
     assert hz > 250, r.stdout
 
 
-def test_2ms_tick_passes_with_a_note_and_checks_its_level(tmp_path):
+def test_2ms_tick_passes_as_thin_and_checks_its_level(tmp_path):
     m = {"format": 1, "rate_hz": RATE, "ceiling_steps": 90, "sounds": {"tick": {
         "len": 40, "peak_steps": 40, "layers": [
             {"kind": "noise", "seed": 2, "level_mdb": 0, "hits": [[0, 0]],
@@ -577,7 +576,7 @@ def test_2ms_tick_passes_with_a_note_and_checks_its_level(tmp_path):
     p, d = dump(tmp_path, m)
     r = run(CHECK, p, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "bands not judged, too short" in r.stdout, r.stdout
+    assert "thin 1 bands, 1 frames" in r.stdout, r.stdout
 
     def spike(data):
         data[:] = bytes([128] * len(data))
@@ -586,3 +585,48 @@ def test_2ms_tick_passes_with_a_note_and_checks_its_level(tmp_path):
     r = run(CHECK, p, d)
     assert r.returncode == 1, r.stdout + r.stderr
     assert re.search(r"level \d+\.\d\d dB outside", r.stdout), r.stdout
+
+
+def wide_tick(bands, seed=2):
+    """A 2 ms noise tick at 48 kHz: two thin bands under 15 kHz."""
+    return {"format": 1, "rate_hz": 48000, "ceiling_steps": 90, "sounds": {"tick": {
+        "len": 96, "peak_steps": 40, "layers": [
+            {"kind": "noise", "seed": seed, "level_mdb": 0, "hits": [[0, 0]],
+             "env": [[0, -60000], [300, 0], [1700, 0], [2000, -60000]],
+             "bands": bands}]}}}
+
+
+LOW_ONLY = [[500, 0], [3000, 0], [3500, -60000], [14000, -60000]]
+HIGH_TOO = [[500, 0], [3000, 0], [3500, -60000], [9000, -60000], [9500, -15000],
+            [14000, -15000]]
+
+
+@pytest.mark.parametrize("seed", range(1, 13))
+def test_thin_tick_passes_for_every_seed(tmp_path, seed):
+    p, d = dump(tmp_path, wide_tick(LOW_ONLY, seed))
+    r = run(CHECK, p, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert re.search(r"thin \d bands, 1 frames", r.stdout), r.stdout
+
+
+def test_thin_band_too_strong_fails_beyond_chance(tmp_path):
+    p, _ = dump(tmp_path, wide_tick(LOW_ONLY), "a.json", "a")
+    _, d = dump(tmp_path, wide_tick(HIGH_TOO), "b.json", "b")
+    r = run(CHECK, p, d)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert re.search(r"FAIL band at \d+ Hz is \+\d+\.\d\d dB off, beyond chance$",
+                     r.stdout.strip()), r.stdout
+
+
+@pytest.mark.parametrize("x", [0.01, 0.5, 1.0, 2.0, 5.0, 30.0])
+def test_incomplete_gamma_known_values(x):
+    sfx_check = _import_check()
+    assert sfx_check.gamma_p(1.0, x) == pytest.approx(1.0 - math.exp(-x), rel=1e-9, abs=1e-12)
+    assert sfx_check.gamma_p(0.5, x) == pytest.approx(math.erf(math.sqrt(x)), rel=1e-9, abs=1e-12)
+    for a in (0.5, 1.0, 3.0, 50.0):
+        assert sfx_check.gamma_p(a, x) + sfx_check.gamma_q(a, x) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_incomplete_gamma_median_near_its_shape():
+    sfx_check = _import_check()
+    assert sfx_check.gamma_p(10000.0, 10000.0) == pytest.approx(0.5, abs=0.01)

@@ -47,7 +47,9 @@ ROUND_POWER = 1.0 / 12.0
 SPAN = {"noise": {"band": 10.0, "frame": 20.0},
         "loop": {"band": 200.0, "frame": 20.0}}
 # Fewer bands or frames than this are not judged.
-MIN_COUNT = 3
+# A thin band or frame fails when the chance of its error, either way, is
+# under this.
+CHANCE = 1e-6
 # Bands are not judged when the table and the model both hold less than
 # this share of the energy under 15 kHz.
 LOW_SHARE = 0.01
@@ -558,15 +560,80 @@ def counts(sums, squares, scale):
     return [scale * u * u / v if v > 0.0 else 0.0 for u, v in zip(sums, squares)]
 
 
-def enough(n, noise, whole, need):
-    """Whether each value holds enough independent values to judge. Tones
-    are fixed, so a value with share `q` of noise counts n / (q (2 - q));
-    a value with no noise is always judged."""
+def effective(n, noise, whole):
+    """The independent values each band or frame holds. Tones are fixed, so
+    a value with share `q` of noise counts n / (q (2 - q)); a value with no
+    noise counts as infinite."""
     out = []
     for c, u, w in zip(n, noise, whole):
         q = min(1.0, u / w) if w > 0.0 else 0.0
-        out.append(q <= 0.0 or c / (q * (2.0 - q)) >= need)
+        out.append(float("inf") if q <= 0.0 else c / (q * (2.0 - q)))
     return out
+
+
+def gamma_p(a, x):
+    """The regularized lower incomplete gamma function P(a, x)."""
+    if x <= 0.0:
+        return 0.0
+    if x == float("inf"):
+        return 1.0
+    lead = a * math.log(x) - x - math.lgamma(a)
+    if x < a + 1.0:
+        # Series.
+        term = total = 1.0 / a
+        ap = a
+        for _ in range(10000):
+            ap += 1.0
+            term *= x / ap
+            total += term
+            if abs(term) < abs(total) * 1e-15:
+                break
+        return min(1.0, total * math.exp(lead))
+    return max(0.0, 1.0 - gamma_q_cf(a, x, lead))
+
+
+def gamma_q_cf(a, x, lead):
+    """Q(a, x) by the continued fraction, modified Lentz."""
+    tiny = 1e-300
+    b = x + 1.0 - a
+    c = 1.0 / tiny
+    d = 1.0 / b
+    h = d
+    for i in range(1, 10000):
+        an = -i * (i - a)
+        b += 2.0
+        d = an * d + b
+        d = tiny if abs(d) < tiny else d
+        c = b + an / c
+        c = tiny if abs(c) < tiny else c
+        d = 1.0 / d
+        step = d * c
+        h *= step
+        if abs(step - 1.0) < 1e-15:
+            break
+    return math.exp(lead) * h
+
+
+def gamma_q(a, x):
+    """The regularized upper incomplete gamma function Q(a, x)."""
+    if x <= 0.0:
+        return 1.0
+    if x == float("inf"):
+        return 0.0
+    if x < a + 1.0:
+        return max(0.0, 1.0 - gamma_p(a, x))
+    return gamma_q_cf(a, x, a * math.log(x) - x - math.lgamma(a))
+
+
+def chance(meas, pred, neff):
+    """The two tail chances of a thin value: a gamma variable with mean
+    `pred` and shape max(neff / 2, 0.5) falls at or below, and at or above,
+    `meas`."""
+    if pred <= 0.0:
+        return 1.0, 0.0
+    k = max(neff / 2.0, 0.5)
+    x = k * meas / pred
+    return gamma_p(k, x), gamma_q(k, x)
 
 
 def to_bands(spec, rate, size, width):
@@ -625,26 +692,32 @@ def read_table(name, sound, folder):
     return data
 
 
-def errors_db(meas, pred, gain, keep=None):
-    """dB errors over the kept entries within FLOOR_DB of the strongest
-    measured."""
-    top = max(meas)
+def judge(meas, pred, neff, need):
+    """Split the entries within FLOOR_DB of the strongest measured into
+    tight and thin ones. Return the dB errors of the tight ones, the count
+    of thin ones, and the index and signed dB error of the worst thin one
+    beyond chance, or None."""
+    top = max(meas) if meas else 0.0
+    errs, thin, worst = [], 0, None
     if top <= 0.0:
-        return []
-    if keep is None:
-        keep = [True] * len(meas)
-    out = []
-    for m, p, k in zip(meas, pred, keep):
-        if not k or m <= 0.0 or 10.0 * math.log10(top / m) > FLOOR_DB:
+        return errs, thin, worst
+    for i, (m, p, n) in enumerate(zip(meas, pred, neff)):
+        if m <= 0.0 or 10.0 * math.log10(top / m) > FLOOR_DB:
             continue
-        p *= gain
-        out.append(float("inf") if p <= 0.0 else abs(10.0 * math.log10(m / p)))
-    return out
+        e = float("inf") if p <= 0.0 else 10.0 * math.log10(m / p)
+        if n >= need:
+            errs.append(abs(e))
+            continue
+        thin += 1
+        lo, hi = chance(m, p, n)
+        if min(lo, hi) < CHANCE and (worst is None or abs(e) > abs(worst[1])):
+            worst = (i, e)
+    return errs, thin, worst
 
 
 def stats(errs):
     if not errs:
-        return {"mean": 0.0, "median": 0.0, "worst": 0.0}
+        return None
     s = sorted(errs)
     k = len(s)
     med = s[k // 2] if k % 2 else (s[k // 2 - 1] + s[k // 2]) / 2.0
@@ -657,6 +730,12 @@ def _gain(meas, floor, pred):
     if pred > 0.0 and meas > floor:
         return (meas - floor) / pred
     return None
+
+
+def _show(st):
+    if st is None:
+        return "mean - median - worst - dB"
+    return "mean %.2f median %.2f worst %.2f dB" % (st["mean"], st["median"], st["worst"])
 
 
 def check_sound(model, name, folder):
@@ -687,10 +766,9 @@ def check_sound(model, name, folder):
         nb_sq, _ = to_bands([v * v for v in nspec], rate, size, width)
         nf_pow = to_frames(npow, step)
         nf_sq = to_frames([v * v for v in npow], step)
-        keep_b = enough(counts(nb_spec, nb_sq, dur * rate / size), nb_spec, pb,
-                        SPAN[kind]["band"])
-        keep_f = enough(counts(nf_pow, nf_sq, bw / rate), nf_pow, pf,
-                        SPAN[kind]["frame"])
+        neff_b = effective(counts(nb_spec, nb_sq, dur * rate / size), nb_spec, pb)
+        neff_f = effective(counts(nf_pow, nf_sq, bw / rate), nf_pow, pf)
+        need_b, need_f = SPAN[kind]["band"], SPAN[kind]["frame"]
         # Rounding adds white noise of n * ROUND_POWER in all, spread
         # evenly from 0 to half the rate.
         nyq = rate / 2.0
@@ -735,10 +813,13 @@ def check_sound(model, name, folder):
         band_gain = frame_gain = 1.0
         m_low, m_all = sum(mb), sum(mf)
         p_low = sum(pb)
-        keep_b, keep_f = [True] * len(mb), [True] * len(mf)
-    be = stats(errors_db(mb, [p * band_gain + f for p, f in zip(pb, fb)], 1.0, keep_b)) \
-        if mb else stats([])
-    fe = stats(errors_db(mf, [p * frame_gain + f for p, f in zip(pf, ff)], 1.0, keep_f))
+        neff_b, neff_f = [float("inf")] * len(mb), [float("inf")] * len(mf)
+        need_b = need_f = 0.0
+    b_errs, b_thin, b_bad = judge(mb, [p * band_gain + f for p, f in zip(pb, fb)],
+                                  neff_b, need_b)
+    f_errs, f_thin, f_bad = judge(mf, [p * frame_gain + f for p, f in zip(pf, ff)],
+                                  neff_f, need_f)
+    be, fe = stats(b_errs), stats(f_errs)
     # Share of the energy under 15 kHz, measured and predicted.
     m_share = m_low / m_all if m_all > 0.0 else 0.0
     p_share = p_low / p_all if p_all > 0.0 else 0.0
@@ -759,24 +840,27 @@ def check_sound(model, name, folder):
         notes.append("bands not judged")
     elif m_share < LOW_SHARE:
         notes.append("bands not judged, no power under 15 kHz")
-    elif has_noise and sum(keep_b) < MIN_COUNT:
-        notes.append("bands not judged, too short")
     else:
         bands_judged = True
-    frames_judged = not (has_noise and sum(keep_f) < MIN_COUNT)
-    if not frames_judged:
-        notes.append("frames not judged, too narrow")
     judged = (("band", be),) if bands_judged else ()
-    judged += (("frame", fe),) if frames_judged else ()
+    judged += (("frame", fe),)
     for what, st in judged:
+        if st is None:
+            continue
         for stat, limit in RULES[kind][what]:
             if not st[stat] <= limit:
                 faults.append("%s %s error %.2f dB over %.2f" % (what, stat, st[stat], limit))
-    line = ("%s %s bands %.0f Hz, frames %.1f ms, band mean %.2f median %.2f worst %.2f dB, "
-            "frame mean %.2f median %.2f worst %.2f dB%s%s: %s"
-            % (name, kind, width, 1000.0 * step / rate,
-               be["mean"], be["median"], be["worst"],
-               fe["mean"], fe["median"], fe["worst"],
+    if bands_judged and b_bad is not None:
+        faults.append("band at %.0f Hz is %+.2f dB off, beyond chance"
+                      % (b_bad[0] * width, b_bad[1]))
+    if f_bad is not None:
+        faults.append("frame at %.1f ms is %+.2f dB off, beyond chance"
+                      % (1000.0 * f_bad[0] * step / rate, f_bad[1]))
+    thin = ""
+    if b_thin or f_thin:
+        thin = ", thin %d bands, %d frames" % (b_thin, f_thin)
+    line = ("%s %s bands %.0f Hz, frames %.1f ms, band %s, frame %s%s%s%s: %s"
+            % (name, kind, width, 1000.0 * step / rate, _show(be), _show(fe), thin,
                ", level %.2f dB" % level if level is not None else "",
                "".join(", " + t for t in notes),
                "ok" if not faults else "FAIL " + "; ".join(faults)))

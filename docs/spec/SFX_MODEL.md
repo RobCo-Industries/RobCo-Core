@@ -304,12 +304,18 @@ A fixed tolerance needs enough independent values in each band and each frame. L
 
 Each limit sits about five standard deviations out, so a table with dozens of bands or hundreds of frames does not fail by chance. A 10 dB limit needs 20 independent real numbers, a 6 or 7 dB limit 40, and a 1.5 dB limit about 400.
 
-A band or frame whose noise fills only part of it holds fewer values than its width says. So each one is judged only when it holds enough values itself:
+A band or frame whose noise fills only part of it holds fewer values than its width says. So the tool counts the values of each one:
 
 - Band `b` holds `N_b = T * (rate / M) * (sum S[j])^2 / (sum S[j]^2)` over the bins `j` of the band.
 - Frame `f` holds `N_f = (B / rate) * (sum p[i])^2 / (sum p[i]^2)` over the samples `i` of the frame.
-- Tones are fixed, not random. With `q` the noise part of the predicted value, before the rounding floor, the value counts `N_eff = N / (q * (2 - q))`. A value with no noise is always judged.
-- A value with `N_eff` under `K_band` or `K_frame` is left out of the statistics, like a value more than 30 dB under the strongest.
+- Tones are fixed, not random. With `q` the noise part of the predicted value, before the rounding floor, the value counts `N_eff = N / (q * (2 - q))`. A value with no noise counts as infinite.
+
+The tool judges every band and frame within 30 dB of the strongest, in one of two tiers:
+
+- A tight value has `N_eff` at or above `K_band` or `K_frame`. The tolerance table judges it. Only tight values enter the mean, median and worst.
+- A thin value has `N_eff` under the count. Chance bounds judge it.
+
+The tool models a thin value as a gamma variable. Its mean is the whole prediction: the model part times the gain, plus the rounding floor. Its shape is `k = max(N_eff / 2, 0.5)`. The halving leaves room for what the count ignores. With `r` the measured value over the predicted one, the two tails are `P(k, k * r)` and `Q(k, k * r)`, the regularized lower and upper incomplete gamma functions. The value fails when either tail is under one in a million.
 
 Bands run from 0 in steps of `W` up to 15 kHz, and the tool drops a last partial band. Frames run from sample 0 in steps of `F`, rounded to whole samples. A last frame shorter than half of `F` joins the frame before it. The line prints the widths after the kind, as `bands 250 Hz, frames 5.0 ms`.
 
@@ -321,13 +327,7 @@ The tool compares the share of the power under 15 kHz in the table with the shar
 
 A sound with a noise layer also gets a level check, since the frame gain hides the level of a one-frame sound. The model fixes the peak at `peak_steps`, so the tool computes `level_db = 10 * log10(peak_steps^2 / (frame_gain * pmax))`. Here `pmax` is the largest predicted power of one sample, model part only, before the gain. It says how far the peak sits above the strongest expected rms. The line prints it as `level L.LL dB` after the frame numbers. The sound fails when `level_db` is under -6 dB or over 14 dB. A sound of tones only prints no level.
 
-Some sounds are judged without their bands or their frames:
-
-- A sound where the table and the model both hold less than 1 % of the power under 15 kHz. Its line says `bands not judged, no power under 15 kHz`.
-- A sound with a noise layer where fewer than 3 bands fit or hold enough values. Its line says `bands not judged, too short`.
-- A sound with a noise layer where fewer than 3 frames fit or hold enough values. Its line says `frames not judged, too narrow`.
-
-A sound can carry both notes. The line still prints the band numbers it measured.
+A sound where the table and the model both hold less than 1 % of the power under 15 kHz is judged without its bands. Its line says `bands not judged, no power under 15 kHz`. The line still prints the band numbers it measured.
 
 It checks the fields it needs and their types, and bounds every number it reads with the ranges of `tools/sfx_table.py`. It also checks the rules its prediction relies on: band frequencies that rise, a `fold` of at most half the samples of the noise envelope, a noise envelope of 1 to 262144 samples, an attack and a release inside the tone, envelope times that do not go down, hits inside the sound, a pitch above zero, lengths above zero, and at least one layer and one hit. An invalid model exits with code 2 and names the sound and the field. It does not repeat every check of `tools/sfx_table.py`.
 
@@ -339,7 +339,7 @@ A loop is a sound with `loop` set. A one-shot with noise has a noise layer and n
 | One-shot with noise | Mean 3 dB, worst 10 dB | Mean 2 dB, worst 6 dB |
 | Loop | 1.5 dB each | Median 1.5 dB, worst 7 dB |
 
-It prints one line per sound: its name and kind, the band width and frame length, the mean, median and worst band error and frame error in dB, the level for a sound with noise, then any note, then `ok` or `FAIL` with the reason.
+It prints one line per sound: its name and kind, the band width and frame length, the mean, median and worst band error and frame error in dB over the tight values, then `thin N bands, M frames` when either count is not 0, the level for a sound with noise, then any note, then `ok` or `FAIL` with the reason. With no tight value, the mean, median and worst print as `-` and the tolerance table judges nothing for that kind. A thin value beyond chance adds `band at F Hz is E.EE dB off, beyond chance` or `frame at T.T ms is E.EE dB off, beyond chance`, with a signed error. Each kind gives at most one such reason, the worst.
 
 Exit codes: 0 every sound passes, 1 a sound fails, 2 the model is not valid or a table file is missing or has the wrong length, 64 a usage error, 70 an internal error.
 
