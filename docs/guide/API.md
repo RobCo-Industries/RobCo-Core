@@ -704,7 +704,9 @@ int rng_read_within(void *buf, size_t len, uint32_t limit_us);
 int rng_u32_within(uint32_t *out, uint32_t limit_us);
 ```
 
-As `rng_read()` and `rng_u32()`, but the whole call waits at most `limit_us` microseconds of the system timer, counted from its start, for all its words together. Use these in a loop that kicks a watchdog: `rng_read()` can wait `RNG_TIMEOUT_US` for each word, which is longer than a 1 s watchdog. Pick `limit_us` well under the watchdog timeout.
+As `rng_read()` and `rng_u32()`, but the call waits for words at most `limit_us` microseconds of the system timer, counted from its start. Use these in a loop that kicks a watchdog: `rng_read()` can wait `RNG_TIMEOUT_US` for each word, which is longer than a 1 s watchdog. Pick `limit_us` well under the watchdog timeout.
+
+The limit bounds waiting only. A word that is ready is taken with no wait, also past the limit and also with `limit_us` `0`. A call that finds every word ready reads all `len / 4` words whatever the limit, so a call runs for at most `limit_us` plus the time to read its ready words. A caller that must return soon, such as one that kicks a watchdog, keeps `len` small.
 
 `limit_us` `0` never waits: each word is taken only if it is ready at its first status read. After the limit the status is read once more, so a word that came in the meantime is still taken. Returns `0`, `RNG_ERR_BOARD` or `RNG_ERR_TIMEOUT`. `buf` after an error is as for `rng_read()`, and `rng_u32_within()` leaves `*out` untouched. The stall guard still counts a million timer reads for each word, so on a stopped timer a call can last longer than `limit_us`.
 

@@ -29,6 +29,8 @@ static uint32_t warm_count;     /* low 20 bits of the status register, as writte
 static uint64_t warm_us;        /* time from the enable to the first word */
 static uint64_t word_us;        /* time per word after it */
 static uint64_t next_word;      /* when the next word enters the FIFO */
+static uint64_t gap_at;         /* the first word due at or after this time... */
+static uint64_t gap_us;         /* ...comes this much later, once */
 static unsigned fifo;           /* words that wait */
 static uint32_t seq;
 static unsigned status_reads;
@@ -39,6 +41,10 @@ static unsigned bad_access;
 
 static void fill(void)
 {
+    if (gap_us != 0 && next_word >= gap_at) {
+        next_word += gap_us;
+        gap_us = 0;
+    }
     while ((reg_ctrl & 1u) && fifo < FIFO_DEPTH && now >= next_word) {
         fifo++;
         next_word += word_us;
@@ -121,6 +127,8 @@ static void fresh(uint64_t start, uint64_t warm, uint64_t per_word)
     timer_stopped = 0;
     jump_at = 0;
     jump_us = 0;
+    gap_at = 0;
+    gap_us = 0;
     reg_ctrl = 0;
     warm_count = 0;
     warm_us = warm;
@@ -417,4 +425,45 @@ TEST(within_with_no_peripheral_base_is_an_error)
     CHECK_EQ(rng_u32_within(&w, 1000), RNG_ERR_BOARD);
     CHECK_EQ(w, 0x12345678u);
     CHECK_EQ(now, 0);
+}
+
+/*
+ * The limit bounds waits only. Every word is ready, so the call never
+ * waits and takes all 1000 words, although they take 2 ms of register
+ * reads against a limit of 100 us.
+ */
+TEST(within_takes_ready_words_past_the_limit)
+{
+    static uint8_t buf[4000];
+
+    fresh(0, 0, 1);
+    CHECK_EQ(rng_init(), 0);
+    CHECK_EQ(rng_read_within(buf, sizeof(buf), 100), 0);
+    CHECK_EQ(data_reads, 1000);
+    CHECK_EQ(status_reads, 1000);
+    CHECK_EQ(empty_reads, 0);
+    CHECK(now >= 2000);
+}
+
+/*
+ * Words are ready until 300 us, then none comes. The limit passed while
+ * the call took ready words, so the first word that is not ready ends the
+ * call at once with no wait.
+ */
+TEST(within_does_not_wait_for_a_word_past_the_limit)
+{
+    static uint8_t buf[4000];
+    uint64_t t;
+
+    fresh(0, 0, 1);
+    gap_at = 300;
+    gap_us = NEVER;
+    CHECK_EQ(rng_init(), 0);
+    t = now;
+    CHECK_EQ(rng_read_within(buf, sizeof(buf), 100), RNG_ERR_TIMEOUT);
+    CHECK(data_reads >= 100);
+    CHECK(data_reads < 1000);
+    /* One status read finds no word, and the call ends there. */
+    CHECK_EQ(status_reads, data_reads + 1);
+    CHECK(now - t <= 2 * data_reads + 1);
 }

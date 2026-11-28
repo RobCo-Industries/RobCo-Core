@@ -82,7 +82,8 @@ static int rng_word(uint32_t base, uint32_t *out, uint32_t t0, uint32_t limit)
 /*
  * Fills buf word by word. With per_word set, each word gets `limit` from
  * the start of its own wait. Else `limit` counts from the start of the
- * call and covers every word.
+ * call and bounds the waits of every word. A ready word is taken with no
+ * wait, also past the limit.
  */
 static int rng_fill(void *buf, size_t len, uint32_t limit, int per_word)
 {
