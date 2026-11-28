@@ -1494,6 +1494,17 @@ int audio_rest_mid(void)
     return 0;
 }
 
+int audio_rest_is_mid(void)
+{
+    uint32_t s;
+    int mid;
+
+    s = irq_save();
+    mid = rest_mid;
+    irq_restore(s);
+    return mid;
+}
+
 int audio_play_rtttl(const char *text, unsigned flags)
 {
     audio_note_t tmp[ROBCO_AUDIO_TUNE_MAX];

@@ -227,7 +227,7 @@ int audio_play_voice(const audio_voice_span_t *spans, size_t count, uint32_t rat
 
 Plays a voice: a note computed live in the sample IRQ from a table of spans, with no sample buffer. The spans play in order, and the play's length is the sum of their `n`. It runs on the PCM engine like a sample play: one grid from its start, the same IRQ, the same end and the same stop rules. A late IRQ skips samples as it does for a sample play. An `audio_pcm_mix()` overlay mixes over a voice, also while it waits for its tick. `audio_pcm_queue()` refuses a voice with `AUDIO_ERR_STATE`, and `audio_pcm_can_queue()` is `0` while one plays. The library does not copy: `spans` must stay valid until the play ends, or until `audio_stop()` or a call that replaces the sound returns, as a sample buffer does.
 
-Flags: `AUDIO_PRIORITY` only. Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG`, `AUDIO_ERR_RANGE` (`rate_hz` outside `AUDIO_PCM_RATE_MIN` to `AUDIO_PCM_RATE_MAX`), `AUDIO_ERR_NO_IRQ` or `AUDIO_ERR_BUSY`. `AUDIO_ERR_ARG` comes for `spans` `NULL`, `count` `0`, `AUDIO_LOOP` or an unknown flag, a span outside the limits below, an `amp` that leaves its range within a span, or a sum of `n` above `AUDIO_PCM_LEN_MAX`. Main context only: the call checks every span, and on the trace backend it takes the CRC-32 of the span bytes.
+Flags: `AUDIO_PRIORITY` only. Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_ARG`, `AUDIO_ERR_RANGE` (`rate_hz` outside `AUDIO_PCM_RATE_MIN` to `AUDIO_PCM_RATE_MAX`), `AUDIO_ERR_NO_IRQ` or `AUDIO_ERR_BUSY`. `AUDIO_ERR_ARG` comes for `spans` `NULL`, `count` `0`, `AUDIO_LOOP` or an unknown flag, a span outside the limits below, an `inc` or an `amp` that leaves its range within a span, or a sum of `n` above `AUDIO_PCM_LEN_MAX`. Main context only: the call checks every span, and on the trace backend it takes the CRC-32 of the span bytes.
 
 | Field | Type | Meaning | Limits |
 |---|---|---|---|
@@ -263,6 +263,12 @@ int audio_rest_mid(void);
 ```
 
 Moves the rest level to the midpoint. See [Rest level](#rest-level). Returns `0` or, in this order, `AUDIO_ERR_NO_INIT`, `AUDIO_ERR_NO_IRQ` (another handler holds `IRQ_TIMER3`) or `AUDIO_ERR_BUSY` (something plays or waits to start, a stop that waits for its tick included: the stop still applies at that tick, and a later call starts the ramp from rest). After an error the rest level is unchanged and a later call can try again. While the ramp waits or plays, and once it has reached its end, later calls return `0` and do nothing. A ramp that ends early leaves the rest level at duty `0`, and a later call can try again.
+
+```c
+int audio_rest_is_mid(void);
+```
+
+Returns `1` once the rest level is the midpoint, `0` before. It is `0` before `audio_init()`, before `audio_rest_mid()`, while the ramp waits for its tick or plays, and after a ramp that ended early. It turns `1` in the IRQ that ends the ramp, the one that turns `audio_busy()` to `0`. So a kernel calls `audio_rest_mid()`, waits with `audio_wait()` and then asks. `1` means the ramp reached its end. `0` means a stop, a cut or a new sound ended it early, and a later `audio_rest_mid()` can try again. It stays `1` until reset.
 
 ```c
 int audio_play_rtttl(const char *text, unsigned flags);
@@ -309,7 +315,7 @@ Every busy rule starts from one question: does something play? The answer is yes
 
 Once the rest level is the midpoint, `audio_rest_mid()` returns `0` and does nothing in every state of the table. A tone then plays on the sample path, but its row does not change: `audio_pcm_mix()` and `audio_pcm_queue()` still answer `AUDIO_ERR_STATE`.
 
-The rest level becomes the midpoint only when the ramp reaches its last sample. A ramp that ends early leaves it at duty `0`: a stop or a priority start before the ramp starts, and a stop, a cut or a priority start while it plays. The table then reads "Nothing plays" or the row of the new sound, and `audio_rest_mid()` can start the ramp again.
+The rest level becomes the midpoint only when the ramp reaches its last sample. A ramp that ends early leaves it at duty `0`: a stop or a priority start before the ramp starts, and a stop, a cut or a priority start while it plays. The table then reads "Nothing plays" or the row of the new sound, and `audio_rest_mid()` can start the ramp again. `audio_rest_is_mid()` tells the two apart.
 
 ```c
 void audio_poll(void);
@@ -461,7 +467,7 @@ Sharp edges of the rest mode:
 
 | Edge | Detail |
 |---|---|
-| A call that ends the ramp early cancels it. | `audio_stop()`, a cut or a priority start, before the ramp starts or while it plays. The rest level stays duty `0`. A ramp that had started drops to duty `0` at once, from wherever it was. One that had not started leaves the pin untouched. Call `audio_rest_mid()` again to retry. |
+| A call that ends the ramp early cancels it. | `audio_stop()`, a cut or a priority start, before the ramp starts or while it plays. The rest level stays duty `0`. A ramp that had started drops to duty `0` at once, from wherever it was. One that had not started leaves the pin untouched. Call `audio_rest_mid()` again to retry. `audio_rest_is_mid()` then returns `0`. |
 | The carrier stays on. | An idle pin carries the 37.5 kHz carrier at half duty all the time. A filter with a corner near 18 kHz lets much of it through to the amplifier. Not checked on a board. |
 | There is no way back. | The rest level stays at the midpoint until reset. |
 | A tone costs a sample IRQ. | After the ramp, a tone or a tune takes `ROBCO_AUDIO_TONE_RATE` IRQs a second while it plays, as PCM does. Not measured on a board. |
@@ -476,7 +482,7 @@ Sharp edges of the rest mode:
 | `audio_play_pcm()`, `audio_pcm_mix()` | Main context, or a tick callback for a short buffer, see below |
 | `audio_pcm_queue()`, `audio_rest_mid()` | Main context: on the trace backend they compute a CRC over the whole buffer |
 | `audio_play_voice()` | Main context: it checks every span, and on the trace backend computes a CRC over them |
-| `audio_pcm_can_queue()`, `audio_pcm_mix_busy()` | Main or IRQ context. They mask IRQs for a few instructions. |
+| `audio_pcm_can_queue()`, `audio_pcm_mix_busy()`, `audio_rest_is_mid()` | Main or IRQ context. They mask IRQs for a few instructions. |
 | `audio_poll()`, `audio_wait()` | Main context only. They print with `k_printf()`. |
 
 `audio_play_pcm()` and `audio_pcm_mix()` may run in a tick callback when the buffer is short. They mask IRQs only for a few instructions, which nests inside an IRQ handler. The cost is the condition: on the trace backend each call computes the CRC-32 of the whole buffer, and `audio_play_pcm()` does a few 64-bit divides, all inside the tick IRQ. The PCM IRQ, the tick and every other IRQ wait until the callback returns, and a late PCM IRQ skips samples. So keep such a buffer short, and keep the long ones for the main context. The cost per byte on a real ARM1176 is not measured. A play started from a callback that runs before the audio callback starts on that same tick, otherwise on the next one. Never call `audio_poll()` or `audio_wait()` there.

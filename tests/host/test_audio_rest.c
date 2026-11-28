@@ -524,3 +524,75 @@ TEST(trace_of_tones_unchanged_in_rest_mode)
     CHECK_STR(out, "@RC stage=host ev=audio op=tone hz=440 vol=100 t_ms=1080\n"
                    "@RC stage=host ev=audio op=stop hz=0 vol=100 t_ms=1110\n");
 }
+
+TEST(rest_is_mid_turns_1_only_when_the_ramp_ends)
+{
+    static const int which[] = { AUDIO_BACKEND_PWM, AUDIO_BACKEND_TRACE };
+    size_t i;
+
+    for (i = 0; i < 2; i++) {
+        fresh(which[i]);
+        CHECK_EQ(audio_rest_is_mid(), 0);
+        CHECK_EQ(audio_rest_mid(), 0);
+        /* The ramp waits for its tick, then plays. */
+        CHECK_EQ(audio_rest_is_mid(), 0);
+        tick(10);
+        CHECK_EQ(audio_rest_is_mid(), 0);
+        run_us(20000);
+        CHECK(audio_busy());
+        CHECK_EQ(audio_rest_is_mid(), 0);
+        run_us(30000);
+        /* Not busy and at the midpoint from the same IRQ. */
+        CHECK(!audio_busy());
+        CHECK_EQ(audio_rest_is_mid(), 1);
+        /* A later sound and its stop leave it. */
+        CHECK_EQ(audio_tone(440, 30), 0);
+        tick(10);
+        CHECK_EQ(audio_rest_is_mid(), 1);
+        audio_stop();
+        tick(10);
+        CHECK(!audio_busy());
+        CHECK_EQ(audio_rest_is_mid(), 1);
+    }
+}
+
+TEST(rest_is_mid_stays_0_after_a_ramp_that_ends_early)
+{
+    fill();
+    /* A stop before the ramp starts. */
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    audio_stop();
+    tick(10);
+    CHECK(!audio_busy());
+    CHECK_EQ(audio_rest_is_mid(), 0);
+    /* A stop while it plays. */
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    run_us(10000);
+    audio_stop();
+    tick(10);
+    CHECK(!audio_busy());
+    CHECK_EQ(audio_rest_is_mid(), 0);
+    /* A priority play while it plays, then a second ramp that reaches its end. */
+    fresh(AUDIO_BACKEND_PWM);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    run_us(10000);
+    CHECK_EQ(audio_play_pcm(buf, 80, 8000, AUDIO_PRIORITY), 0);
+    tick(10);
+    run_us(20000);
+    tick(10);
+    CHECK(!audio_busy());
+    CHECK_EQ(audio_rest_is_mid(), 0);
+    CHECK_EQ(audio_rest_mid(), 0);
+    tick(10);
+    run_us(50000);
+    CHECK(!audio_busy());
+    CHECK_EQ(audio_rest_is_mid(), 1);
+    /* Before audio_init(). */
+    fresh(AUDIO_BACKEND_PWM);
+    backend = -1;
+    CHECK_EQ(audio_rest_is_mid(), 0);
+}

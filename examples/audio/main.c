@@ -69,6 +69,23 @@ static void sleep_ms(uint32_t ms)
     audio_poll();
 }
 
+/*
+ * Waits for the next tick run, then sleeps `ms`. A start or a stop takes
+ * effect at the next tick, and the tick runs every callback in one IRQ.
+ * So once tick_runs moves after a call, the audio tick has applied that
+ * call, and the sleep begins after the time of the sound's start line.
+ */
+static void sleep_from_tick(uint32_t ms)
+{
+    uint32_t r0 = tick_runs;
+
+    while (tick_runs == r0) {
+        audio_poll();
+        __asm__ volatile("wfi");
+    }
+    sleep_ms(ms);
+}
+
 static void case_begin(const char *name)
 {
     k_printf("@RC stage=audio ev=case name=%s\n", name);
@@ -110,7 +127,7 @@ static void play_loop(void)
 
     case_begin("loop");
     ret = audio_play(alarm, 3, AUDIO_LOOP);
-    sleep_ms(700);
+    sleep_from_tick(700);
     audio_stop();
     case_end("loop", ret);
 }
@@ -122,7 +139,7 @@ static void play_interrupt(void)
 
     case_begin("interrupt");
     audio_tone(440, 3000);
-    sleep_ms(200);
+    sleep_from_tick(200);
     busy = audio_play(&high, 1, 0);
     prio = audio_play(&high, 1, AUDIO_PRIORITY);
     k_printf("@RC stage=audio ev=interrupt busy=%d prio=%d\n", busy, prio);
@@ -171,7 +188,7 @@ static void play_pcm_stop(void)
     case_begin("pcm_stop");
     pcm_fill(8000);
     ret = audio_play_pcm(pcm_buf, 8000, 8000, 0);
-    sleep_ms(200);
+    sleep_from_tick(200);
     audio_stop();
     audio_wait();
     k_printf("@RC stage=audio ev=pcm_stop busy=%d\n", audio_busy());
@@ -267,7 +284,7 @@ static void play_pcm_loop(void)
     case_begin("pcm_loop");
     pcm_fill(200);
     ret = audio_play_pcm(pcm_buf, 200, 8000, AUDIO_LOOP);
-    sleep_ms(300);
+    sleep_from_tick(300);
     busy = audio_busy();
     audio_stop();
     audio_wait();
@@ -456,7 +473,7 @@ static void play_pcm_mix(void)
     null = audio_pcm_mix(0, 200);
     audio_wait();
     ret2 = audio_play_pcm(pcm_buf, 800, 8000, 0);
-    sleep_ms(50);
+    sleep_from_tick(50);
     mix1 = audio_pcm_mix(pcm_buf + 4000, 2000);
     live = audio_pcm_mix_busy();
     audio_wait();
@@ -603,20 +620,23 @@ static void play_rule(void)
 static void play_rest(void)
 {
     int ret, again, tone;
+    int mid0, mid1;
     uint32_t s0, s1;
 
     case_begin("rest");
     audio_set_volume(50);
+    mid0 = audio_rest_is_mid();
     ret = audio_rest_mid();
     audio_wait();
+    mid1 = audio_rest_is_mid();
     again = audio_rest_mid();
     s0 = audio_pcm_samples(0);
     tone = audio_tone(440, 50);
     audio_wait();
     s1 = audio_pcm_samples(0);
     audio_set_volume(100);
-    k_printf("@RC stage=audio ev=rest again=%d tone=%d grew=%u\n", again, tone,
-             (unsigned)(s1 - s0));
+    k_printf("@RC stage=audio ev=rest again=%d tone=%d grew=%u mid0=%d mid1=%d\n",
+             again, tone, (unsigned)(s1 - s0), mid0, mid1);
     case_end("rest", ret);
 }
 

@@ -261,8 +261,8 @@ int audio_pcm_mix_busy(void);
  * Main context only: the call checks every span, and on the trace
  * backend it takes the CRC-32 of the span bytes.
  * Returns 0 or AUDIO_ERR_* (NO_INIT, ARG for NULL, count 0, AUDIO_LOOP or
- * unknown flags, a span outside the limits, an amp that leaves its range
- * within a span, or a sum of n above AUDIO_PCM_LEN_MAX, RANGE for the
+ * unknown flags, a span outside the limits, an inc or an amp that leaves its
+ * range within a span, or a sum of n above AUDIO_PCM_LEN_MAX, RANGE for the
  * rate, NO_IRQ, BUSY when something plays and AUDIO_PRIORITY is not set).
  */
 int audio_play_voice(const audio_voice_span_t *spans, size_t count, uint32_t rate_hz,
@@ -287,6 +287,16 @@ int audio_play_voice(const audio_voice_span_t *spans, size_t count, uint32_t rat
  * waits: the rest level is then unchanged and a later call can try again.
  */
 int audio_rest_mid(void);
+
+/*
+ * 1 once the rest level is the midpoint: a ramp of audio_rest_mid() has
+ * reached its last sample. 0 before that: before audio_init(), before the
+ * call, while the ramp waits for its tick or plays, and after a ramp that
+ * ended early. It turns 1 in the IRQ that ends the ramp, the one that
+ * turns audio_busy() to 0. So once audio_busy() is 0 after the call, the
+ * answer says how the ramp ended. It never goes back to 0.
+ */
+int audio_rest_is_mid(void);
 
 /*
  * Samples output since audio_init(). If `play` is not NULL, it gets the
