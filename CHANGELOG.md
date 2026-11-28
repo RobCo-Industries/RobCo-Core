@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The `tools/` row of `docs/guide/PROJECT_LAYOUT.md` names every tool: `check_workflow_exprs.py`, `sfx_check.py`, `tone_square.py`, `voice_engine.py`, `ci_local.sh`, `tools/nightly/` and `tools/release/` join it.
 - The header and the guide name the last refused case of `audio_play_voice()`: a span whose `inc` leaves `0` to `AUDIO_VOICE_INC_MAX` at its last sample returns `AUDIO_ERR_ARG`. The check was already there. New host tests cover both ends on a full span and through the driver.
 - `audio_rest_is_mid()` returns 1 once the ramp of `audio_rest_mid()` has reached its last sample and the rest level is the midpoint, else 0. After a wait, a kernel can tell a ramp that reached its end from one that a stop, a cut or a new sound ended early.
 - `examples/audio` waits for the tick that starts a sound before it counts the time to a stop or to an overlay. The five call-timed bounds of `tests/target/test_audio.py` are now the exact times, 200, 300, 50, 700 and 200 ms, with no allowance for a late tick: a busy host can only make those gaps longer.
