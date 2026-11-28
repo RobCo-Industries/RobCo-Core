@@ -108,7 +108,7 @@ Each table lists the parts of one document. "Implemented" means the code in this
 | ABI 1.6: `volume` as the master for a ROM and as a trim for a holotape | Specified |
 | ABI 1.6: one gain per play, the square law of the four levels and a level change with no click | Specified |
 | ABI 1.6: the stored levels in `/PIPBOY/PIPOS.SET` and the `ev=levels` marker | Specified |
-| ABI 1.6: the `gain` field of a start line and the `op=gain` line of the audio trace | Specified |
+| ABI 1.6: the `gain` field of a start line and the `op=gain` line of the audio trace | Implemented |
 
 ### TESTING.md
 
