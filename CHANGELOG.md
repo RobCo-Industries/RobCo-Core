@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `rng_read_within()` and `rng_u32_within()` take a time limit on waiting for words, in microseconds of the system timer, counted from the start of the call. A limit of 0 never waits. A word that is ready is taken also past the limit, so a long read of ready words runs past it: a caller that must return soon keeps the length small. A caller that kicks a watchdog from its main loop uses them instead of `rng_read()`, which can wait `RNG_TIMEOUT_US` for each word. New host tests cover the limit.
 - `PIPOS_ABI.md`: the built-in sound levels of ABI 1.6 are now 30 for `radio`, 100 for `sfx`, 80 for `recordings` and 50 for `games`. They were 100 each. A long tune at full level is far louder than the short interface sounds. A stored level still wins, and a ROM still reads a level and never assumes it.
 - `examples/gpio` prints `us=` on its `ev=rng` line: the time from `rng_init()` to the first word. On a real board from power-on that is the warm-up of the generator. `docs/HARDWARE_VALIDATION.md` gains a row that asks for it on each board.
 - `rng_read()` and `rng_u32()` wait for each word by time: up to `RNG_TIMEOUT_US`, 3 s on the system timer. Before, the wait was a million status reads, which can end before a real generator has warmed up after `rng_init()`. QEMU has a word at once and never showed it. `rng_init()` still returns at once. A timer that does not advance still ends the wait. New host test `tests/host/test_rng.c` runs the driver on a fake generator with a warm-up.

@@ -29,6 +29,8 @@ static uint32_t warm_count;     /* low 20 bits of the status register, as writte
 static uint64_t warm_us;        /* time from the enable to the first word */
 static uint64_t word_us;        /* time per word after it */
 static uint64_t next_word;      /* when the next word enters the FIFO */
+static uint64_t gap_at;         /* the first word due at or after this time... */
+static uint64_t gap_us;         /* ...comes this much later, once */
 static unsigned fifo;           /* words that wait */
 static uint32_t seq;
 static unsigned status_reads;
@@ -39,6 +41,10 @@ static unsigned bad_access;
 
 static void fill(void)
 {
+    if (gap_us != 0 && next_word >= gap_at) {
+        next_word += gap_us;
+        gap_us = 0;
+    }
     while ((reg_ctrl & 1u) && fifo < FIFO_DEPTH && now >= next_word) {
         fifo++;
         next_word += word_us;
@@ -121,6 +127,8 @@ static void fresh(uint64_t start, uint64_t warm, uint64_t per_word)
     timer_stopped = 0;
     jump_at = 0;
     jump_us = 0;
+    gap_at = 0;
+    gap_us = 0;
     reg_ctrl = 0;
     warm_count = 0;
     warm_us = warm;
@@ -295,4 +303,167 @@ TEST(no_peripheral_base_is_an_error_and_reads_no_register)
     CHECK_EQ(w, 0x12345678u);
     CHECK_EQ(now, 0);
     CHECK_EQ(bad_access, 0);
+}
+
+TEST(within_limit_zero_takes_a_word_that_is_ready)
+{
+    uint32_t w = 0x12345678u;
+
+    fresh(0, 0, 30);
+    CHECK_EQ(rng_init(), 0);
+    CHECK_EQ(rng_u32_within(&w, 0), 0);
+    CHECK(w != 0x12345678u);
+    CHECK_EQ(status_reads, 1);
+    CHECK_EQ(data_reads, 1);
+}
+
+/* No word: one status read, then the error, with no wait. */
+TEST(within_limit_zero_with_no_word_does_not_wait)
+{
+    uint32_t w = 0x12345678u;
+    uint64_t t;
+
+    fresh(0, NEVER, 30);
+    CHECK_EQ(rng_init(), 0);
+    t = now;
+    CHECK_EQ(rng_u32_within(&w, 0), RNG_ERR_TIMEOUT);
+    CHECK_EQ(status_reads, 1);
+    CHECK_EQ(now - t, 1);
+    CHECK_EQ(w, 0x12345678u);
+    CHECK_EQ(data_reads, 0);
+}
+
+TEST(within_takes_a_word_that_comes_before_the_limit)
+{
+    uint32_t w = 0;
+    uint64_t t;
+
+    fresh(0, 500, 30);
+    CHECK_EQ(rng_init(), 0);
+    t = now;
+    CHECK_EQ(rng_u32_within(&w, 1000), 0);
+    CHECK(w != 0);
+    CHECK(now - t <= 510);
+}
+
+TEST(within_refuses_a_word_that_comes_after_the_limit)
+{
+    uint32_t w = 0x12345678u;
+    uint64_t t;
+
+    fresh(0, 2000, 30);
+    CHECK_EQ(rng_init(), 0);
+    t = now;
+    CHECK_EQ(rng_u32_within(&w, 1000), RNG_ERR_TIMEOUT);
+    CHECK(now - t >= 1000);
+    CHECK(now - t <= 1010);
+    CHECK_EQ(w, 0x12345678u);
+    CHECK_EQ(data_reads, 0);
+}
+
+/* The wait is held up past the limit and the word came meanwhile. */
+TEST(within_looks_once_more_after_the_limit)
+{
+    uint32_t w = 0;
+
+    fresh(0, 2000, 30);
+    jump_at = 500;
+    jump_us = 3000;
+    CHECK_EQ(rng_init(), 0);
+    CHECK_EQ(rng_u32_within(&w, 1000), 0);
+    CHECK(w != 0);
+    CHECK_EQ(empty_reads, 0);
+}
+
+/*
+ * First word at 1 ms, the next 0.6 ms later. Each wait is under 1.5 ms,
+ * the whole call is not: the second wait counts the time of the first.
+ */
+TEST(within_limit_covers_the_whole_call)
+{
+    uint8_t buf[8];
+    uint32_t w0 = 1u * 0x9e3779b9u;
+
+    memset(buf, 0xaa, sizeof(buf));
+    fresh(0, 1000, 600);
+    CHECK_EQ(rng_init(), 0);
+    CHECK_EQ(rng_read_within(buf, sizeof(buf), 1500), RNG_ERR_TIMEOUT);
+    CHECK(now <= 1520);
+    CHECK_EQ(data_reads, 1);
+    /* The first word is in buf, the rest is unchanged. */
+    CHECK_EQ(buf[0], (uint8_t)w0);
+    CHECK_EQ(buf[3], (uint8_t)(w0 >> 24));
+    CHECK_EQ(buf[4], 0xaa);
+    CHECK_EQ(buf[7], 0xaa);
+    /* With room for both words the call succeeds. */
+    fresh(0, 1000, 600);
+    CHECK_EQ(rng_init(), 0);
+    CHECK_EQ(rng_read_within(buf, sizeof(buf), 1700), 0);
+    CHECK_EQ(data_reads, 2);
+}
+
+TEST(within_ends_on_a_stopped_timer)
+{
+    uint32_t w = 0x12345678u;
+
+    fresh(0, NEVER, 30);
+    timer_stopped = 1;
+    CHECK_EQ(rng_init(), 0);
+    CHECK_EQ(rng_u32_within(&w, 1000), RNG_ERR_TIMEOUT);
+    CHECK(status_reads <= 1000001);
+    CHECK_EQ(w, 0x12345678u);
+}
+
+TEST(within_with_no_peripheral_base_is_an_error)
+{
+    uint32_t w = 0x12345678u;
+    uint8_t b[4];
+
+    fresh(0, 0, 30);
+    board.periph_base = 0;
+    CHECK_EQ(rng_read_within(b, sizeof(b), 1000), RNG_ERR_BOARD);
+    CHECK_EQ(rng_u32_within(&w, 1000), RNG_ERR_BOARD);
+    CHECK_EQ(w, 0x12345678u);
+    CHECK_EQ(now, 0);
+}
+
+/*
+ * The limit bounds waits only. Every word is ready, so the call never
+ * waits and takes all 1000 words, although they take 2 ms of register
+ * reads against a limit of 100 us.
+ */
+TEST(within_takes_ready_words_past_the_limit)
+{
+    static uint8_t buf[4000];
+
+    fresh(0, 0, 1);
+    CHECK_EQ(rng_init(), 0);
+    CHECK_EQ(rng_read_within(buf, sizeof(buf), 100), 0);
+    CHECK_EQ(data_reads, 1000);
+    CHECK_EQ(status_reads, 1000);
+    CHECK_EQ(empty_reads, 0);
+    CHECK(now >= 2000);
+}
+
+/*
+ * Words are ready until 300 us, then none comes. The limit passed while
+ * the call took ready words, so the first word that is not ready ends the
+ * call at once with no wait.
+ */
+TEST(within_does_not_wait_for_a_word_past_the_limit)
+{
+    static uint8_t buf[4000];
+    uint64_t t;
+
+    fresh(0, 0, 1);
+    gap_at = 300;
+    gap_us = NEVER;
+    CHECK_EQ(rng_init(), 0);
+    t = now;
+    CHECK_EQ(rng_read_within(buf, sizeof(buf), 100), RNG_ERR_TIMEOUT);
+    CHECK(data_reads >= 100);
+    CHECK(data_reads < 1000);
+    /* One status read finds no word, and the call ends there. */
+    CHECK_EQ(status_reads, data_reads + 1);
+    CHECK(now - t <= 2 * data_reads + 1);
 }

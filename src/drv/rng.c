@@ -47,20 +47,20 @@ int rng_init(void)
 }
 
 /*
- * Waits for one word, up to RNG_TIMEOUT_US on the system timer. Returns 0
- * and stores it, or RNG_ERR_TIMEOUT. The time is the low word of the
- * timer: the difference of two reads stays right when it wraps. After the
- * limit the status is read once more, so a wait that was held up, as by a
- * long interrupt, still takes a word that came in the meantime. A timer
- * that does not advance ends the wait after RNG_STALL_POLLS reads.
+ * Waits for one word until `limit` microseconds after t0 on the system
+ * timer. Returns 0 and stores it, or RNG_ERR_TIMEOUT. The time is the low
+ * word of the timer: the difference of two reads stays right when it
+ * wraps. After the limit the status is read once more, so a wait that was
+ * held up, as by a long interrupt, still takes a word that came in the
+ * meantime. A wait that starts past the limit reads the status once. A
+ * timer that does not advance ends the wait after RNG_STALL_POLLS reads.
  */
-static int rng_word(uint32_t base, uint32_t *out)
+static int rng_word(uint32_t base, uint32_t *out, uint32_t t0, uint32_t limit)
 {
-    uint32_t t0 = timer_now_lo();
-    uint32_t last = t0;
+    uint32_t last = timer_now_lo();
     uint32_t same = 0;
     uint32_t t;
-    int late = 0;
+    int late = last - t0 >= limit;
 
     while (!(mmio_read(base + RNG_STATUS) >> 24)) {
         if (late) {
@@ -73,16 +73,23 @@ static int rng_word(uint32_t base, uint32_t *out)
         } else if (++same >= RNG_STALL_POLLS) {
             return RNG_ERR_TIMEOUT;
         }
-        late = t - t0 >= RNG_TIMEOUT_US;
+        late = t - t0 >= limit;
     }
     *out = mmio_read(base + RNG_DATA);
     return 0;
 }
 
-int rng_read(void *buf, size_t len)
+/*
+ * Fills buf word by word. With per_word set, each word gets `limit` from
+ * the start of its own wait. Else `limit` counts from the start of the
+ * call and bounds the waits of every word. A ready word is taken with no
+ * wait, also past the limit.
+ */
+static int rng_fill(void *buf, size_t len, uint32_t limit, int per_word)
 {
     uint32_t base = rng_base();
     unsigned char *p = buf;
+    uint32_t t0;
     uint32_t w;
     size_t i;
     int rc;
@@ -90,8 +97,12 @@ int rng_read(void *buf, size_t len)
     if (base == 0) {
         return RNG_ERR_BOARD;
     }
+    t0 = timer_now_lo();
     while (len > 0) {
-        rc = rng_word(base, &w);
+        if (per_word) {
+            t0 = timer_now_lo();
+        }
+        rc = rng_word(base, &w, t0, limit);
         if (rc < 0) {
             return rc;
         }
@@ -102,10 +113,31 @@ int rng_read(void *buf, size_t len)
     return 0;
 }
 
+int rng_read(void *buf, size_t len)
+{
+    return rng_fill(buf, len, RNG_TIMEOUT_US, 1);
+}
+
+int rng_read_within(void *buf, size_t len, uint32_t limit_us)
+{
+    return rng_fill(buf, len, limit_us, 0);
+}
+
 int rng_u32(uint32_t *out)
 {
     uint32_t w;
     int rc = rng_read(&w, sizeof(w));
+
+    if (rc == 0) {
+        *out = w;
+    }
+    return rc;
+}
+
+int rng_u32_within(uint32_t *out, uint32_t limit_us)
+{
+    uint32_t w;
+    int rc = rng_read_within(&w, sizeof(w), limit_us);
 
     if (rc == 0) {
         *out = w;
