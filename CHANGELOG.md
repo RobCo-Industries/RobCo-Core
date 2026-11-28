@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `examples/gpio` prints `us=` on its `ev=rng` line: the time from `rng_init()` to the first word. On a real board from power-on that is the warm-up of the generator. `docs/HARDWARE_VALIDATION.md` gains a row that asks for it on each board.
+- `rng_read()` and `rng_u32()` wait for each word by time: up to `RNG_TIMEOUT_US`, 3 s on the system timer. Before, the wait was a million status reads, which can end before a real generator has warmed up after `rng_init()`. QEMU has a word at once and never showed it. `rng_init()` still returns at once. A timer that does not advance still ends the wait. New host test `tests/host/test_rng.c` runs the driver on a fake generator with a warm-up.
 - The `tools/` row of `docs/guide/PROJECT_LAYOUT.md` names every tool: `check_workflow_exprs.py`, `sfx_check.py`, `tone_square.py`, `voice_engine.py`, `ci_local.sh`, `tools/nightly/` and `tools/release/` join it.
 - The header and the guide name the last refused case of `audio_play_voice()`: a span whose `inc` leaves `0` to `AUDIO_VOICE_INC_MAX` at its last sample returns `AUDIO_ERR_ARG`. The check was already there. New host tests cover both ends on a full span and through the driver.
 - `audio_rest_is_mid()` returns 1 once the ramp of `audio_rest_mid()` has reached its last sample and the rest level is the midpoint, else 0. After a wait, a kernel can tell a ramp that reached its end from one that a stop, a cut or a new sound ended early.

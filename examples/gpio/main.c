@@ -5,6 +5,7 @@
 #include <robco/klibc.h>
 #include <robco/power.h>
 #include <robco/rng.h>
+#include <robco/timer.h>
 #include <robco/uart.h>
 
 static void print_out(void)
@@ -30,6 +31,8 @@ void robco_main(void)
 {
     uint32_t a;
     uint32_t b;
+    uint64_t t0;
+    uint32_t us;
     int rc;
     int c;
 
@@ -53,15 +56,22 @@ void robco_main(void)
 
     k_printf("@RC stage=gpio ev=badpin rc=%d\n", bad_pin_rejected());
 
+    /*
+     * us is the time from rng_init() to the first word. On a real board,
+     * from power-on, that is the warm-up of the generator.
+     */
+    t0 = timer_now_us();
     rc = rng_init();
     a = b = 0;
     if (rc == 0) {
         rc = rng_u32(&a);
     }
+    us = (uint32_t)(timer_now_us() - t0);
     if (rc == 0) {
         rc = rng_u32(&b);
     }
-    k_printf("@RC stage=gpio ev=rng a=0x%08x b=0x%08x rc=%d\n", (unsigned)a, (unsigned)b, rc);
+    k_printf("@RC stage=gpio ev=rng a=0x%08x b=0x%08x rc=%d us=%u\n",
+             (unsigned)a, (unsigned)b, rc, (unsigned)us);
 
     k_printf("@RC stage=gpio ev=ready\n");
 
