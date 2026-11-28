@@ -231,6 +231,20 @@ TEST(check_errors)
     CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), 0);
     b = s; b.n = 2; b.inc = 1; b.dinc = -1;
     CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), 0);
+    /* A full span: the last sample's step lands on each limit, then one past it. */
+    b = s; b.n = AUDIO_VOICE_N_MAX; b.inc = AUDIO_VOICE_N_MAX - 1; b.dinc = -1;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), 0);
+    b.inc--;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);
+    b = s; b.n = AUDIO_VOICE_N_MAX; b.inc = AUDIO_VOICE_INC_MAX - (AUDIO_VOICE_N_MAX - 1); b.dinc = 1;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), 0);
+    b.inc++;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);
+    /* The largest moves do not wrap the check. */
+    b = s; b.n = AUDIO_VOICE_N_MAX; b.inc = AUDIO_VOICE_INC_MAX; b.dinc = INT32_MIN;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);
+    b = s; b.n = AUDIO_VOICE_N_MAX; b.inc = 0; b.dinc = INT32_MAX;
+    CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);
     b = s; b.amp = -1;
     CHECK_EQ(audio_voice_check(&b, 1, RATE, 0, 0), AUDIO_ERR_ARG);
     b = s; b.amp = AUDIO_VOICE_AMP_MAX + 1;
@@ -296,6 +310,21 @@ TEST(driver_errors)
     CHECK_EQ(audio_play_voice(&s, 1, RATE, AUDIO_PRIORITY), 0);
     backend = -1;
     CHECK_EQ(audio_play_voice(&s, 1, RATE, 0), AUDIO_ERR_NO_INIT);
+}
+
+/* The driver refuses a span whose pitch leaves its range, at either end, and plays nothing. */
+TEST(the_driver_refuses_a_pitch_that_leaves_its_range)
+{
+    static const audio_voice_span_t low = { 2, 0, 0, -1, 10 << 16, 0, 0 };
+    static const audio_voice_span_t high = { 2, 0, AUDIO_VOICE_INC_MAX, 1, 10 << 16, 0, 0 };
+
+    fresh(AUDIO_BACKEND_TRACE);
+    CHECK_EQ(audio_play_voice(&low, 1, RATE, 0), AUDIO_ERR_ARG);
+    CHECK_EQ(audio_play_voice(&high, 1, RATE, 0), AUDIO_ERR_ARG);
+    CHECK_EQ(audio_busy(), 0);
+    tick(10);
+    audio_trace_flush();
+    CHECK_STR(out, "");
 }
 
 TEST(one_rounding)
