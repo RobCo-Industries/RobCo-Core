@@ -261,8 +261,8 @@ int audio_pcm_mix_busy(void);
  * Main context only: the call checks every span, and on the trace
  * backend it takes the CRC-32 of the span bytes.
  * Returns 0 or AUDIO_ERR_* (NO_INIT, ARG for NULL, count 0, AUDIO_LOOP or
- * unknown flags, a span outside the limits, an amp that leaves its range
- * within a span, or a sum of n above AUDIO_PCM_LEN_MAX, RANGE for the
+ * unknown flags, a span outside the limits, an inc or an amp that leaves its
+ * range within a span, or a sum of n above AUDIO_PCM_LEN_MAX, RANGE for the
  * rate, NO_IRQ, BUSY when something plays and AUDIO_PRIORITY is not set).
  */
 int audio_play_voice(const audio_voice_span_t *spans, size_t count, uint32_t rate_hz,
