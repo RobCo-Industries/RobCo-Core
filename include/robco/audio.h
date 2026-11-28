@@ -289,6 +289,16 @@ int audio_play_voice(const audio_voice_span_t *spans, size_t count, uint32_t rat
 int audio_rest_mid(void);
 
 /*
+ * 1 once the rest level is the midpoint: a ramp of audio_rest_mid() has
+ * reached its last sample. 0 before that: before audio_init(), before the
+ * call, while the ramp waits for its tick or plays, and after a ramp that
+ * ended early. It turns 1 in the IRQ that ends the ramp, the one that
+ * turns audio_busy() to 0. So once audio_busy() is 0 after the call, the
+ * answer says how the ramp ended. It never goes back to 0.
+ */
+int audio_rest_is_mid(void);
+
+/*
  * Samples output since audio_init(). If `play` is not NULL, it gets the
  * samples output by the current or last PCM play, counted from
  * audio_play_pcm() over every queued buffer that followed. For tests.

@@ -620,20 +620,23 @@ static void play_rule(void)
 static void play_rest(void)
 {
     int ret, again, tone;
+    int mid0, mid1;
     uint32_t s0, s1;
 
     case_begin("rest");
     audio_set_volume(50);
+    mid0 = audio_rest_is_mid();
     ret = audio_rest_mid();
     audio_wait();
+    mid1 = audio_rest_is_mid();
     again = audio_rest_mid();
     s0 = audio_pcm_samples(0);
     tone = audio_tone(440, 50);
     audio_wait();
     s1 = audio_pcm_samples(0);
     audio_set_volume(100);
-    k_printf("@RC stage=audio ev=rest again=%d tone=%d grew=%u\n", again, tone,
-             (unsigned)(s1 - s0));
+    k_printf("@RC stage=audio ev=rest again=%d tone=%d grew=%u mid0=%d mid1=%d\n",
+             again, tone, (unsigned)(s1 - s0), mid0, mid1);
     case_end("rest", ret);
 }
 
