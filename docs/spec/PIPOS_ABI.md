@@ -419,7 +419,7 @@ Each level is 0 to 100. The built-in value of each of the four levels is 100. `P
 
 The master is not a kind. No sound has it as its kind, and `sound_kind` takes 0 to 3 only. `PIP_LEVEL_MASTER` is a fifth value for the first argument of `sound_level`, so that call reaches all five levels.
 
-This section is a rule for Pip-OS and for the audio driver of RobCo-Core. Neither follows it yet.
+This section is a rule for Pip-OS and for the audio driver of RobCo-Core. Both follow it.
 
 #### Finding the calls
 
@@ -1010,6 +1010,6 @@ A project that also has a `robco.toml` sets `ABI` to the value of `target.abi`, 
 | 1.3 | `hw_flags` in `sys_info` |
 | 1.4 | Removable holotapes: `[holotape] slot` in `PIPOS.CFG`, `PIP_HW_TAPE`, `flags` in `pip_holo_info_t`, `PIP_EV_TAPE`, the `holo_eject_event` mask, `-PIP_ENODEV` from `holo_launch` |
 | 1.5 | `sample_rate`: `sample` and `sample_queue` play at 8000 or 37500 Hz. `PIP_HW_AUDIO_MID` in `hw_flags`: the audio output rests at its midpoint. |
-| 1.6 | Sound kinds and levels: `sound_kind`, `sound_level` and `sound_store`, numbers `0x28` to `0x2A`. Four levels beside the master, `PIP_LEVEL_MASTER` to read the master, one gain per play, and a level change with no click. The levels are stored in `/PIPBOY/PIPOS.SET`, and `PIPOS.CFG` takes the keys `radio`, `sfx`, `recordings` and `games` under `[audio]`. `volume` from a holotape sets a trim that ends with the holotape. No new `hw_flags` bit. Pip-OS implements it in its own repository later. Until then it reports ABI 1.5, returns `-PIP_ENOSYS` for the three numbers and keeps the `volume` of 1.5. |
+| 1.6 | Sound kinds and levels: `sound_kind`, `sound_level` and `sound_store`, numbers `0x28` to `0x2A`. Four levels beside the master, `PIP_LEVEL_MASTER` to read the master, one gain per play, and a level change with no click. The levels are stored in `/PIPBOY/PIPOS.SET`, and `PIPOS.CFG` takes the keys `radio`, `sfx`, `recordings` and `games` under `[audio]`. `volume` from a holotape sets a trim that ends with the holotape. No new `hw_flags` bit. |
 
-Pip-OS implements every version up to 1.5 and reports ABI 1.5.
+Pip-OS implements every version up to 1.6 and reports ABI 1.6.
