@@ -670,19 +670,28 @@ Both `power_reboot()` and `power_halt()` mask IRQs and FIQs first, so a running 
 | Constant | Value | Meaning |
 |---|---|---|
 | `RNG_ERR_BOARD` | `-1` | No peripheral base |
-| `RNG_ERR_TIMEOUT` | `-2` | No data within the poll limit |
+| `RNG_ERR_TIMEOUT` | `-2` | No word within `RNG_TIMEOUT_US` |
+| `RNG_TIMEOUT_US` | `3000000` | Longest wait for one word, in microseconds of the system timer |
 
 ```c
 int rng_init(void);
 ```
 
-Starts the generator if it is off and discards its first words. Returns `0` or `RNG_ERR_BOARD`.
+Starts the generator if it is off and returns at once. It does not wait and does not use the timer. Returns `0` or `RNG_ERR_BOARD`. A generator that already runs is left alone, so a later boot stage adds no second warm-up.
+
+After its start the real generator discards its first output. That is the warm-up, and no word comes while it lasts. QEMU has a word at once.
 
 ```c
 int rng_read(void *buf, size_t len);
 ```
 
-Fills `buf` with `len` random bytes. It busy-waits for each word, up to a million status reads. Returns `0` or a negative error. Before `rng_init()` it may time out.
+Fills `buf` with `len` random bytes. It busy-waits for each word, up to `RNG_TIMEOUT_US` on the system timer. The first read after `rng_init()` waits for the rest of the warm-up. Later words come much faster. Returns `0` or a negative error. `RNG_ERR_TIMEOUT` means a generator that gives no word. Before `rng_init()` the generator is off and the read times out.
+
+The wait needs the system timer. A timer that does not advance ends the wait with `RNG_ERR_TIMEOUT` after a million timer reads with no change, so the call never hangs.
+
+A stage that must not block in a read calls `rng_init()` early and reads later. The warm-up runs in the meantime.
+
+The warm-up time is in no public data sheet. Public reports for this generator put it under one second, and the limit is three times that. It is a choice with a margin, not a proven bound. `examples/gpio` prints the time to the first word as `us=`, and [HARDWARE_VALIDATION.md](../HARDWARE_VALIDATION.md#serial-adapter-only) asks for that number on each board.
 
 ```c
 int rng_u32(uint32_t *out);

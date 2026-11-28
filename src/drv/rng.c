@@ -4,6 +4,7 @@
 #include <robco/board.h>
 #include <robco/mmio.h>
 #include <robco/rng.h>
+#include <robco/timer.h>
 
 #define RNG_OFFSET      0x104000
 #define RNG_CTRL        0x00
@@ -12,7 +13,12 @@
 
 #define RNG_ENABLE      1u
 #define RNG_WARMUP      0x40000u
-#define RNG_POLL_LIMIT  1000000u
+/*
+ * Timer reads in a row with no change before a wait calls the system
+ * timer stopped. A running 1 MHz counter changes every microsecond, so
+ * a million equal reads only happen when the counter does not run.
+ */
+#define RNG_STALL_POLLS 1000000u
 
 static uint32_t rng_base(void)
 {
@@ -29,25 +35,48 @@ int rng_init(void)
         return RNG_ERR_BOARD;
     }
     if (!(mmio_read(base + RNG_CTRL) & RNG_ENABLE)) {
-        /* Discard the first words while the generator warms up. */
+        /*
+         * The generator discards its first output: the warm-up. It gives
+         * no word until that is over, so the first read waits. A
+         * generator that already runs is left alone.
+         */
         mmio_write(base + RNG_STATUS, RNG_WARMUP);
         mmio_write(base + RNG_CTRL, RNG_ENABLE);
     }
     return 0;
 }
 
-/* Waits for one word. Returns 0 and stores it, or a negative error. */
+/*
+ * Waits for one word, up to RNG_TIMEOUT_US on the system timer. Returns 0
+ * and stores it, or RNG_ERR_TIMEOUT. The time is the low word of the
+ * timer: the difference of two reads stays right when it wraps. After the
+ * limit the status is read once more, so a wait that was held up, as by a
+ * long interrupt, still takes a word that came in the meantime. A timer
+ * that does not advance ends the wait after RNG_STALL_POLLS reads.
+ */
 static int rng_word(uint32_t base, uint32_t *out)
 {
-    uint32_t n;
+    uint32_t t0 = timer_now_lo();
+    uint32_t last = t0;
+    uint32_t same = 0;
+    uint32_t t;
+    int late = 0;
 
-    for (n = 0; n < RNG_POLL_LIMIT; n++) {
-        if (mmio_read(base + RNG_STATUS) >> 24) {
-            *out = mmio_read(base + RNG_DATA);
-            return 0;
+    while (!(mmio_read(base + RNG_STATUS) >> 24)) {
+        if (late) {
+            return RNG_ERR_TIMEOUT;
         }
+        t = timer_now_lo();
+        if (t != last) {
+            last = t;
+            same = 0;
+        } else if (++same >= RNG_STALL_POLLS) {
+            return RNG_ERR_TIMEOUT;
+        }
+        late = t - t0 >= RNG_TIMEOUT_US;
     }
-    return RNG_ERR_TIMEOUT;
+    *out = mmio_read(base + RNG_DATA);
+    return 0;
 }
 
 int rng_read(void *buf, size_t len)
