@@ -670,7 +670,7 @@ Both `power_reboot()` and `power_halt()` mask IRQs and FIQs first, so a running 
 | Constant | Value | Meaning |
 |---|---|---|
 | `RNG_ERR_BOARD` | `-1` | No peripheral base |
-| `RNG_ERR_TIMEOUT` | `-2` | No word within `RNG_TIMEOUT_US` |
+| `RNG_ERR_TIMEOUT` | `-2` | No word within the time limit |
 | `RNG_TIMEOUT_US` | `3000000` | Longest wait for one word, in microseconds of the system timer |
 
 ```c
@@ -685,9 +685,9 @@ After its start the real generator discards its first output. That is the warm-u
 int rng_read(void *buf, size_t len);
 ```
 
-Fills `buf` with `len` random bytes. It busy-waits for each word, up to `RNG_TIMEOUT_US` on the system timer. The first read after `rng_init()` waits for the rest of the warm-up. Later words come much faster. Returns `0` or a negative error. `RNG_ERR_TIMEOUT` means a generator that gives no word. Before `rng_init()` the generator is off and the read times out.
+Fills `buf` with `len` random bytes. It busy-waits for each word, up to `RNG_TIMEOUT_US` on the system timer. The first read after `rng_init()` waits for the rest of the warm-up. Later words come much faster. Returns `0` or a negative error. `RNG_ERR_TIMEOUT` means a generator that gives no word. Before `rng_init()` the generator is off and the read times out. On an error, `buf` holds the bytes of the words read before the failed one, and the rest of `buf` is unchanged.
 
-The wait needs the system timer. A timer that does not advance ends the wait with `RNG_ERR_TIMEOUT` after a million timer reads with no change, so the call never hangs.
+The wait needs the system timer. A timer that does not advance ends the wait with `RNG_ERR_TIMEOUT` after a million timer reads with no change, so the call never hangs. That guard counts reads, not time.
 
 A stage that must not block in a read calls `rng_init()` early and reads later. The warm-up runs in the meantime.
 
@@ -698,6 +698,15 @@ int rng_u32(uint32_t *out);
 ```
 
 Stores one random word in `*out`. Returns `0`, or a negative error as `rng_read()` does and leaves `*out` untouched.
+
+```c
+int rng_read_within(void *buf, size_t len, uint32_t limit_us);
+int rng_u32_within(uint32_t *out, uint32_t limit_us);
+```
+
+As `rng_read()` and `rng_u32()`, but the whole call waits at most `limit_us` microseconds of the system timer, counted from its start, for all its words together. Use these in a loop that kicks a watchdog: `rng_read()` can wait `RNG_TIMEOUT_US` for each word, which is longer than a 1 s watchdog. Pick `limit_us` well under the watchdog timeout.
+
+`limit_us` `0` never waits: each word is taken only if it is ready at its first status read. After the limit the status is read once more, so a word that came in the meantime is still taken. Returns `0`, `RNG_ERR_BOARD` or `RNG_ERR_TIMEOUT`. `buf` after an error is as for `rng_read()`, and `rng_u32_within()` leaves `*out` untouched. The stall guard still counts a million timer reads for each word, so on a stopped timer a call can last longer than `limit_us`.
 
 ## Framebuffer (`fb.h`)
 
