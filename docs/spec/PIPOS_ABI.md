@@ -415,7 +415,7 @@ ABI 1.6 gives the device five sound levels. One is the master, the level `volume
 
 The image that starts a sound picks its kind. This document does not say which kind a given sound takes. A sound that fits two kinds, such as a recorded piece on a radio station, takes the kind its ROM picks.
 
-Each level is 0 to 100. The built-in value of each of the four levels is 100. `PIPOS.CFG` and the [stored levels](#stored-levels) can replace it, and the user can change it. So a ROM reads a level with `PIP_LEVEL_ASK` and never assumes its value.
+Each level is 0 to 100. The built-in values are 30 for `radio`, 100 for `sfx`, 80 for `recordings` and 50 for `games`. A long tune at full level is far louder than the short interface sounds, so the kinds that play for seconds start lower. `PIPOS.CFG` and the [stored levels](#stored-levels) can replace it, and the user can change it. So a ROM reads a level with `PIP_LEVEL_ASK` and never assumes its value.
 
 The master is not a kind. No sound has it as its kind, and `sound_kind` takes 0 to 3 only. `PIP_LEVEL_MASTER` is a fifth value for the first argument of `sound_level`, so that call reaches all five levels.
 
@@ -616,7 +616,7 @@ Pip-OS keeps the master and the four levels in one file on the boot card, so the
 | Who writes it | Pip-OS only, inside `sound_store`, with RobCo-Core's atomic write. A power cut leaves the old file or the new one. |
 | When | Only when a ROM calls `sound_store`. `volume` and `sound_level` never write the card, and no other event does. |
 | What | The master and the four levels in force at the call. Pip-OS stores no kind and no trim. |
-| Order at boot | First the built-in values, 100 for the master and for each level. Then `PIPOS.CFG`, whose `[audio]` section takes the same five keys. Then `PIPOS.SET`. A key in `PIPOS.SET` wins over `PIPOS.CFG`, and a key in `PIPOS.CFG` wins over the built-in value. |
+| Order at boot | First the built-in values: 100 for the master, 30 for `radio`, 100 for `sfx`, 80 for `recordings` and 50 for `games`. Then `PIPOS.CFG`, whose `[audio]` section takes the same five keys. Then `PIPOS.SET`. A key in `PIPOS.SET` wins over `PIPOS.CFG`, and a key in `PIPOS.CFG` wins over the built-in value. |
 | Before the first sound | Pip-OS reads both files before it starts its first sound, so the power-on beep follows the stored levels |
 | A deleted file | The next boot uses the values of `PIPOS.CFG` again |
 | A missing file | It is not an error and prints nothing. A fresh card has none. Pip-OS keeps the values it has after `PIPOS.CFG`. |
