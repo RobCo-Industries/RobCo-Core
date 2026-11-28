@@ -203,6 +203,7 @@ This run does not show: the variants `build/kfault`, `build/ksvc` and `build/kmm
 | Audio probe | All | `examples/audio` | `ev=backend name=pwm probe_pwm=ok err=0` and the expected pins |
 | Mini UART script channel | Pi 3 or Zero 2 W first | `examples/input`, with the adapter on GPIO 14 and 15 at ALT5 and `core_freq` fixed in `config.txt` | `ready`, then `ok` answers at 115200 baud |
 | Input stuck-line guard | All, nothing wired | `examples/input` | `ev=gpio status=active`, not `disabled_stuck`, since the pull-ups read high |
+| Hardware RNG warm-up | All | `examples/gpio` from power-on, then send `r` and read the second boot | `ev=rng` with `rc=0` and `a` different from `b`. `us=` is the time from `rng_init()` to the first word. From power-on that is the warm-up of the generator: write it down for each board. It must stay well under 3000000, the limit of `rng_read()`. A value above 1500000 means the limit must rise. The second boot tells whether a reset stops the generator: a small `us=` means it kept running. QEMU has a word at once and shows none of this. Seen on a Pi Zero W on 2026-11-27, with the earlier limit of a million status reads: the first read after `rng_init()` returned `RNG_ERR_TIMEOUT`. Open on every board. |
 
 ## HDMI screen
 

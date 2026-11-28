@@ -48,6 +48,10 @@ def test_gpio(board, example_image):
         assert len(rng) == 1, vm.serial
         assert rng[0]["rc"] == "0"
         assert rng[0]["a"] != rng[0]["b"]
+        # The time from rng_init() to the first word. QEMU has a word at
+        # once, so there is no bound to check here. A real board waits for
+        # the warm-up, see docs/HARDWARE_VALIDATION.md.
+        assert rng[0]["us"].isdigit(), rng[0]
         assert not events(vm, "exception"), vm.serial
 
 
